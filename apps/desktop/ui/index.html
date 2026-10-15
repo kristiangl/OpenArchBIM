@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OpenArch BIM</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="app">
+  <header id="titlebar">
+    <span class="logo">OpenArch BIM</span>
+    <span class="qa">
+      <button id="qa-new" title="New project">New</button>
+      <button id="qa-open" title="Open project">Open</button>
+      <button id="qa-save" title="Save (Ctrl+S)">Save</button>
+      <button id="qa-undo" title="Undo (Ctrl+Z)">Undo</button>
+      <button id="qa-redo" title="Redo (Ctrl+Y)">Redo</button>
+    </span>
+    <span id="doc-tabs" hidden></span>
+    <span class="doc" id="doc-title">Untitled project</span>
+    <span class="spacer"></span>
+    <span id="core-status" class="pill">core: ...</span>
+    <span id="gpu-status" class="pill">GPU: ...</span>
+  </header>
+
+  <nav id="tabs"></nav>
+  <section id="ribbon"></section>
+
+  <main id="workspace">
+    <aside id="left">
+      <div class="panel" id="properties">
+        <div class="panel-title">Properties</div>
+        <div class="type-selector"><select id="type-select"></select><button id="edit-type" hidden title="Edit the type's parameters">Edit Type</button><button id="edit-family" hidden title="Open the family in the family editor">Edit Family</button></div>
+        <div class="prop-scroll" id="prop-body"></div>
+        <div class="panel-foot"><a href="#">Properties help</a></div>
+      </div>
+      <div class="panel" id="browser">
+        <div class="panel-title">Project Browser - Untitled</div>
+        <ul class="tree" id="tree"></ul>
+      </div>
+    </aside>
+
+    <section id="center">
+      <div id="view-tabs"></div>
+      <div id="viewport-wrap">
+        <div id="optionsbar" hidden>
+          <div id="ob-wall">
+            <label>Location Line <select id="ob-location"></select></label>
+            <label>Height <select id="ob-top"></select></label>
+            <label id="ob-height-label"><input id="ob-height" type="number" step="any" min="1"> mm</label>
+            <label title="Spacebar: puts the exterior side on the right of the drawing direction"><input id="ob-flip" type="checkbox"> Flip (Space)</label>
+          </div>
+          <div id="ob-joins" hidden></div>
+          <div id="ob-edit" hidden></div>
+          <div id="ob-sketch" hidden></div>
+          <div id="ob-level" hidden>
+            <label title="Also make a floor plan for each new level"><input id="ob-level-plan" type="checkbox" checked> Make Plan View</label>
+            <span class="ob-hint">Click at a height, or type an elevation and press Enter.</span>
+          </div>
+          <div id="ob-grid" hidden>
+            <label>Draw <select id="ob-grid-shape">
+              <option value="line">Line</option>
+              <option value="arc_3pt">Start-End-Radius Arc</option>
+              <option value="arc_centre">Center-ends Arc</option>
+              <option value="multi">Multi-Segment</option>
+              <option value="pick">Pick Lines</option>
+            </select></label>
+            <label id="ob-grid-offset-label">Offset <input id="ob-grid-offset" type="number" min="0" step="any" value="0" style="width:70px"> mm</label>
+          </div>
+          <div id="ob-elev" hidden>
+            <span>Pointers:</span>
+            <label><input type="checkbox" class="ob-slot" data-slot="0" checked> A</label>
+            <label><input type="checkbox" class="ob-slot" data-slot="1"> B</label>
+            <label><input type="checkbox" class="ob-slot" data-slot="2"> C</label>
+            <label><input type="checkbox" class="ob-slot" data-slot="3"> D</label>
+            <span class="ob-hint">Click to place. Space turns the marker 90 degrees.</span>
+          </div>
+        </div>
+        <canvas id="plan"></canvas>
+        <canvas id="elev"></canvas>
+        <canvas id="viewport"></canvas>
+        <div id="schedule-view"></div>
+        <div id="gpu-msg" hidden></div>
+        <div id="hud">
+          <div id="fps">- fps</div>
+          <div id="inst"></div>
+        </div>
+      </div>
+      <div id="viewbar">
+        <label>Scale <select id="vb-scale"></select></label>
+        <label>Detail <select id="vb-detail"></select></label>
+        <label>Style <select id="vb-style"></select></label>
+        <button id="vb-thin" title="Thin Lines: draw every line one pixel wide">Thin Lines</button>
+        <button disabled>Sun Path</button>
+        <button disabled>Shadows</button>
+        <button disabled>Crop</button>
+        <button disabled>Temporary Hide/Isolate</button>
+        <button disabled>Reveal Hidden</button>
+        <span class="spacer"></span>
+        <button id="stress" title="Draw 1200 instanced apartments to check frame rate">Stress test</button>
+      </div>
+    </section>
+
+    <aside id="fam-left">
+      <div class="panel" id="fam-properties">
+        <div class="panel-title">Properties</div>
+        <div class="type-selector"><select id="fam-type-select" title="Family type"></select></div>
+        <div class="prop-scroll" id="fam-prop-body"></div>
+      </div>
+      <div class="panel" id="fam-browser">
+        <div class="panel-title" id="fam-browser-title">Project Browser</div>
+        <ul class="tree" id="fam-tree"></ul>
+      </div>
+    </aside>
+
+    <section id="fam-center">
+      <div id="fam-vtabs"></div>
+      <div id="fam-options" hidden></div>
+      <div id="fam-wrap"><canvas id="fam-canvas"></canvas></div>
+      <div id="fam-viewbar"></div>
+    </section>
+  </main>
+
+  <footer id="status">
+    <span id="prompt">Ready.</span>
+    <span class="spacer"></span>
+    <span id="cursor-pos"></span>
+    <span id="selopts"></span>
+    <button id="filter-btn" class="filter" title="Filter the selection by category">Filter: 0</button>
+    <span>Main Model</span>
+  </footer>
+</div>
+<script src="terms.js"></script>
+<script src="backend.js"></script>
+<script src="ribbon.js"></script>
+<script src="units.js"></script>
+<script src="snap.js"></script>
+<script src="annotation.js"></script>
+<script src="sketch.js"></script>
+<script src="dims.js"></script>
+<script src="spots.js"></script>
+<script src="sections.js"></script>
+<script src="plan.js"></script>
+<script src="elevation.js"></script>
+<script src="viewport.js"></script>
+<script src="panels.js"></script>
+<script src="styles.js"></script>
+<script src="famed.js"></script>
+<script src="fameditor.js"></script>
+<script src="main.js"></script>
+</body>
+</html>

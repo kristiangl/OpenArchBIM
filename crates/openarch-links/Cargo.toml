@@ -1,0 +1,8 @@
+[package]
+name = "openarch-links"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Instanced linked-model data structures (Phase 0 spike)"
+
+[dependencies]

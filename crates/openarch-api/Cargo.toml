@@ -1,0 +1,13 @@
+[package]
+name = "openarch-api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "JSON command interface between the UI and the Rust core"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+openarch-model = { path = "../openarch-model" }
+openarch-params = { path = "../openarch-params" }
+openarch-links = { path = "../openarch-links" }

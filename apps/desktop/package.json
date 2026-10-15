@@ -1,0 +1,14 @@
+{
+  "name": "openarch-desktop",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "ui": "python3 -m http.server 8080 --directory ui"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2"
+  }
+}

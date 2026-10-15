@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["crates/openarch-params", "crates/openarch-links", "crates/openarch-model", "crates/openarch-api", "crates/openarch-dev"]
+exclude = ["apps/desktop/src-tauri"]
+# apps/desktop/src-tauri is built separately (needs platform GUI libraries)
+
+[workspace.package]
+edition = "2021"
+version = "0.0.1"
+license = "UNLICENSED"
+
+[profile.release]
+lto = "thin"
+codegen-units = 1

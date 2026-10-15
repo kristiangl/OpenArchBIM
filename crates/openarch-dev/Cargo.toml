@@ -1,0 +1,11 @@
+[package]
+name = "openarch-dev"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Dev server: serves the UI and the JSON API over HTTP so the UI can be tested in a normal browser"
+
+[dependencies]
+tiny_http = "0.12"
+serde_json = "1"
+openarch-api = { path = "../openarch-api" }

@@ -1,0 +1,826 @@
+//! Properties palette content. Each row says what to show and, when it can be
+//! edited, which JSON patch an edit produces, so the UI needs no per-property
+//! code: it sends the patch to `patch_wall` or `patch_view` and refreshes.
+//!
+//! Row shape: `{ label, value, kind, ... }` where kind is one of
+//! `ro` (read only), `text`, `number`, `bool`, `select`, `dialog`.
+//! `path` is the property path for text/number/bool rows. `select` rows carry
+//! `options: [{ label, patch, selected }]`. `locked` marks a property that a
+//! view template controls.
+
+use openarch_model::view::*;
+use openarch_model::*;
+use crate::Res;
+use serde_json::{json, Value};
+
+pub const SCALES: &[u32] = &[1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 1000, 2000, 5000];
+
+/// Nest `value` under a dotted path: ("settings.scale", 50) -> {"settings":{"scale":50}}.
+pub fn nest(path: &str, value: Value) -> Value {
+    path.rsplit('.').fold(value, |v, k| json!({ k: v }))
+}
+
+fn ro(label: &str, value: impl Into<String>) -> Value {
+    json!({ "label": label, "value": value.into(), "kind": "ro" })
+}
+
+fn num(label: &str, path: &str, v: f64, enabled: bool) -> Value {
+    json!({ "label": label, "value": format!("{v}"), "raw": v, "kind": if enabled { "number" } else { "ro" }, "path": path })
+}
+
+fn text(label: &str, path: &str, v: &str) -> Value {
+    json!({ "label": label, "value": v, "kind": "text", "path": path })
+}
+
+fn boolean(label: &str, path: &str, v: bool, enabled: bool) -> Value {
+    json!({ "label": label, "value": if v { "Yes" } else { "No" }, "raw": v, "kind": if enabled { "bool" } else { "ro" }, "path": path })
+}
+
+fn select(label: &str, opts: Vec<(String, Value, bool)>) -> Value {
+    let shown = opts.iter().find(|(_, _, sel)| *sel).map(|(l, _, _)| l.clone()).unwrap_or_default();
+    json!({
+        "label": label, "value": shown, "kind": "select",
+        "options": opts.into_iter().map(|(l, p, s)| json!({ "label": l, "patch": p, "selected": s })).collect::<Vec<_>>(),
+    })
+}
+
+fn dialog(label: &str, name: &str, button: &str) -> Value {
+    json!({ "label": label, "value": button, "kind": "dialog", "dialog": name })
+}
+
+fn locked(mut row: Value, is: bool) -> Value {
+    if is {
+        row["locked"] = json!(true);
+    }
+    row
+}
+
+fn group(name: &str, rows: Vec<Value>) -> Value {
+    json!({ "name": name, "rows": rows })
+}
+
+/// Select over an enum serialised as snake_case: `current` and the variants are
+/// given as (json name, label).
+fn enum_select(label: &str, path: &str, current: &str, variants: &[(&str, &str)]) -> Value {
+    select(label, variants.iter().map(|(v, l)| (l.to_string(), nest(path, json!(v)), *v == current)).collect())
+}
+
+fn name_of<T: serde::Serialize>(v: &T) -> String {
+    serde_json::to_value(v).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
+}
+
+pub fn wall_props(d: &Document, id: Id, w: &Wall) -> Value {
+    let t = d.wall_type(w.wall_type);
+    let (z0, z1) = d.wall_extent(w);
+    let len = Document::wall_length_mm(w);
+    let thick = t.map_or(0.0, |t| t.thickness_mm());
+    let levels = d.levels();
+    let level_opts = |current: Option<Id>, path: &str, none: Option<&str>, prefix: &str| {
+        let mut o: Vec<(String, Value, bool)> = vec![];
+        if let Some(n) = none {
+            o.push((n.to_string(), nest(path, Value::Null), current.is_none()));
+        }
+        for (lid, l) in &levels {
+            o.push((format!("{prefix}{}", l.name), nest(path, json!(lid)), current == Some(*lid)));
+        }
+        o
+    };
+    let ll = name_of(&w.location_line);
+    let slanted = w.cross_section == CrossSection::Slanted;
+    let has_top_level = w.top_level.is_some();
+    let area = (len * (z1 - z0) - d.wall_opening_area(id)) / 1e6; // net of openings
+    let mut cross = vec![enum_select(
+        "Cross-Section",
+        "cross_section",
+        &name_of(&w.cross_section),
+        &[("vertical", "Vertical"), ("slanted", "Slanted"), ("tapered", "Tapered")],
+    )];
+    if slanted {
+        cross.push(num("Angle from Vertical", "angle_from_vertical_deg", w.angle_from_vertical_deg, true));
+    }
+    json!({
+        "id": id, "kind": "Wall", "type_id": w.wall_type,
+        "title": format!("Basic Wall: {}", t.map_or("?", |t| t.name.as_str())),
+        "target": { "method": "patch_wall", "id": id },
+        "height_mm": w.height_mm,
+        "groups": [
+            group("Constraints", vec![
+                enum_select("Location Line", "location_line", &ll, &[
+                    ("wall_centreline", "Wall Centerline"), ("core_centreline", "Core Centerline"),
+                    ("finish_face_exterior", "Finish Face: Exterior"), ("finish_face_interior", "Finish Face: Interior"),
+                    ("core_face_exterior", "Core Face: Exterior"), ("core_face_interior", "Core Face: Interior"),
+                ]),
+                boolean("Flipped", "flipped", w.flipped, true),
+                boolean("Pinned", "pinned", w.pinned, true),
+                select("Base Constraint", level_opts(Some(w.base_level), "base_level", None, "")),
+                num("Base Offset", "base_offset_mm", w.base_offset_mm, true),
+                ro("Base is Attached", "No"),
+                num("Base Extension Distance", "base_extension_mm", w.base_extension_mm, true),
+                select("Top Constraint", {
+                    let mut o = vec![("Unconnected".to_string(), nest("top_level", Value::Null), !has_top_level)];
+                    o.extend(level_opts(w.top_level, "top_level", None, "Up to level: "));
+                    o
+                }),
+                num("Unconnected Height", "height_mm", w.height_mm, !has_top_level),
+                num("Top Offset", "top_offset_mm", w.top_offset_mm, has_top_level),
+                ro("Top is Attached", "No"),
+                num("Top Extension Distance", "top_extension_mm", w.top_extension_mm, true),
+                boolean("Room Bounding", "room_bounding", w.room_bounding, true),
+                ro("Related to Mass", "No"),
+            ]),
+            group("Cross-Section Definition", cross),
+            group("Structural", vec![
+                boolean("Structural", "structural", w.structural, true),
+                if w.structural {
+                    enum_select("Structural Usage", "structural_usage", &name_of(&w.structural_usage), &[
+                        ("bearing", "Bearing"), ("shear", "Shear"), ("structural_combination", "Structural combination"), ("non_bearing", "Non-bearing"),
+                    ])
+                } else {
+                    ro("Structural Usage", "Non-bearing")
+                },
+            ]),
+            group("Joins", vec![ro("Join at Start", join_label(&w.start_join)), ro("Join at End", join_label(&w.end_join))]),
+            group("Dimensions", vec![
+                ro("Length", format!("{len:.0}")),
+                ro("Thickness", format!("{thick:.0}")),
+                ro("Area", format!("{area:.3} m\u{b2}")),
+                ro("Volume", format!("{:.3} m\u{b3}", area * thick / 1000.0)),
+            ]),
+            group("Identity Data", vec![text("Comments", "comments", &w.comments), text("Mark", "mark", &w.mark)]),
+            group("Phasing", vec![ro("Phase Created", "New Construction"), ro("Phase Demolished", "None")]),
+            group("IFC Parameters", vec![
+                enum_select("Export to IFC", "ifc.export", &name_of(&w.ifc.export), &[("by_type", "By Type"), ("yes", "Yes"), ("no", "No")]),
+                text("Export to IFC As", "ifc.export_as", &w.ifc.export_as),
+                text("IFC Predefined Type", "ifc.predefined_type", &w.ifc.predefined_type),
+                ro("IfcGUID", w.ifc.guid.clone()),
+            ]),
+        ],
+    })
+}
+
+pub fn join_label(j: &EndJoin) -> String {
+    if !j.allowed {
+        return "Not allowed".into();
+    }
+    match j.kind {
+        JoinKind::Butt => "Butt",
+        JoinKind::Miter => "Miter",
+        JoinKind::SquareOff => "Square off",
+    }
+    .into()
+}
+
+pub fn floor_props(d: &Document, id: Id, f: &Floor) -> Value {
+    let t = d.floor_type(f.floor_type);
+    json!({
+        "id": id, "kind": "Floor", "type_id": f.floor_type,
+        "title": format!("Floor: {}", t.map_or("?", |t| t.name.as_str())),
+        "groups": [
+            group("Constraints", vec![ro("Level", d.level(f.level).map_or("?", |l| l.name.as_str())), ro("Pinned", if f.pinned { "Yes" } else { "No" })]),
+            group("Dimensions", vec![
+                ro("Area", format!("{:.2} m\u{b2}", f.area_mm2() / 1e6)),
+                ro("Thickness", format!("{:.0}", t.map_or(0.0, |t| t.thickness_mm()))),
+                ro("Slope", d.floor_surface(f).map_or("Flat".to_string(), |s| if s.rise.abs() < 1e-9 { "Flat".to_string() } else { format!("{:.2}%", s.percent()) })),
+            ]),
+        ],
+    })
+}
+
+pub fn roof_props(d: &Document, id: Id, r: &openarch_model::roof::Roof) -> Value {
+    use openarch_model::roof::RafterCut;
+    let t = d.roof_type(r.roof_type);
+    let g = d.roof_geometry(r);
+    let area = g.as_ref().map_or(0.0, |g| g.surface_area_mm2());
+    let thick = t.map_or(0.0, |t| t.thickness_mm());
+    let level_opts: Vec<(String, Value, bool)> = std::iter::once(("None".to_string(), json!({ "cutoff_level": null }), r.cutoff_level.is_none()))
+        .chain(d.levels().iter().map(|(lid, l)| (l.name.clone(), json!({ "cutoff_level": lid }), r.cutoff_level == Some(*lid))))
+        .collect();
+    let cut_opts: Vec<(String, Value, bool)> = [(RafterCut::Plumb, "plumb", "Plumb Cut"), (RafterCut::TwoCutPlumb, "two_cut_plumb", "Two Cut - Plumb"), (RafterCut::Square, "square", "Square Cut")]
+        .iter()
+        .map(|(c, k, l)| (l.to_string(), json!({ "rafter_cut": k }), r.rafter_cut == *c))
+        .collect();
+    let slope_row = match (r.has_slope_edges(), r.common_slope()) {
+        (true, Some(s)) => num("Slope (degrees)", "slope_deg", s, !r.pinned),
+        (true, None) => ro("Slope (degrees)", "*Varies*"),
+        (false, _) => ro("Slope (degrees)", ""),
+    };
+    json!({
+        "id": id, "kind": "Roof", "type_id": r.roof_type, "type_label": "Roof",
+        "title": format!("Roof: {}", t.map_or("?", |t| t.name.as_str())),
+        "target": { "method": "patch_roof", "id": id },
+        "groups": [
+            group("Constraints", vec![
+                ro("Base Level", d.level(r.level).map_or("?", |l| l.name.as_str())),
+                boolean("Room Bounding", "room_bounding", r.room_bounding, true),
+                num("Base Offset From Level", "base_offset_mm", r.base_offset_mm, true),
+                select("Cutoff Level", level_opts),
+                num("Cutoff Offset", "cutoff_offset_mm", r.cutoff_offset_mm, r.cutoff_level.is_some()),
+                boolean("Pinned", "pinned", r.pinned, true),
+            ]),
+            group("Construction", vec![
+                select("Rafter Cut", cut_opts),
+                num("Fascia Depth", "fascia_depth_mm", r.fascia_depth_mm, true),
+            ]),
+            group("Dimensions", vec![
+                slope_row,
+                ro("Thickness", format!("{thick:.0}")),
+                ro("Area", format!("{:.2} m\u{b2}", area / 1e6)),
+                ro("Volume", format!("{:.2} m\u{b3}", area * thick / 1e9)),
+                ro("Maximum Ridge Height", g.as_ref().map_or(String::new(), |g| format!("{:.0}", g.top_z - d.level(r.level).map_or(0.0, |l| l.elevation_mm)))),
+            ]),
+            group("Identity Data", vec![text("Mark", "mark", &r.mark), text("Comments", "comments", &r.comments)]),
+        ],
+    })
+}
+
+fn kind_label(k: ViewKind) -> &'static str {
+    match k {
+        ViewKind::FloorPlan => "Floor Plan",
+        ViewKind::CeilingPlan => "Ceiling Plan",
+        ViewKind::StructuralPlan => "Structural Plan",
+        ViewKind::AreaPlan => "Area Plan",
+        ViewKind::Elevation => "Elevation",
+        ViewKind::Section => "Section",
+        ViewKind::Callout => "Callout",
+        ViewKind::Drafting => "Drafting View",
+        ViewKind::Legend => "Legend",
+        ViewKind::ThreeD => "3D View",
+    }
+}
+
+pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
+    let eff = d.effective_settings(id).unwrap_or_else(|| v.settings.clone());
+    let tpl = v.template.and_then(|t| d.view_template(t));
+    let inc = |p: TemplateProp| tpl.is_some_and(|t| t.included.contains(&p));
+    let plan = v.view_kind.is_plan();
+    let levels = d.levels();
+    let s = &eff;
+
+    let scale_label = |n: u32| format!("1 : {n}");
+    let mut scale_opts: Vec<(String, Value, bool)> = SCALES
+        .iter()
+        .map(|n| (scale_label(*n), nest("settings", json!({ "scale": n, "custom_scale": false })), !s.custom_scale && s.scale == *n))
+        .collect();
+    scale_opts.push(("Custom".into(), nest("settings", json!({ "custom_scale": true })), s.custom_scale));
+
+    let mut graphics = vec![
+        locked(select("View Scale", scale_opts), inc(TemplateProp::Scale)),
+        locked(num("Scale Value  1:", "settings.scale", s.scale as f64, s.custom_scale), inc(TemplateProp::Scale)),
+        locked(enum_select("Display Model", "settings.display_model", &name_of(&s.display_model), &[("normal", "Normal"), ("do_not_display", "Do not display"), ("halftone", "Halftone")]), inc(TemplateProp::DisplayModel)),
+        locked(enum_select("Detail Level", "settings.detail_level", &name_of(&s.detail_level), &[("coarse", "Coarse"), ("medium", "Medium"), ("fine", "Fine")]), inc(TemplateProp::DetailLevel)),
+        locked(enum_select("Parts Visibility", "settings.parts_visibility", &name_of(&s.parts_visibility), &[("show_original", "Show Original"), ("show_parts", "Show Parts"), ("show_both", "Show Both")]), inc(TemplateProp::PartsVisibility)),
+        locked(dialog("Visibility/Graphics Overrides", "vg", "Edit..."), inc(TemplateProp::VgModel)),
+        locked(enum_select("Visual Style", "settings.visual_style", &name_of(&s.visual_style), &[("wireframe", "Wireframe"), ("hidden_line", "Hidden Line"), ("shaded", "Shaded"), ("consistent_colors", "Consistent Colors"), ("realistic", "Realistic")]), inc(TemplateProp::VisualStyle)),
+    ];
+    if plan {
+        graphics.extend([
+            locked(enum_select("Orientation", "settings.orientation", &name_of(&s.orientation), &[("project_north", "Project North"), ("true_north", "True North")]), inc(TemplateProp::Orientation)),
+            locked(enum_select("Wall Join Display", "settings.wall_join_display", &name_of(&s.wall_join_display), &[("clean_all", "Clean all wall joins"), ("clean_same_type", "Clean same type wall joins")]), inc(TemplateProp::WallJoinDisplay)),
+            locked(enum_select("Discipline", "settings.discipline", &name_of(&s.discipline), &[("architectural", "Architectural"), ("structural", "Structural"), ("mechanical", "Mechanical"), ("electrical", "Electrical"), ("plumbing", "Plumbing"), ("coordination", "Coordination")]), inc(TemplateProp::Discipline)),
+            locked(enum_select("Show Hidden Lines", "settings.show_hidden_lines", &name_of(&s.show_hidden_lines), &[("by_discipline", "By Discipline"), ("none", "None"), ("all", "All")]), inc(TemplateProp::ShowHiddenLines)),
+            locked(enum_select("Color Scheme Location", "settings.color_scheme_location", &name_of(&s.color_scheme_location), &[("background", "Background"), ("foreground", "Foreground")]), inc(TemplateProp::ColorScheme)),
+            locked(ro("Color Scheme", "<none>"), inc(TemplateProp::ColorScheme)),
+            locked(boolean("Sun Path", "settings.sun_path", s.sun_path, true), inc(TemplateProp::SunPath)),
+        ]);
+    }
+
+    graphics.extend([
+        locked(boolean("Show Edges", "settings.graphic_display.show_edges", s.graphic_display.show_edges, true), inc(TemplateProp::GraphicDisplay)),
+        locked(boolean("Show Silhouettes", "settings.graphic_display.silhouettes", s.graphic_display.silhouettes, true), inc(TemplateProp::GraphicDisplay)),
+        locked(boolean("Cast Shadows", "settings.graphic_display.cast_shadows", s.graphic_display.cast_shadows, true), inc(TemplateProp::GraphicDisplay)),
+        locked(boolean("Sketchy Lines", "settings.graphic_display.sketchy_lines", s.graphic_display.sketchy_lines, true), inc(TemplateProp::GraphicDisplay)),
+    ]);
+    let mut groups = vec![group("Graphics", graphics)];
+    if plan {
+        let level_opts = |current: Option<Id>, path: &str| {
+            let mut o = vec![("None".to_string(), nest(path, Value::Null), current.is_none())];
+            for (lid, l) in &levels {
+                o.push((l.name.clone(), nest(path, json!(lid)), current == Some(*lid)));
+            }
+            o
+        };
+        let has_under = v.underlay.base_level.is_some();
+        let mut top_opts = vec![("Unbounded".to_string(), nest("underlay.top_level", Value::Null), v.underlay.top_level.is_none())];
+        for (lid, l) in &levels {
+            top_opts.push((l.name.clone(), nest("underlay.top_level", json!(lid)), v.underlay.top_level == Some(*lid)));
+        }
+        let mut top = select("Range: Top Level", top_opts);
+        if !has_under {
+            top["kind"] = json!("ro");
+        }
+        groups.push(group("Underlay", vec![
+            select("Range: Base Level", level_opts(v.underlay.base_level, "underlay.base_level")),
+            top,
+            locked(
+                if has_under {
+                    enum_select("Underlay Orientation", "settings.underlay_orientation", &name_of(&s.underlay_orientation), &[("look_down", "Look down"), ("look_up", "Look up")])
+                } else {
+                    ro("Underlay Orientation", "Look down")
+                },
+                inc(TemplateProp::UnderlayOrientation),
+            ),
+        ]));
+        groups.push(group("Extents", vec![
+            boolean("Crop View", "crop.enabled", v.crop.enabled, true),
+            boolean("Crop Region Visible", "crop.region_visible", v.crop.region_visible, v.crop.enabled),
+            boolean("Annotation Crop", "crop.annotation_crop", v.crop.annotation_crop, v.crop.enabled),
+            locked(dialog("View Range", "view_range", "Edit..."), inc(TemplateProp::ViewRange)),
+            ro("Associated Level", v.level.and_then(|l| d.level(l)).map_or("", |l| l.name.as_str())),
+            ro("Scope Box", "None"),
+            num("Column Symbolic Offset", "column_symbolic_offset_mm", v.column_symbolic_offset_mm, true),
+            locked(enum_select("Depth Clipping", "settings.depth_clipping", &name_of(&s.depth_clipping), &[("no_clip", "No clip"), ("clip_with_line", "Clip with line"), ("clip_without_line", "Clip without line")]), inc(TemplateProp::DepthClipping)),
+        ]));
+    } else {
+        groups.push(group("Extents", vec![
+            boolean("Crop View", "crop.enabled", v.crop.enabled, true),
+            boolean("Crop Region Visible", "crop.region_visible", v.crop.region_visible, v.crop.enabled),
+        ]));
+    }
+    let mut tpl_opts = vec![("<None>".to_string(), nest("template", Value::Null), v.template.is_none())];
+    for (tid, t) in d.view_templates() {
+        if t.view_kind == v.view_kind {
+            tpl_opts.push((t.name.clone(), nest("template", json!(tid)), v.template == Some(tid)));
+        }
+    }
+    groups.push(group("Identity Data", vec![
+        select("View Template", tpl_opts),
+        text("View Name", "name", &v.name),
+        ro("Dependency", if v.parent.is_some() { "Dependent" } else { "Independent" }),
+        text("Title on Sheet", "title_on_sheet", &v.title_on_sheet),
+        ro("Sheet Number", "<None>"),
+        ro("Sheet Name", "<None>"),
+    ]));
+    groups.push(group("Phasing", vec![ro("Phase Filter", "Show All"), ro("Phase", "New Construction")]));
+    json!({
+        "id": id, "kind": "View",
+        "title": format!("{}: {}", kind_label(v.view_kind), v.name),
+        "type_label": kind_label(v.view_kind),
+        "target": { "method": "patch_view", "id": id },
+        "groups": groups,
+    })
+}
+
+fn param_row(d: &Document, i: &FamilyInstance, p: &ParamDef, ro_only: bool) -> Value {
+    let v = d.instance_param(i, &p.name).unwrap_or_else(|| p.default.clone());
+    let editable = p.instance && !p.reporting && !ro_only;
+    let path = format!("values.{}", p.name);
+    match (&v, p.param_kind) {
+        (ParamValue::Bool(b), _) => boolean(&p.name, &path, *b, editable),
+        (ParamValue::Number(n), _) => num(&p.name, &path, *n, editable),
+        (ParamValue::Text(t), _) if editable && !p.choices.is_empty() => {
+            select(&p.name, p.choices.iter().map(|c| (c.clone(), json!({ "values": { p.name.clone(): c } }), c == t)).collect())
+        }
+        (ParamValue::Text(t), _) if editable => text(&p.name, &path, t),
+        (other, _) => ro(&p.name, other.display()),
+    }
+}
+
+/// Properties of a placed door, window or other family instance.
+pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
+    let (fam, t) = d.instance_family(i).ok_or("instance has no family")?;
+    let (_, height, sill) = d.instance_opening_size(i);
+    let mut groups: Vec<(String, Vec<Value>)> = vec![];
+    let mut add = |g: &str, row: Value| match groups.iter_mut().find(|(n, _)| n == g) {
+        Some((_, rows)) => rows.push(row),
+        None => groups.push((g.to_string(), vec![row])),
+    };
+    let levels = d.levels();
+    add(
+        "Constraints",
+        select("Level", levels.iter().map(|(lid, l)| (l.name.clone(), nest("level", json!(lid)), *lid == i.level)).collect()),
+    );
+    if let Some(h) = i.host {
+        add("Constraints", ro("Host", format!("Basic Wall ({})", h.wall)));
+    }
+    add("Constraints", ro("Head Height", format!("{:.0}", sill + height)));
+    if let Some(msg) = d.frame_fit(id) {
+        add("Construction", ro("Frame Fit", msg));
+    }
+    // instance parameters edit; type parameters show their value for context
+    for p in fam.params.iter().filter(|p| p.instance) {
+        add(if p.group.is_empty() { "Other" } else { &p.group }, param_row(d, i, p, false));
+    }
+    for p in fam.params.iter().filter(|p| !p.instance && p.group != "Identity Data") {
+        add(if p.group.is_empty() { "Other" } else { &p.group }, param_row(d, i, p, true));
+    }
+    add("Identity Data", text("Comments", "comments", &i.comments));
+    add("Identity Data", text("Mark", "mark", &i.mark));
+    if let Some(h) = i.host {
+        let _ = h;
+        add("Constraints", boolean("Flip Facing", "flip_facing", i.flip_facing, true));
+        add("Constraints", boolean("Flip Hand", "flip_hand", i.flip_hand, true));
+    }
+    add("Constraints", boolean("Pinned", "pinned", i.pinned, true));
+    add("Phasing", ro("Phase Created", "New Construction"));
+    add("Phasing", ro("Phase Demolished", "None"));
+    add("IFC Parameters", enum_select("Export to IFC", "ifc.export", &name_of(&i.ifc.export), &[("by_type", "By Type"), ("yes", "Yes"), ("no", "No")]));
+    add("IFC Parameters", text("Export to IFC As", "ifc.export_as", &i.ifc.export_as));
+    add("IFC Parameters", text("IFC Predefined Type", "ifc.predefined_type", &i.ifc.predefined_type));
+    add("IFC Parameters", ro("IfcGUID", i.ifc.guid.clone()));
+    let order = ["Constraints", "Construction", "Materials and Finishes", "Dimensions", "Identity Data", "Phasing", "IFC Parameters"];
+    groups.sort_by_key(|(n, _)| order.iter().position(|o| o == n).unwrap_or(order.len()));
+    Ok(json!({
+        "id": id, "kind": "FamilyInstance", "category": fam.category.label(), "type_id": i.type_id, "type_label": format!("{}: {}", fam.name, t.name),
+        "title": format!("{}: {}", fam.category.label().trim_end_matches('s'), fam.name),
+        "target": { "method": "patch_instance", "id": id },
+        "groups": groups.into_iter().map(|(n, rows)| group(&n, rows)).collect::<Vec<_>>(),
+    }))
+}
+
+/// Type parameters of a family type, grouped like the Edit Type dialog.
+pub fn type_props(d: &Document, id: Id, t: &FamilyType) -> Res {
+    let fam = d.family(t.family).ok_or("type has no family")?;
+    let mut groups: Vec<(String, Vec<Value>)> = vec![];
+    for p in fam.params.iter().filter(|p| !p.instance) {
+        let v = d.type_param(t, &p.name).unwrap_or_else(|| p.default.clone());
+        let path = format!("values.{}", p.name);
+        let row = match v {
+            ParamValue::Bool(b) => boolean(&p.name, &path, b, true),
+            ParamValue::Number(n) => num(&p.name, &path, n, true),
+            ParamValue::Text(s) => text(&p.name, &path, &s),
+        };
+        let g = if p.group.is_empty() { "Other".to_string() } else { p.group.clone() };
+        match groups.iter_mut().find(|(n, _)| *n == g) {
+            Some((_, rows)) => rows.push(row),
+            None => groups.push((g, vec![row])),
+        }
+    }
+    let order = ["Constraints", "Construction", "Materials and Finishes", "Dimensions", "Identity Data", "IFC Parameters", "Analytical Properties"];
+    groups.sort_by_key(|(n, _)| order.iter().position(|o| o == n).unwrap_or(order.len()));
+    Ok(json!({
+        "id": id, "kind": "FamilyType", "family": fam.name, "name": t.name,
+        "siblings": d.family_types().iter().filter(|(_, o)| o.family == t.family).map(|(i, o)| json!({ "id": i, "name": o.name })).collect::<Vec<_>>(),
+        "target": { "method": "patch_family_type", "id": id },
+        "groups": groups.into_iter().map(|(n, rows)| group(&n, rows)).collect::<Vec<_>>(),
+    }))
+}
+
+/// Properties of several selected elements together. A row shows when every element has it with
+/// the same way of editing it (same patch), so one patch applies to all of them. Where the values
+/// differ the row says "*Varies*". Walls of different types still share height, location line and
+/// so on; a selection of one category also offers the type selector.
+pub fn multi_props(d: &Document, ids: &[Id]) -> Res {
+    let mut all: Vec<Value> = vec![];
+    for &id in ids {
+        all.push(match d.get(id).ok_or("no such element")? {
+            Element::Wall(w) => wall_props(d, id, w),
+            Element::Floor(f) => floor_props(d, id, f),
+            Element::Roof(r) => roof_props(d, id, r),
+            Element::FamilyInstance(i) => instance_props(d, id, i)?,
+            Element::Grid(g) => grid_props(d, id, g),
+            _ => return Err("these elements cannot be edited together".into()),
+        });
+    }
+    let first = all.first().ok_or("nothing selected")?;
+    let kind_of = |v: &Value| match v["kind"].as_str() {
+        Some("FamilyInstance") => v["category"].as_str().unwrap_or("Elements").to_string(),
+        Some("Wall") => "Walls".to_string(),
+        Some("Floor") => "Floors".to_string(),
+        Some("Roof") => "Roofs".to_string(),
+        Some("Grid") => "Grids".to_string(),
+        _ => "Elements".to_string(),
+    };
+    let label = kind_of(first);
+    let same_category = all.iter().all(|v| kind_of(v) == label);
+    let title = if same_category { format!("{label} ({})", ids.len()) } else { format!("Multiple Categories ({})", ids.len()) };
+    // the type selector: one category (all walls, all floors, or all doors, windows...)
+    let type_kind = if !same_category { Value::Null } else { match first["kind"].as_str() { Some("Wall") => json!("wall"), Some("Floor") => json!("floor"), Some("Roof") => json!("roof"), Some("Grid") => json!("grid"), _ => json!("instance") } };
+    let type_ids: Vec<Value> = all.iter().map(|v| match v["kind"].as_str() {
+        Some("Wall") => v["type_id"].clone(),
+        Some("Floor") => v["type_id"].clone(),
+        _ => v["type_id"].clone(),
+    }).collect();
+    let common_type = if type_ids.iter().all(|t| *t == type_ids[0]) { type_ids[0].clone() } else { Value::Null };
+    // rows
+    let mut groups: Vec<Value> = vec![];
+    for g in first["groups"].as_array().into_iter().flatten() {
+        let gname = g["name"].as_str().unwrap_or("");
+        let mut rows: Vec<Value> = vec![];
+        for row in g["rows"].as_array().into_iter().flatten() {
+            let label = row["label"].as_str().unwrap_or("");
+            let mut found: Vec<&Value> = vec![];
+            for v in &all {
+                let r = v["groups"].as_array().into_iter().flatten().filter(|x| x["name"].as_str() == Some(gname)).flat_map(|x| x["rows"].as_array().into_iter().flatten()).find(|r| r["label"].as_str() == Some(label));
+                match r {
+                    Some(r) => found.push(r),
+                    None => break,
+                }
+            }
+            if found.len() != all.len() || row["kind"] == "dialog" {
+                continue;
+            }
+            let same_value = found.iter().all(|r| r["value"] == row["value"]);
+            let editable = found.iter().all(|r| r["kind"] == row["kind"] && r["kind"] != "ro") && matches!(row["kind"].as_str(), Some("number" | "text" | "bool" | "select"));
+            let mut out = row.clone();
+            if !editable {
+                let mut ro_row = ro(label, if same_value { row["value"].as_str().unwrap_or("").to_string() } else { "*Varies*".to_string() });
+                if let Some(k) = row.get("kind") { if k != "ro" && !same_value { ro_row["varies"] = json!(true); } }
+                rows.push(ro_row);
+                continue;
+            }
+            match row["kind"].as_str() {
+                Some("select") => {
+                    // the options every element offers with the same patch
+                    let opts: Vec<Value> = row["options"].as_array().into_iter().flatten().filter(|o| found.iter().all(|r| r["options"].as_array().into_iter().flatten().any(|p| p["label"] == o["label"] && p["patch"] == o["patch"]))).cloned().collect();
+                    if opts.is_empty() {
+                        continue;
+                    }
+                    let sel_label = |r: &Value| r["options"].as_array().into_iter().flatten().find(|o| o["selected"] == true).map(|o| o["label"].clone());
+                    let same = found.iter().all(|r| sel_label(r) == sel_label(found[0]));
+                    out["options"] = json!(opts.into_iter().map(|mut o| { o["selected"] = json!(same && Some(o["label"].clone()) == sel_label(found[0])); o }).collect::<Vec<_>>());
+                    if !same { out["varies"] = json!(true); }
+                }
+                _ => {
+                    if !found.iter().all(|r| r["path"] == row["path"]) {
+                        continue;
+                    }
+                    if !same_value {
+                        out["varies"] = json!(true);
+                        out["value"] = json!("");
+                        out["raw"] = Value::Null;
+                    }
+                }
+            }
+            rows.push(out);
+        }
+        if !rows.is_empty() {
+            groups.push(group(gname, rows));
+        }
+    }
+    Ok(json!({
+        "kind": "Multi", "title": title, "count": ids.len(), "type_kind": type_kind, "category": if same_category { json!(label) } else { Value::Null },
+        "type_id": common_type, "ids": ids,
+        "target": { "method": "patch_multi", "id": 0, "extra": { "ids": ids } },
+        "groups": groups,
+    }))
+}
+
+/// Properties of a level (the Level properties: Elevation, Name, Building Story, Structural
+/// and the type's Elevation Base).
+pub fn level_props(d: &Document, id: Id, l: &Level) -> Value {
+    let above = d.levels().into_iter().filter(|(_, o)| o.elevation_mm > l.elevation_mm + 1e-6).min_by(|a, b| a.1.elevation_mm.total_cmp(&b.1.elevation_mm)).map(|(_, o)| o.name.clone());
+    let base = name_of(&l.elevation_base);
+    json!({
+        "id": id, "kind": "Level", "title": format!("Level: {}", l.name), "type_label": "Level",
+        "type_id": d.level_type_of(l).map(|(t, _)| t),
+        "target": { "method": "patch_level", "id": id },
+        "groups": [
+            group("Constraints", vec![
+                num("Elevation", "display_elevation_mm", d.level_display_elevation(l), true),
+                ro("Story Above", above.unwrap_or_else(|| "Default".into())),
+                ro("Computation Height", format!("{:.0}", l.elevation_mm - d.level_datum_z(l) + 0.0)),
+            ]),
+            group("Identity Data", vec![
+                text("Name", "name", &l.name),
+                text("Level Number", "number", &l.number),
+                boolean("Building Story", "building_story", l.building_story, true),
+                boolean("Structural", "structural", l.structural, true),
+            ]),
+            group("Type Parameters", vec![
+                enum_select("Elevation Base", "elevation_base", &base, &[("project_base_point", "Project Base Point"), ("survey_point", "Survey Point")]),
+            ]),
+        ],
+    })
+}
+
+/// Properties of the project base point or the survey point (shown as N/S, E/W and Elev as
+/// shared coordinates, and the angle to true north on the base point).
+pub fn site_point_props(d: &Document, which: openarch_model::site::SitePoint) -> Res {
+    use openarch_model::site::{SitePoint, P3};
+    let (_, loc) = d.project_location().ok_or("the project has no location")?;
+    let (pos, pinned_path, pinned) = match which {
+        SitePoint::Base => (loc.base, "base_pinned", loc.base_pinned),
+        SitePoint::Survey => (loc.survey, "survey_pinned", loc.survey_pinned),
+    };
+    let shared = d.shared_coordinates(P3 { x: pos.x, y: pos.y, z: pos.z });
+    let (title, prefix, editable) = match which {
+        SitePoint::Base => ("Project Base Point", "base", true),
+        SitePoint::Survey => ("Survey Point", "survey", !loc.survey_clipped),
+    };
+    let mut loc_rows = vec![
+        num("N/S", &format!("{prefix}_shared_y"), shared.y, editable),
+        num("E/W", &format!("{prefix}_shared_x"), shared.x, editable),
+        num("Elev", &format!("{prefix}_shared_z"), shared.z, editable),
+    ];
+    if which == SitePoint::Base {
+        loc_rows.push(num("Angle to True North", "angle_true_north_deg", loc.angle_true_north_deg, true));
+    }
+    let mut cons = vec![boolean("Pinned", pinned_path, pinned, true)];
+    if which == SitePoint::Survey {
+        cons.push(boolean("Clipped", "survey_clipped", loc.survey_clipped, true));
+    }
+    Ok(json!({
+        "id": if which == SitePoint::Base { crate::SITE_BASE_ID } else { crate::SITE_SURVEY_ID }, "kind": "SitePoint", "title": title, "type_label": title,
+        "target": { "method": "patch_project_location", "id": 0 },
+        "groups": [group("Constraints", cons), group("Location", loc_rows), group("Identity Data", vec![ro("Category", "Site")])],
+    }))
+}
+
+/// Properties of an elevation marker: which of its four pointers have views, and its pose.
+pub fn marker_props(d: &Document, id: Id, m: &openarch_model::site::ElevationMarker) -> Value {
+    use openarch_model::site::SLOT_NAMES;
+    let slots: Vec<Value> = (0..4)
+        .map(|k| {
+            let label = match m.slots[k].and_then(|v| d.view(v)) {
+                Some(v) => format!("View {}: {}", openarch_model::site::ElevationMarker::view_letter(k), v.name),
+                None => format!("View {}: {}", openarch_model::site::ElevationMarker::view_letter(k), if m.rotation_deg == 0.0 { SLOT_NAMES[k] } else { "(off)" }),
+            };
+            boolean(&label, &format!("slot_on.{k}"), m.slots[k].is_some(), true)
+        })
+        .collect();
+    json!({
+        "id": id, "kind": "ElevationMarker", "title": "Elevation Marker", "type_label": "Elevation Marker",
+        "target": { "method": "patch_marker", "id": id },
+        "groups": [
+            group("Constraints", vec![boolean("Pinned", "pinned", m.pinned, true), num("Rotation", "rotation_deg", m.rotation_deg, true)]),
+            group("Graphics", vec![select("Symbol", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::ElevationMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.marker_family(m.family).map(|(i, _)| i))).collect())]),
+            group("Views", slots),
+            group("Identity Data", vec![ro("Level", d.level(m.level).map_or("?", |l| l.name.as_str()))]),
+        ],
+    })
+}
+
+/// Properties of a grid (Constraints, Identity Data; the type's settings are in Edit Type).
+pub fn grid_props(d: &Document, id: Id, g: &openarch_model::grid::Grid) -> Value {
+    let kind = if g.multi_segment() { format!("Multi-Segment ({})", g.curves.len()) } else if g.line().is_some() { "Line".to_string() } else { "Arc".to_string() };
+    json!({
+        "id": id, "kind": "Grid", "title": format!("Grid: {}", g.name), "type_label": "Grid",
+        "type_id": g.grid_type,
+        "target": { "method": "patch_grid", "id": id },
+        "groups": [
+            group("Constraints", vec![boolean("Pinned", "pinned", g.pinned, true), ro("Scope Box", if g.scope_box.is_some() { "Set" } else { "None" })]),
+            group("Dimensions", vec![ro("Length", format!("{:.0}", g.length())), ro("Shape", kind)]),
+            group("Identity Data", vec![text("Name", "name", &g.name)]),
+        ],
+    })
+}
+
+/// Properties of a permanent dimension.
+pub fn dimension_props(d: &Document, id: Id, x: &openarch_model::dimension::Dimension) -> Value {
+    use openarch_model::dimension::EqDisplay;
+    let types: Vec<(String, Value, bool)> = d.dimension_types().into_iter().map(|(tid, t)| (t.name.clone(), nest("dim_type", json!(tid)), tid == x.dim_type)).collect();
+    let eq = match x.eq_display { EqDisplay::Value => "value", EqDisplay::Eq => "eq", EqDisplay::Formula => "formula" };
+    let draw = d.dimension_draw(id);
+    let total = draw.as_ref().map(|dr| dr.segments.iter().map(|s| s.value_mm).sum::<f64>()).unwrap_or(0.0);
+    let round_value = draw.as_ref().and_then(|dr| dr.segments.first().map(|s| s.value_mm));
+    let warning = draw.and_then(|dr| dr.invalid);
+    let chain = x.refs.len() >= 3;
+    json!({
+        "id": id, "kind": "Dimension", "title": format!("Dimension ({})", match x.kind { openarch_model::dimension::DimKind::Aligned => "Aligned", openarch_model::dimension::DimKind::Linear => "Linear", openarch_model::dimension::DimKind::Angular => "Angular", openarch_model::dimension::DimKind::Radial => "Radial", openarch_model::dimension::DimKind::Diameter => "Diameter", openarch_model::dimension::DimKind::ArcLength => "Arc Length" }),
+        "type_label": "Dimension", "type_id": x.dim_type,
+        "target": { "method": "patch_dimension", "id": id },
+        "groups": [
+            group("Graphics", vec![select("Dimension Type", types)]),
+            group("Constraints", if x.kind.is_chain() {
+                vec![
+                    boolean("Equality", "equality", x.equality, chain),
+                    enum_select("Equality Display", "eq_display", eq, &[("value", "Value"), ("eq", "Equality Text"), ("formula", "Equality Formula")]),
+                    boolean("Pinned", "pinned", x.pinned, true),
+                ]
+            } else {
+                vec![boolean("Pinned", "pinned", x.pinned, true)]
+            }),
+            group("Dimensions", if x.kind.is_chain() {
+                vec![ro("Segments", format!("{}", x.segments.len())), ro("Overall Length", if warning.is_some() { String::new() } else { format!("{:.0}", total) })].into_iter().chain(warning.map(|w| ro("Warning", w))).collect()
+            } else {
+                let (what, unit) = match x.kind {
+                    openarch_model::dimension::DimKind::Angular => ("Angle", "\u{00B0}"),
+                    openarch_model::dimension::DimKind::Radial => ("Radius", ""),
+                    openarch_model::dimension::DimKind::Diameter => ("Diameter", ""),
+                    _ => ("Arc Length", ""),
+                };
+                let mut rows = vec![ro(what, if warning.is_some() { String::new() } else { round_value.map_or(String::new(), |v| if unit.is_empty() { format!("{:.0}", v) } else { format!("{:.2}{unit}", v) }) })];
+                match x.kind {
+                    openarch_model::dimension::DimKind::Angular => rows.push(boolean("Reflex Angle", "reflex", x.reflex, true)),
+                    openarch_model::dimension::DimKind::Radial | openarch_model::dimension::DimKind::Diameter => rows.push(boolean("Centre Mark", "centre_mark", x.centre_mark, true)),
+                    _ => {}
+                }
+                rows.into_iter().chain(warning.map(|w| ro("Warning", w))).collect()
+            }),
+            group("Identity Data", vec![text("Label", "label", x.label.as_deref().unwrap_or(""))]),
+        ],
+    })
+}
+
+/// Properties of a spot elevation, coordinate or slope.
+pub fn spot_props(d: &Document, id: Id, x: &openarch_model::spot::Spot) -> Value {
+    use openarch_model::spot::{SpotKind, SpotSurface};
+    let types: Vec<(String, Value, bool)> = d.spot_types(x.kind).into_iter().map(|(tid, t)| (t.name.clone(), nest("spot_type", json!(tid)), tid == x.spot_type)).collect();
+    let draw = d.spot_draw(id);
+    let warning = draw.as_ref().and_then(|dr| dr.invalid.clone());
+    let host_name = x.host.and_then(|h| d.get(h)).map(|e| e.kind().to_string()).unwrap_or_else(|| "None".to_string());
+    let title = match x.kind { SpotKind::Elevation => "Spot Elevation", SpotKind::Coordinate => "Spot Coordinate", SpotKind::Slope => "Spot Slope" };
+    let surface = name_of(&x.surface);
+    let mut dims: Vec<Value> = vec![];
+    if let Some(dr) = &draw {
+        if warning.is_none() {
+            for (i, l) in dr.lines.iter().enumerate() {
+                dims.push(ro(if dr.lines.len() > 1 { ["Line 1", "Line 2", "Line 3"][i.min(2)] } else { "Value" }, l.clone()));
+            }
+        }
+    }
+    dims.extend(warning.map(|w| ro("Warning", w)));
+    let mut graphics = vec![select("Spot Type", types), boolean("Leader", "leader", x.leader, true)];
+    if x.host.is_some() && x.kind != SpotKind::Coordinate {
+        graphics.insert(1, enum_select("Surface", "surface", &surface, &[("top", "Top"), ("core", "Core"), ("bottom", "Bottom")]));
+    } else if x.host.is_some() {
+        graphics.insert(1, ro("Surface", match x.surface { SpotSurface::Top => "Top", SpotSurface::Core => "Core", SpotSurface::Bottom => "Bottom" }));
+    }
+    json!({
+        "id": id, "kind": "Spot", "title": title,
+        "type_label": "Spot", "type_id": x.spot_type,
+        "target": { "method": "patch_spot", "id": id },
+        "groups": [
+            group("Graphics", graphics),
+            group("Text", vec![
+                text("Prefix", "prefix", &x.prefix),
+                text("Suffix", "suffix", &x.suffix),
+                text("Text Above", "above", &x.above),
+                text("Text Below", "below", &x.below),
+            ]),
+            group("Constraints", vec![boolean("Pinned", "pinned", x.pinned, true), ro("Host", host_name)]),
+            group("Dimensions", dims),
+        ],
+    })
+}
+
+/// Type Properties of a grid type: the head size, the centre segment and the default heads.
+pub fn grid_type_props(d: &Document, id: Id, t: &openarch_model::grid::GridType) -> Value {
+    use openarch_model::grid::CentreSegment;
+    let cs = match t.centre_segment { CentreSegment::None => "none", CentreSegment::Continuous => "continuous", CentreSegment::Custom => "custom" };
+    json!({
+        "id": id, "kind": "GridType", "title": t.name,
+        "siblings": d.grid_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "groups": [
+            group("Graphics", vec![
+                enum_select("Centre Segment", "centre_segment", cs, &[("none", "None"), ("continuous", "Continuous"), ("custom", "Custom")]),
+                num("End Segment Length", "end_segment_mm", t.end_segment_mm, t.centre_segment != CentreSegment::None),
+                num("Head Diameter", "bubble_dia_mm", t.bubble_dia_mm, true),
+            ]),
+            group("Plan View Symbols", vec![
+                boolean("End 1 Default", "bubble_default.0", t.bubble_default[0], true),
+                boolean("End 2 Default", "bubble_default.1", t.bubble_default[1], true),
+            ]),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
+        ],
+    })
+}
+
+/// Type Properties of a level type: the head family and the default heads.
+pub fn level_type_props(d: &Document, id: Id, t: &openarch_model::annotation::LevelType) -> Value {
+    let heads: Vec<(String, Value, bool)> = d
+        .annotation_families()
+        .into_iter()
+        .filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::LevelHead)
+        .map(|(fid, f)| (f.name.clone(), nest("head", json!(fid)), Some(fid) == t.head))
+        .collect();
+    json!({
+        "id": id, "kind": "LevelType", "title": t.name, "head": t.head,
+        "siblings": d.level_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "groups": [
+            group("Graphics", vec![select("Symbol", heads)]),
+            group("Plan View Symbols", vec![
+                boolean("End 1 Default", "end_default.0", t.end_default[0], true),
+                boolean("End 2 Default", "end_default.1", t.end_default[1], true),
+            ]),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
+        ],
+    })
+}
+
+/// Properties of a section: its view, the side it looks at, how far, and the far clip.
+pub fn section_props(d: &Document, id: Id, s: &openarch_model::section::Section) -> Value {
+    use openarch_model::section::FarClip;
+    let view = s.view.and_then(|v| d.view(v));
+    let far = match s.far_clip {
+        FarClip::WithLine => "with_line",
+        FarClip::WithoutLine => "without_line",
+        FarClip::NoClip => "no_clip",
+    };
+    let (z0, z1) = s.z_range.unwrap_or_else(|| {
+        let (a, b) = d.model_z_extent();
+        (a - 1500.0, b + 1500.0)
+    });
+    json!({
+        "id": id, "kind": "Section", "title": "Section", "type_label": "Section",
+        "target": { "method": "patch_section", "id": id },
+        "groups": [
+            group("Constraints", vec![boolean("Pinned", "pinned", s.pinned, true)]),
+            group("Graphics", vec![
+                select("Symbol", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::SectionMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.section_marker_family(s.family).map(|(i, _)| i))).collect()),
+                boolean("Flipped", "flipped", s.flipped, true),
+            ]),
+            group("Extents", vec![
+                enum_select("Far Clipping", "far_clip", far, &[("with_line", "Clip with line"), ("without_line", "Clip without line"), ("no_clip", "No clip")]),
+                num("Far Clip Offset", "far_clip_mm", s.far_clip_mm.unwrap_or(0.0), s.far_clip != FarClip::NoClip),
+                ro("Width", format!("{:.0}", s.length())),
+                ro("Bottom", format!("{z0:.0}")),
+                ro("Top", format!("{z1:.0}")),
+            ]),
+            group("Identity Data", vec![
+                ro("View Name", view.map_or(String::new(), |v| v.name.clone())),
+                ro("Level", d.level(s.level).map_or("?".to_string(), |l| l.name.clone())),
+            ]),
+        ],
+    })
+}
