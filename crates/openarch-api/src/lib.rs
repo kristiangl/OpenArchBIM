@@ -381,8 +381,10 @@ impl Session {
             "family_def" => {
                 let id = id_of(p, "id")?;
                 let f = self.doc.family(id).ok_or("no such family")?;
+                let mut body = f.body.clone();
+                body.fix_dim_ids();
                 let types: Vec<Value> = self.doc.family_types().into_iter().filter(|(_, t)| t.family == id).map(|(tid, t)| json!({ "id": tid, "name": t.name, "values": t.values })).collect();
-                Ok(json!({ "id": id, "name": f.name, "category": f.category, "category_label": f.category.label(), "host": f.host, "built_in": f.built_in, "params": f.params, "body": f.body, "types": types,
+                Ok(json!({ "id": id, "name": f.name, "category": f.category, "category_label": f.category.label(), "host": f.host, "built_in": f.built_in, "params": f.params, "body": body, "types": types,
                     "categories": openarch_model::family::FamilyCategory::all().iter().map(|c| json!({ "id": c, "label": c.label() })).collect::<Vec<_>>() }))
             }
             "set_family_def" => {
@@ -423,6 +425,52 @@ impl Session {
                     }
                 };
                 Ok(family_preview_json(solved))
+            }
+            "family_edit" => {
+                // edits that depend on where the planes stand: dimensions and plane moves. The body
+                // and parameters come from the editor as they stand, unsaved; the new body goes back.
+                use openarch_model::famgeom::{DimPatch, FamilyBody, SymView};
+                let id = id_of(p, "id")?;
+                let tid = p.get("type").and_then(|v| v.as_u64());
+                let over: std::collections::BTreeMap<String, openarch_model::family::ParamValue> = match p.get("values").filter(|v| !v.is_null()) {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad values: {e}"))?,
+                    None => Default::default(),
+                };
+                let body: FamilyBody = match p.get("body").filter(|v| !v.is_null()) {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad body: {e}"))?,
+                    None => self.doc.family(id).ok_or("no such family")?.body.clone(),
+                };
+                let params: Option<Vec<openarch_model::family::ParamDef>> = match p.get("params").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad params: {e}"))?),
+                    None => None,
+                };
+                let mut d2 = self.doc.clone();
+                if params.is_some() {
+                    d2.set_family_def(id, params, None)?;
+                }
+                let op = p.get("op").and_then(|v| v.as_str()).ok_or("missing op")?.to_string();
+                let num = |k: &str| p.get(k).and_then(|v| v.as_f64()).ok_or(format!("missing {k}"));
+                let mut made: Option<u32> = None;
+                let body = d2.family_body_edit(id, tid, &over, body, |b, env| match op.as_str() {
+                    "add_dim" => {
+                        let refs: Vec<u32> = serde_json::from_value(p.get("refs").cloned().ok_or("missing refs")?).map_err(|e| format!("bad refs: {e}"))?;
+                        let view: Option<SymView> = match p.get("view").filter(|v| !v.is_null()) {
+                            Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad view: {e}"))?),
+                            None => None,
+                        };
+                        made = Some(b.add_dim(&refs, view, env)?);
+                        Ok(())
+                    }
+                    "patch_dim" => {
+                        let patch: DimPatch = serde_json::from_value(p.get("patch").cloned().ok_or("missing patch")?).map_err(|e| format!("bad patch: {e}"))?;
+                        b.patch_dim(num("dim")? as u32, &patch, env)
+                    }
+                    "remove_dim" => b.remove_dim(num("dim")? as u32, env),
+                    "dim_value" => b.set_dim_value(num("dim")? as u32, p.get("seg").and_then(|v| v.as_u64()).unwrap_or(0) as usize, num("value")?, env),
+                    "move_plane" => b.move_plane(num("plane")? as u32, num("to")?, env),
+                    other => Err(format!("unknown family edit '{other}'")),
+                })?;
+                Ok(json!({ "body": body, "dim": made }))
             }
             "export_family" => {
                 let f = self.doc.export_family(id_of(p, "id")?)?;

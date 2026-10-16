@@ -267,7 +267,7 @@ mod tests {
         let mut fam = d.family(fid).unwrap().clone();
         let (left, right) = (fam.body.plane_named("Left").unwrap(), fam.body.plane_named("Right").unwrap());
         fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], default: ParamValue::Number(0.0) });
-        fam.body.dims.push(DimDef { a: left, b: right, reports_to: Some("Clear Width".into()) });
+        fam.body.dims.push(DimDef { a: left, b: right, reports_to: Some("Clear Width".into()), ..Default::default() });
         d.set_family_def(fid, Some(fam.params.clone()), Some(fam.body.clone())).unwrap();
         let id = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
         let Some(Element::FamilyInstance(inst)) = d.get(id) else { panic!() };
@@ -405,6 +405,15 @@ impl Document {
                 }
             }
         }
+        for d in &f.body.dims {
+            for n in d.label.iter().chain(d.seg_labels.iter()).filter(|n| !n.trim().is_empty()) {
+                match f.param(n) {
+                    Some(p) if !p.reporting => {}
+                    Some(_) => return Err(format!("'{n}' is a reporting parameter, so it cannot drive a dimension")),
+                    None => return Err(format!("a dimension is labelled '{n}', which is not a parameter")),
+                }
+            }
+        }
         self.transact("Edit family", |tx| tx.update(family, Element::Family(f)))?;
         Ok(())
     }
@@ -437,6 +446,37 @@ impl Document {
             }
         };
         fam.body.solve(&mut env)
+    }
+
+    /// Run an edit on a copy of a family body with the parameter values of one type (and
+    /// `overrides`) at hand, for edits that need to know where the planes stand.
+    pub fn family_body_edit(&self, family: Id, type_id: Option<Id>, overrides: &std::collections::BTreeMap<String, ParamValue>, mut body: crate::famgeom::FamilyBody, edit: impl FnOnce(&mut crate::famgeom::FamilyBody, &mut crate::famgeom::Env) -> Result<(), String>) -> Result<crate::famgeom::FamilyBody, String> {
+        self.family(family).ok_or("no such family")?;
+        let mut t = match type_id {
+            Some(t) => self.family_type(t).ok_or("no such type")?.clone(),
+            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default() }),
+        };
+        for (k, v) in overrides {
+            t.values.insert(k.clone(), v.clone());
+        }
+        let reporting: Vec<String> = body.dims.iter().filter_map(|d| d.reports_to.clone()).collect();
+        let mut env = |n: &str| -> Result<Value, EvalError> {
+            match n {
+                "Host Thickness" => return Ok(Value::Num(100.0)),
+                "Host Core Thickness" => return Ok(Value::Num(100.0)),
+                "Host Core Offset" => return Ok(Value::Num(0.0)),
+                _ if reporting.iter().any(|r| r == n) => return Err(EvalError::UnknownName(n.to_string())),
+                _ => {}
+            }
+            match self.type_param(&t, n) {
+                Some(ParamValue::Number(x)) => Ok(Value::Num(x)),
+                Some(ParamValue::Bool(b)) => Ok(Value::Bool(b)),
+                Some(ParamValue::Text(s)) => Ok(Value::Text(s)),
+                None => Err(EvalError::UnknownName(n.to_string())),
+            }
+        };
+        edit(&mut body, &mut env)?;
+        Ok(body)
     }
 
     pub fn export_family(&self, family: Id) -> Result<FamilyFile, String> {

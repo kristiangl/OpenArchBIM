@@ -103,6 +103,8 @@ pub enum Anchor {
     Offset { from: PlaneId, by: String },
     /// Midway between two planes (an EQ dimension).
     Mid { a: PlaneId, b: PlaneId },
+    /// The `i`th of `n` equal steps from `a` to `b` (an EQ dimension across several segments).
+    Div { a: PlaneId, b: PlaneId, i: u32, n: u32 },
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -115,15 +117,70 @@ pub struct RefPlane {
     pub ref_kind: RefKind,
 }
 
-/// A dimension kept for display or as a reporting parameter. A dimension that
-/// drives geometry is the `Offset` anchor of a plane instead.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// A dimension drawn in one view across two or more parallel reference planes. It can show
+/// a distance, report it to a parameter, be labelled with a length parameter, be locked to
+/// its current value, or equalise its segments (EQ). Labelled, locked and EQ dimensions
+/// work by anchoring the planes they drive; `drives` lists those planes so the dimension
+/// that owns a constraint is known.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct DimDef {
+    /// 0 in files written before dimensions had ids; `fix_dim_ids` numbers them.
+    #[serde(default)]
+    pub id: u32,
+    /// First reference, in order along the axis.
     pub a: PlaneId,
+    /// Last reference.
     pub b: PlaneId,
+    /// References between `a` and `b`, in order.
+    #[serde(default)]
+    pub via: Vec<PlaneId>,
     /// A reporting parameter that takes the measured value.
     #[serde(default)]
     pub reports_to: Option<String>,
+    /// The view the dimension is drawn in; `None` shows it in every view.
+    #[serde(default)]
+    pub view: Option<SymView>,
+    /// Length parameter that drives the whole dimension (one segment, or the total when EQ is on).
+    #[serde(default)]
+    pub label: Option<String>,
+    /// Length parameter for each segment of a multi-segment dimension without EQ ("" for none).
+    #[serde(default)]
+    pub seg_labels: Vec<String>,
+    /// Equal segments.
+    #[serde(default)]
+    pub eq: bool,
+    /// Holds its current value when nothing labels it.
+    #[serde(default)]
+    pub locked: bool,
+    /// Where the dimension line sits on the other axis of its view, when moved from the default.
+    #[serde(default)]
+    pub at: Option<f64>,
+    /// Planes whose anchors this dimension sets.
+    #[serde(default)]
+    pub drives: Vec<PlaneId>,
+}
+
+impl DimDef {
+    pub fn refs(&self) -> Vec<PlaneId> {
+        let mut v = vec![self.a];
+        v.extend(&self.via);
+        v.push(self.b);
+        v
+    }
+    pub fn segments(&self) -> usize {
+        self.via.len() + 1
+    }
+}
+
+/// A change to a dimension. Empty strings clear a label or reporting parameter.
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DimPatch {
+    pub label: Option<String>,
+    pub seg_labels: Option<Vec<String>>,
+    pub reports_to: Option<String>,
+    pub eq: Option<bool>,
+    pub locked: Option<bool>,
+    pub at: Option<f64>,
 }
 
 /// One coordinate of a sketch node: a reference plane plus an offset, or just a
@@ -420,7 +477,7 @@ impl FamilyBody {
     }
 
     fn take_id(&mut self) -> u32 {
-        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).max().unwrap_or(0);
+        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.dims.iter().map(|d| d.id)).max().unwrap_or(0);
         self.next_id = self.next_id.max(used) + 1;
         self.next_id
     }
@@ -473,7 +530,7 @@ impl FamilyBody {
         }
         let used_by_plane = self.planes.iter().any(|p| match p.anchor {
             Anchor::Offset { from, .. } => from == id,
-            Anchor::Mid { a, b } => a == id || b == id,
+            Anchor::Mid { a, b } | Anchor::Div { a, b, .. } => a == id || b == id,
             Anchor::Origin => false,
         });
         let in_loop = |l: &Loop| l.nodes.iter().any(|n| n.u.plane == Some(id) || n.v.plane == Some(id));
@@ -491,13 +548,301 @@ impl FamilyBody {
             return Err("something is locked to this reference plane".into());
         }
         self.planes.retain(|p| p.id != id);
-        self.dims.retain(|d| d.a != id && d.b != id);
+        self.dims.retain(|d| d.a != id && d.b != id && !d.via.contains(&id));
+        for d in &mut self.dims {
+            d.drives.retain(|p| *p != id);
+        }
         Ok(())
     }
 
     /// Whether a dimension in this body reports its length to the parameter `name`.
     pub fn reports(&self, name: &str) -> bool {
         self.dims.iter().any(|d| d.reports_to.as_deref() == Some(name))
+    }
+
+    // -------------------------------------------------------------- dimensions
+
+    /// Number dimensions that came from files written before dimensions had ids.
+    pub fn fix_dim_ids(&mut self) {
+        for i in 0..self.dims.len() {
+            if self.dims[i].id == 0 {
+                let id = self.take_id();
+                self.dims[i].id = id;
+            }
+        }
+    }
+
+    pub fn dim(&self, id: u32) -> Option<&DimDef> {
+        self.dims.iter().find(|d| d.id == id)
+    }
+
+    fn dim_index(&self, id: u32) -> Result<usize, String> {
+        self.dims.iter().position(|d| d.id == id).ok_or_else(|| "no such dimension".to_string())
+    }
+
+    /// A new dimension across `refs` (two or more parallel planes) in `view`.
+    pub fn add_dim(&mut self, refs: &[PlaneId], view: Option<SymView>, env: &mut Env) -> Result<u32, String> {
+        self.fix_dim_ids();
+        if refs.len() < 2 {
+            return Err("a dimension needs two references".into());
+        }
+        let axis = self.plane(refs[0]).ok_or("no such plane")?.axis;
+        for r in refs {
+            if self.plane(*r).ok_or("no such plane")?.axis != axis {
+                return Err("pick parallel reference planes".into());
+            }
+        }
+        let pos = self.solve_planes(env)?;
+        let mut sorted: Vec<PlaneId> = refs.to_vec();
+        sorted.sort_by(|x, y| pos[x].total_cmp(&pos[y]));
+        sorted.dedup();
+        if sorted.len() < 2 {
+            return Err("pick two different reference planes".into());
+        }
+        let id = self.take_id();
+        let n = sorted.len();
+        self.dims.push(DimDef { id, a: sorted[0], b: sorted[n - 1], via: sorted[1..n - 1].to_vec(), view, ..Default::default() });
+        Ok(id)
+    }
+
+    /// The plane whose position is zero on `axis`.
+    fn axis_origin(&self, axis: Axis) -> Result<PlaneId, String> {
+        self.planes.iter().find(|p| p.axis == axis && p.anchor == Anchor::Origin).map(|p| p.id).ok_or_else(|| "the family has lost an origin plane".to_string())
+    }
+
+    /// Make a plane stand where it is now, without any dimension holding it.
+    fn bake(&mut self, id: PlaneId, pos: &BTreeMap<PlaneId, f64>) -> Result<(), String> {
+        let Some(i) = self.planes.iter().position(|p| p.id == id) else { return Ok(()) };
+        if self.planes[i].anchor == Anchor::Origin {
+            return Ok(());
+        }
+        let origin = self.axis_origin(self.planes[i].axis)?;
+        self.planes[i].anchor = Anchor::Offset { from: origin, by: fmt_num(pos[&id]) };
+        Ok(())
+    }
+
+    /// Anchor `target` and check the planes still solve; put the old anchor back if they do not.
+    fn try_anchor(&mut self, target: PlaneId, anchor: Anchor, env: &mut Env) -> Result<(), String> {
+        let i = self.planes.iter().position(|p| p.id == target).ok_or("no such plane")?;
+        let old = std::mem::replace(&mut self.planes[i].anchor, anchor);
+        match self.solve_planes(env) {
+            Ok(_) => Ok(()),
+            Err(e) => {
+                self.planes[i].anchor = old;
+                Err(e)
+            }
+        }
+    }
+
+    fn driven_elsewhere(&self, dim: usize) -> Vec<PlaneId> {
+        self.dims.iter().enumerate().filter(|(i, _)| *i != dim).flat_map(|(_, d)| d.drives.iter().copied()).collect()
+    }
+
+    fn is_origin(&self, id: PlaneId) -> bool {
+        self.plane(id).map_or(false, |p| p.anchor == Anchor::Origin)
+    }
+
+    /// Hold `hi` at `expr` past `lo`, or failing that `lo` at `expr` before `hi`.
+    fn constrain_pair(&mut self, lo: PlaneId, hi: PlaneId, expr: &str, taken: &[PlaneId], drives: &mut Vec<PlaneId>, env: &mut Env) -> Result<(), String> {
+        let mut last = String::from("the references are already fixed by other constraints");
+        for (target, from, by) in [(hi, lo, expr.to_string()), (lo, hi, format!("-({expr})"))] {
+            if self.is_origin(target) || taken.contains(&target) || drives.contains(&target) {
+                continue;
+            }
+            match self.try_anchor(target, Anchor::Offset { from, by }, env) {
+                Ok(()) => {
+                    drives.push(target);
+                    return Ok(());
+                }
+                Err(e) => last = e,
+            }
+        }
+        Err(format!("this dimension would over-constrain the family ({last})"))
+    }
+
+    /// Recompute what the dimension drives. `pos` are the plane positions before any change.
+    fn derive_dim(&mut self, di: usize, pos: &BTreeMap<PlaneId, f64>, env: &mut Env) -> Result<(), String> {
+        // let go of what it held, keeping every plane where it stands
+        for p in std::mem::take(&mut self.dims[di].drives) {
+            self.bake(p, pos)?;
+        }
+        let mut refs = self.dims[di].refs();
+        refs.sort_by(|x, y| pos[x].total_cmp(&pos[y]));
+        let n = refs.len() - 1;
+        {
+            let d = &mut self.dims[di];
+            d.a = refs[0];
+            d.b = refs[n];
+            d.via = refs[1..n].to_vec();
+        }
+        let taken = self.driven_elsewhere(di);
+        let d = self.dims[di].clone();
+        let label = |s: &Option<String>| s.as_ref().map(|l| l.trim()).filter(|l| !l.is_empty()).map(|l| format!("[{l}]"));
+        let mut drives: Vec<PlaneId> = Vec::new();
+        if d.eq && n >= 2 {
+            let total = pos[&refs[n]] - pos[&refs[0]];
+            let mut te = label(&d.label).or_else(|| d.locked.then(|| fmt_num(total)));
+            let fixed_origin = refs.iter().position(|r| self.is_origin(*r));
+            if te.is_none() && fixed_origin.is_some() {
+                te = Some(fmt_num(total));
+            }
+            match te {
+                Some(te) => {
+                    let k = fixed_origin.or_else(|| refs.iter().position(|r| !taken.contains(r))).ok_or("every reference is fixed by other constraints")?;
+                    for (i, r) in refs.iter().enumerate() {
+                        if i == k {
+                            continue;
+                        }
+                        if self.is_origin(*r) || taken.contains(r) {
+                            return Err("a reference in this dimension is already fixed".into());
+                        }
+                        let step = i as i64 - k as i64;
+                        self.try_anchor(*r, Anchor::Offset { from: refs[k], by: format!("({step})*({te})/{n}") }, env)?;
+                        drives.push(*r);
+                    }
+                }
+                None => {
+                    for i in 1..n {
+                        if taken.contains(&refs[i]) {
+                            return Err("a reference in this dimension is already fixed".into());
+                        }
+                        self.try_anchor(refs[i], Anchor::Div { a: refs[0], b: refs[n], i: i as u32, n: n as u32 }, env)?;
+                        drives.push(refs[i]);
+                    }
+                }
+            }
+        } else {
+            for j in 0..n {
+                let seg = if n == 1 { label(&d.label) } else { label(&d.seg_labels.get(j).cloned()) };
+                let expr = seg.or_else(|| d.locked.then(|| fmt_num(pos[&refs[j + 1]] - pos[&refs[j]])));
+                if let Some(e) = expr {
+                    self.constrain_pair(refs[j], refs[j + 1], &e, &taken, &mut drives, env)?;
+                }
+            }
+        }
+        self.dims[di].drives = drives;
+        Ok(())
+    }
+
+    /// Change a dimension's label, EQ, lock, reporting parameter or position, and re-derive the
+    /// planes it drives. Nothing changes if the result cannot be solved.
+    pub fn patch_dim(&mut self, id: u32, patch: &DimPatch, env: &mut Env) -> Result<(), String> {
+        self.fix_dim_ids();
+        let di = self.dim_index(id)?;
+        let saved = (self.planes.clone(), self.dims.clone());
+        let pos = self.solve_planes(env)?;
+        let run = |this: &mut FamilyBody, env: &mut Env| -> Result<(), String> {
+            let d = &mut this.dims[di];
+            if let Some(l) = &patch.label {
+                d.label = Some(l.trim().to_string()).filter(|l| !l.is_empty());
+            }
+            if let Some(l) = &patch.seg_labels {
+                d.seg_labels = l.clone();
+            }
+            if let Some(r) = &patch.reports_to {
+                d.reports_to = Some(r.trim().to_string()).filter(|r| !r.is_empty());
+            }
+            if let Some(e) = patch.eq {
+                d.eq = e;
+            }
+            if let Some(l) = patch.locked {
+                d.locked = l;
+            }
+            if let Some(a) = patch.at {
+                d.at = Some(a);
+            }
+            if d.label.is_some() && d.reports_to.is_some() {
+                return Err("a dimension either drives a parameter (label) or reports to one, not both".into());
+            }
+            this.derive_dim(di, &pos, env)?;
+            this.solve_planes(env).map(|_| ())
+        };
+        match run(self, env) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.planes = saved.0;
+                self.dims = saved.1;
+                Err(e)
+            }
+        }
+    }
+
+    /// Delete a dimension. The planes it drove stay where they are.
+    pub fn remove_dim(&mut self, id: u32, env: &mut Env) -> Result<(), String> {
+        self.fix_dim_ids();
+        let di = self.dim_index(id)?;
+        let pos = self.solve_planes(env)?;
+        for p in std::mem::take(&mut self.dims[di].drives) {
+            self.bake(p, &pos)?;
+        }
+        self.dims.remove(di);
+        Ok(())
+    }
+
+    /// Move a plane to `to` by changing its offset. Refused for a plane a dimension drives or one
+    /// whose position comes from a formula or from other planes.
+    pub fn move_plane(&mut self, id: PlaneId, to: f64, env: &mut Env) -> Result<(), String> {
+        let pos = self.solve_planes(env)?;
+        let p = self.plane(id).ok_or("no such plane")?;
+        if let Some(d) = self.dims.iter().find(|d| d.drives.contains(&id)) {
+            let how = match (&d.label, d.eq, d.locked) {
+                (Some(l), _, _) => format!("labelled '{l}'"),
+                (_, true, _) => "set to equal segments".to_string(),
+                _ => "locked".to_string(),
+            };
+            return Err(format!("'{}' is held by a dimension that is {how}; change or unlock the dimension", p.name));
+        }
+        let name = p.name.clone();
+        let Anchor::Offset { from, by } = p.anchor.clone() else {
+            return Err(format!("'{name}' cannot be moved on its own"));
+        };
+        if by.trim().parse::<f64>().is_err() {
+            return Err(format!("'{name}' is positioned by a formula ({by})"));
+        }
+        let i = self.planes.iter().position(|q| q.id == id).unwrap();
+        self.planes[i].anchor = Anchor::Offset { from, by: fmt_num(to - pos[&from]) };
+        self.solve_planes(env)?;
+        Ok(())
+    }
+
+    /// Type a new value into a dimension that has no label: the plane at its far end moves (or
+    /// the near one when the far one is fixed). A locked dimension keeps the new value.
+    pub fn set_dim_value(&mut self, id: u32, seg: usize, value: f64, env: &mut Env) -> Result<(), String> {
+        self.fix_dim_ids();
+        let di = self.dim_index(id)?;
+        let saved = (self.planes.clone(), self.dims.clone());
+        let d = self.dims[di].clone();
+        if d.label.is_some() || d.seg_labels.iter().any(|l| !l.trim().is_empty()) || d.eq {
+            return Err("this dimension is driven by a parameter or by EQ; change the parameter instead".into());
+        }
+        let refs = d.refs();
+        if seg + 1 >= refs.len() {
+            return Err("no such segment".into());
+        }
+        let pos = self.solve_planes(env)?;
+        let run = |this: &mut FamilyBody, env: &mut Env| -> Result<(), String> {
+            // release this dimension so its own lock does not hold the plane back
+            for p in std::mem::take(&mut this.dims[di].drives) {
+                this.bake(p, &pos)?;
+            }
+            let taken = this.driven_elsewhere(di);
+            let (lo, hi) = (refs[seg], refs[seg + 1]);
+            let (target, base, sign) = if !this.is_origin(hi) && !taken.contains(&hi) { (hi, lo, 1.0) } else if !this.is_origin(lo) && !taken.contains(&lo) { (lo, hi, -1.0) } else { return Err("both references are fixed".into()) };
+            this.move_plane(target, pos[&base] + sign * value, env)?;
+            let pos2 = this.solve_planes(env)?;
+            if this.dims[di].locked {
+                this.derive_dim(di, &pos2, env)?;
+            }
+            Ok(())
+        };
+        match run(self, env) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                self.planes = saved.0;
+                self.dims = saved.1;
+                Err(e)
+            }
+        }
     }
 
     pub fn remove_form(&mut self, id: FormId) {
@@ -638,6 +983,12 @@ pub fn tessellate_loop(pts: &[Point], l: &Loop, tol: f64) -> Vec<Point> {
 
 const TOL: f64 = 0.5;
 
+/// A number as it goes into an expression: no trailing noise from float arithmetic.
+fn fmt_num(v: f64) -> String {
+    let r = (v * 1e6).round() / 1e6;
+    if r == 0.0 { "0".into() } else { format!("{r}") }
+}
+
 impl FamilyBody {
     /// Positions of every reference plane, resolving offsets through `env`.
     pub fn solve_planes(&self, env: &mut Env) -> Result<BTreeMap<PlaneId, f64>, String> {
@@ -655,6 +1006,11 @@ impl FamilyBody {
                     },
                     Anchor::Mid { a, b } => match (pos.get(a), pos.get(b)) {
                         (Some(x), Some(y)) => Some((x + y) / 2.0),
+                        _ => None,
+                    },
+                    Anchor::Div { a, b, i, n } => match (pos.get(a), pos.get(b)) {
+                        (Some(x), Some(y)) if *n > 0 => Some(x + (y - x) * f64::from(*i) / f64::from(*n)),
+                        (Some(_), Some(_)) => return Err(format!("reference plane '{}': equal division into zero parts", p.name)),
                         _ => None,
                     },
                 };
@@ -1512,5 +1868,155 @@ mod tests {
         let vc = volume(&s.form(cyl).unwrap().solid.tris);
         let wantc = std::f64::consts::PI * 900.0 * 100.0;
         assert!((vc - wantc).abs() / wantc < 0.02, "{vc} vs {wantc}");
+    }
+
+    // ---- dimension objects
+
+    fn pos_of(b: &FamilyBody, id: PlaneId, env: &mut Env) -> f64 {
+        b.solve_planes(env).unwrap()[&id]
+    }
+
+    fn label(l: &str) -> DimPatch {
+        DimPatch { label: Some(l.into()), ..Default::default() }
+    }
+
+    #[test]
+    fn labelled_dimension_drives_the_far_plane_and_follows_the_parameter() {
+        let mut b = FamilyBody::template();
+        let r = b.add_offset_plane("Right", PLANE_LR, "300").unwrap();
+        let d = b.add_dim(&[r, PLANE_LR], Some(SymView::Plan), &mut params(&[])).unwrap();
+        assert_eq!(b.dim(d).unwrap().refs(), vec![PLANE_LR, r]);
+        b.patch_dim(d, &label("Width"), &mut params(&[("Width", 400.0)])).unwrap();
+        assert_eq!(b.dim(d).unwrap().drives, vec![r]);
+        assert_eq!(pos_of(&b, r, &mut params(&[("Width", 400.0)])), 400.0);
+        assert_eq!(pos_of(&b, r, &mut params(&[("Width", 650.0)])), 650.0);
+        // the plane on the near side of the origin gets a negative offset
+        let l = b.add_offset_plane("Left", PLANE_LR, "-200").unwrap();
+        let d2 = b.add_dim(&[PLANE_LR, l], None, &mut params(&[("Width", 400.0)])).unwrap();
+        b.patch_dim(d2, &label("Depth"), &mut params(&[("Width", 400.0), ("Depth", 250.0)])).unwrap();
+        assert_eq!(pos_of(&b, l, &mut params(&[("Width", 400.0), ("Depth", 250.0)])), -250.0);
+    }
+
+    #[test]
+    fn dimension_between_two_free_planes_moves_the_far_one() {
+        let mut b = FamilyBody::template();
+        let a = b.add_offset_plane("A", PLANE_LR, "100").unwrap();
+        let c = b.add_offset_plane("C", PLANE_LR, "500").unwrap();
+        let d = b.add_dim(&[c, a], None, &mut params(&[])).unwrap();
+        b.patch_dim(d, &label("Gap"), &mut params(&[("Gap", 250.0)])).unwrap();
+        let env = &mut params(&[("Gap", 250.0)]);
+        assert_eq!(pos_of(&b, a, env), 100.0);
+        assert_eq!(pos_of(&b, c, env), 350.0);
+        // moving A drags C along, and A cannot be unhooked from a plane that holds it
+        b.dims.iter_mut().for_each(|d| d.drives.clear());
+        assert!(b.dim(d).is_some());
+    }
+
+    #[test]
+    fn eq_with_a_label_is_symmetric_about_the_origin() {
+        let mut b = FamilyBody::template();
+        let l = b.add_offset_plane("Left", PLANE_LR, "-300").unwrap();
+        let r = b.add_offset_plane("Right", PLANE_LR, "300").unwrap();
+        let d = b.add_dim(&[l, PLANE_LR, r], Some(SymView::Plan), &mut params(&[])).unwrap();
+        b.patch_dim(d, &DimPatch { eq: Some(true), ..Default::default() }, &mut params(&[])).unwrap();
+        b.patch_dim(d, &label("Width"), &mut params(&[("Width", 900.0)])).unwrap();
+        let env = &mut params(&[("Width", 900.0)]);
+        assert_eq!(pos_of(&b, l, env), -450.0);
+        assert_eq!(pos_of(&b, r, env), 450.0);
+        let env = &mut params(&[("Width", 1000.0)]);
+        assert_eq!(pos_of(&b, l, env), -500.0);
+        assert_eq!(pos_of(&b, r, env), 500.0);
+        // the origin plane is never moved
+        assert_eq!(pos_of(&b, PLANE_LR, env), 0.0);
+    }
+
+    #[test]
+    fn eq_without_a_label_splits_the_span_evenly() {
+        let mut b = FamilyBody::template();
+        let a = b.add_offset_plane("A", PLANE_LR, "0").unwrap();
+        let m1 = b.add_offset_plane("M1", PLANE_LR, "100").unwrap();
+        let m2 = b.add_offset_plane("M2", PLANE_LR, "200").unwrap();
+        let z = b.add_offset_plane("Z", PLANE_LR, "900").unwrap();
+        let d = b.add_dim(&[z, a, m2, m1], None, &mut params(&[])).unwrap();
+        b.patch_dim(d, &DimPatch { eq: Some(true), ..Default::default() }, &mut params(&[])).unwrap();
+        let env = &mut params(&[]);
+        assert_eq!(pos_of(&b, m1, env), 300.0);
+        assert_eq!(pos_of(&b, m2, env), 600.0);
+        // the end planes stay free: moving Z re-divides the span
+        b.move_plane(z, 1200.0, env).unwrap();
+        assert_eq!(pos_of(&b, m1, env), 400.0);
+        assert_eq!(pos_of(&b, m2, env), 800.0);
+        // a driven plane cannot be dragged
+        assert!(b.move_plane(m1, 10.0, env).unwrap_err().contains("equal"));
+    }
+
+    #[test]
+    fn locked_dimension_holds_its_value_when_the_near_plane_moves() {
+        let mut b = FamilyBody::template();
+        let a = b.add_offset_plane("A", PLANE_LR, "100").unwrap();
+        let c = b.add_offset_plane("C", PLANE_LR, "400").unwrap();
+        let d = b.add_dim(&[a, c], None, &mut params(&[])).unwrap();
+        b.patch_dim(d, &DimPatch { locked: Some(true), ..Default::default() }, &mut params(&[])).unwrap();
+        b.move_plane(a, 250.0, &mut params(&[])).unwrap();
+        assert_eq!(pos_of(&b, c, &mut params(&[])), 550.0);
+        // typing a value into the locked dimension keeps the lock at the new value
+        b.set_dim_value(d, 0, 100.0, &mut params(&[])).unwrap();
+        assert_eq!(pos_of(&b, c, &mut params(&[])), 350.0);
+        b.move_plane(a, 0.0, &mut params(&[])).unwrap();
+        assert_eq!(pos_of(&b, c, &mut params(&[])), 100.0);
+        // unlocking frees the far plane where it stands
+        b.patch_dim(d, &DimPatch { locked: Some(false), ..Default::default() }, &mut params(&[])).unwrap();
+        b.move_plane(c, 700.0, &mut params(&[])).unwrap();
+        assert_eq!(pos_of(&b, a, &mut params(&[])), 0.0);
+    }
+
+    #[test]
+    fn removing_or_unlabelling_a_dimension_keeps_the_geometry_where_it_is() {
+        let mut b = FamilyBody::template();
+        let r = b.add_offset_plane("Right", PLANE_LR, "300").unwrap();
+        let d = b.add_dim(&[PLANE_LR, r], None, &mut params(&[])).unwrap();
+        b.patch_dim(d, &label("Width"), &mut params(&[("Width", 800.0)])).unwrap();
+        b.patch_dim(d, &label(""), &mut params(&[("Width", 800.0)])).unwrap();
+        assert!(b.dim(d).unwrap().drives.is_empty());
+        assert_eq!(pos_of(&b, r, &mut params(&[])), 800.0);
+        b.patch_dim(d, &label("Width"), &mut params(&[("Width", 900.0)])).unwrap();
+        b.remove_dim(d, &mut params(&[("Width", 900.0)])).unwrap();
+        assert!(b.dims.is_empty());
+        assert_eq!(pos_of(&b, r, &mut params(&[])), 900.0);
+    }
+
+    #[test]
+    fn over_constraint_and_loops_are_refused_and_change_nothing() {
+        let mut b = FamilyBody::template();
+        let a = b.add_offset_plane("A", PLANE_LR, "100").unwrap();
+        let c = b.add_offset_plane("C", PLANE_LR, "500").unwrap();
+        let d1 = b.add_dim(&[a, c], None, &mut params(&[])).unwrap();
+        b.patch_dim(d1, &label("P"), &mut params(&[("P", 100.0), ("Q", 100.0)])).unwrap();
+        // a second labelled dimension between the same two planes cannot also drive either of them
+        let d2 = b.add_dim(&[a, c], None, &mut params(&[("P", 100.0)])).unwrap();
+        let before = b.clone();
+        let err = b.patch_dim(d2, &label("Q"), &mut params(&[("P", 100.0), ("Q", 100.0)]));
+        assert!(err.unwrap_err().contains("over-constrain"));
+        assert_eq!(b, before);
+        // an unknown parameter name is refused without touching the planes
+        let e = b.add_offset_plane("E", PLANE_LR, "50").unwrap();
+        let d3 = b.add_dim(&[PLANE_LR, e], None, &mut params(&[("P", 100.0)])).unwrap();
+        let before = b.clone();
+        assert!(b.patch_dim(d3, &label("Nope"), &mut params(&[("P", 100.0)])).is_err());
+        assert_eq!(b, before);
+        // the origin plane is never driven
+        assert!(b.dims.iter().all(|d| !d.drives.contains(&PLANE_LR)));
+    }
+
+    #[test]
+    fn old_dimensions_and_anchors_still_load() {
+        let old = r#"{"planes":[{"id":1,"name":"C","axis":"x","anchor":{"type":"origin"}}],"dims":[{"a":1,"b":1,"reports_to":"W"}]}"#;
+        let mut b: FamilyBody = serde_json::from_str(old).unwrap();
+        assert_eq!(b.dims[0].id, 0);
+        b.fix_dim_ids();
+        assert_ne!(b.dims[0].id, 0);
+        assert!(b.dims[0].via.is_empty() && !b.dims[0].eq && b.dims[0].view.is_none());
+        let div: Anchor = serde_json::from_str(r#"{"type":"div","a":1,"b":2,"i":1,"n":3}"#).unwrap();
+        assert_eq!(div, Anchor::Div { a: 1, b: 2, i: 1, n: 3 });
     }
 }
