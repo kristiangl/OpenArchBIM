@@ -185,13 +185,23 @@ pub struct ParamDef {
     /// For text parameters: the values the palette offers in a drop-down.
     #[serde(default)]
     pub choices: Vec<String>,
+    /// Discipline the data type belongs to (common, structural, hvac, electrical, piping, energy).
+    #[serde(default = "common")]
+    pub discipline: String,
+    /// Help text shown when the pointer rests on the parameter in a palette.
+    #[serde(default)]
+    pub tooltip: String,
     /// Value when a type or instance does not set one.
     pub default: ParamValue,
 }
 
+fn common() -> String {
+    "common".into()
+}
+
 impl ParamDef {
     fn new(name: &str, kind: ParamKind, instance: bool, group: &str, default: ParamValue) -> ParamDef {
-        ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], default }
+        ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: common(), tooltip: String::new(), default }
     }
     /// A text parameter chosen from a list.
     fn choice(name: &str, instance: bool, group: &str, choices: &[&str]) -> ParamDef {

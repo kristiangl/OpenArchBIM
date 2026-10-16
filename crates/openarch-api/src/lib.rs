@@ -458,7 +458,11 @@ impl Session {
                             Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad view: {e}"))?),
                             None => None,
                         };
-                        made = Some(b.add_dim(&refs, view, env)?);
+                        let id = b.add_dim(&refs, view, env)?;
+                        if let (Some(at), Some(d)) = (p.get("at").and_then(|v| v.as_f64()), b.dims.iter_mut().find(|d| d.id == id)) {
+                            d.at = Some(at);
+                        }
+                        made = Some(id);
                         Ok(())
                     }
                     "patch_dim" => {
@@ -468,6 +472,7 @@ impl Session {
                     "remove_dim" => b.remove_dim(num("dim")? as u32, env),
                     "dim_value" => b.set_dim_value(num("dim")? as u32, p.get("seg").and_then(|v| v.as_u64()).unwrap_or(0) as usize, num("value")?, env),
                     "move_plane" => b.move_plane(num("plane")? as u32, num("to")?, env),
+                    "remove_plane" => b.remove_plane(num("plane")? as u32),
                     other => Err(format!("unknown family edit '{other}'")),
                 })?;
                 Ok(json!({ "body": body, "dim": made }))
@@ -3193,5 +3198,37 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn family_edit_adds_labels_and_moves_planes() {
+        let mut s = Session::new();
+        let id = call(&mut s, "new_family", json!({"name": "Panel", "category": "generic_models", "host": "none"}))["id"].as_u64().unwrap();
+        let def = call(&mut s, "family_def", json!({"id": id}));
+        let mut body = def["body"].clone();
+        let mut params = def["params"].clone();
+        // two planes 600 apart, then a dimension across both
+        let planes = body["planes"].as_array_mut().unwrap();
+        planes.push(json!({"id": 50, "name": "A", "axis": "x", "anchor": {"type": "offset", "from": 1, "by": "100"}}));
+        planes.push(json!({"id": 51, "name": "B", "axis": "x", "anchor": {"type": "offset", "from": 1, "by": "700"}}));
+        let r = call(&mut s, "family_edit", json!({"id": id, "body": body, "params": params, "op": "add_dim", "refs": [51, 50], "view": "plan", "at": -400}));
+        let dim = r["dim"].as_u64().unwrap();
+        assert_eq!(r["body"]["dims"][0]["a"], 50);
+        assert_eq!(r["body"]["dims"][0]["at"], -400.0);
+        body = r["body"].clone();
+        // label it with a new length parameter: the far plane follows the parameter
+        params.as_array_mut().unwrap().push(json!({"name": "Gap", "param_kind": "length", "default": 250.0}));
+        let r = call(&mut s, "family_edit", json!({"id": id, "body": body, "params": params, "op": "patch_dim", "dim": dim, "patch": {"label": "Gap"}}));
+        assert_eq!(r["body"]["dims"][0]["drives"], json!([51]));
+        body = r["body"].clone();
+        let pv = call(&mut s, "family_preview", json!({"id": id, "body": body, "params": params, "values": {"Gap": 300.0}}));
+        assert_eq!(pv["planes"]["51"], 400.0);
+        // a plane held by the dimension cannot be moved; a free one can
+        let held = s.handle("family_edit", &json!({"id": id, "body": body, "params": params, "op": "move_plane", "plane": 51, "to": 900.0}));
+        assert!(held.unwrap_err().contains("held by a dimension"));
+        let r = call(&mut s, "family_edit", json!({"id": id, "body": body, "params": params, "op": "move_plane", "plane": 50, "to": -100.0}));
+        assert_eq!(r["body"]["planes"][3]["anchor"]["by"], "-100");
+        // an unknown label is refused
+        assert!(s.handle("family_edit", &json!({"id": id, "body": body, "params": params, "op": "patch_dim", "dim": dim, "patch": {"label": "Nope"}})).is_err());
     }
 }

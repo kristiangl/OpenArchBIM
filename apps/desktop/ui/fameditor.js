@@ -131,7 +131,7 @@ const FamModel = (() => {
       id: familyId, def, body: clone(def.body), params: clone(def.params), types: clone(def.types),
       typeId: first ? first.id : null, values: {}, view: "plan", tool: "select", sketch: "rect", sel: null,
       draft: null, pv: null, cams: {}, dirty: false, undo: [], redo: [], mouse: null, tick: 0, rot: { a: -0.6, b: 0.5 }, drag: null,
-      start: "0", end: "100", a0: "0", a1: "360", pathMode: "line", pathClosed: false, dimMode: "drive", blend: null, rev: null, wp: null, msg: "",
+      start: "0", end: "100", a0: "0", a1: "360", pathMode: "line", pathClosed: false, blend: null, rev: null, wp: null, msg: "",
       show: { names: true, dims: def.body.planes.length <= 14 }, symMode: "line", open: ["plan", "front"],
     };
     mount();
@@ -161,9 +161,29 @@ const FamModel = (() => {
     return ok;
   }
 
+  // An edit done by the Rust side (dimensions, plane moves): it needs to know where the planes stand.
+  async function edit(op, args, keep, pre) {
+    const before = snapshot();
+    const sel = S.sel;
+    let r;
+    if (pre) pre();
+    try { r = await Backend.call("family_edit", { id: S.id, type: S.typeId, values: S.values, body: S.body, params: S.params, op, ...args }); }
+    catch (e) { if (pre) { restore(before); S.sel = sel; } S.msg = String(e.message || e); status(); render(); return null; }
+    S.body = r.body;
+    const ok = await preview();
+    if (!ok) { restore(before); S.sel = sel; S.msg = S.pvError || "That change does not solve."; await preview(); status(); render(); return null; }
+    S.undo.push(before); S.redo = []; S.dirty = true; S.msg = "";
+    if (!keep) props();
+    status(); render();
+    return r;
+  }
+  const dimById = (id) => (S.body.dims || []).find((d) => d.id === id);
+  const dimRefs = (d) => [d.a, ...(d.via || []), d.b];
+  const drivenBy = (planeId) => (S.body.dims || []).find((d) => (d.drives || []).includes(planeId));
+
   const newId = () => {
     const b = S.body;
-    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id));
+    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id));
   };
   const planeById = (id) => S.body.planes.find((p) => p.id === id);
   const formById = (id) => S.body.forms.find((f) => f.id === id);
@@ -272,7 +292,7 @@ const FamModel = (() => {
 
   // ---- ribbon commands ----
   const TOOL_OF = {
-    "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-eq": "eq", "f-align": "align", "f-ext": "ext", "f-void": "void",
+    "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
     "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-sym": "sym", "f-region": "region",
   };
   function setTool(t) {
@@ -283,6 +303,7 @@ const FamModel = (() => {
     "f-types": () => typesDialog(),
     "f-category": () => paramsDialog(),
     "f-del": () => deleteSel(),
+    "f-eq": () => toggleEq(),
     "f-load": () => loadIntoProject(false),
     "f-loadclose": () => loadIntoProject(true),
     "f-3d": () => openFamView("3d"),
@@ -309,12 +330,6 @@ const FamModel = (() => {
       [["line", "Line"], ["arc", "3-Point Arc"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; mode.append(o); });
       mode.value = S.symMode; mode.onchange = () => { S.symMode = mode.value; S.draft = null; status(); render(); };
       bar.append(el("span", "fe-opt", "Draw"), mode);
-    }
-    if (S.tool === "dim") {
-      const m = el("select");
-      [["drive", "Label a dimension"], ["report", "Reporting parameter"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; m.append(o); });
-      m.value = S.dimMode; m.onchange = () => { S.dimMode = m.value; S.picks = []; status(); };
-      bar.append(el("span", "fe-opt", "Dimension"), m);
     }
     if (S.tool === "sweep") sweepBar(bar);
     if (S.tool === "ext" || S.tool === "void" || S.tool === "blend" || S.tool === "revolve") {
@@ -446,10 +461,9 @@ const FamModel = (() => {
 
   function status() {
     const tips = {
-      select: "Click to select. Drag a reference plane or a sketch point of a selected form to move it. Delete removes the selection.",
-      plane: "Click where the plane goes, then drag along it or click a second point to set the direction.",
-      dim: "Click two parallel reference planes, then give the label (a parameter) or a value. In Reporting parameter mode the dimension reads its length into a new read-only parameter instead.",
-      eq: "Click two outer planes, then the plane that is kept midway between them.",
+      select: "Click to select. Drag a reference plane or a sketch point of a selected form to move it. Click a dimension's padlock to lock it, or its EQ to equalise. Delete removes the selection.",
+      plane: "Click the start of the reference plane, then click its end (or drag). The line it follows sets the direction.",
+      dim: "Click two or more parallel reference planes, then click in empty space to place the dimension. Select it to label it with a parameter, lock it or equalise it (EQ).",
       ext: "Sketch the profile on the work plane. Points near a reference plane lock to it.",
       void: "Sketch the void. A void that cuts the host makes the opening in the wall.",
       blend: "Sketch the base, then the top. Both need the same number of points. The solid blends from the base height to the top height.",
@@ -503,7 +517,8 @@ const FamModel = (() => {
       r.append(field("Hosted by", selIn([["none", "Nothing (free standing)"], ["wall", "Wall"], ["floor", "Floor"], ["ceiling", "Ceiling"], ["roof", "Roof"], ["face", "Face"]], S.def.host, (v) => setMeta({ host: v }))));
       r.append(field("Cut with voids", checkIn(b.cut_with_voids, (v) => change((x) => { x.cut_with_voids = v; }, true))));
       r.append(field("Always vertical", checkIn(b.always_vertical, (v) => change((x) => { x.always_vertical = v; }, true))));
-    } else if (s.kind === "plane") planeProps(r, planeById(s.id));
+    } else if (s.kind === "dim") dimProps(r, dimById(s.id));
+    else if (s.kind === "plane") planeProps(r, planeById(s.id));
     else if (s.kind === "form") formProps(r, formById(s.id));
     else if (s.kind === "sym") symProps(r, symById(s.id));
     flex(r);
@@ -528,6 +543,14 @@ const FamModel = (() => {
     const a = p.anchor;
     if (a.type === "origin") { r.append(el("div", "famed-hint", "This plane marks the origin.")); return; }
     const same = S.body.planes.filter((q) => q.axis === p.axis && q.id !== p.id).map((q) => [q.id, q.name]);
+    const held = drivenBy(p.id);
+    if (held) {
+      r.append(el("div", "famed-hint", held.label ? `Positioned by the dimension labelled ${held.label}.` : held.eq ? "Positioned by an equal (EQ) dimension." : "Held by a locked dimension."));
+      const go = button("Select the dimension", () => { S.sel = { kind: "dim", id: held.id }; props(); render(); });
+      r.append(go);
+      return;
+    }
+    if (a.type === "div") { r.append(el("div", "famed-hint", `Step ${a.i} of ${a.n} between two planes.`)); return; }
     if (a.type === "offset") {
       r.append(field("Measured from", selIn(same, a.from, (v) => change((b) => { planeById(p.id).anchor.from = Number(v); }))));
       r.append(field("Dimension / label", textIn(a.by, (v) => change((b) => { planeById(p.id).anchor.by = v; }), { list: lengthParams() })));
@@ -832,7 +855,9 @@ const FamModel = (() => {
           const before = snapshot();
           S.params = work;
           // a dimension whose parameter was deleted or renamed stops reporting
-          S.body.dims = (S.body.dims || []).filter((d) => work.some((p) => p.name === d.reports_to));
+          const labelled = (S.body.dims || []).flatMap((d) => [d.label, ...(d.seg_labels || [])]).filter(Boolean).find((n) => !work.some((p) => p.name === n));
+          if (labelled) { S.params = JSON.parse(before).params; msg.textContent = `'${labelled}' labels a dimension. Remove the label from the dimension first.`; return; }
+          S.body.dims = (S.body.dims || []).filter((d) => !d.reports_to || work.some((p) => p.name === d.reports_to));
           const ok = await preview();
           if (!ok) { const old = JSON.parse(before); S.params = old.params; S.body.dims = old.body.dims; msg.textContent = S.pvError; await preview(); return; }
           S.undo.push(before); S.dirty = true; close(); props(); render();
@@ -917,7 +942,7 @@ const FamModel = (() => {
     for (const p of ordered) {
       const at = pos(p.id);
       if (at === undefined) continue;
-      const selected = S.sel && S.sel.kind === "plane" && S.sel.id === p.id;
+      const selected = (S.sel && S.sel.kind === "plane" && S.sel.id === p.id) || (S.picks || []).includes(p.id);
       const vertical = p.axis === V.h; // a plane normal to the view's horizontal axis is a vertical line
       ctx.beginPath();
       if (vertical) { const x = w2s(at, 0).x; ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); }
@@ -954,19 +979,24 @@ const FamModel = (() => {
     drawDraft(V);
   }
 
+  // Dimension objects draw only in their own view. S.dimHits keeps what can be clicked for the select tool.
   function drawDims(V) {
     const { ctx } = S;
     const selPlane = S.sel && S.sel.kind === "plane" ? S.sel.id : null;
-    const dims = S.body.planes.filter((p) => p.anchor.type === "offset" && (p.axis === V.h || p.axis === V.v) && (S.show.dims || p.id === selPlane));
-    let ih = 0, iv = 0;
+    const selDim = S.sel && S.sel.kind === "dim" ? S.sel.id : null;
+    const accent = css("--accent");
+    S.dimHits = [];
     ctx.font = "11px system-ui, sans-serif";
-    for (const p of dims) {
+    let ih = 0, iv = 0;
+    // planes that follow a parameter but have no dimension object yet (older families): a plain read-out
+    const covered = new Set((S.body.dims || []).flatMap((d) => d.drives || []));
+    const implicit = S.body.planes.filter((p) => p.anchor.type === "offset" && !covered.has(p.id) && (p.axis === V.h || p.axis === V.v) && (S.show.dims || p.id === selPlane));
+    for (const p of implicit) {
       const a = pos(p.anchor.from), b = pos(p.id);
       if (a === undefined || b === undefined) continue;
-      const horizontal = p.axis === V.h; // measured along the view's horizontal axis
       ctx.strokeStyle = "#8a6d1f"; ctx.fillStyle = "#8a6d1f"; ctx.lineWidth = 1;
       const label = `${String(p.anchor.by).replace(/[\[\]]/g, "")}  ${(b - a).toFixed(0)}`;
-      if (horizontal) {
+      if (p.axis === V.h) {
         const y = 22 + (ih++ % 6) * 16, x0 = w2s(a, 0).x, x1 = w2s(b, 0).x;
         ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke();
         tick(x0, y, true); tick(x1, y, true);
@@ -978,25 +1008,84 @@ const FamModel = (() => {
         ctx.save(); ctx.translate(x - 3, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(label, 0, 0); ctx.restore();
       }
     }
-    // reporting dimensions
     for (const d of S.body.dims || []) {
-      const pa = planeById(d.a), pb = planeById(d.b);
-      if (!pa || !pb || !(pa.axis === V.h || pa.axis === V.v) || !(S.show.dims)) continue;
-      const a = pos(d.a), b = pos(d.b);
-      if (a === undefined || b === undefined) continue;
-      ctx.strokeStyle = "#2f7d6b"; ctx.fillStyle = "#2f7d6b"; ctx.lineWidth = 1;
-      const label = `${d.reports_to || ""} = ${Math.abs(b - a).toFixed(0)}`;
-      if (pa.axis === V.h) {
-        const y = S.canvas.height - 24 - (ih++ % 4) * 16, x0 = w2s(a, 0).x, x1 = w2s(b, 0).x;
-        ctx.beginPath(); ctx.moveTo(x0, y); ctx.lineTo(x1, y); ctx.stroke(); tick(x0, y, true); tick(x1, y, true);
-        ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(label, (x0 + x1) / 2, y - 2);
-      } else {
-        const x = 40 + (iv++ % 4) * 16, y0 = w2s(0, a).y, y1 = w2s(0, b).y;
-        ctx.beginPath(); ctx.moveTo(x, y0); ctx.lineTo(x, y1); ctx.stroke(); tick(x, y0, false); tick(x, y1, false);
-        ctx.save(); ctx.translate(x + 12, (y0 + y1) / 2); ctx.rotate(-Math.PI / 2); ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(label, 0, 0); ctx.restore();
-      }
+      const pa = planeById(d.a);
+      if (!pa || !(pa.axis === V.h || pa.axis === V.v)) continue;
+      if (d.view ? d.view !== S.view : !S.show.dims) continue;
+      if (d.view && !S.show.dims && d.id !== selDim) continue;
+      drawChain(d, d.id === selDim);
     }
+    // the dimension being made follows the pointer once two references are picked
+    const picks = S.tool === "dim" ? S.picks || [] : [];
+    if (picks.length >= 2 && S.mouse) {
+      const w = s2w(S.mouse.x, S.mouse.y), first = planeById(picks[0]);
+      const sorted = picks.slice().sort((x, y) => pos(x) - pos(y));
+      drawChain({ id: 0, a: sorted[0], b: sorted[sorted.length - 1], via: sorted.slice(1, -1), at: first.axis === V.h ? w.v : w.u, seg_labels: [] }, true, true);
+    }
+
     function tick(x, y, h) { ctx.beginPath(); if (h) { ctx.moveTo(x, y - 5); ctx.lineTo(x, y + 5); } else { ctx.moveTo(x - 5, y); ctx.lineTo(x + 5, y); } ctx.stroke(); }
+
+    function drawChain(d, selected, ghost) {
+      const refs = dimRefs(d);
+      const ps = refs.map(pos);
+      if (ps.some((x) => x === undefined)) return;
+      const horizontal = planeById(d.a).axis === V.h; // measured along the view's horizontal axis
+      const col = ghost ? "#999" : selected ? accent : d.reports_to ? "#2f7d6b" : d.label || (d.seg_labels || []).some(Boolean) ? "#7a5a00" : "#8a6d1f";
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = selected ? 1.8 : 1;
+      let lineAt;
+      if (d.at !== null && d.at !== undefined) lineAt = horizontal ? w2s(0, d.at).y : w2s(d.at, 0).x;
+      else lineAt = horizontal ? S.canvas.height - 24 - (ih++ % 4) * 16 : 40 + (iv++ % 4) * 16;
+      const s = ps.map((v) => (horizontal ? w2s(v, 0).x : w2s(0, v).y));
+      const lo = Math.min(...s) - 8, hi = Math.max(...s) + 8;
+      ctx.beginPath();
+      if (horizontal) { ctx.moveTo(lo, lineAt); ctx.lineTo(hi, lineAt); } else { ctx.moveTo(lineAt, lo); ctx.lineTo(lineAt, hi); }
+      ctx.stroke();
+      s.forEach((v) => (horizontal ? tick(v, lineAt, true) : tick(lineAt, v, false)));
+      const n = refs.length - 1;
+      const text = (str, c0, c1, row, seg) => {
+        const mid = (c0 + c1) / 2, w = ctx.measureText(str).width;
+        let box;
+        ctx.textAlign = "center"; ctx.textBaseline = "bottom";
+        if (horizontal) { ctx.fillText(str, mid, lineAt - 2 - row * 14); box = { x: mid - w / 2, y: lineAt - 16 - row * 14, w, h: 14 }; }
+        else { ctx.save(); ctx.translate(lineAt - 3 - row * 14, mid); ctx.rotate(-Math.PI / 2); ctx.fillText(str, 0, 0); ctx.restore(); box = { x: lineAt - 17 - row * 14, y: mid - w / 2, w: 14, h: w }; }
+        if (!ghost) S.dimHits.push({ id: d.id, kind: "val", seg, ...box });
+        return box;
+      };
+      for (let j = 0; j < n; j++) {
+        const val = Math.abs(ps[j + 1] - ps[j]);
+        const lab = n === 1 ? d.label : d.eq ? "" : (d.seg_labels || [])[j];
+        const str = d.eq ? "EQ" : lab ? `${lab} = ${val.toFixed(0)}` : d.reports_to ? `${d.reports_to} = ${val.toFixed(0)}` : val.toFixed(0);
+        text(str, s[j], s[j + 1], 0, j);
+      }
+      if (d.eq && d.label) text(`${d.label} = ${Math.abs(ps[n] - ps[0]).toFixed(0)}`, s[0], s[n], 1, 0);
+      else if (d.eq) text(`${Math.abs(ps[n] - ps[0]).toFixed(0)}`, s[0], s[n], 1, 0);
+      if (ghost) return;
+      // the padlock, and the EQ switch for a chain of three or more
+      const end = (horizontal ? hi : hi) + 12;
+      const px = horizontal ? end : lineAt, py = horizontal ? lineAt : end;
+      ctx.lineWidth = 1.5; ctx.strokeStyle = d.locked ? accent : "#999";
+      ctx.beginPath(); ctx.rect(px - 4, py - 1, 8, 7); if (d.locked) ctx.fill(); else ctx.stroke();
+      ctx.beginPath(); ctx.arc(px, py - 1, 3, Math.PI, d.locked ? 0 : Math.PI * 1.7); ctx.stroke();
+      S.dimHits.push({ id: d.id, kind: "lock", x: px - 6, y: py - 6, w: 12, h: 14 });
+      if (refs.length >= 3 && (selected || d.eq)) {
+        ctx.fillStyle = d.eq ? accent : "#999"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        const ex = horizontal ? px + 10 : px + 8, ey = horizontal ? py : py + 12;
+        ctx.fillText("EQ", ex, ey);
+        S.dimHits.push({ id: d.id, kind: "eq", x: ex - 2, y: ey - 7, w: 20, h: 14 });
+      }
+      // the line itself, for selecting and dragging
+      if (horizontal) S.dimHits.push({ id: d.id, kind: "line", x: lo, y: lineAt - 4, w: hi - lo, h: 8 });
+      else S.dimHits.push({ id: d.id, kind: "line", x: lineAt - 4, y: lo, w: 8, h: hi - lo });
+    }
+  }
+
+  function hitDim(sx, sy) {
+    const hits = S.dimHits || [];
+    for (const kind of ["lock", "eq", "val", "line"]) {
+      const h = hits.find((q) => q.kind === kind && sx >= q.x && sx <= q.x + q.w && sy >= q.y && sy <= q.y + q.h);
+      if (h) return h;
+    }
+    return null;
   }
 
   // loops of the selected form or symbolic item, with the axis of their sketch plane
@@ -1046,6 +1135,13 @@ const FamModel = (() => {
     if (!d || !S.mouse) return;
     ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
     const m = snapPoint(S.mouse.x, S.mouse.y);
+    if (d.kind === "plane") {
+      const a = P(d.a), dx = S.mouse.x - a.x, dy = S.mouse.y - a.y;
+      ctx.beginPath();
+      if (Math.abs(dx) >= Math.abs(dy)) { ctx.moveTo(0, a.y); ctx.lineTo(S.canvas.width, a.y); } else { ctx.moveTo(a.x, 0); ctx.lineTo(a.x, S.canvas.height); }
+      ctx.stroke(); ctx.setLineDash([]); ctx.fillStyle = css("--accent"); ctx.beginPath(); ctx.arc(a.x, a.y, 3.5, 0, Math.PI * 2); ctx.fill();
+      return;
+    }
     if (d.kind === "rect" && d.a) { const a = P(d.a), b = P(m.pt); ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); }
     else if (d.kind === "circle" && d.a) { const a = P(d.a), b = P(m.pt); ctx.beginPath(); ctx.arc(a.x, a.y, Math.hypot(b.x - a.x, b.y - a.y), 0, Math.PI * 2); ctx.stroke(); }
     else if (d.kind === "poly" && d.pts.length) { ctx.beginPath(); d.pts.forEach((q, i) => { const p = P(q.pt); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }); const p = P(m.pt); ctx.lineTo(p.x, p.y); ctx.stroke(); }
@@ -1283,23 +1379,42 @@ const FamModel = (() => {
     if (t === "select") {
       const h = hitHandle(m.x, m.y);
       if (h) { S.drag = { handle: h, before: snapshot(), moved: false }; return; }
+      const dh = hitDim(m.x, m.y);
+      if (dh) { await clickDim(dh); return; }
       const pl = hitPlane(m.x, m.y);
-      if (pl) { S.sel = { kind: "plane", id: pl.id }; props(); render(); S.drag = pl.anchor.type === "offset" && /^\s*-?\d+(\.\d+)?\s*$/.test(String(pl.anchor.by)) ? { plane: pl.id, before: snapshot(), moved: false } : null; return; }
+      if (pl) {
+        S.sel = { kind: "plane", id: pl.id }; props(); render();
+        const held = drivenBy(pl.id);
+        if (held) { S.msg = `${pl.name} is held by a dimension. Change the dimension instead.`; status(); }
+        S.drag = !held && pl.anchor.type === "offset" && /^\s*-?\d+(\.\d+)?\s*$/.test(String(pl.anchor.by)) ? { plane: pl.id, before: snapshot(), moved: false } : null;
+        return;
+      }
       S.sel = hitItem(m.x, m.y); props(); render();
       return;
     }
     if (t === "plane") {
-      const w = s2w(m.x, m.y);
-      S.draft = { kind: "plane", a: w, down: m };
+      if (S.draft && S.draft.kind === "plane") { await finishPlane(m); return; }
+      S.draft = { kind: "plane", a: s2w(m.x, m.y), down: m };
       return;
     }
-    if (t === "dim" || t === "eq") {
+    if (t === "dim") {
+      const V = VIEWS[S.view];
       const pl = hitPlane(m.x, m.y);
-      if (!pl) return;
-      S.picks = (S.picks || []).concat(pl.id);
-      if (t === "dim" && S.picks.length === 2) { const [a, b] = S.picks; S.picks = []; await makeDim(a, b); }
-      else if (t === "eq" && S.picks.length === 3) { const [a, b, mid] = S.picks; S.picks = []; await makeEq(a, b, mid); }
-      else { S.msg = `${S.picks.length} picked.`; status(); }
+      const picks = S.picks || (S.picks = []);
+      if (pl) {
+        if (picks.length && planeById(picks[0]).axis !== pl.axis) { S.msg = "Pick parallel reference planes."; status(); return; }
+        if (!picks.includes(pl.id)) picks.push(pl.id);
+        S.msg = picks.length < 2 ? "Pick another reference plane." : "Pick more planes, or click in empty space to place the dimension.";
+        status(); render();
+        return;
+      }
+      if (picks.length < 2) { S.msg = "Pick two or more parallel reference planes first."; status(); return; }
+      const w = s2w(m.x, m.y);
+      const at = Math.round(planeById(picks[0]).axis === V.h ? w.v : w.u);
+      const refs = picks.slice();
+      S.picks = [];
+      const r = await edit("add_dim", { refs, view: S.view, at }, true);
+      if (r && r.dim) { S.sel = { kind: "dim", id: r.dim }; S.msg = "Dimension placed. Label it, lock it or set EQ in Properties."; props(); status(); render(); }
       return;
     }
     if (t === "align") {
@@ -1395,6 +1510,11 @@ const FamModel = (() => {
         d.moved = true;
         await preview(); props(); render(); return;
       }
+      if (d.dimAt) {
+        const dm = dimById(d.dimAt), w = s2w(m.x, m.y);
+        if (dm) { dm.at = Math.round(planeById(dm.a).axis === VIEWS[S.view].h ? w.v : w.u); d.moved = true; render(); }
+        return;
+      }
       if (d.handle) {
         const sp = snapPoint(m.x, m.y);
         moveNode(d.handle, sp);
@@ -1422,28 +1542,33 @@ const FamModel = (() => {
     const d = S.drag;
     S.drag = null;
     const m = mouse(e);
-    if (d && (d.plane || d.handle) && d.moved) {
+    if (d && (d.plane || d.handle || d.dimAt) && d.moved) {
       const ok = await preview();
       if (!ok) { restore(d.before); S.msg = S.pvError; await preview(); }
       else { S.undo.push(d.before); S.redo = []; S.dirty = true; }
       props(); status(); render();
     }
-    if (S.draft && S.draft.kind === "plane" && S.tool === "plane") {
-      const dr = S.draft; S.draft = null;
-      const dx = m.x - dr.down.x, dy = m.y - dr.down.y;
-      const V = VIEWS[S.view];
-      // a mostly horizontal stroke makes a horizontal line: a plane normal to the view's vertical axis
-      const axis = Math.abs(dx) >= Math.abs(dy) && Math.hypot(dx, dy) > 12 ? V.v : Math.hypot(dx, dy) > 12 ? V.h : null;
-      if (!axis) { S.msg = "Drag along the line the plane should follow."; status(); return; }
-      const at = Math.round(axis === V.h ? dr.a.u : dr.a.v);
-      await change((b) => {
-        const id = newId();
-        const origin = b.planes.find((p) => p.axis === axis && p.anchor.type === "origin");
-        const n = b.planes.filter((p) => /^Reference Plane/.test(p.name)).length + 1;
-        b.planes.push({ id, name: `Reference Plane ${n}`, axis, anchor: { type: "offset", from: origin.id, by: String(at) }, ref_kind: "weak" });
-        S.sel = { kind: "plane", id };
-      });
-    }
+    // a drag along the line finishes the plane; a plain click leaves it waiting for the second click
+    if (S.draft && S.draft.kind === "plane" && S.tool === "plane" && Math.hypot(m.x - S.draft.down.x, m.y - S.draft.down.y) > 12) await finishPlane(m);
+  }
+
+  // The second point of a reference plane: the stroke from the first decides which way it runs, like a grid.
+  async function finishPlane(m) {
+    const dr = S.draft;
+    const dx = m.x - dr.down.x, dy = m.y - dr.down.y;
+    const V = VIEWS[S.view];
+    if (Math.hypot(dx, dy) <= 12) { S.msg = "Click the end of the plane, away from its start."; status(); return; }
+    S.draft = null;
+    // a mostly horizontal stroke makes a horizontal line: a plane normal to the view's vertical axis
+    const axis = Math.abs(dx) >= Math.abs(dy) ? V.v : V.h;
+    const at = Math.round(axis === V.h ? dr.a.u : dr.a.v);
+    await change((b) => {
+      const id = newId();
+      const origin = b.planes.find((p) => p.axis === axis && p.anchor.type === "origin");
+      const n = b.planes.filter((p) => /^Reference Plane/.test(p.name)).length + 1;
+      b.planes.push({ id, name: `Reference Plane ${n}`, axis, anchor: { type: "offset", from: origin.id, by: String(at) }, ref_kind: "weak" });
+      S.sel = { kind: "plane", id };
+    });
   }
 
   async function onDbl(e) {
@@ -1473,46 +1598,126 @@ const FamModel = (() => {
   }
 
   // ---------------------------------------------------------------- making things
-  // A dimension that only reports: its length goes to a new read-only parameter.
-  async function makeReport(a, b) {
-    const pa = planeById(a), pb = planeById(b);
-    if (pa.axis !== pb.axis) { S.msg = "Pick two parallel planes."; status(); return; }
-    if (a === b) { S.msg = "Pick two different planes."; status(); return; }
-    askText("Reporting parameter", "Parameter name", "Reported Length", [], async (v) => {
-      const name = v.trim();
-      if (!name) return;
-      if (S.params.some((p) => p.name === name)) { S.msg = `A parameter called '${name}' already exists.`; status(); return; }
-      await change((body) => {
-        S.params.push({ name, param_kind: "length", instance: false, group: "Dimensions", formula: null, reporting: true, shared_guid: null, choices: [], default: 0 });
-        (body.dims = body.dims || []).push({ a, b, reports_to: name });
+  // ---- dimensions ----
+  async function toggleEq(id) {
+    const d = id ? dimById(id) : S.sel && S.sel.kind === "dim" ? dimById(S.sel.id) : null;
+    if (!d) { S.msg = "Select a dimension with three or more references first."; status(); return; }
+    if (dimRefs(d).length < 3) { S.msg = "EQ needs a dimension across three or more references."; status(); return; }
+    S.sel = { kind: "dim", id: d.id };
+    await edit("patch_dim", { dim: d.id, patch: { eq: !d.eq } });
+  }
+  async function dimPatch(d, patch) { return edit("patch_dim", { dim: d.id, patch }); }
+
+  // The segment's value: a labelled dimension changes its parameter for the open type; a plain one moves its plane.
+  function editDimValue(d, seg) {
+    const refs = dimRefs(d), val = Math.abs(pos(refs[seg + 1]) - pos(refs[seg]));
+    const single = refs.length === 2 || d.eq;
+    const label = single ? d.label : (d.seg_labels || [])[seg];
+    if (d.reports_to) { S.msg = `${d.reports_to} reads this dimension, so it cannot be typed over.`; status(); return; }
+    if (label) {
+      const p = S.params.find((q) => q.name === label);
+      askText("Dimension", label, String(Math.round(val * 100) / 100), [], async (v) => {
+        await setFlex(p, num(v));
+        S.saveVals = { ...(S.saveVals || {}), ...(p.instance ? {} : { [p.name]: num(v) }) }; S.dirty = true;
       });
-      S.msg = `${name} reports the distance between the two planes.`; status();
+      return;
+    }
+    if (d.eq) { S.msg = "Equal segments follow the whole length: label the dimension and change its parameter."; status(); return; }
+    askText("Dimension", "Length", String(Math.round(val * 100) / 100), [], (v) => edit("dim_value", { dim: d.id, seg, value: num(v) }));
+  }
+
+  async function clickDim(h) {
+    const d = dimById(h.id);
+    if (!d) return;
+    const was = S.sel && S.sel.kind === "dim" && S.sel.id === d.id;
+    S.sel = { kind: "dim", id: d.id };
+    if (h.kind === "lock") { await dimPatch(d, { locked: !d.locked }); return; }
+    if (h.kind === "eq") { await toggleEq(d.id); return; }
+    props(); render();
+    if (h.kind === "val" && was) { editDimValue(d, h.seg); return; }
+    if (h.kind === "line" || h.kind === "val") S.drag = { dimAt: d.id, before: snapshot(), moved: false };
+  }
+
+  // The Parameter Properties dialog: a new family parameter for a dimension, as a label or a reporting parameter.
+  function paramProps(opts, done) {
+    openModal("Parameter Properties", (body, foot, close) => {
+      const msg = el("div", "modal-msg");
+      const st = { name: opts.name || "", kind: "length", instance: false, group: "Dimensions", reporting: false, tooltip: "", discipline: "common" };
+      const row = (l, n) => body.append(field(l, n));
+      const fam = selIn([["family", "Family parameter"], ["shared", "Shared parameter (not built yet)"]], "family", () => {});
+      row("Parameter type", fam);
+      row("Name", textIn(st.name, (v) => { st.name = v; }));
+      row("Discipline", selIn([["common", "Common"]], st.discipline, (v) => { st.discipline = v; }));
+      row("Type of parameter", selIn(opts.kinds || KINDS, st.kind, (v) => { st.kind = v; }));
+      row("Group parameter under", textIn(st.group, (v) => { st.group = v; }, { list: ["Dimensions", "Constraints", "Construction", "Materials and Finishes", "Identity Data"] }));
+      row("Type or instance", selIn([["false", "Type"], ["true", "Instance"]], "false", (v) => { st.instance = v === "true"; }));
+      if (opts.canReport) row("Reporting parameter", checkIn(false, (v) => { st.reporting = v; }));
+      row("Tooltip description", textIn("", (v) => { st.tooltip = v; }));
+      body.append(msg);
+      const ok = () => {
+        const name = st.name.trim();
+        if (fam.value === "shared") { msg.textContent = "Shared parameters are not built yet."; return; }
+        if (!name) { msg.textContent = "Give the parameter a name."; return; }
+        if (S.params.some((p) => p.name.toLowerCase() === name.toLowerCase())) { msg.textContent = `A parameter called '${name}' already exists.`; return; }
+        if (/[\[\]]/.test(name)) { msg.textContent = "A parameter name cannot contain [ or ]."; return; }
+        close();
+        done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: null, choices: [], discipline: st.discipline, tooltip: st.tooltip, default: opts.value || 0 });
+      };
+      foot.append(button("Cancel", close), button("OK", ok, true));
     });
   }
-  async function makeDim(a, b) {
-    if (S.dimMode === "report") { await makeReport(a, b); return; }
-    const pa = planeById(a), pb = planeById(b);
-    if (pa.axis !== pb.axis) { S.msg = "Pick two parallel planes."; status(); return; }
-    const [lo, hi] = pos(a) <= pos(b) ? [pa, pb] : [pb, pa];
-    // the plane that is not an origin plane takes the dimension; both origin planes cannot be dimensioned
-    const target = hi.anchor.type !== "origin" ? hi : lo.anchor.type !== "origin" ? lo : null;
-    if (!target) { S.msg = "Both are origin planes."; status(); return; }
-    const other = target === hi ? lo : hi;
-    const sign = target === hi ? 1 : -1;
-    const dist = Math.round(Math.abs(pos(a) - pos(b)));
-    askText("Dimension", "Label or value", `${dist}`, lengthParams(), async (v) => {
-      const by = v.trim() || String(dist);
-      await change((body) => {
-        const t = body.planes.find((p) => p.id === target.id);
-        t.anchor = { type: "offset", from: other.id, by: sign < 0 ? (/^[\d.]+$/.test(by) ? `-${by}` : `-(${by})`) : by };
-        S.sel = { kind: "plane", id: t.id };
-      });
+
+  // Add a parameter and use it on a dimension: as its label, or (reporting) as the parameter that reads it.
+  function addParamToDim(d, seg) {
+    const refs = dimRefs(d), val = Math.round(Math.abs(pos(refs[seg + 1]) - pos(refs[seg])) * 100) / 100;
+    const single = refs.length === 2 || d.eq;
+    const total = Math.round(Math.abs(pos(refs[refs.length - 1]) - pos(refs[0])) * 100) / 100;
+    paramProps({ kinds: [["length", "Length"]], canReport: single, value: d.eq ? total : val }, async (param) => {
+      const patch = param.reporting ? { reports_to: param.name, label: "" } : single ? { label: param.name, reports_to: "" } : { seg_labels: refs.slice(1).map((_, j) => (j === seg ? param.name : (d.seg_labels || [])[j] || "")) };
+      await edit("patch_dim", { dim: d.id, patch }, false, () => { S.params.push(param); });
     });
   }
-  async function makeEq(a, b, mid) {
-    const pm = planeById(mid);
-    if (pm.anchor.type === "origin") { S.msg = "The middle plane cannot be an origin plane."; status(); return; }
-    await change((body) => { body.planes.find((p) => p.id === mid).anchor = { type: "mid", a, b }; S.sel = { kind: "plane", id: mid }; });
+
+  function dimProps(r, d) {
+    if (!d) return;
+    const refs = dimRefs(d), n = refs.length - 1;
+    r.append(el("div", "famed-hint", `Dimension${d.view ? ` (${d.view} view)` : ""}, ${n} segment${n > 1 ? "s" : ""}`));
+    const lens = S.params.filter((p) => ["length", "number"].includes(p.param_kind) && !p.reporting && !p.formula).map((p) => [p.name, p.name]);
+    const single = n === 1 || d.eq;
+    const labelSel = (cur, apply) => {
+      const s = selIn([["", "<none>"], ...lens, ["__new", "<Add parameter...>"]], cur || "", (v) => { if (v === "__new") { s.value = cur || ""; addParamToDim(d, 0); } else apply(v); });
+      return s;
+    };
+    for (let j = 0; j < n; j++) {
+      const val = pos(refs[j]) !== undefined ? Math.abs(pos(refs[j + 1]) - pos(refs[j])) : 0;
+      if (single && j > 0) break;
+      const shown = d.eq ? Math.abs(pos(refs[n]) - pos(refs[0])) : val;
+      r.append(field(n > 1 && !d.eq ? `Length ${j + 1}` : d.eq ? "Total length" : "Length", textIn(String(Math.round(shown * 100) / 100), () => editDimValue(d, j))));
+    }
+    if (single) {
+      r.append(field("Label", labelSel(d.label, (v) => dimPatch(d, { label: v, reports_to: "" }))));
+    } else {
+      for (let j = 0; j < n; j++) {
+        const cur = (d.seg_labels || [])[j] || "";
+        const s = selIn([["", "<none>"], ...lens, ["__new", "<Add parameter...>"]], cur, (v) => {
+          if (v === "__new") { s.value = cur; addParamToDim(d, j); return; }
+          const labels = refs.slice(1).map((_, k) => (k === j ? v : (d.seg_labels || [])[k] || ""));
+          dimPatch(d, { seg_labels: labels });
+        });
+        r.append(field(`Label ${j + 1}`, s));
+      }
+    }
+    r.append(button("Add Parameter...", () => addParamToDim(d, 0)));
+    if (single) {
+      const reps = S.params.filter((p) => p.reporting && !p.formula).map((p) => [p.name, p.name]);
+      r.append(field("Reports to", selIn([["", "<none>"], ...reps], d.reports_to || "", (v) => dimPatch(d, { reports_to: v, label: "" }))));
+    }
+    r.append(field("Locked", checkIn(d.locked, (v) => dimPatch(d, { locked: v }))));
+    if (refs.length >= 3) r.append(field("Equal segments (EQ)", checkIn(d.eq, (v) => dimPatch(d, { eq: v }))));
+    const names = refs.map((id) => (planeById(id) || {}).name).filter(Boolean).join(", ");
+    r.append(el("div", "famed-hint", `References: ${names}.`));
+    if ((d.drives || []).length) r.append(el("div", "famed-hint", `Holds: ${d.drives.map((id) => (planeById(id) || {}).name).filter(Boolean).join(", ")}.`));
+    r.append(el("div", "famed-hint", "Click the padlock on the dimension to lock it. Click its value to type a new length. Drag the dimension line to move it."));
   }
 
   function loopFromDraft(sp) {
@@ -1691,6 +1896,8 @@ const FamModel = (() => {
   async function deleteSel() {
     const s = S.sel;
     if (!s) return;
+    if (s.kind === "dim") { S.sel = null; await edit("remove_dim", { dim: s.id }); return; }
+    if (s.kind === "plane") { S.sel = null; if (!(await edit("remove_plane", { plane: s.id }))) { S.sel = s; props(); } return; }
     await change((b) => {
       if (s.kind === "plane") {
         const used = b.planes.some((p) => (p.anchor.type === "offset" && p.anchor.from === s.id) || (p.anchor.type === "mid" && (p.anchor.a === s.id || p.anchor.b === s.id)));

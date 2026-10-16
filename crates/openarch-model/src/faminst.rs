@@ -173,7 +173,7 @@ mod tests {
             subcategory: "Plan Swing".into(),
             vis: Visibility::default(),
         });
-        let p = |name: &str, kind, instance, default| ParamDef { name: name.into(), param_kind: kind, instance, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], default };
+        let p = |name: &str, kind, instance, default| ParamDef { name: name.into(), param_kind: kind, instance, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), default };
         Family {
             name: "Hatch".into(),
             category: FamilyCategory::Doors,
@@ -266,7 +266,7 @@ mod tests {
         let (fid, types) = d.add_family(hatch_family(), vec![("900 x 2100".into(), BTreeMap::new())]).unwrap();
         let mut fam = d.family(fid).unwrap().clone();
         let (left, right) = (fam.body.plane_named("Left").unwrap(), fam.body.plane_named("Right").unwrap());
-        fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], default: ParamValue::Number(0.0) });
+        fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), default: ParamValue::Number(0.0) });
         fam.body.dims.push(DimDef { a: left, b: right, reports_to: Some("Clear Width".into()), ..Default::default() });
         d.set_family_def(fid, Some(fam.params.clone()), Some(fam.body.clone())).unwrap();
         let id = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
@@ -357,6 +357,8 @@ impl Document {
             reporting: false,
             shared_guid: None,
             choices: vec![],
+            discipline: "common".into(),
+            tooltip: String::new(),
             default: ParamValue::Number(default),
         };
         let hosted = host == crate::family::HostKind::Wall;
