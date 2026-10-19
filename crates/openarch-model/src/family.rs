@@ -24,18 +24,34 @@ pub enum FamilyCategory {
     Doors,
     Windows,
     Furniture,
+    FurnitureSystems,
     Casework,
     PlumbingFixtures,
     LightingFixtures,
+    LightingDevices,
     ElectricalFixtures,
     ElectricalEquipment,
+    FireAlarmDevices,
+    CommunicationDevices,
+    DataDevices,
+    SecurityDevices,
     MechanicalEquipment,
+    MechanicalControlDevices,
+    AirTerminals,
+    FireProtection,
     SpecialtyEquipment,
+    FoodServiceEquipment,
     Columns,
+    StructuralColumns,
+    StructuralFraming,
+    StructuralFoundations,
     Planting,
     Entourage,
     Parking,
     Site,
+    Hardscape,
+    Signage,
+    Mass,
 }
 
 impl FamilyCategory {
@@ -58,12 +74,43 @@ impl FamilyCategory {
             FamilyCategory::Entourage => "Entourage",
             FamilyCategory::Parking => "Parking",
             FamilyCategory::Site => "Site",
+            FamilyCategory::FurnitureSystems => "Furniture Systems",
+            FamilyCategory::LightingDevices => "Lighting Devices",
+            FamilyCategory::FireAlarmDevices => "Fire Alarm Devices",
+            FamilyCategory::CommunicationDevices => "Communication Devices",
+            FamilyCategory::DataDevices => "Data Devices",
+            FamilyCategory::SecurityDevices => "Security Devices",
+            FamilyCategory::MechanicalControlDevices => "Mechanical Control Devices",
+            FamilyCategory::AirTerminals => "Air Terminals",
+            FamilyCategory::FireProtection => "Fire Protection",
+            FamilyCategory::FoodServiceEquipment => "Food Service Equipment",
+            FamilyCategory::StructuralColumns => "Structural Columns",
+            FamilyCategory::StructuralFraming => "Structural Framing",
+            FamilyCategory::StructuralFoundations => "Structural Foundations",
+            FamilyCategory::Hardscape => "Hardscape",
+            FamilyCategory::Signage => "Signage",
+            FamilyCategory::Mass => "Mass",
         }
     }
     /// Every category in the order the family editor lists them.
     pub fn all() -> &'static [FamilyCategory] {
         use FamilyCategory::*;
-        &[GenericModels, Doors, Windows, Furniture, Casework, PlumbingFixtures, LightingFixtures, ElectricalFixtures, ElectricalEquipment, MechanicalEquipment, SpecialtyEquipment, Columns, Planting, Entourage, Parking, Site]
+        &[
+            GenericModels, Doors, Windows, Furniture, FurnitureSystems, Casework, PlumbingFixtures, LightingFixtures, LightingDevices, ElectricalFixtures, ElectricalEquipment, FireAlarmDevices,
+            CommunicationDevices, DataDevices, SecurityDevices, MechanicalEquipment, MechanicalControlDevices, AirTerminals, FireProtection, SpecialtyEquipment, FoodServiceEquipment, Columns,
+            StructuralColumns, StructuralFraming, StructuralFoundations, Planting, Entourage, Parking, Site, Hardscape, Signage, Mass,
+        ]
+    }
+    /// The discipline filter the category belongs under in the Family Category dialog.
+    pub fn discipline(self) -> &'static str {
+        use FamilyCategory::*;
+        match self {
+            StructuralColumns | StructuralFraming | StructuralFoundations => "structure",
+            ElectricalFixtures | ElectricalEquipment | LightingFixtures | LightingDevices | FireAlarmDevices | CommunicationDevices | DataDevices | SecurityDevices => "electrical",
+            MechanicalEquipment | MechanicalControlDevices | AirTerminals => "mechanical",
+            PlumbingFixtures | FireProtection => "piping",
+            _ => "architecture",
+        }
     }
     pub fn ifc_class(self) -> &'static str {
         match self {
@@ -78,7 +125,17 @@ impl FamilyCategory {
             FamilyCategory::MechanicalEquipment => "IfcUnitaryEquipment",
             FamilyCategory::Columns => "IfcColumn",
             FamilyCategory::Planting | FamilyCategory::Site => "IfcGeographicElement",
-            FamilyCategory::SpecialtyEquipment | FamilyCategory::Entourage | FamilyCategory::Parking => "IfcBuildingElementProxy",
+            FamilyCategory::StructuralColumns => "IfcColumn",
+            FamilyCategory::StructuralFraming => "IfcBeam",
+            FamilyCategory::StructuralFoundations => "IfcFooting",
+            FamilyCategory::FurnitureSystems => "IfcFurniture",
+            FamilyCategory::LightingDevices => "IfcLightFixture",
+            FamilyCategory::FireAlarmDevices | FamilyCategory::CommunicationDevices | FamilyCategory::DataDevices | FamilyCategory::SecurityDevices => "IfcSensor",
+            FamilyCategory::MechanicalControlDevices => "IfcController",
+            FamilyCategory::AirTerminals => "IfcAirTerminal",
+            FamilyCategory::FireProtection => "IfcFireSuppressionTerminal",
+            FamilyCategory::Hardscape => "IfcCovering",
+            FamilyCategory::SpecialtyEquipment | FamilyCategory::FoodServiceEquipment | FamilyCategory::Entourage | FamilyCategory::Parking | FamilyCategory::Signage | FamilyCategory::Mass => "IfcBuildingElementProxy",
         }
     }
 }
@@ -191,6 +248,9 @@ pub struct ParamDef {
     /// Help text shown when the pointer rests on the parameter in a palette.
     #[serde(default)]
     pub tooltip: String,
+    /// Locked in the Family Types dialog: its value is not changed by flexing or typing there.
+    #[serde(default)]
+    pub locked: bool,
     /// Value when a type or instance does not set one.
     pub default: ParamValue,
 }
@@ -201,7 +261,7 @@ fn common() -> String {
 
 impl ParamDef {
     fn new(name: &str, kind: ParamKind, instance: bool, group: &str, default: ParamValue) -> ParamDef {
-        ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: common(), tooltip: String::new(), default }
+        ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: common(), tooltip: String::new(), locked: false, default }
     }
     /// A text parameter chosen from a list.
     fn choice(name: &str, instance: bool, group: &str, choices: &[&str]) -> ParamDef {
@@ -210,6 +270,38 @@ impl ParamDef {
     /// A type parameter worked out from others by a formula. It cannot be set.
     fn formula(name: &str, group: &str, formula: &str) -> ParamDef {
         ParamDef { formula: Some(formula.into()), reporting: true, ..ParamDef::new(name, ParamKind::Length, false, group, ParamValue::Number(0.0)) }
+    }
+}
+
+/// The yes/no and choice settings of the Family Category and Parameters dialog that are not a
+/// category or host (those are `Family::category` and `Family::host`; Always vertical and Cut with
+/// Voids When Loaded sit on the body).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct FamilySettings {
+    #[serde(default)]
+    pub can_host_rebar: bool,
+    #[serde(default = "normal_part")]
+    pub part_type: String,
+    /// Shared: nested copies in other families are counted and tagged on their own.
+    #[serde(default)]
+    pub shared: bool,
+    /// Marks a point of the family that room calculations use (a door's point on either side).
+    #[serde(default)]
+    pub room_calculation_point: bool,
+    /// Where the point is, in the family's own axes (mm).
+    #[serde(default)]
+    pub room_point: [f64; 3],
+    #[serde(default)]
+    pub maintain_annotation_orientation: bool,
+}
+
+fn normal_part() -> String {
+    "Normal".into()
+}
+
+impl Default for FamilySettings {
+    fn default() -> Self {
+        FamilySettings { can_host_rebar: false, part_type: normal_part(), shared: false, room_calculation_point: false, room_point: [0.0; 3], maintain_annotation_orientation: false }
     }
 }
 
@@ -235,6 +327,8 @@ pub struct Family {
     /// parameter-only families); see `famgeom`.
     #[serde(default)]
     pub body: crate::famgeom::FamilyBody,
+    #[serde(default)]
+    pub settings: FamilySettings,
 }
 
 /// One row of a family's type catalogue: a type name and its type parameter values.
@@ -530,11 +624,11 @@ fn sized(w: f64, h: f64, extra: &[(&str, ParamValue)]) -> BTreeMap<String, Param
 /// The Australian starter set of door and window families.
 pub fn starter_families() -> Vec<StarterFamily> {
     let door = |name: &str, symbol: PlanSymbol, types: Vec<(String, BTreeMap<String, ParamValue>)>| StarterFamily {
-        family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: door_params(), built_in: true, catalog: vec![], body: if symbol == PlanSymbol::Sliding { crate::famdoor::sliding_door_body() } else { Default::default() } },
+        family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: door_params(), built_in: true, catalog: vec![], settings: Default::default(), body: if symbol == PlanSymbol::Sliding { crate::famdoor::sliding_door_body() } else { Default::default() } },
         types,
     };
     let window = |name: &str, types: Vec<(String, BTreeMap<String, ParamValue>)>| StarterFamily {
-        family: Family { name: name.into(), category: FamilyCategory::Windows, host: HostKind::Wall, plan_symbol: PlanSymbol::Window, params: window_params(), built_in: true, catalog: vec![], body: crate::famdoor::window_body() },
+        family: Family { name: name.into(), category: FamilyCategory::Windows, host: HostKind::Wall, plan_symbol: PlanSymbol::Window, params: window_params(), built_in: true, catalog: vec![], settings: Default::default(), body: crate::famdoor::window_body() },
         types,
     };
     let ext = |w: f64, h: f64| (format!("{w:.0} x {h:.0} Exterior"), sized(w, h, &[("Function", txt("Exterior"))]));
@@ -544,7 +638,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
         let catalog = framed_catalog(double);
         let types = catalog.iter().filter(|r| first.contains(&r.name.as_str())).map(|r| (r.name.clone(), r.values.clone())).collect();
         StarterFamily {
-            family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: framed_door_params(), built_in: true, catalog, body: crate::famdoor::flush_door_body(double) },
+            family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: framed_door_params(), built_in: true, catalog, settings: Default::default(), body: crate::famdoor::flush_door_body(double) },
             types,
         }
     };

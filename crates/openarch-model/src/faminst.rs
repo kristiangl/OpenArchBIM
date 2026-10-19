@@ -35,6 +35,32 @@ impl std::fmt::Debug for SolveCache {
     }
 }
 
+/// Rename a parameter in a family's parameter list and body: every formula, expression, dimension label
+/// and material link that names it follows. `names` are the other names in use, which must not clash.
+pub fn rename_family_param(params: &mut [crate::family::ParamDef], body: &mut crate::famgeom::FamilyBody, old: &str, new: &str) -> Result<(), String> {
+    let new = new.trim();
+    if new.is_empty() {
+        return Err("a parameter needs a name".into());
+    }
+    if new.contains('[') || new.contains(']') || new.contains('"') {
+        return Err("a parameter name cannot contain [ ] or quotes".into());
+    }
+    if params.iter().any(|p| p.name != old && p.name.eq_ignore_ascii_case(new)) {
+        return Err(format!("a parameter called '{new}' already exists"));
+    }
+    let Some(p) = params.iter_mut().find(|p| p.name == old) else { return Err(format!("no parameter called '{old}'")) };
+    p.name = new.to_string();
+    for q in params.iter_mut() {
+        if let Some(f) = &q.formula {
+            if crate::famgeom::expr_names(f).iter().any(|n| n == old) {
+                q.formula = Some(crate::famgeom::rename_in_expr(f, old, new));
+            }
+        }
+    }
+    body.rename_param(old, new);
+    Ok(())
+}
+
 impl Document {
     /// Values a body can read about its host, in the body's own direction.
     fn host_value(&self, inst: &FamilyInstance, name: &str) -> Option<f64> {
@@ -173,7 +199,7 @@ mod tests {
             subcategory: "Plan Swing".into(),
             vis: Visibility::default(),
         });
-        let p = |name: &str, kind, instance, default| ParamDef { name: name.into(), param_kind: kind, instance, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), default };
+        let p = |name: &str, kind, instance, default| ParamDef { name: name.into(), param_kind: kind, instance, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default };
         Family {
             name: "Hatch".into(),
             category: FamilyCategory::Doors,
@@ -186,6 +212,7 @@ mod tests {
             ],
             built_in: false,
             catalog: vec![],
+            settings: Default::default(),
             body: b,
         }
     }
@@ -266,7 +293,7 @@ mod tests {
         let (fid, types) = d.add_family(hatch_family(), vec![("900 x 2100".into(), BTreeMap::new())]).unwrap();
         let mut fam = d.family(fid).unwrap().clone();
         let (left, right) = (fam.body.plane_named("Left").unwrap(), fam.body.plane_named("Right").unwrap());
-        fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), default: ParamValue::Number(0.0) });
+        fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default: ParamValue::Number(0.0) });
         fam.body.dims.push(DimDef { a: left, b: right, reports_to: Some("Clear Width".into()), ..Default::default() });
         d.set_family_def(fid, Some(fam.params.clone()), Some(fam.body.clone())).unwrap();
         let id = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
@@ -359,6 +386,7 @@ impl Document {
             choices: vec![],
             discipline: "common".into(),
             tooltip: String::new(),
+            locked: false,
             default: ParamValue::Number(default),
         };
         let hosted = host == crate::family::HostKind::Wall;
@@ -373,7 +401,7 @@ impl Document {
         }
         let mut body = crate::famgeom::FamilyBody::template();
         body.cut_with_voids = hosted;
-        let family = Family { name: name.into(), category, host, plan_symbol: PlanSymbol::None, params, built_in: false, catalog: vec![], body };
+        let family = Family { name: name.into(), category, host, plan_symbol: PlanSymbol::None, params, built_in: false, catalog: vec![], settings: Default::default(), body };
         let (id, _) = self.add_family(family, vec![("Type 1".into(), Default::default())])?;
         Ok(id)
     }
@@ -381,8 +409,17 @@ impl Document {
     /// Replace a family's parameters and/or body in one undo step. Parameter names must be unique and
     /// every formula must read; the body must solve for the family's first type.
     pub fn set_family_def(&mut self, family: Id, params: Option<Vec<crate::family::ParamDef>>, body: Option<crate::famgeom::FamilyBody>) -> Result<(), String> {
+        self.set_family_def_full(family, params, body, None, &[])
+    }
+
+    /// Replace a family's parameters, body and settings. `renames` are parameters renamed in the editor
+    /// (old name, new name): the stored types and the placed instances keep their values under the new name.
+    pub fn set_family_def_full(&mut self, family: Id, params: Option<Vec<crate::family::ParamDef>>, body: Option<crate::famgeom::FamilyBody>, settings: Option<crate::family::FamilySettings>, renames: &[(String, String)]) -> Result<(), String> {
         let Some(Element::Family(f)) = self.get(family) else { return Err("no such family".into()) };
         let mut f = f.clone();
+        if let Some(st) = settings {
+            f.settings = st;
+        }
         if let Some(ps) = params {
             let mut seen = std::collections::BTreeSet::new();
             for p in &ps {
@@ -416,8 +453,68 @@ impl Document {
                 }
             }
         }
-        self.transact("Edit family", |tx| tx.update(family, Element::Family(f)))?;
+        // values stored under a parameter's old name move to the new one
+        let mut moved: Vec<(Id, Element)> = Vec::new();
+        if !renames.is_empty() {
+            let rename_keys = |m: &mut std::collections::BTreeMap<String, ParamValue>| -> bool {
+                let mut changed = false;
+                for (old, new) in renames {
+                    if let Some(v) = m.remove(old) {
+                        m.insert(new.clone(), v);
+                        changed = true;
+                    }
+                }
+                changed
+            };
+            for (tid, t) in self.family_types() {
+                if t.family == family {
+                    let mut t = t.clone();
+                    if rename_keys(&mut t.values) {
+                        moved.push((tid, Element::FamilyType(t)));
+                    }
+                }
+            }
+            for (iid, i) in self.instances() {
+                if self.family_type(i.type_id).map_or(false, |t| t.family == family) {
+                    let mut i = i.clone();
+                    if rename_keys(&mut i.values) {
+                        moved.push((iid, Element::FamilyInstance(i)));
+                    }
+                }
+            }
+        }
+        self.transact("Edit family", |tx| {
+            tx.update(family, Element::Family(f))?;
+            for (id, e) in moved {
+                tx.update(id, e)?;
+            }
+            Ok(())
+        })?;
         Ok(())
+    }
+
+    /// Every parameter's value for one type, as the Family Types dialog shows them: the type's own
+    /// value or the default, a formula worked out, a reporting parameter read from its dimension.
+    pub fn family_param_values(&self, family: Id, type_id: Option<Id>, overrides: &std::collections::BTreeMap<String, ParamValue>) -> Result<Vec<(String, ParamValue)>, String> {
+        let fam = self.family(family).ok_or("no such family")?;
+        let mut t = match type_id {
+            Some(t) => self.family_type(t).ok_or("no such type")?.clone(),
+            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default() }),
+        };
+        for (k, v) in overrides {
+            t.values.insert(k.clone(), v.clone());
+        }
+        let reports = self.family_preview(family, type_id, overrides).map(|s| s.reports).unwrap_or_default();
+        Ok(fam
+            .params
+            .iter()
+            .filter_map(|p| {
+                if let Some((_, v)) = reports.iter().find(|(n, _)| *n == p.name).filter(|_| p.formula.is_none()) {
+                    return Some((p.name.clone(), ParamValue::Number(*v)));
+                }
+                self.type_param(&t, &p.name).map(|v| (p.name.clone(), v))
+            })
+            .collect())
     }
 
     /// The family as it stands for one type, with `overrides` laid over the type's values (the

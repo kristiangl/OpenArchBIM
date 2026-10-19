@@ -128,7 +128,7 @@ const FamModel = (() => {
     try { def = await Backend.call("family_def", { id: familyId }); } catch (e) { setPrompt(String(e.message || e), true); return; }
     const first = def.types[0];
     S = {
-      id: familyId, def, body: clone(def.body), params: clone(def.params), types: clone(def.types),
+      id: familyId, def, body: clone(def.body), params: clone(def.params), settings: clone(def.settings || {}), types: clone(def.types),
       typeId: first ? first.id : null, values: {}, view: "plan", tool: "select", sketch: "rect", sel: null,
       draft: null, pv: null, cams: {}, dirty: false, undo: [], redo: [], mouse: null, tick: 0, rot: { a: -0.6, b: 0.5 }, drag: null,
       start: "0", end: "100", a0: "0", a1: "360", pathMode: "line", pathClosed: false, blend: null, rev: null, wp: null, msg: "",
@@ -141,9 +141,9 @@ const FamModel = (() => {
     render();
   }
 
-  function snapshot() { return JSON.stringify({ body: S.body, params: S.params }); }
+  function snapshot() { return JSON.stringify({ body: S.body, params: S.params, settings: S.settings }); }
   function pushUndo() { S.undo.push(snapshot()); if (S.undo.length > 100) S.undo.shift(); S.redo = []; S.dirty = true; }
-  function restore(js) { const o = JSON.parse(js); S.body = o.body; S.params = o.params; S.sel = null; }
+  function restore(js) { const o = JSON.parse(js); S.body = o.body; S.params = o.params; if (o.settings) S.settings = o.settings; S.sel = null; }
   async function undo() { if (!S.undo.length) return; S.redo.push(snapshot()); restore(S.undo.pop()); await preview(); props(); render(); }
   async function redo() { if (!S.redo.length) return; S.undo.push(snapshot()); restore(S.redo.pop()); await preview(); props(); render(); }
 
@@ -266,7 +266,7 @@ const FamModel = (() => {
 
   async function save(close) {
     try {
-      await Backend.call("set_family_def", { id: S.id, params: S.params, body: S.body });
+      await Backend.call("set_family_def", { id: S.id, params: S.params, body: S.body, settings: S.settings });
       for (const t of S.types) {
         const changed = {};
         for (const [k, v] of Object.entries(S.saveVals || {})) if (t.id === S.typeId) changed[k] = v;
@@ -301,7 +301,7 @@ const FamModel = (() => {
   }
   const commands = {
     "f-types": () => typesDialog(),
-    "f-category": () => paramsDialog(),
+    "f-category": () => categoryDialog(),
     "f-del": () => deleteSel(),
     "f-eq": () => toggleEq(),
     "f-load": () => loadIntoProject(false),
@@ -511,12 +511,9 @@ const FamModel = (() => {
     r.replaceChildren();
     const s = S.sel;
     if (!s) {
-      r.append(el("div", "famed-hint", "Nothing selected."));
-      const b = S.body;
-      r.append(field("Family category", selIn((S.def.categories || []).map((c) => [c.id, c.label]), S.def.category, (v) => setMeta({ category: v }))));
-      r.append(field("Hosted by", selIn([["none", "Nothing (free standing)"], ["wall", "Wall"], ["floor", "Floor"], ["ceiling", "Ceiling"], ["roof", "Roof"], ["face", "Face"]], S.def.host, (v) => setMeta({ host: v }))));
-      r.append(field("Cut with voids", checkIn(b.cut_with_voids, (v) => change((x) => { x.cut_with_voids = v; }, true))));
-      r.append(field("Always vertical", checkIn(b.always_vertical, (v) => change((x) => { x.always_vertical = v; }, true))));
+      r.append(el("div", "famed-hint", `Family: ${S.def.name}`));
+      r.append(button("Family Category and Parameters...", () => categoryDialog()));
+      for (const g of settingRows(currentSettings(), (w) => applyFamilySettings(w))) r.append(g);
     } else if (s.kind === "dim") dimProps(r, dimById(s.id));
     else if (s.kind === "plane") planeProps(r, planeById(s.id));
     else if (s.kind === "form") formProps(r, formById(s.id));
@@ -749,67 +746,233 @@ const FamModel = (() => {
       if (patch.host) S.def.host = patch.host;
       S.msg = "";
       await refresh(true);
-    } catch (e) { S.msg = String(e.message || e); }
+    } catch (e) { S.msg = String(e.message || e); props(); status(); return false; }
     props(); status();
+    return true;
   }
 
   // ---------------------------------------------------------------- family types dialog
   // Every type of the family side by side: one column per type, one row per type parameter.
+  // ---------------------------------------------------------------- family types
+  const GROUP_ORDER = ["Constraints", "Construction", "Graphics", "Dimensions", "Materials and Finishes", "Identity Data", "IFC Parameters", "Other"];
+  const groupOf = (p) => (p.group && p.group.trim() ? p.group.trim() : "Other");
+  const groupsOf = (params) => [...new Set(params.map(groupOf))].sort((a, b) => {
+    const ia = GROUP_ORDER.indexOf(a), ib = GROUP_ORDER.indexOf(b);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+  });
+  const showValue = (v) => (v === undefined || v === null ? "" : typeof v === "boolean" ? (v ? "Yes" : "No") : typeof v === "number" ? String(Math.round(v * 100) / 100) : String(v));
+
+  // The Family Types dialog: one type at a time, parameters grouped, with value, formula and lock.
+  // Everything is worked on in copies and goes into the family on Apply or OK.
   function typesDialog() {
     openModal("Family Types", (body, foot, close) => {
-      const work = S.types.map((t) => ({ id: t.id, name: t.name, values: { ...t.values } }));
-      const gone = [];
+      let wp = clone(S.params), wb = clone(S.body);
+      let renames = [];
+      let work = S.types.map((t) => ({ id: t.id, name: t.name, values: { ...t.values } }));
+      let gone = [];
+      let cur = Math.max(0, work.findIndex((t) => t.id === S.typeId));
+      let sel = null, search = "", calc = {};
+      const collapsed = new Set();
       const msg = el("div", "modal-msg");
-      const tbl = el("div", "fe-ptable");
-      const rows = () => S.params.filter((p) => !p.instance && !p.formula && !p.reporting && ["length", "number", "integer", "angle", "yes_no", "text", "material"].includes(p.param_kind));
-      const draw = () => {
-        tbl.replaceChildren();
-        tbl.style.gridTemplateColumns = `200px repeat(${work.length}, minmax(110px, 1fr))`;
-        const head = el("div", "fe-prow fe-phead"); head.style.gridTemplateColumns = tbl.style.gridTemplateColumns;
-        head.append(el("span", "", "Parameter"));
-        work.forEach((w, i) => {
-          const c = el("span"); const n = textIn(w.name, (v) => { w.name = v; });
-          const del = button("x", () => { if (work.length < 2) { msg.textContent = "A family needs at least one type."; return; } const [d] = work.splice(i, 1); if (d.id) gone.push(d); draw(); });
-          del.title = "Delete this type"; c.append(n, del); head.append(c);
-        });
-        tbl.append(head);
-        for (const p of rows()) {
-          const row = el("div", "fe-prow"); row.style.gridTemplateColumns = tbl.style.gridTemplateColumns;
-          row.append(el("span", "", p.name));
-          for (const w of work) {
-            const cur = w.values[p.name] !== undefined ? w.values[p.name] : p.default;
-            const c = el("span");
-            if (p.param_kind === "yes_no") c.append(checkIn(cur, (v) => { w.values[p.name] = v; }));
-            else if (p.choices && p.choices.length) c.append(selIn(p.choices.map((x) => [x, x]), cur, (v) => { w.values[p.name] = v; }));
-            else c.append(textIn(String(cur), (v) => { w.values[p.name] = ["text", "material"].includes(p.param_kind) ? v : num(v); }));
-            row.append(c);
-          }
-          tbl.append(row);
-        }
+      const top = el("div", "fe-tbar"), tbl = el("div", "fe-ptable fe-gtable"), bar = el("div", "fe-tbar");
+      const cols = "minmax(180px,2fr) minmax(130px,1.4fr) minmax(130px,1.4fr) 44px";
+      const typeKey = () => work[cur].id || work[cur].from;
+
+      async function recalc() {
+        try {
+          const r = await Backend.call("family_param_values", { id: S.id, type: typeKey(), values: work[cur].values, params: wp, body: wb });
+          calc = {}; r.values.forEach((x) => { calc[x.name] = x.value; });
+          msg.textContent = "";
+        } catch (e) { calc = {}; msg.textContent = String(e.message || e); }
+      }
+      const sizesRead = (p) => p.reporting || !!p.formula;
+      const valueOf = (p) => (p.instance ? p.default : work[cur].values[p.name] !== undefined ? work[cur].values[p.name] : p.default);
+      const setValue = async (p, v) => {
+        if (p.instance) p.default = v; else work[cur].values[p.name] = v;
+        await recalc(); draw();
       };
-      draw();
-      body.append(el("div", "note", "One column per type. Instance parameters are set on each placed copy, not here. Types with placed copies cannot be deleted."), tbl, msg);
-      foot.append(
-        button("Add type", () => { const src = work[work.length - 1]; work.push({ id: null, from: src.id || src.from, name: `Type ${work.length + 1}`, values: { ...src.values } }); draw(); }),
-        button("Cancel", close),
-        button("OK", async () => {
-          try {
-            // the parameters must be in the project before types can hold values for them
-            await Backend.call("set_family_def", { id: S.id, params: S.params, body: S.body });
-            for (const w of work) {
-              let id = w.id;
-              if (!id) id = (await Backend.call("duplicate_family_type", { id: w.from, name: w.name })).id;
-              const old = S.types.find((t) => t.id === id);
-              const patch = { values: w.values };
-              if (!old || old.name !== w.name) patch.name = w.name;
-              await Backend.call("patch_family_type", { id, patch });
+
+      function valueCell(p) {
+        const c = el("span");
+        if (sizesRead(p)) { c.append(el("span", "fe-ro", showValue(calc[p.name]))); return c; }
+        const cur0 = valueOf(p);
+        let inp;
+        if (p.param_kind === "yes_no") inp = checkIn(cur0, (v) => setValue(p, v));
+        else if (p.choices && p.choices.length) inp = selIn(p.choices.map((x) => [x, x]), cur0, (v) => setValue(p, v));
+        else inp = textIn(showValue(cur0), (v) => setValue(p, ["text", "material"].includes(p.param_kind) ? v : num(v)));
+        if (p.locked) inp.disabled = true;
+        c.append(inp);
+        return c;
+      }
+
+      function draw() {
+        top.replaceChildren();
+        const ts = selIn(work.map((w, i) => [i, w.name]), cur, async (v) => { cur = Number(v); await recalc(); draw(); });
+        top.append(el("span", "fe-opt", "Type name:"), ts,
+          button("New Type...", () => askText("New Type", "Type name", `Type ${work.length + 1}`, [], async (v) => {
+            const n = v.trim();
+            if (!n) return;
+            if (work.some((w) => w.name === n)) { msg.textContent = `A type called '${n}' already exists.`; return; }
+            const src = work[cur];
+            work.push({ id: null, from: src.id || src.from, name: n, values: { ...src.values } });
+            cur = work.length - 1; await recalc(); draw();
+          })),
+          button("Rename Type...", () => askText("Rename Type", "Type name", work[cur].name, [], (v) => {
+            const n = v.trim();
+            if (!n) return;
+            if (work.some((w, i) => i !== cur && w.name === n)) { msg.textContent = `A type called '${n}' already exists.`; return; }
+            work[cur].name = n; draw();
+          })),
+          button("Delete Type", async () => {
+            if (work.length < 2) { msg.textContent = "A family needs at least one type."; return; }
+            const [d] = work.splice(cur, 1);
+            if (d.id) gone.push(d);
+            cur = Math.max(0, cur - 1); await recalc(); draw();
+          }));
+        const q = el("input"); q.type = "text"; q.placeholder = "Search parameters"; q.value = search; q.style.marginLeft = "auto";
+        q.oninput = () => { search = q.value; drawTable(); };
+        top.append(q);
+        drawTable();
+      }
+
+      function drawTable() {
+        tbl.replaceChildren();
+        const head = el("div", "fe-prow fe-phead"); head.style.gridTemplateColumns = cols;
+        ["Parameter", "Value", "Formula", "Lock"].forEach((t) => head.append(el("span", "", t)));
+        tbl.append(head);
+        const needle = search.trim().toLowerCase();
+        for (const g of groupsOf(wp)) {
+          const rows = wp.filter((p) => groupOf(p) === g && (!needle || p.name.toLowerCase().includes(needle)));
+          if (!rows.length) continue;
+          const open = needle || !collapsed.has(g);
+          const gh = el("div", "fe-pgroup", `${open ? "▾" : "▸"} ${g}`);
+          gh.onclick = () => { collapsed.has(g) ? collapsed.delete(g) : collapsed.add(g); drawTable(); };
+          tbl.append(gh);
+          if (!open) continue;
+          for (const p of rows) {
+            const row = el("div", "fe-prow" + (sel === p.name ? " sel" : "") + (sizesRead(p) ? " ro" : "")); row.style.gridTemplateColumns = cols;
+            const nm = el("span", "fe-pname", p.name + (p.instance ? " (default)" : ""));
+            nm.title = p.tooltip || (p.instance ? "Instance parameter: this is the value a new copy starts with" : "Type parameter");
+            nm.onclick = () => { sel = p.name; drawTable(); };
+            const reads = wb.dims.some((d) => d.reports_to === p.name);
+            const fm = el("span");
+            if (reads) fm.append(el("span", "fe-ro", "reads a dimension"));
+            else if (p.reporting && !p.formula) fm.append(el("span", "fe-ro", "reporting"));
+            else {
+              const f = textIn(p.formula || "", async (v) => {
+                p.formula = v.trim() ? v.trim() : null;
+                if (p.formula) work.forEach((w) => { delete w.values[p.name]; });
+                await recalc(); draw();
+              });
+              if (p.locked) f.disabled = true;
+              fm.append(f);
             }
-            for (const g of gone) await Backend.call("delete_family_type", { id: g.id });
-            close();
-            await reloadTypes();
-          } catch (e) { msg.textContent = String(e.message || e); await reloadTypes(); }
-        }, true),
+            const lk = el("span"); lk.append(checkIn(p.locked, (v) => { p.locked = v; drawTable(); }));
+            row.append(nm, valueCell(p), fm, lk);
+            tbl.append(row);
+          }
+        }
+      }
+
+      const move = (dir) => {
+        const i = wp.findIndex((p) => p.name === sel);
+        if (i < 0) return;
+        const g = groupOf(wp[i]);
+        let j = i + dir;
+        while (j >= 0 && j < wp.length && groupOf(wp[j]) !== g) j += dir;
+        if (j < 0 || j >= wp.length) return;
+        [wp[i], wp[j]] = [wp[j], wp[i]];
+        drawTable();
+      };
+      const sortAll = (dir) => {
+        const out = [];
+        for (const g of groupsOf(wp)) out.push(...wp.filter((p) => groupOf(p) === g).sort((a, b) => dir * a.name.localeCompare(b.name)));
+        wp = out; drawTable();
+      };
+      const names = () => wp.map((p) => p.name);
+
+      bar.append(
+        button("New Parameter...", () => paramProps({ kinds: KINDS, names: names(), canReport: false }, async (np) => {
+          wp.push(np); sel = np.name; await recalc(); draw();
+        })),
+        button("Modify Parameter...", () => {
+          const p = wp.find((q) => q.name === sel);
+          if (!p) { msg.textContent = "Select a parameter first."; return; }
+          const used = wb.dims.some((d) => d.reports_to === p.name);
+          paramProps({ initial: p, kinds: KINDS, names: names(), lockKind: used || p.reporting }, async (np) => {
+            try {
+              if (np.name !== p.name) {
+                const r = await Backend.call("family_rename_param", { params: wp, body: wb, old: p.name, new: np.name });
+                wp = r.params; wb = r.body;
+                renames.push([p.name, np.name]);
+                for (const w of work) if (w.values[p.name] !== undefined) { w.values[np.name] = w.values[p.name]; delete w.values[p.name]; }
+                sel = np.name;
+              }
+              const t = wp.find((q) => q.name === np.name);
+              Object.assign(t, { param_kind: np.param_kind, instance: np.instance, group: np.group, discipline: np.discipline, tooltip: np.tooltip, default: np.default });
+              if (np.instance) for (const w of work) delete w.values[t.name];
+              await recalc(); draw();
+            } catch (e) { msg.textContent = String(e.message || e); }
+          });
+        }),
+        button("Delete Parameter", async () => {
+          const p = wp.find((q) => q.name === sel);
+          if (!p) { msg.textContent = "Select a parameter first."; return; }
+          try {
+            const r = await Backend.call("family_param_uses", { params: wp, body: wb, name: p.name });
+            if (r.uses.length) { msg.textContent = `'${p.name}' is used by ${r.uses.slice(0, 4).join(", ")}${r.uses.length > 4 ? " and more" : ""}. Remove those first.`; return; }
+            wp = wp.filter((q) => q !== p);
+            for (const w of work) delete w.values[p.name];
+            sel = null; await recalc(); draw();
+          } catch (e) { msg.textContent = String(e.message || e); }
+        }),
+        button("↑", () => move(-1)), button("↓", () => move(1)),
+        button("A→Z", () => sortAll(1)), button("Z→A", () => sortAll(-1)),
       );
+      bar.children[3].title = "Move up"; bar.children[4].title = "Move down"; bar.children[5].title = "Sort ascending"; bar.children[6].title = "Sort descending";
+      const lookups = button("Manage Lookup Tables...", () => {});
+      lookups.disabled = true; lookups.title = "Lookup tables arrive in a later step";
+      lookups.style.marginLeft = "auto"; bar.append(lookups);
+
+      body.append(top, tbl, bar, msg);
+
+      async function apply() {
+        const before = snapshot();
+        S.params = clone(wp); S.body = clone(wb);
+        if (!(await preview())) { restore(before); msg.textContent = S.pvError || "That does not solve."; await preview(); return false; }
+        try {
+          // the parameters must be in the project before types can hold values for them
+          await Backend.call("set_family_def", { id: S.id, params: S.params, body: S.body, settings: S.settings, renames });
+          for (const w of work) {
+            let id = w.id;
+            if (!id) id = (await Backend.call("duplicate_family_type", { id: w.from, name: w.name })).id;
+            const old = S.types.find((t) => t.id === id);
+            const patch = { values: w.values };
+            if (!old || old.name !== w.name) patch.name = w.name;
+            await Backend.call("patch_family_type", { id, patch });
+          }
+          for (const g of gone) await Backend.call("delete_family_type", { id: g.id });
+        } catch (e) { msg.textContent = String(e.message || e); await reloadTypes(); return false; }
+        const keep = work[cur].name;
+        S.undo.push(before); S.redo = [];
+        if (renames.length) { S.undo = []; }
+        renames = []; gone = [];
+        await reloadTypes();
+        const t = S.types.find((x) => x.name === keep);
+        if (t) { S.typeId = t.id; S.values = {}; tabsUI(); await preview(); }
+        work = S.types.map((x) => ({ id: x.id, name: x.name, values: { ...x.values } }));
+        cur = Math.max(0, work.findIndex((x) => x.id === S.typeId));
+        wp = clone(S.params); wb = clone(S.body);
+        S.msg = ""; props(); status(); render();
+        await recalc(); draw();
+        return true;
+      }
+      foot.append(
+        button("Cancel", close),
+        button("Apply", () => apply()),
+        button("OK", async () => { if (await apply()) close(); }, true),
+      );
+      recalc().then(draw);
     }, { wide: true });
   }
   async function reloadTypes() {
@@ -821,48 +984,93 @@ const FamModel = (() => {
     tabsUI(); await preview(); props(); render();
   }
 
-  // ---------------------------------------------------------------- parameters dialog
-  function paramsDialog() {
-    openModal("Family Parameters", (body, foot, close) => {
-      const work = clone(S.params);
+  // ---------------------------------------------------------------- family category and parameters
+  const currentSettings = () => ({
+    category: S.def.category, host: S.def.host,
+    always_vertical: !!S.body.always_vertical, cut_with_voids: !!S.body.cut_with_voids,
+    can_host_rebar: !!S.settings.can_host_rebar, part_type: S.settings.part_type || "Normal", shared: !!S.settings.shared,
+    room_calculation_point: !!S.settings.room_calculation_point, room_point: [...(S.settings.room_point || [0, 0, 0])],
+    maintain_annotation_orientation: !!S.settings.maintain_annotation_orientation,
+  });
+
+  // The rows of Family Parameters, for the dialog and for the Properties palette. `w` is a working copy that
+  // the rows change; `changed(w)` is called after each change.
+  function settingRows(w, changed) {
+    const rows = [];
+    const row = (label, node) => { rows.push(field(label, node)); };
+    const go = () => changed(w);
+    row("Hosted by", selIn([["none", "Nothing (free standing)"], ["wall", "Wall"], ["floor", "Floor"], ["ceiling", "Ceiling"], ["roof", "Roof"], ["face", "Face"]], w.host, (v) => { w.host = v; go(); }));
+    row("Work Plane-Based", checkIn(w.host === "face", (v) => { w.host = v ? "face" : "none"; go(); }));
+    row("Always vertical", checkIn(w.always_vertical, (v) => { w.always_vertical = v; go(); }));
+    row("Cut with Voids When Loaded", checkIn(w.cut_with_voids, (v) => { w.cut_with_voids = v; go(); }));
+    row("Can host rebar", checkIn(w.can_host_rebar, (v) => { w.can_host_rebar = v; go(); }));
+    row("Part Type", selIn([["Normal", "Normal"]], w.part_type, (v) => { w.part_type = v; go(); }));
+    row("Shared", checkIn(w.shared, (v) => { w.shared = v; go(); }));
+    row("Room Calculation Point", checkIn(w.room_calculation_point, (v) => { w.room_calculation_point = v; go(); }));
+    if (w.room_calculation_point) {
+      const pt = el("div", "famed-pt");
+      ["x", "y", "z"].forEach((a, i) => { const t = el("input"); t.type = "text"; t.title = `${a} (mm)`; t.value = String(w.room_point[i] || 0); t.onchange = () => { w.room_point[i] = num(t.value); go(); }; pt.append(t); });
+      row("Point (x, y, z mm)", pt);
+    }
+    row("Maintain Annotation Orientation", checkIn(w.maintain_annotation_orientation, (v) => { w.maintain_annotation_orientation = v; go(); }));
+    return rows;
+  }
+
+  // Settings that are not the category or the host change at once and can be undone; a new category or host is
+  // kept by the project and refused while copies are placed.
+  async function applyFamilySettings(w) {
+    if (w.category !== S.def.category || w.host !== S.def.host) {
+      const ok = await setMeta({ category: w.category, host: w.host });
+      if (!ok) return false;
+    }
+    const before = snapshot();
+    const o = currentSettings();
+    const same = ["always_vertical", "cut_with_voids", "can_host_rebar", "part_type", "shared", "room_calculation_point", "maintain_annotation_orientation"].every((k) => o[k] === w[k]) && JSON.stringify(o.room_point) === JSON.stringify(w.room_point);
+    if (same) { props(); return true; }
+    S.body.always_vertical = w.always_vertical; S.body.cut_with_voids = w.cut_with_voids;
+    S.settings = { ...S.settings, can_host_rebar: w.can_host_rebar, part_type: w.part_type, shared: w.shared, room_calculation_point: w.room_calculation_point, room_point: w.room_point, maintain_annotation_orientation: w.maintain_annotation_orientation };
+    S.undo.push(before); S.redo = []; S.dirty = true; S.msg = "";
+    props(); status(); render();
+    return true;
+  }
+
+  function categoryDialog() {
+    openModal("Family Category and Parameters", (body, foot, close) => {
+      const w = currentSettings();
       const msg = el("div", "modal-msg");
-      const tbl = el("div", "fe-ptable");
-      const draw = () => {
-        tbl.replaceChildren();
-        const hd = el("div", "fe-prow fe-phead");
-        ["Name", "Kind", "Type / Instance", "Group", "Default", "Formula", ""].forEach((t) => hd.append(el("span", "", t)));
-        tbl.append(hd);
-        work.forEach((p, i) => {
-          const row = el("div", "fe-prow");
-          const nm = textIn(p.name, (v) => { p.name = v; });
-          const kind = selIn(KINDS, p.param_kind, (v) => { p.param_kind = v; p.default = v === "yes_no" ? false : ["text", "material"].includes(v) ? "" : 0; draw(); });
-          const inst = selIn([["false", "Type"], ["true", "Instance"]], String(!!p.instance), (v) => { p.instance = v === "true"; });
-          const grp = textIn(p.group || "", (v) => { p.group = v; }, { list: ["Dimensions", "Constraints", "Construction", "Materials and Finishes", "Identity Data"] });
-          const def = p.param_kind === "yes_no" ? checkIn(p.default, (c) => { p.default = c; }) : textIn(String(p.default), (v) => { p.default = ["text", "material"].includes(p.param_kind) ? v : num(v); });
-          const dimRep = p.reporting && !p.formula && (S.body.dims || []).some((d) => d.reports_to === p.name);
-          const fm = dimRep ? el("span", "", "reads a dimension") : textIn(p.formula || "", (v) => { p.formula = v.trim() ? v : null; });
-          const del = button("Delete", () => { work.splice(i, 1); draw(); });
-          [nm, kind, inst, grp, def, fm, del].forEach((n) => { const c = el("span"); c.append(n); row.append(c); });
-          tbl.append(row);
-        });
+      let filter = "", search = "";
+      const DISC = [["", "<all>"], ["architecture", "Architecture"], ["structure", "Structure"], ["mechanical", "Mechanical"], ["electrical", "Electrical"], ["piping", "Piping"]];
+      const wrap = el("div", "fe-catwrap");
+      const left = el("div", "fe-catleft"), right = el("div", "fe-catright");
+      const list = el("div", "fe-catlist");
+      const drawList = () => {
+        list.replaceChildren();
+        const needle = search.trim().toLowerCase();
+        for (const [d, label] of DISC.slice(1)) {
+          const cats = (S.def.categories || []).filter((c) => c.discipline === d && (!filter || filter === d) && (!needle || c.label.toLowerCase().includes(needle)));
+          if (!cats.length) continue;
+          list.append(el("div", "fe-pgroup", label));
+          for (const c of cats) {
+            const r = el("div", "fe-catrow" + (c.id === w.category ? " sel" : ""), c.label);
+            r.onclick = () => { w.category = c.id; drawList(); };
+            list.append(r);
+          }
+        }
       };
-      draw();
-      body.append(el("div", "note", "Type parameters are set per type. Use a parameter in a reference plane's dimension as [Name]. A formula makes the parameter read only."), tbl, msg);
-      foot.append(
-        button("Add parameter", () => { work.push({ name: `Parameter ${work.length + 1}`, param_kind: "length", instance: false, group: "Dimensions", formula: null, reporting: false, shared_guid: null, choices: [], default: 0 }); draw(); }),
-        button("Cancel", close),
-        button("OK", async () => {
-          const before = snapshot();
-          S.params = work;
-          // a dimension whose parameter was deleted or renamed stops reporting
-          const labelled = (S.body.dims || []).flatMap((d) => [d.label, ...(d.seg_labels || [])]).filter(Boolean).find((n) => !work.some((p) => p.name === n));
-          if (labelled) { S.params = JSON.parse(before).params; msg.textContent = `'${labelled}' labels a dimension. Remove the label from the dimension first.`; return; }
-          S.body.dims = (S.body.dims || []).filter((d) => !d.reports_to || work.some((p) => p.name === d.reports_to));
-          const ok = await preview();
-          if (!ok) { const old = JSON.parse(before); S.params = old.params; S.body.dims = old.body.dims; msg.textContent = S.pvError; await preview(); return; }
-          S.undo.push(before); S.dirty = true; close(); props(); render();
-        }, true),
-      );
+      const fl = selIn(DISC, filter, (v) => { filter = v; drawList(); });
+      const q = el("input"); q.type = "text"; q.placeholder = "Search"; q.oninput = () => { search = q.value; drawList(); };
+      left.append(el("div", "famed-h", "Family Category"), q, field("Filter list", fl), list);
+      const drawRight = () => {
+        right.replaceChildren(el("div", "famed-h", "Family Parameters"));
+        for (const r of settingRows(w, () => drawRight())) right.append(r);
+      };
+      wrap.append(left, right);
+      body.append(wrap, msg);
+      drawList(); drawRight();
+      foot.append(button("Cancel", close), button("OK", async () => {
+        const ok = await applyFamilySettings(w);
+        if (ok) close(); else msg.textContent = S.msg || "That change was refused.";
+      }, true));
     }, { wide: true });
   }
 
@@ -1640,28 +1848,32 @@ const FamModel = (() => {
 
   // The Parameter Properties dialog: a new family parameter for a dimension, as a label or a reporting parameter.
   function paramProps(opts, done) {
-    openModal("Parameter Properties", (body, foot, close) => {
+    openModal(opts.initial ? "Modify Parameter" : "Parameter Properties", (body, foot, close) => {
       const msg = el("div", "modal-msg");
-      const st = { name: opts.name || "", kind: "length", instance: false, group: "Dimensions", reporting: false, tooltip: "", discipline: "common" };
+      const ini = opts.initial;
+      const st = ini ? { name: ini.name, kind: ini.param_kind, instance: !!ini.instance, group: ini.group || "Other", reporting: !!ini.reporting, tooltip: ini.tooltip || "", discipline: ini.discipline || "common" } : { name: opts.name || "", kind: opts.kinds && opts.kinds[0] ? opts.kinds[0][0] : "length", instance: false, group: "Dimensions", reporting: false, tooltip: "", discipline: "common" };
       const row = (l, n) => body.append(field(l, n));
       const fam = selIn([["family", "Family parameter"], ["shared", "Shared parameter (not built yet)"]], "family", () => {});
       row("Parameter type", fam);
       row("Name", textIn(st.name, (v) => { st.name = v; }));
       row("Discipline", selIn([["common", "Common"]], st.discipline, (v) => { st.discipline = v; }));
       row("Type of parameter", selIn(opts.kinds || KINDS, st.kind, (v) => { st.kind = v; }));
+      if (ini && opts.lockKind) body.lastChild.querySelector("select").disabled = true;
       row("Group parameter under", textIn(st.group, (v) => { st.group = v; }, { list: ["Dimensions", "Constraints", "Construction", "Materials and Finishes", "Identity Data"] }));
-      row("Type or instance", selIn([["false", "Type"], ["true", "Instance"]], "false", (v) => { st.instance = v === "true"; }));
+      row("Type or instance", selIn([["false", "Type"], ["true", "Instance"]], String(st.instance), (v) => { st.instance = v === "true"; }));
       if (opts.canReport) row("Reporting parameter", checkIn(false, (v) => { st.reporting = v; }));
-      row("Tooltip description", textIn("", (v) => { st.tooltip = v; }));
+      row("Tooltip description", textIn(st.tooltip, (v) => { st.tooltip = v; }));
       body.append(msg);
       const ok = () => {
         const name = st.name.trim();
         if (fam.value === "shared") { msg.textContent = "Shared parameters are not built yet."; return; }
         if (!name) { msg.textContent = "Give the parameter a name."; return; }
-        if (S.params.some((p) => p.name.toLowerCase() === name.toLowerCase())) { msg.textContent = `A parameter called '${name}' already exists.`; return; }
+        if ((opts.names || S.params.map((p) => p.name)).some((n) => n.toLowerCase() === name.toLowerCase() && !(ini && n === ini.name))) { msg.textContent = `A parameter called '${name}' already exists.`; return; }
         if (/[\[\]]/.test(name)) { msg.textContent = "A parameter name cannot contain [ or ]."; return; }
         close();
-        done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: null, choices: [], discipline: st.discipline, tooltip: st.tooltip, default: opts.value || 0 });
+        const dflt = (k) => (k === "yes_no" ? false : ["text", "material"].includes(k) ? "" : opts.value || 0);
+        if (ini) done({ ...ini, name, param_kind: st.kind, instance: st.instance, group: st.group, discipline: st.discipline, tooltip: st.tooltip, default: st.kind === ini.param_kind ? ini.default : dflt(st.kind) });
+        else done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: null, choices: [], discipline: st.discipline, tooltip: st.tooltip, locked: false, default: dflt(st.kind) });
       };
       foot.append(button("Cancel", close), button("OK", ok, true));
     });

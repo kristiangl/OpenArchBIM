@@ -853,6 +853,203 @@ impl FamilyBody {
     }
 }
 
+
+// ------------------------------------------------------------------ names in expressions
+
+/// One name in an expression: its span in the source and whether it was written in brackets.
+struct NameRef {
+    start: usize,
+    end: usize,
+    name: String,
+    bracketed: bool,
+}
+
+/// The parameter names an expression refers to: `[Bracketed Names]` and bare identifiers, leaving out
+/// text in quotes, numbers and function names.
+fn name_refs(src: &str) -> Vec<NameRef> {
+    let b: Vec<(usize, char)> = src.char_indices().collect();
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < b.len() {
+        let (at, c) = b[i];
+        if c == '"' {
+            i += 1;
+            while i < b.len() && b[i].1 != '"' {
+                i += 1;
+            }
+            i += 1;
+        } else if c == '[' {
+            let mut j = i + 1;
+            while j < b.len() && b[j].1 != ']' {
+                j += 1;
+            }
+            if j < b.len() {
+                out.push(NameRef { start: at, end: b[j].0 + 1, name: src[b[i + 1].0..b[j].0].to_string(), bracketed: true });
+            }
+            i = j + 1;
+        } else if c.is_ascii_digit() {
+            while i < b.len() && (b[i].1.is_ascii_alphanumeric() || b[i].1 == '.' || b[i].1 == '_') {
+                i += 1;
+            }
+        } else if c.is_alphabetic() || c == '_' {
+            let mut j = i;
+            while j < b.len() && (b[j].1.is_alphanumeric() || b[j].1 == '_') {
+                j += 1;
+            }
+            let end = b.get(j).map_or(src.len(), |x| x.0);
+            let mut k = j;
+            while k < b.len() && b[k].1 == ' ' {
+                k += 1;
+            }
+            let call = k < b.len() && b[k].1 == '(';
+            let word = &src[at..end];
+            if !call && !matches!(word, "true" | "false" | "and" | "or" | "not") {
+                out.push(NameRef { start: at, end, name: word.to_string(), bracketed: false });
+            }
+            i = j;
+        } else {
+            i += 1;
+        }
+    }
+    out
+}
+
+/// The names an expression refers to.
+pub fn expr_names(src: &str) -> Vec<String> {
+    name_refs(src).into_iter().map(|r| r.name).collect()
+}
+
+fn plain_name(n: &str) -> bool {
+    let mut cs = n.chars();
+    cs.next().map_or(false, |c| c.is_alphabetic() || c == '_') && cs.all(|c| c.is_alphanumeric() || c == '_')
+}
+
+/// `src` with every reference to the parameter `old` pointing at `new` instead.
+pub fn rename_in_expr(src: &str, old: &str, new: &str) -> String {
+    let mut out = String::new();
+    let mut at = 0;
+    for r in name_refs(src).into_iter().filter(|r| r.name == old) {
+        out.push_str(&src[at..r.start]);
+        if r.bracketed || !plain_name(new) {
+            out.push_str(&format!("[{new}]"));
+        } else {
+            out.push_str(new);
+        }
+        at = r.end;
+    }
+    out.push_str(&src[at..]);
+    out
+}
+
+impl FamilyBody {
+    /// Every expression in the body with a note of where it is, so renames and uses can walk them.
+    fn each_expr(&mut self, f: &mut dyn FnMut(String, &mut String)) {
+        for p in &mut self.planes {
+            let what = format!("reference plane '{}'", p.name);
+            if let Anchor::Offset { by, .. } = &mut p.anchor {
+                f(what, by);
+            }
+        }
+        for fm in &mut self.forms {
+            let what = label(fm);
+            match &mut fm.shape {
+                FormShape::Extrusion { start, end, .. } | FormShape::Blend { start, end, .. } => {
+                    f(format!("{what} (start)"), start);
+                    f(format!("{what} (end)"), end);
+                }
+                FormShape::Sweep { profile, .. } => {
+                    for l in profile {
+                        match l {
+                            ProfileLoop::Poly { points, .. } => {
+                                for pt in points {
+                                    f(format!("{what} (profile)"), &mut pt.u);
+                                    f(format!("{what} (profile)"), &mut pt.v);
+                                }
+                            }
+                            ProfileLoop::Circle { u, v, r } => {
+                                for x in [u, v, r] {
+                                    f(format!("{what} (profile)"), x);
+                                }
+                            }
+                        }
+                    }
+                }
+                FormShape::Revolve { .. } => {}
+            }
+            if let Some(w) = &mut fm.vis.when {
+                f(format!("{what} (visible when)"), w);
+            }
+        }
+        for sy in &mut self.syms {
+            let what = format!("symbolic geometry {}", sy.id);
+            if let Some(w) = &mut sy.vis.when {
+                f(format!("{what} (visible when)"), w);
+            }
+        }
+        for n in &mut self.nested {
+            let what = format!("nested family '{}'", n.family);
+            for v in n.params.values_mut() {
+                f(what.clone(), v);
+            }
+            if let Some(w) = &mut n.vis.when {
+                f(format!("{what} (visible when)"), w);
+            }
+        }
+    }
+
+    /// Where the body uses the parameter `name`, as short descriptions for a warning.
+    pub fn param_users(&self, name: &str) -> Vec<String> {
+        let mut me = self.clone();
+        let mut out: Vec<String> = Vec::new();
+        me.each_expr(&mut |what, src| {
+            if expr_names(src).iter().any(|n| n == name) && !out.contains(&what) {
+                out.push(what);
+            }
+        });
+        for f in &self.forms {
+            if f.material_param.as_deref() == Some(name) {
+                out.push(format!("material of {}", label(f)));
+            }
+        }
+        for d in &self.dims {
+            if d.label.as_deref() == Some(name) || d.seg_labels.iter().any(|l| l == name) {
+                out.push("a dimension label".into());
+            }
+            if d.reports_to.as_deref() == Some(name) {
+                out.push("a reporting dimension".into());
+            }
+        }
+        out
+    }
+
+    /// Point everything in the body that uses the parameter `old` at `new`.
+    pub fn rename_param(&mut self, old: &str, new: &str) {
+        self.each_expr(&mut |_, src| {
+            if expr_names(src).iter().any(|n| n == old) {
+                *src = rename_in_expr(src, old, new);
+            }
+        });
+        for f in &mut self.forms {
+            if f.material_param.as_deref() == Some(old) {
+                f.material_param = Some(new.to_string());
+            }
+        }
+        for d in &mut self.dims {
+            if d.label.as_deref() == Some(old) {
+                d.label = Some(new.to_string());
+            }
+            for l in &mut d.seg_labels {
+                if l == old {
+                    *l = new.to_string();
+                }
+            }
+            if d.reports_to.as_deref() == Some(old) {
+                d.reports_to = Some(new.to_string());
+            }
+        }
+    }
+}
+
 // ------------------------------------------------------------------ solving
 
 /// Resolves a parameter name to a value for the formula engine.
@@ -2018,5 +2215,20 @@ mod tests {
         assert!(b.dims[0].via.is_empty() && !b.dims[0].eq && b.dims[0].view.is_none());
         let div: Anchor = serde_json::from_str(r#"{"type":"div","a":1,"b":2,"i":1,"n":3}"#).unwrap();
         assert_eq!(div, Anchor::Div { a: 1, b: 2, i: 1, n: 3 });
+    }
+
+    #[test]
+    fn renaming_a_parameter_follows_every_expression_that_uses_it() {
+        assert_eq!(rename_in_expr("-Width/2 + [Width]*2 - Width2", "Width", "Overall"), "-Overall/2 + [Overall]*2 - Width2");
+        assert_eq!(rename_in_expr("Width/2", "Width", "Clear Width"), "[Clear Width]/2");
+        assert_eq!(rename_in_expr("if(Type == \"Width\", Width, 0)", "Width", "W"), "if(Type == \"Width\", W, 0)");
+        assert_eq!(expr_names("sqrt(2) + 1e3 + [A B] * C"), vec!["A B".to_string(), "C".to_string()]);
+        let (mut b, form) = block();
+        b.forms.iter_mut().find(|f| f.id == form).unwrap().vis.when = Some("Width > 500".into());
+        assert_eq!(b.param_users("Width").len(), 3);
+        b.rename_param("Width", "Overall");
+        assert!(b.param_users("Width").is_empty());
+        let s = b.solve(&mut params(&[("Overall", 800.0), ("Height", 2100.0)])).unwrap();
+        assert!((volume(&s.form(form).unwrap().solid.tris) - 800.0 * 2100.0 * 100.0).abs() < 1.0);
     }
 }

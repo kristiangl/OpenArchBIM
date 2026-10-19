@@ -298,3 +298,22 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 #doc-tabs .dtab.active { background: var(--accent-soft); border-color: var(--accent); color: var(--text); font-weight: 600; }
 #doc-tabs .dtab .x { width: 16px; height: 16px; line-height: 14px; text-align: center; border-radius: 3px; font-weight: 400; }
 #doc-tabs .dtab .x:hover { background: var(--line); }
+
+/* family editor: types dialog and category dialog */
+.fe-tbar { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; margin-bottom: 6px; }
+.fe-tbar button { padding: 2px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
+.fe-tbar button:disabled { opacity: .5; cursor: default; }
+.fe-gtable { min-height: 260px; }
+.fe-pgroup { font-weight: 600; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; padding: 2px 6px; cursor: pointer; margin-top: 2px; }
+.fe-prow.sel { background: rgba(74, 144, 217, .18); }
+.fe-prow.ro input, .fe-ro { opacity: .65; }
+.fe-ro { font-size: 12px; }
+.fe-pname { cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.fe-catwrap { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+.fe-catlist { max-height: 46vh; overflow: auto; margin-top: 6px; border: 1px solid var(--line); border-radius: 3px; }
+.fe-catrow { padding: 2px 14px; cursor: pointer; }
+.fe-catrow:hover { background: var(--panel-2); }
+.fe-catrow.sel { background: var(--accent); color: #fff; }
+.fe-catright .famed-row { margin-bottom: 4px; }
+#fam-prop-body .famed-row span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#fam-prop-body .famed-row input[type=text], #fam-prop-body .famed-row select { width: 110px; flex: none; }

@@ -384,8 +384,8 @@ impl Session {
                 let mut body = f.body.clone();
                 body.fix_dim_ids();
                 let types: Vec<Value> = self.doc.family_types().into_iter().filter(|(_, t)| t.family == id).map(|(tid, t)| json!({ "id": tid, "name": t.name, "values": t.values })).collect();
-                Ok(json!({ "id": id, "name": f.name, "category": f.category, "category_label": f.category.label(), "host": f.host, "built_in": f.built_in, "params": f.params, "body": body, "types": types,
-                    "categories": openarch_model::family::FamilyCategory::all().iter().map(|c| json!({ "id": c, "label": c.label() })).collect::<Vec<_>>() }))
+                Ok(json!({ "id": id, "name": f.name, "category": f.category, "category_label": f.category.label(), "host": f.host, "built_in": f.built_in, "params": f.params, "body": body, "settings": f.settings, "types": types,
+                    "categories": openarch_model::family::FamilyCategory::all().iter().map(|c| json!({ "id": c, "label": c.label(), "discipline": c.discipline() })).collect::<Vec<_>>() }))
             }
             "set_family_def" => {
                 let id = id_of(p, "id")?;
@@ -397,8 +397,61 @@ impl Session {
                     Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad body: {e}"))?),
                     None => None,
                 };
-                self.doc.set_family_def(id, params, body)?;
+                let settings: Option<openarch_model::family::FamilySettings> = match p.get("settings").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad settings: {e}"))?),
+                    None => None,
+                };
+                let renames: Vec<(String, String)> = match p.get("renames").filter(|v| !v.is_null()) {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad renames: {e}"))?,
+                    None => vec![],
+                };
+                self.doc.set_family_def_full(id, params, body, settings, &renames)?;
                 Ok(json!({}))
+            }
+            "family_rename_param" => {
+                // stateless: the editor's parameters, body and type values in, the renamed ones back
+                use openarch_model::famgeom::FamilyBody;
+                let mut params: Vec<openarch_model::family::ParamDef> = serde_json::from_value(p.get("params").cloned().ok_or("missing params")?).map_err(|e| format!("bad params: {e}"))?;
+                let mut body: FamilyBody = serde_json::from_value(p.get("body").cloned().ok_or("missing body")?).map_err(|e| format!("bad body: {e}"))?;
+                let old = p.get("old").and_then(|v| v.as_str()).ok_or("missing old")?;
+                let new = p.get("new").and_then(|v| v.as_str()).ok_or("missing new")?;
+                openarch_model::faminst::rename_family_param(&mut params, &mut body, old, new.trim())?;
+                Ok(json!({ "params": params, "body": body }))
+            }
+            "family_param_uses" => {
+                use openarch_model::famgeom::FamilyBody;
+                let params: Vec<openarch_model::family::ParamDef> = serde_json::from_value(p.get("params").cloned().ok_or("missing params")?).map_err(|e| format!("bad params: {e}"))?;
+                let body: FamilyBody = serde_json::from_value(p.get("body").cloned().ok_or("missing body")?).map_err(|e| format!("bad body: {e}"))?;
+                let name = p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+                let mut uses = body.param_users(name);
+                for q in params.iter().filter(|q| q.name != name) {
+                    if q.formula.as_deref().map_or(false, |f| openarch_model::famgeom::expr_names(f).iter().any(|n| n == name)) {
+                        uses.push(format!("the formula of '{}'", q.name));
+                    }
+                }
+                Ok(json!({ "uses": uses }))
+            }
+            "family_param_values" => {
+                let id = id_of(p, "id")?;
+                let tid = p.get("type").and_then(|v| v.as_u64());
+                let over: std::collections::BTreeMap<String, openarch_model::family::ParamValue> = match p.get("values").filter(|v| !v.is_null()) {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad values: {e}"))?,
+                    None => Default::default(),
+                };
+                let mut d2 = self.doc.clone();
+                let body = match p.get("body").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value::<openarch_model::famgeom::FamilyBody>(v.clone()).map_err(|e| format!("bad body: {e}"))?),
+                    None => None,
+                };
+                let params: Option<Vec<openarch_model::family::ParamDef>> = match p.get("params").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad params: {e}"))?),
+                    None => None,
+                };
+                if params.is_some() || body.is_some() {
+                    d2.set_family_def(id, params, body)?;
+                }
+                let vals = d2.family_param_values(id, tid, &over)?;
+                Ok(json!({ "values": vals.into_iter().map(|(n, v)| json!({ "name": n, "value": v })).collect::<Vec<_>>() }))
             }
             "family_preview" => {
                 let id = id_of(p, "id")?;
@@ -3230,5 +3283,36 @@ mod tests {
         assert_eq!(r["body"]["planes"][3]["anchor"]["by"], "-100");
         // an unknown label is refused
         assert!(s.handle("family_edit", &json!({"id": id, "body": body, "params": params, "op": "patch_dim", "dim": dim, "patch": {"label": "Nope"}})).is_err());
+    }
+
+    #[test]
+    fn family_parameters_rename_and_report_their_uses() {
+        let mut s = Session::new();
+        let id = call(&mut s, "new_family", json!({"name": "Panel", "category": "generic_models", "host": "none"}))["id"].as_u64().unwrap();
+        let def = call(&mut s, "family_def", json!({"id": id}));
+        let mut body = def["body"].clone();
+        let mut params = def["params"].clone();
+        assert_eq!(def["settings"]["part_type"], "Normal");
+        assert!(def["categories"].as_array().unwrap().iter().any(|c| c["discipline"] == "structure"));
+        body["planes"].as_array_mut().unwrap().push(json!({"id": 50, "name": "A", "axis": "x", "anchor": {"type": "offset", "from": 1, "by": "Width/2"}}));
+        let u = call(&mut s, "family_param_uses", json!({"params": params, "body": body, "name": "Width"}));
+        assert_eq!(u["uses"], json!(["reference plane 'A'"]));
+        // renaming moves the type value, the expression and a formula with it
+        params.as_array_mut().unwrap().push(json!({"name": "Half", "param_kind": "length", "formula": "Width / 2", "default": 0.0}));
+        let r = call(&mut s, "family_rename_param", json!({"params": params, "body": body, "old": "Width", "new": "Overall Width"}));
+        assert_eq!(r["body"]["planes"][3]["anchor"]["by"], "[Overall Width]/2");
+        let half = r["params"].as_array().unwrap().iter().find(|p| p["name"] == "Half").unwrap();
+        assert_eq!(half["formula"], "[Overall Width] / 2");
+        assert!(s.handle("family_rename_param", &json!({"params": params, "body": body, "old": "Width", "new": "Height"})).is_err());
+        let tid = def["types"][0]["id"].as_u64().unwrap();
+        call(&mut s, "patch_family_type", json!({"id": tid, "patch": {"values": {"Width": 700.0}}}));
+        call(&mut s, "set_family_def", json!({"id": id, "params": r["params"], "body": r["body"], "renames": [["Width", "Overall Width"]]}));
+        let def = call(&mut s, "family_def", json!({"id": id}));
+        assert_eq!(def["types"][0]["values"]["Overall Width"], 700.0);
+        assert!(def["types"][0]["values"].get("Width").is_none());
+        let v = call(&mut s, "family_param_values", json!({"id": id, "type": tid}));
+        let get = |n: &str| v["values"].as_array().unwrap().iter().find(|x| x["name"] == n).unwrap()["value"].clone();
+        assert_eq!(get("Overall Width"), 700.0);
+        assert_eq!(get("Half"), 350.0);
     }
 }
