@@ -112,6 +112,14 @@ impl FamilyCategory {
             _ => "architecture",
         }
     }
+    /// The IFC predefined type that goes with `ifc_class` for this category, or "" when
+    /// the category covers several (the family can set its own).
+    pub fn ifc_predefined(self) -> &'static str {
+        match self {
+            FamilyCategory::Hardscape => "PAVING",
+            _ => "",
+        }
+    }
     pub fn ifc_class(self) -> &'static str {
         match self {
             FamilyCategory::GenericModels => "IfcBuildingElementProxy",
@@ -128,13 +136,14 @@ impl FamilyCategory {
             FamilyCategory::StructuralColumns => "IfcColumn",
             FamilyCategory::StructuralFraming => "IfcBeam",
             FamilyCategory::StructuralFoundations => "IfcFooting",
-            FamilyCategory::FurnitureSystems => "IfcFurniture",
-            FamilyCategory::LightingDevices => "IfcLightFixture",
-            FamilyCategory::FireAlarmDevices | FamilyCategory::CommunicationDevices | FamilyCategory::DataDevices | FamilyCategory::SecurityDevices => "IfcSensor",
+            FamilyCategory::FurnitureSystems => "IfcSystemFurnitureElement",
+            FamilyCategory::LightingDevices => "IfcSwitchingDevice",
+            FamilyCategory::FireAlarmDevices | FamilyCategory::SecurityDevices => "IfcSensor",
+            FamilyCategory::CommunicationDevices | FamilyCategory::DataDevices => "IfcCommunicationsAppliance",
             FamilyCategory::MechanicalControlDevices => "IfcController",
             FamilyCategory::AirTerminals => "IfcAirTerminal",
             FamilyCategory::FireProtection => "IfcFireSuppressionTerminal",
-            FamilyCategory::Hardscape => "IfcCovering",
+            FamilyCategory::Hardscape => "IfcSlab",
             FamilyCategory::SpecialtyEquipment | FamilyCategory::FoodServiceEquipment | FamilyCategory::Entourage | FamilyCategory::Parking | FamilyCategory::Signage | FamilyCategory::Mass => "IfcBuildingElementProxy",
         }
     }

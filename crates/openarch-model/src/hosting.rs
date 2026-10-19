@@ -384,6 +384,7 @@ impl Document {
         inst.flip_facing = (across < 0.0) != flip_facing;
         inst.flip_hand = flip_hand;
         inst.ifc.export_as = fam.category.ifc_class().to_string();
+        inst.ifc.predefined_type = fam.category.ifc_predefined().to_string();
         self.fits(&inst, None)?;
         let name = match fam.category {
             FamilyCategory::Doors => "Place door",

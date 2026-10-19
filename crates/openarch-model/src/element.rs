@@ -277,7 +277,7 @@ pub enum IfcExport {
 pub struct IfcParams {
     #[serde(default)]
     pub export: IfcExport,
-    /// Override of the IFC class, e.g. "IfcWallStandardCase".
+    /// Override of the IFC class, e.g. "IfcBeam".
     #[serde(default)]
     pub export_as: String,
     #[serde(default)]

@@ -337,6 +337,24 @@ mod tests {
     }
 
     #[test]
+    fn every_category_maps_to_an_ifc43_class() {
+        // Entities checked against the IFC4.3 schema listing.
+        const KNOWN: &[&str] = &[
+            "IfcBuildingElementProxy", "IfcDoor", "IfcWindow", "IfcFurniture", "IfcSystemFurnitureElement",
+            "IfcSanitaryTerminal", "IfcLightFixture", "IfcElectricAppliance", "IfcElectricDistributionBoard",
+            "IfcUnitaryEquipment", "IfcColumn", "IfcBeam", "IfcFooting", "IfcGeographicElement", "IfcSensor",
+            "IfcSwitchingDevice", "IfcCommunicationsAppliance", "IfcController", "IfcAirTerminal",
+            "IfcFireSuppressionTerminal", "IfcSlab",
+        ];
+        for c in FamilyCategory::all() {
+            assert!(KNOWN.contains(&c.ifc_class()), "{:?} maps to {}", c, c.ifc_class());
+        }
+        assert_eq!(FamilyCategory::Hardscape.ifc_predefined(), "PAVING");
+        assert_eq!(FamilyCategory::DataDevices.ifc_class(), "IfcCommunicationsAppliance");
+        assert_eq!(FamilyCategory::FurnitureSystems.ifc_class(), "IfcSystemFurnitureElement");
+    }
+
+    #[test]
     fn reference_kinds_offer_the_named_references_of_their_axis_and_old_files_still_read() {
         use crate::famgeom::{Axis, RefKind};
         assert!(RefKind::choices(Axis::X).contains(&RefKind::CenterLeftRight) && !RefKind::choices(Axis::X).contains(&RefKind::Top));
