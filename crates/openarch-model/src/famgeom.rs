@@ -318,6 +318,9 @@ pub struct Visibility {
     pub front_back: bool,
     #[serde(default = "yes")]
     pub left_right: bool,
+    /// The Visible setting: off hides the piece in every view and every type.
+    #[serde(default = "yes")]
+    pub visible: bool,
     /// A Yes/No parameter or an expression (`Frame Type == "Timber"`); shown only while true.
     #[serde(default)]
     pub when: Option<String>,
@@ -325,7 +328,7 @@ pub struct Visibility {
 
 impl Default for Visibility {
     fn default() -> Self {
-        Visibility { coarse: true, medium: true, fine: true, plan: true, front_back: true, left_right: true, when: None }
+        Visibility { coarse: true, medium: true, fine: true, plan: true, front_back: true, left_right: true, visible: true, when: None }
     }
 }
 
@@ -347,7 +350,18 @@ pub enum FormShape {
         profile: Vec<Loop>,
     },
     /// A loft between `base` at `start` and `top` at `end`; the loops have equal node counts.
-    Blend { plane: PlaneId, start: String, end: String, base: Vec<Loop>, top: Vec<Loop> },
+    /// `start_lock` and `end_lock` work as they do for an extrusion.
+    Blend {
+        plane: PlaneId,
+        start: String,
+        end: String,
+        #[serde(default)]
+        start_lock: Option<PlaneId>,
+        #[serde(default)]
+        end_lock: Option<PlaneId>,
+        base: Vec<Loop>,
+        top: Vec<Loop>,
+    },
     /// The sketch turned about an axis drawn on the same plane.
     Revolve { plane: PlaneId, axis_a: Node, axis_b: Node, start_deg: f64, end_deg: f64, profile: Vec<Loop> },
     /// The profile carried along an open or closed path drawn on the work plane. The profile is
@@ -539,7 +553,7 @@ impl FamilyBody {
                 || match &f.shape {
                     FormShape::Extrusion { profile, start_lock, end_lock, .. } => profile.iter().any(in_loop) || *start_lock == Some(id) || *end_lock == Some(id),
                     FormShape::Revolve { profile, .. } => profile.iter().any(in_loop),
-                    FormShape::Blend { base, top, .. } => base.iter().chain(top).any(in_loop),
+                    FormShape::Blend { base, top, start_lock, end_lock, .. } => base.iter().chain(top).any(in_loop) || *start_lock == Some(id) || *end_lock == Some(id),
                     FormShape::Sweep { path, .. } => in_loop(path),
                 }
         });
@@ -1311,10 +1325,11 @@ impl FamilyBody {
     }
 
     fn resolve_vis(&self, v: &Visibility, env: &mut Env) -> Result<SolvedVis, String> {
-        let present = match &v.when {
-            Some(w) if !w.trim().is_empty() => eval_bool(w, env).map_err(|e| format!("visibility: {e}"))?,
-            _ => true,
-        };
+        let present = v.visible
+            && match &v.when {
+                Some(w) if !w.trim().is_empty() => eval_bool(w, env).map_err(|e| format!("visibility: {e}"))?,
+                _ => true,
+            };
         Ok(SolvedVis { coarse: v.coarse, medium: v.medium, fine: v.fine, plan: v.plan, front_back: v.front_back, left_right: v.left_right, present })
     }
 
@@ -1338,7 +1353,7 @@ impl FamilyBody {
             };
             let solid = self.solve_form(&planes, f, env).map_err(|e| format!("{}: {e}", label(f)))?;
             let span = match &f.shape {
-                FormShape::Extrusion { plane, start, end, start_lock, end_lock, .. } => {
+                FormShape::Extrusion { plane, start, end, start_lock, end_lock, .. } | FormShape::Blend { plane, start, end, start_lock, end_lock, .. } => {
                     let wp = self.plane(*plane).ok_or("the work plane is missing")?;
                     let w0 = planes[&wp.id];
                     Some((self.depth(&planes, wp.axis, w0, start, *start_lock, env)?, self.depth(&planes, wp.axis, w0, end, *end_lock, env)?))
@@ -1399,8 +1414,8 @@ impl FamilyBody {
                 let tris = prism_tris(normal, &part);
                 Ok(Solid { axis: Some(normal), parts: vec![part], tris })
             }
-            FormShape::Blend { start, end, base, top, .. } => {
-                let (a, b) = (w0 + eval_num(start, env)?, w0 + eval_num(end, env)?);
+            FormShape::Blend { start, end, start_lock, end_lock, base, top, .. } => {
+                let (a, b) = (self.depth(pos, normal, w0, start, *start_lock, env)?, self.depth(pos, normal, w0, end, *end_lock, env)?);
                 let (p0, p1) = (self.polys(pos, base, axes)?, self.polys(pos, top, axes)?);
                 if p0.len() != 1 || p1.len() != 1 {
                     return Err("a blend needs one closed loop at the base and one at the top".into());
@@ -1957,6 +1972,35 @@ mod tests {
     }
 
     #[test]
+    fn a_blend_end_locked_to_a_plane_follows_it_and_visible_off_hides_a_form() {
+        let mut b = FamilyBody::template();
+        let top = b.add_offset_plane("Top", PLANE_LEVEL, "[H]").unwrap();
+        let sq = |r: f64| Loop::rect(Coord::at(-r), Coord::at(r), Coord::at(-r), Coord::at(r));
+        let id = b.add_form(Form {
+            id: 0,
+            name: "Taper".into(),
+            shape: FormShape::Blend { plane: PLANE_LEVEL, start: "0".into(), end: "50".into(), start_lock: None, end_lock: Some(top), base: vec![sq(100.0)], top: vec![sq(50.0)] },
+            void: false,
+            cuts_host: true,
+            cut_by: vec![],
+            material: String::new(),
+            material_param: None,
+            subcategory: String::new(),
+            vis: Visibility::default(),
+        });
+        for h in [300.0, 800.0] {
+            let s = b.solve(&mut params(&[("H", h)])).unwrap();
+            assert_eq!(s.form(id).unwrap().span, Some((0.0, h)));
+        }
+        assert!(b.remove_plane(top).is_err());
+        // an old file has no visible flag and reads as visible
+        let js = serde_json::to_string(&b.forms[0].vis).unwrap().replace("\"visible\":true,", "");
+        assert!(serde_json::from_str::<Visibility>(&js).unwrap().visible);
+        b.forms[0].vis.visible = false;
+        assert!(!b.solve(&mut params(&[("H", 300.0)])).unwrap().form(id).unwrap().vis.present);
+    }
+
+    #[test]
     fn a_sweep_follows_its_path_and_mitres_the_corners() {
         for plane in [PLANE_LEVEL, PLANE_FB, PLANE_LR] {
             for flip in [false, true] {
@@ -2029,7 +2073,7 @@ mod tests {
         let blend = b.add_form(Form {
             id: 0,
             name: "Frustum".into(),
-            shape: FormShape::Blend { plane: PLANE_LEVEL, start: "0".into(), end: "100".into(), base: vec![sq(100.0)], top: vec![sq(50.0)] },
+            shape: FormShape::Blend { plane: PLANE_LEVEL, start: "0".into(), end: "100".into(), start_lock: None, end_lock: None, base: vec![sq(100.0)], top: vec![sq(50.0)] },
             void: false,
             cuts_host: true,
             cut_by: vec![],

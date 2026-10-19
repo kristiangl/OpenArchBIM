@@ -317,3 +317,19 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 .fe-catright .famed-row { margin-bottom: 4px; }
 #fam-prop-body .famed-row span:first-child { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 #fam-prop-body .famed-row input[type=text], #fam-prop-body .famed-row select { width: 110px; flex: none; }
+
+/* Associate Family Parameter: the small button at the right of a property row, and its chooser */
+.fe-assocbox { display: inline-flex; align-items: center; gap: 4px; }
+.fe-assoc { width: 20px; height: 20px; padding: 0; font-size: 12px; line-height: 1; border: 1px solid var(--line); background: transparent; border-radius: 3px; cursor: pointer; color: var(--muted); flex: none; }
+.fe-assoc:hover { background: var(--panel-2); }
+.fe-assoc.on { background: var(--accent); color: #fff; border-color: var(--accent); }
+.fe-assoclist { border: 1px solid var(--line); border-radius: 4px; max-height: 220px; min-width: 280px; overflow: auto; margin-top: 8px; }
+.fe-assocrow { padding: 4px 10px; cursor: pointer; font-size: 12px; }
+.fe-assocrow:hover { background: var(--panel-2); }
+.fe-assocrow.sel { background: var(--accent); color: #fff; }
+#fam-prop-body .fe-assocbox .fe-ro { width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 1; font-weight: 600; }
+#fam-prop-body .fe-assocbox input[type=text] { width: 86px; }
+/* boxes with a label and a field inside the family ribbon's contextual tab (Depth, Label Dimension) */
+.fe-ctxbox { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 8px; font-size: 12px; }
+.fe-ctxbox > * { align-self: flex-start; }
+.fe-depth { width: 70px; }

@@ -132,10 +132,51 @@ function renderTabs() {
   Object.keys(ribbonSet()).forEach((name) => {
     const b = document.createElement("button");
     b.textContent = name;
-    b.onclick = () => selectTab(name);
+    b.onclick = () => { app.famCtxOn = false; selectTab(name); };
     tabs.appendChild(b);
   });
   selectTab(app.ribbonTab[app.doc]);
+  if (app.doc === "family") renderFamContext();
+}
+
+// The family editor's contextual tab ("Modify | Extrusion" and so on): FamModel.context() says what the selection offers.
+// It appears while something is selected, comes to the front when the person selects it, and goes when they let go.
+function renderFamContext(activate) {
+  if (app.doc !== "family") return;
+  const tabs = $("#tabs");
+  let ctx = tabs.querySelector("button.contextual.fam");
+  const c = FamModel.context();
+  if (!c) {
+    if (ctx) { const was = ctx.classList.contains("active"); ctx.remove(); if (was || app.famCtxOn) selectTab(app.ribbonTab.family); app.famCtxOn = false; }
+    return;
+  }
+  const fresh = !ctx;
+  if (fresh) { ctx = document.createElement("button"); ctx.className = "contextual fam"; ctx.onclick = () => renderFamContext(true); tabs.append(ctx); }
+  ctx.textContent = c.title;
+  const changed = ctx.dataset.key !== c.key || (c.auto && ctx.dataset.auto !== "1");
+  ctx.dataset.key = c.key;
+  ctx.dataset.auto = c.auto ? "1" : "";
+  if (activate === true || ((fresh || changed) && c.auto) || app.famCtxOn) drawFamContext(c, ctx);
+}
+function drawFamContext(c, ctx) {
+  app.famCtxOn = true;
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b === ctx));
+  const ribbon = $("#ribbon");
+  ribbon.replaceChildren();
+  for (const g of c.groups) {
+    const grp = el("div", { className: "group" });
+    const items = el("div", { className: "items" });
+    let stack = null;
+    for (const it of g.items) {
+      if (it.node) { stack = null; items.append(it.node); continue; }
+      const node = sketchButton(it, !it.big, it.onclick, it.on);
+      if (it.big) { stack = null; items.append(node); continue; }
+      if (!stack || stack.children.length >= 3) { stack = el("div", { className: "stack" }); items.append(stack); }
+      stack.append(node);
+    }
+    grp.append(items, el("div", { className: "label", textContent: g.label }));
+    ribbon.append(grp);
+  }
 }
 
 // Switch between the project and the family open in the family editor (each keeps its own ribbon tab)

@@ -89,7 +89,7 @@ impl B {
 }
 
 fn vis(when: Option<&str>, coarse: bool, medium: bool, fine: bool, plan: bool) -> Visibility {
-    Visibility { coarse, medium, fine, plan, front_back: true, left_right: true, when: when.map(|s| s.to_string()) }
+    Visibility { coarse, medium, fine, plan, front_back: true, left_right: true, visible: true, when: when.map(|s| s.to_string()) }
 }
 
 fn piece(a0: &str, a1: &str, b0: &str, b1: &str) -> Piece {
