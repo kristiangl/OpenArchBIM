@@ -1,3 +1,5 @@
+<img width="400" alt="Logo" src="https://github.com/user-attachments/assets/a8d24118-092c-4e25-93fd-096e7065c8b0" />
+
 # OpenArch BIM
 
 A free, open-source building information modelling (BIM) application for architects. Windows and Mac. Built in Rust.
