@@ -1,7 +1,7 @@
 # OpenArch BIM - notes for Claude
 
 - Project: BIM authoring app (open-source alternative to the incumbent BIM tools), internal to Lawrence Associates first. Australian standards and metric units first, by default.
-- Stack: Rust core, Tauri 2 shell, WebGPU viewport. Avoid GPL dependencies (commercial use stays possible).
+- Stack: Rust core, Tauri 2 shell, WebGPU viewport. The project is AGPL-3.0-only. Dependencies must be AGPL-compatible (MIT, Apache-2.0, BSD, MPL are fine); avoid anything GPL-incompatible or proprietary.
 - Plan (plan-v0.2) and the feature parity list live in the private claude.ai Project for this app, not in this repo; check the parity list before building a feature and add notes from the public help documentation for that feature.
 - The Rust crates have no GUI dependencies and are tested on Linux (`cargo test --workspace`). `apps/desktop/src-tauri` is excluded from the workspace and only builds on CI (Windows/Mac) or with platform webview libraries.
 - Crates: openarch-params (formulas, schedules), openarch-links (instanced links), openarch-model (elements, undo/redo, geometry, project file), openarch-api (JSON commands used by the UI), openarch-dev (browser dev server).

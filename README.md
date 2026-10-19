@@ -72,4 +72,4 @@ Contribution guidelines are coming before the first public release. Until then, 
 
 ## Licence
 
-To be confirmed before the first public release.
+OpenArch BIM is free software under the GNU Affero General Public License v3.0 (AGPL-3.0-only). See [LICENSE](LICENSE). If you run a modified version as a network service, you must offer its source to the users of that service.
