@@ -134,7 +134,10 @@ const FAM_RIBBON = {
       { id: "f-category", label: "Family Category and Parameters", big: true }, { id: "f-types", label: "Family Types", big: true } ] },
     { label: "Forms", items: [
       { id: "f-ext", label: "Extrusion", big: true }, { id: "f-blend", label: "Blend", big: true }, { id: "f-revolve", label: "Revolve", big: true },
-      { id: "f-sweep", label: "Sweep", big: true }, { id: "f-swblend", label: "Swept Blend", big: true }, { id: "f-void", label: "Void Extrusion", big: true } ] },
+      { id: "f-sweep", label: "Sweep", big: true }, { id: "f-swblend", label: "Swept Blend", big: true },
+      { id: "f-void-menu", label: "Void Forms", big: true, menu: [
+        { id: "f-void-ext", label: "Void Extrusion" }, { id: "f-void-blend", label: "Void Blend" }, { id: "f-void-revolve", label: "Void Revolve" },
+        { id: "f-void-sweep", label: "Void Sweep" }, { id: "f-void-swblend", label: "Void Swept Blend" } ] } ] },
     { label: "Model", items: [
       { id: "f-mline", label: "Model Line" }, { id: "f-comp", label: "Component" }, { id: "f-mtext", label: "Model Text" },
       { id: "f-opening", label: "Opening" }, { id: "f-mgroup", label: "Model Group" } ] },

@@ -389,15 +389,22 @@ const FamModel = (() => {
   // ---- ribbon commands ----
   const TOOL_OF = {
     "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
-    "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-sym": "sym", "f-region": "region",
+    "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-swblend": "swblend", "f-sym": "sym", "f-region": "region",
   };
   function setTool(t) {
+    S.voidNext = false;
     S.tool = t; S.draft = null; S.alignRef = null; S.blend = null; S.rev = null; S.picks = [];
     toolbar(); status(); render(); ctxRefresh();
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
   const commands = {
     "f-types": () => typesDialog(),
+    // Void Forms: the same five forms, made as voids
+    "f-void-ext": () => setTool("void"),
+    "f-void-blend": () => { setTool("blend"); S.voidNext = true; toolbar(); status(); },
+    "f-void-revolve": () => { setTool("revolve"); S.voidNext = true; toolbar(); status(); },
+    "f-void-sweep": () => { setTool("sweep"); S.voidNext = true; toolbar(); status(); },
+    "f-void-swblend": () => { setTool("swblend"); S.voidNext = true; toolbar(); status(); },
     "f-category": () => categoryDialog(),
     "f-del": () => deleteSel(),
     "f-eq": () => toggleEq(),
@@ -416,7 +423,7 @@ const FamModel = (() => {
   function syncRibbon() {
     document.querySelectorAll("#ribbon button.cmd[data-id^='f-']").forEach((b) => {
       const id = b.dataset.id;
-      b.classList.toggle("on", S ? (TOOL_OF[id] ? TOOL_OF[id] === S.tool : (id === "f-names" ? S.show.names : id === "f-dims" ? S.show.dims : id === "f-wpshow" ? S.showWp : false)) : false);
+      b.classList.toggle("on", S ? (TOOL_OF[id] ? TOOL_OF[id] === S.tool : (id === "f-names" ? S.show.names : id === "f-dims" ? S.show.dims : id === "f-wpshow" ? S.showWp : id === "f-void-menu" ? (S.tool === "void" || !!S.voidNext) : false)) : false);
     });
   }
 
@@ -431,7 +438,7 @@ const FamModel = (() => {
       mode.value = S.symMode; mode.onchange = () => { S.symMode = mode.value; S.draft = null; status(); render(); };
       bar.append(el("span", "fe-opt", "Draw"), mode);
     }
-    if (S.tool === "sweep") sweepBar(bar);
+    if (S.tool === "sweep" || S.tool === "swblend") sweepBar(bar);
     if (S.tool === "align") {
       const o = S.alignOpts;
       const lab = (text, tip, key) => { const l = el("label", "fe-opt", text); l.title = tip; l.prepend(checkIn(o[key], (v) => { o[key] = v; })); return l; };
@@ -468,7 +475,7 @@ const FamModel = (() => {
         bar.append(el("span", "fe-opt", "Draw"), sk, el("span", "fe-opt", "Work plane"), wp, el("span", "fe-opt", "Start angle"), a0, el("span", "fe-opt", "End angle"), a1);
       } else bar.append(el("span", "fe-opt", "Draw"), sk, el("span", "fe-opt", "Work plane"), wp, el("span", "fe-opt", S.tool === "blend" ? "Base at" : "Start"), st, el("span", "fe-opt", S.tool === "blend" ? "Top at" : "End"), en);
     }
-    if (["ext", "void", "blend", "revolve", "sweep"].includes(S.tool)) bar.append(lockOpt());
+    if (["ext", "void", "blend", "revolve", "sweep", "swblend"].includes(S.tool)) bar.append(lockOpt());
     bar.hidden = !bar.children.length;
   }
   function lockOpt() {
@@ -482,7 +489,8 @@ const FamModel = (() => {
     const mode = el("select");
     [["line", "Line"], ["arc", "3-Point Arc"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; mode.append(o); });
     mode.value = S.pathMode; mode.onchange = () => { S.pathMode = mode.value; if (S.draft) S.draft.arcEnd = null; status(); render(); };
-    const cl = el("label", "fe-opt", "Closed path"); cl.prepend(checkIn(S.pathClosed, (v) => { S.pathClosed = v; }));
+    const cl = el("label", "fe-opt", "Closed path"); cl.prepend(checkIn(S.tool === "swblend" ? false : S.pathClosed, (v) => { S.pathClosed = v; }));
+    if (S.tool === "swblend") cl.hidden = true;
     const axis = VIEWS[S.view] ? VIEWS[S.view].n : "z";
     const wp = el("select");
     S.body.planes.filter((p) => p.axis === axis).forEach((p) => { const o = el("option", "", p.name); o.value = p.id; wp.append(o); });
@@ -589,6 +597,7 @@ const FamModel = (() => {
       void: "Sketch the void. A void that cuts the host makes the opening in the wall.",
       blend: "Sketch the base, then the top. Both need the same number of points. The solid blends from the base height to the top height.",
       revolve: "Sketch the profile, then click two points for the axis it turns about. Set the start and end angle above.",
+      swblend: "Draw the open path: click points, double-click or press Enter to finish. Then set the start and end profile in Properties.",
       sweep: "Draw the path: click points, double-click or press Enter to finish. In 3-Point Arc mode click the end, then a point on the arc. Then set the profile in Properties.",
       align: "Click a reference plane or the edge of a form to align to, then click the edge to move to it. Lock in the options bar ties it to a reference plane; Multiple Alignment (or Ctrl) keeps the same reference.",
       sym: "Line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. Shows only in this kind of view.",
@@ -764,7 +773,7 @@ const FamModel = (() => {
 
   function formProps(r, f) {
     if (!f) return;
-    r.append(el("div", "famed-hint", { blend: "Blend", revolve: "Revolve", sweep: "Sweep" }[f.shape.type] || (f.void ? "Void extrusion" : "Extrusion")));
+    r.append(el("div", "famed-hint", { blend: "Blend", revolve: "Revolve", sweep: "Sweep", swept_blend: "Swept Blend" }[f.shape.type] || (f.void ? "Void extrusion" : "Extrusion")));
     r.append(field("Name", textIn(f.name, (v) => change((b) => { formById(f.id).name = v; }, true))));
     r.append(field("Void", checkIn(f.void, (v) => change((b) => { formById(f.id).void = v; }))));
     const sh = f.shape;
@@ -777,11 +786,16 @@ const FamModel = (() => {
       r.append(field("Start angle", textIn(String(sh.start_deg), (v) => change((b) => { formById(f.id).shape.start_deg = Number(v) || 0; }, true))));
       r.append(field("End angle", textIn(String(sh.end_deg), (v) => change((b) => { formById(f.id).shape.end_deg = v === "" || isNaN(Number(v)) ? 360 : Number(v); }, true))));
     }
-    if (sh.type === "sweep") {
+    if (sh.type === "sweep" || sh.type === "swept_blend") {
       r.append(field("Work plane", selIn(S.body.planes.filter((p) => p.axis === planeById(sh.plane).axis).map((p) => [p.id, p.name]), sh.plane, (v) => change((b) => { formById(f.id).shape.plane = Number(v); }))));
-      r.append(el("div", "famed-h", "Profile"));
+      r.append(el("div", "famed-h", sh.type === "swept_blend" ? "Start profile" : "Profile"));
       r.append(el("div", "famed-hint", "Measured from the first point of the path. Across is to the left of the path, Up follows the work plane normal."));
-      sweepProfile(r, f);
+      sweepProfile(r, f, "profile");
+      if (sh.type === "swept_blend") {
+        r.append(el("div", "famed-h", "End profile"));
+        r.append(el("div", "famed-hint", "Measured from the last point of the path. It needs the same kind and number of points as the start profile."));
+        sweepProfile(r, f, "profile_end");
+      }
       r.append(field("Turn profile (deg)", textIn(String(sh.profile_angle || 0), (v) => change((b) => { formById(f.id).shape.profile_angle = Number(v) || 0; }, true))));
       r.append(field("Flip profile", checkIn(sh.flip, (v) => change((b) => { formById(f.id).shape.flip = v; }, true))));
     }
@@ -843,8 +857,8 @@ const FamModel = (() => {
 
   // The profile of a sweep: loops of rectangles, circles or points. Every number is an expression
   // (a value or a formula using parameters) measured across and up from the path start.
-  function sweepProfile(r, f) {
-    const loops = f.shape.profile;
+  function sweepProfile(r, f, key = "profile") {
+    const loops = f.shape[key];
     const set = (fn) => change((b) => { fn(formById(f.id).shape); });
     const lens = lengthParams();
     const kindOf = (l) => {
@@ -862,44 +876,44 @@ const FamModel = (() => {
       const sel = selIn([["rect", "Rectangle"], ["circle", "Circle"], ["poly", "Points"]], kind, (v) => {
         if (v === kind) return;
         set((sh) => {
-          const cur = sh.profile[li];
+          const cur = sh[key][li];
           let u0 = "-25", u1 = "25", v0 = "-25", v1 = "25";
           if (kind === "rect") { u0 = cur.points[0].u; u1 = cur.points[1].u; v0 = cur.points[0].v; v1 = cur.points[2].v; }
-          if (v === "circle") sh.profile[li] = { type: "circle", u: "0", v: "0", r: "25" };
-          else sh.profile[li] = rect(u0, u1, v0, v1);
+          if (v === "circle") sh[key][li] = { type: "circle", u: "0", v: "0", r: "25" };
+          else sh[key][li] = rect(u0, u1, v0, v1);
         });
       });
       head.append(sel);
-      if (loops.length > 1) { const del = el("button", "", "Remove"); del.onclick = () => set((sh) => { sh.profile.splice(li, 1); }); head.append(del); }
+      if (loops.length > 1) { const del = el("button", "", "Remove"); del.onclick = () => set((sh) => { sh[key].splice(li, 1); }); head.append(del); }
       r.append(head);
       if (kind === "rect") {
         const p = l.points;
-        const put = (u0, u1, v0, v1) => set((sh) => { sh.profile[li] = rect(u0, u1, v0, v1); });
+        const put = (u0, u1, v0, v1) => set((sh) => { sh[key][li] = rect(u0, u1, v0, v1); });
         exprIn("Across from", p[0].u, (v) => put(v, p[1].u, p[0].v, p[2].v));
         exprIn("Across to", p[1].u, (v) => put(p[0].u, v, p[0].v, p[2].v));
         exprIn("Up from", p[0].v, (v) => put(p[0].u, p[1].u, v, p[2].v));
         exprIn("Up to", p[2].v, (v) => put(p[0].u, p[1].u, p[0].v, v));
       } else if (kind === "circle") {
-        exprIn("Centre across", l.u, (v) => set((sh) => { sh.profile[li].u = v; }));
-        exprIn("Centre up", l.v, (v) => set((sh) => { sh.profile[li].v = v; }));
-        exprIn("Radius", l.r, (v) => set((sh) => { sh.profile[li].r = v; }));
+        exprIn("Centre across", l.u, (v) => set((sh) => { sh[key][li].u = v; }));
+        exprIn("Centre up", l.v, (v) => set((sh) => { sh[key][li].v = v; }));
+        exprIn("Radius", l.r, (v) => set((sh) => { sh[key][li].r = v; }));
       } else {
         l.points.forEach((n, i) => {
           const row = el("div", "famed-row");
-          const iu = textIn(n.u, (v) => set((sh) => { sh.profile[li].points[i].u = v.trim() || "0"; }), { list: lens });
-          const iv = textIn(n.v, (v) => set((sh) => { sh.profile[li].points[i].v = v.trim() || "0"; }), { list: lens });
+          const iu = textIn(n.u, (v) => set((sh) => { sh[key][li].points[i].u = v.trim() || "0"; }), { list: lens });
+          const iv = textIn(n.v, (v) => set((sh) => { sh[key][li].points[i].v = v.trim() || "0"; }), { list: lens });
           const del = el("button", "", "x"); del.title = "Remove this point";
-          del.onclick = () => { if (l.points.length > 3) set((sh) => { const q = sh.profile[li]; q.points.splice(i, 1); if ((q.bulges || []).length) q.bulges.splice(i, 1); }); };
+          del.onclick = () => { if (l.points.length > 3) set((sh) => { const q = sh[key][li]; q.points.splice(i, 1); if ((q.bulges || []).length) q.bulges.splice(i, 1); }); };
           row.append(el("span", "", `Point ${i + 1}`), iu, iv, del);
           r.append(row);
         });
         const add = el("button", "", "Add point");
-        add.onclick = () => set((sh) => { const q = sh.profile[li]; q.points.push({ u: "0", v: "0" }); if ((q.bulges || []).length) q.bulges.push(0); });
+        add.onclick = () => set((sh) => { const q = sh[key][li]; q.points.push({ u: "0", v: "0" }); if ((q.bulges || []).length) q.bulges.push(0); });
         r.append(add);
       }
     });
     const addLoop = el("button", "", "Add loop");
-    addLoop.onclick = () => set((sh) => { sh.profile.push(rect("-10", "10", "-10", "10")); });
+    addLoop.onclick = () => set((sh) => { sh[key].push(rect("-10", "10", "-10", "10")); });
     r.append(addLoop);
   }
 
@@ -1528,7 +1542,7 @@ const FamModel = (() => {
       const f = formById(S.sel.id);
       if (!f) return [];
       const wp = planeById(f.shape.plane), ax = wp && wp.axis;
-      if (f.shape.type === "sweep") return [{ loop: f.shape.path, plane: ax }];
+      if (f.shape.type === "sweep" || f.shape.type === "swept_blend") return [{ loop: f.shape.path, plane: ax }];
       if (f.shape.type === "blend") return [...f.shape.base, ...f.shape.top].map((loop) => ({ loop, plane: ax }));
       if (f.shape.type === "revolve") return [...f.shape.profile.map((loop) => ({ loop, plane: ax })), { loop: { nodes: [f.shape.axis_a, f.shape.axis_b], bulges: [], closed: false }, plane: ax }];
       return f.shape.profile.map((loop) => ({ loop, plane: ax }));
@@ -1808,7 +1822,7 @@ const FamModel = (() => {
       const wp = planeById(f.shape.plane);
       if (!wp || wp.axis !== V.n) continue;
       if (f.shape.type === "extrusion" || f.shape.type === "revolve") f.shape.profile.forEach((loop, li) => out.push({ kind: "form", id: f.id, li, loop }));
-      if (f.shape.type === "sweep") out.push({ kind: "form", id: f.id, li: 0, loop: f.shape.path, which: "path" });
+      if (f.shape.type === "sweep" || f.shape.type === "swept_blend") out.push({ kind: "form", id: f.id, li: 0, loop: f.shape.path, which: "path" });
       if (f.shape.type === "blend") { f.shape.base.forEach((loop, li) => out.push({ kind: "form", id: f.id, li, loop })); f.shape.top.forEach((loop, li) => out.push({ kind: "form", id: f.id, li, loop, which: "top" })); }
     }
     for (const y of S.body.syms) {
@@ -1862,7 +1876,7 @@ const FamModel = (() => {
     return best;
   }
   function hitEdgeNodes(b, h) {
-    const owner = h.kind === "form" ? (({ shape: sh }) => (sh.type === "sweep" ? [sh.path] : sh.type === "blend" ? (h.which === "top" ? sh.top : sh.base) : sh.profile)[h.li])(b.forms.find((f) => f.id === h.id)) : b.syms.find((y) => y.id === h.id).path;
+    const owner = h.kind === "form" ? (({ shape: sh }) => (sh.type === "sweep" || sh.type === "swept_blend" ? [sh.path] : sh.type === "blend" ? (h.which === "top" ? sh.top : sh.base) : sh.profile)[h.li])(b.forms.find((f) => f.id === h.id)) : b.syms.find((y) => y.id === h.id).path;
     return [owner.nodes[h.i], owner.nodes[h.j]];
   }
   function pointIn(ring, x, y) {
@@ -1981,7 +1995,7 @@ const FamModel = (() => {
       S.msg = `Aligned to ${ref.name}${lock ? " and locked" : o.lock ? ". It could not be locked: that edge is not on a reference plane" : ""}.`; status(); render();
       return;
     }
-    if (t === "sweep") {
+    if (t === "sweep" || t === "swblend") {
       const sp = snapPoint(m.x, m.y);
       const d = S.draft && S.draft.kind === "path" ? S.draft : (S.draft = { kind: "path", pts: [], bulges: [], arcEnd: null });
       if (S.pathMode === "arc" && d.pts.length) {
@@ -2233,7 +2247,7 @@ const FamModel = (() => {
     wrap.append(el("span", "", "Depth"), inp);
     return wrap;
   }
-  const NOUN = (f) => ({ extrusion: "Extrusion", blend: "Blend", revolve: "Revolve", sweep: "Sweep" }[f.shape.type]);
+  const NOUN = (f) => ({ extrusion: "Extrusion", blend: "Blend", revolve: "Revolve", sweep: "Sweep", swept_blend: "Swept Blend" }[f.shape.type]);
   // What the ribbon shows for the selection: null for none. main.js draws it as a "Modify | ..." tab.
   function context() {
     const c = contextBase();
@@ -2607,9 +2621,9 @@ const FamModel = (() => {
       const id = newId();
       const n = b.forms.filter((f) => f.shape.type === "blend").length + 1;
       b.forms.push({
-        id, name: `Blend ${n}`, void: false, cuts_host: true, cut_by: [],
+        id, name: `${S.voidNext ? "Void " : ""}Blend ${n}`, void: !!S.voidNext, cuts_host: true, cut_by: [],
         shape: { type: "blend", plane: wp, start: S.start, end: S.end, base, top: profile },
-        material: "", material_param: null, subcategory: "Frame/Mullion", vis: {},
+        material: "", material_param: null, subcategory: S.voidNext ? "" : "Frame/Mullion", vis: {},
       });
       S.sel = { kind: "form", id };
     });
@@ -2625,9 +2639,9 @@ const FamModel = (() => {
       const id = newId();
       const n = b.forms.filter((f) => f.shape.type === "revolve").length + 1;
       b.forms.push({
-        id, name: `Revolve ${n}`, void: false, cuts_host: true, cut_by: [],
+        id, name: `${S.voidNext ? "Void " : ""}Revolve ${n}`, void: !!S.voidNext, cuts_host: true, cut_by: [],
         shape: { type: "revolve", plane: wp, axis_a: node(pts[0]), axis_b: node(pts[1]), start_deg: Number(S.a0) || 0, end_deg: S.a1 === "" || isNaN(Number(S.a1)) ? 360 : Number(S.a1), profile },
-        material: "", material_param: null, subcategory: "Frame/Mullion", vis: {},
+        material: "", material_param: null, subcategory: S.voidNext ? "" : "Frame/Mullion", vis: {},
       });
       S.sel = { kind: "form", id };
     });
@@ -2645,17 +2659,21 @@ const FamModel = (() => {
     if (S.pathClosed) bulges.push(0);
     const path = { nodes: q.map((p) => ({ u: coordOf(p.u), v: coordOf(p.v) })), bulges, closed: S.pathClosed && q.length > 2 };
     if (!path.closed) path.bulges = d.bulges.slice();
-    await change((b) => {
+    const ok = await change((b) => {
       const id = newId();
-      const n = b.forms.filter((f) => f.shape.type === "sweep").length + 1;
+      const blend = S.tool === "swblend";
+      const n = b.forms.filter((f) => f.shape.type === (blend ? "swept_blend" : "sweep")).length + 1;
+      const sq = (h) => [{ type: "poly", points: [[-h, -h], [h, -h], [h, h], [-h, h]].map(([u, v]) => ({ u: String(u), v: String(v) })), bulges: [] }];
+      const shape = blend ? { type: "swept_blend", plane: wp, path, profile: sq(25), profile_end: sq(10), profile_angle: 0, flip: false } : { type: "sweep", plane: wp, path, profile: sq(25), profile_angle: 0, flip: false };
       b.forms.push({
-        id, name: `Sweep ${n}`, void: false, cuts_host: true, cut_by: [],
-        shape: { type: "sweep", plane: wp, path, profile: [{ type: "poly", points: [["-25", "-25"], ["25", "-25"], ["25", "25"], ["-25", "25"]].map(([u, v]) => ({ u, v })), bulges: [] }], profile_angle: 0, flip: false },
-        material: "", material_param: null, subcategory: "Frame/Mullion", vis: {},
+        id, name: `${S.voidNext ? "Void " : ""}${blend ? "Swept Blend" : "Sweep"} ${n}`, void: !!S.voidNext, cuts_host: true, cut_by: [],
+        shape,
+        material: "", material_param: null, subcategory: S.voidNext ? "" : "Frame/Mullion", vis: {},
       });
       S.sel = { kind: "form", id };
     });
-    S.msg = "Swept a 50 x 50 profile. Set its size and position in Properties.";
+    if (!ok) return;
+    S.msg = S.tool === "swblend" ? "Blended a 50 x 50 profile into a 20 x 20 one. Set both in Properties." : "Swept a 50 x 50 profile. Set its size and position in Properties.";
     status();
   }
   async function addSym(path, filled) {

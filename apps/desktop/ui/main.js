@@ -220,7 +220,44 @@ function runCommand(id, e) {
   return f ? f(e) : undefined;
 }
 
+// A ribbon drop-down: the button opens a short list of commands under it
+function menuButton(item, small) {
+  const b = document.createElement("button");
+  b.className = "cmd" + (small ? " small" : "");
+  b.title = item.label;
+  b.dataset.id = item.id;
+  const ico = document.createElement("span");
+  ico.className = "ico";
+  ico.textContent = item.ico || item.label.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  const lab = document.createElement("span");
+  lab.textContent = item.label + " \u25BE";
+  b.append(ico, lab);
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const open = document.querySelector(".cmd-menu");
+    if (open) { const same = open.dataset.for === item.id; open.remove(); if (same) return; }
+    const m = document.createElement("div");
+    m.className = "cmd-menu";
+    m.dataset.for = item.id;
+    for (const sub of item.menu) {
+      const it = document.createElement("button");
+      it.textContent = sub.label;
+      it.disabled = !commandFor(sub.id);
+      it.onclick = (ev) => { ev.stopPropagation(); m.remove(); runCommand(sub.id, ev); };
+      m.append(it);
+    }
+    const r = b.getBoundingClientRect();
+    m.style.left = `${r.left}px`;
+    m.style.top = `${r.bottom}px`;
+    document.body.append(m);
+    const away = () => { m.remove(); document.removeEventListener("click", away, true); };
+    setTimeout(() => document.addEventListener("click", away, true), 0);
+  };
+  return b;
+}
+
 function cmdButton(item, small) {
+  if (item.menu) return menuButton(item, small);
   const b = document.createElement("button");
   b.className = "cmd" + (small ? " small" : "");
   b.disabled = !commandFor(item.id);

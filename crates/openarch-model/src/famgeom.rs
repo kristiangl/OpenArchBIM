@@ -378,12 +378,25 @@ pub enum FormShape {
         #[serde(default)]
         flip: bool,
     },
+    /// A sweep whose profile changes along the path: `profile` at the start, `profile_end` at the end,
+    /// blended in between by distance along the path. The two profiles have to tessellate to the same
+    /// number of points, loop for loop. The path is open.
+    SweptBlend {
+        plane: PlaneId,
+        path: Loop,
+        profile: Vec<ProfileLoop>,
+        profile_end: Vec<ProfileLoop>,
+        #[serde(default)]
+        profile_angle: f64,
+        #[serde(default)]
+        flip: bool,
+    },
 }
 
 impl FormShape {
     pub fn plane(&self) -> PlaneId {
         match self {
-            FormShape::Extrusion { plane, .. } | FormShape::Blend { plane, .. } | FormShape::Revolve { plane, .. } | FormShape::Sweep { plane, .. } => *plane,
+            FormShape::Extrusion { plane, .. } | FormShape::Blend { plane, .. } | FormShape::Revolve { plane, .. } | FormShape::Sweep { plane, .. } | FormShape::SweptBlend { plane, .. } => *plane,
         }
     }
 }
@@ -554,7 +567,7 @@ impl FamilyBody {
                     FormShape::Extrusion { profile, start_lock, end_lock, .. } => profile.iter().any(in_loop) || *start_lock == Some(id) || *end_lock == Some(id),
                     FormShape::Revolve { profile, .. } => profile.iter().any(in_loop),
                     FormShape::Blend { base, top, start_lock, end_lock, .. } => base.iter().chain(top).any(in_loop) || *start_lock == Some(id) || *end_lock == Some(id),
-                    FormShape::Sweep { path, .. } => in_loop(path),
+                    FormShape::Sweep { path, .. } | FormShape::SweptBlend { path, .. } => in_loop(path),
                 }
         });
         let used_by_sym = self.syms.iter().any(|s| in_loop(&s.path));
@@ -971,22 +984,10 @@ impl FamilyBody {
                     f(format!("{what} (start)"), start);
                     f(format!("{what} (end)"), end);
                 }
-                FormShape::Sweep { profile, .. } => {
-                    for l in profile {
-                        match l {
-                            ProfileLoop::Poly { points, .. } => {
-                                for pt in points {
-                                    f(format!("{what} (profile)"), &mut pt.u);
-                                    f(format!("{what} (profile)"), &mut pt.v);
-                                }
-                            }
-                            ProfileLoop::Circle { u, v, r } => {
-                                for x in [u, v, r] {
-                                    f(format!("{what} (profile)"), x);
-                                }
-                            }
-                        }
-                    }
+                FormShape::Sweep { profile, .. } => profile_exprs(profile, &what, f),
+                FormShape::SweptBlend { profile, profile_end, .. } => {
+                    profile_exprs(profile, &what, f);
+                    profile_exprs(profile_end, &what, f);
                 }
                 FormShape::Revolve { .. } => {}
             }
@@ -1443,6 +1444,25 @@ impl FamilyBody {
                 let tris = sweep_tris(normal, w0, &route, path.closed, &rings, *profile_angle, *flip)?;
                 Ok(Solid { axis: None, parts: vec![], tris })
             }
+            FormShape::SweptBlend { path, profile, profile_end, profile_angle, flip, .. } => {
+                if path.nodes.len() < 2 {
+                    return Err("a swept blend needs a path of at least two points".into());
+                }
+                if path.closed {
+                    return Err("a swept blend needs an open path".into());
+                }
+                let pts = self.place(pos, path, axes)?;
+                let route = tessellate_loop(&pts, path, TOL);
+                let (r0, r1) = (profile_rings(profile, env)?, profile_rings(profile_end, env)?);
+                if r0.is_empty() || r1.is_empty() {
+                    return Err("a swept blend needs a closed profile at each end".into());
+                }
+                if r0.len() != r1.len() || r0.iter().zip(&r1).any(|(a, b)| a.len() != b.len()) {
+                    return Err("the two profiles of a swept blend need the same number of points".into());
+                }
+                let tris = sweep_core(normal, w0, &route, false, &r0, Some(&r1), *profile_angle, *flip)?;
+                Ok(Solid { axis: None, parts: vec![], tris })
+            }
             FormShape::Revolve { axis_a, axis_b, start_deg, end_deg, profile, .. } => {
                 let rings = self.polys(pos, profile, axes)?;
                 let pa = Point::new(self.coord(pos, &axis_a.u, axes.0)?, self.coord(pos, &axis_a.v, axes.1)?);
@@ -1486,6 +1506,24 @@ fn profile_rings(profile: &[ProfileLoop], env: &mut Env) -> Result<Vec<Vec<Point
         }
     }
     Ok(out)
+}
+
+fn profile_exprs(profile: &mut [ProfileLoop], what: &str, f: &mut dyn FnMut(String, &mut String)) {
+    for l in profile {
+        match l {
+            ProfileLoop::Poly { points, .. } => {
+                for pt in points {
+                    f(format!("{what} (profile)"), &mut pt.u);
+                    f(format!("{what} (profile)"), &mut pt.v);
+                }
+            }
+            ProfileLoop::Circle { u, v, r } => {
+                for x in [u, v, r] {
+                    f(format!("{what} (profile)"), x);
+                }
+            }
+        }
+    }
 }
 
 fn label(f: &Form) -> String {
@@ -1559,6 +1597,12 @@ fn loft_tris(axis: Axis, r0: &[Point], r1: &[Point], w0: f64, w1: f64) -> Vec<Tr
 /// A profile carried along a planar path. Corners are mitred, so the profile keeps its width
 /// through a turn. The result faces outward whichever way the path and profile run.
 fn sweep_tris(axis: Axis, w: f64, route: &[Point], closed: bool, rings: &[Vec<Point>], angle_deg: f64, flip: bool) -> Result<Vec<Tri>, String> {
+    sweep_core(axis, w, route, closed, rings, None, angle_deg, flip)
+}
+
+/// The sweep, or with `rings_end` a swept blend: the profile at each station is the one at the start
+/// moved towards the one at the end by the share of the path length covered so far.
+fn sweep_core(axis: Axis, w: f64, route: &[Point], closed: bool, rings: &[Vec<Point>], rings_end: Option<&[Vec<Point>]>, angle_deg: f64, flip: bool) -> Result<Vec<Tri>, String> {
     // drop repeated points
     let mut r: Vec<Point> = Vec::new();
     for p in route {
@@ -1604,32 +1648,79 @@ fn sweep_tris(axis: Axis, w: f64, route: &[Point], closed: bool, rings: &[Vec<Po
         (if flip { -a } else { a }, b)
     };
     let mut out = Vec::new();
-    for region in regions(rings) {
-        let shapes: Vec<Vec<Point>> = std::iter::once(region.outer.clone()).chain(region.holes.iter().cloned()).collect();
+    // how far along the path each station is, 0 to 1 (only a swept blend uses it)
+    let mut t = vec![0.0; n];
+    for k in 1..n {
+        t[k] = t[k - 1] + frames[k].0.dist(&frames[k - 1].0);
+    }
+    let total = t[n - 1].max(1e-9);
+    for v in t.iter_mut() {
+        *v /= total;
+    }
+    if let Some(end) = rings_end {
+        // side walls: every ring point moves from its start place to its end place along the path
         let at = |k: usize, q: Point| {
             let (a, b) = place((q.x, q.y));
             let (p, m) = frames[k];
             axis.point(p.x + m.0 * a, p.y + m.1 * a, w + b)
         };
-        for ring in &shapes {
+        for (ri, ring) in rings.iter().enumerate() {
             let c = ring.len();
-            let spans = if closed { n } else { n - 1 };
-            for k in 0..spans {
-                let k1 = (k + 1) % n;
+            let mix = |i: usize, k: usize| {
+                let (a, b) = (ring[i], end[ri][i]);
+                Point::new(a.x + (b.x - a.x) * t[k], a.y + (b.y - a.y) * t[k])
+            };
+            for k in 0..n - 1 {
                 for i in 0..c {
                     let j = (i + 1) % c;
-                    let (a0, b0, a1, b1) = (at(k, ring[i]), at(k, ring[j]), at(k1, ring[i]), at(k1, ring[j]));
+                    let (a0, b0, a1, b1) = (at(k, mix(i, k)), at(k, mix(j, k)), at(k + 1, mix(i, k + 1)), at(k + 1, mix(j, k + 1)));
                     out.push([a0, b0, b1]);
                     out.push([a0, b1, a1]);
                 }
             }
         }
-        if !closed {
-            if let Some((pts, tris)) = triangulate_region(&region) {
-                for t in tris {
-                    let q = [pts[t[0]], pts[t[1]], pts[t[2]]];
-                    out.push([at(n - 1, q[0]), at(n - 1, q[1]), at(n - 1, q[2])]);
-                    out.push([at(0, q[0]), at(0, q[2]), at(0, q[1])]);
+        for (rs, k, rev) in [(rings, 0usize, true), (end, n - 1, false)] {
+            for region in regions(rs) {
+                if let Some((pts, tris)) = triangulate_region(&region) {
+                    for tr in tris {
+                        let q = [pts[tr[0]], pts[tr[1]], pts[tr[2]]];
+                        if rev {
+                            out.push([at(k, q[0]), at(k, q[2]), at(k, q[1])]);
+                        } else {
+                            out.push([at(k, q[0]), at(k, q[1]), at(k, q[2])]);
+                        }
+                    }
+                }
+            }
+        }
+    } else {
+        for region in regions(rings) {
+            let shapes: Vec<Vec<Point>> = std::iter::once(region.outer.clone()).chain(region.holes.iter().cloned()).collect();
+            let at = |k: usize, q: Point| {
+                let (a, b) = place((q.x, q.y));
+                let (p, m) = frames[k];
+                axis.point(p.x + m.0 * a, p.y + m.1 * a, w + b)
+            };
+            for ring in &shapes {
+                let c = ring.len();
+                let spans = if closed { n } else { n - 1 };
+                for k in 0..spans {
+                    let k1 = (k + 1) % n;
+                    for i in 0..c {
+                        let j = (i + 1) % c;
+                        let (a0, b0, a1, b1) = (at(k, ring[i]), at(k, ring[j]), at(k1, ring[i]), at(k1, ring[j]));
+                        out.push([a0, b0, b1]);
+                        out.push([a0, b1, a1]);
+                    }
+                }
+            }
+            if !closed {
+                if let Some((pts, tris)) = triangulate_region(&region) {
+                    for t in tris {
+                        let q = [pts[t[0]], pts[t[1]], pts[t[2]]];
+                        out.push([at(n - 1, q[0]), at(n - 1, q[1]), at(n - 1, q[2])]);
+                        out.push([at(0, q[0]), at(0, q[2]), at(0, q[1])]);
+                    }
                 }
             }
         }
@@ -1998,6 +2089,54 @@ mod tests {
         assert!(serde_json::from_str::<Visibility>(&js).unwrap().visible);
         b.forms[0].vis.visible = false;
         assert!(!b.solve(&mut params(&[("H", 300.0)])).unwrap().form(id).unwrap().vis.present);
+    }
+
+    #[test]
+    fn a_swept_blend_changes_its_profile_along_the_path() {
+        let mk = |start: Vec<ProfileLoop>, end: Vec<ProfileLoop>, path: Loop, flip: bool| Form {
+            id: 0,
+            name: "Swept Blend".into(),
+            shape: FormShape::SweptBlend { plane: PLANE_LEVEL, path, profile: start, profile_end: end, profile_angle: 0.0, flip },
+            void: false,
+            cuts_host: true,
+            cut_by: vec![],
+            material: String::new(),
+            material_param: None,
+            subcategory: String::new(),
+            vis: Visibility::default(),
+        };
+        let straight = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(1000.0), Coord::at(0.0))], bulges: vec![], closed: false };
+        for flip in [false, true] {
+            let mut b = FamilyBody::template();
+            let id = b.add_form(mk(vec![ProfileLoop::rect("-50", "50", "-50", "50")], vec![ProfileLoop::rect("-25", "25", "-25", "25")], straight.clone(), flip));
+            let s = b.solve(&mut params(&[])).unwrap();
+            let tris = &s.form(id).unwrap().solid.tris;
+            // a square frustum: h/3 (A1 + A2 + sqrt(A1 A2))
+            let want = 1000.0 / 3.0 * (10000.0 + 2500.0 + 5000.0);
+            assert!((volume(tris) - want).abs() < 1.0, "{flip}: {} vs {want}", volume(tris));
+            assert!(watertight(tris), "{flip}");
+        }
+        // a path with a corner: still closed and facing outward, with the end profile smaller
+        let bent = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(500.0), Coord::at(0.0)), Node::new(Coord::at(500.0), Coord::at(500.0))], bulges: vec![], closed: false };
+        let mut b = FamilyBody::template();
+        let id = b.add_form(mk(vec![ProfileLoop::rect("-40", "40", "-40", "40")], vec![ProfileLoop::rect("-20", "20", "-20", "20")], bent, false));
+        let tris = b.solve(&mut params(&[])).unwrap().form(id).unwrap().solid.tris.clone();
+        assert!(volume(&tris) > 0.0 && watertight(&tris));
+        // different point counts, or a closed path, are refused with a reason
+        let mut b = FamilyBody::template();
+        b.add_form(mk(vec![ProfileLoop::rect("-50", "50", "-50", "50")], vec![ProfileLoop::Circle { u: "0".into(), v: "0".into(), r: "20".into() }], straight.clone(), false));
+        let e = b.solve(&mut params(&[])).err().unwrap();
+        assert!(e.contains("same number of points"), "{e}");
+        let mut b = FamilyBody::template();
+        let sq = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(100.0))], bulges: vec![], closed: true };
+        b.add_form(mk(vec![ProfileLoop::rect("-5", "5", "-5", "5")], vec![ProfileLoop::rect("-5", "5", "-5", "5")], sq, false));
+        assert!(b.solve(&mut params(&[])).err().unwrap().contains("open path"));
+        // expressions in both profiles follow a renamed parameter
+        let mut b = FamilyBody::template();
+        b.add_form(mk(vec![ProfileLoop::rect("-[W]", "[W]", "-[W]", "[W]")], vec![ProfileLoop::rect("-[W]/2", "[W]/2", "-[W]/2", "[W]/2")], straight, false));
+        b.rename_param("W", "Wide");
+        let j = serde_json::to_string(&b).unwrap();
+        assert!(j.contains("[Wide]") && !j.contains("[W]"), "{j}");
     }
 
     #[test]

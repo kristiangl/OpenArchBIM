@@ -333,3 +333,8 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 .fe-ctxbox { display: flex; flex-direction: column; justify-content: center; gap: 4px; padding: 0 8px; font-size: 12px; }
 .fe-ctxbox > * { align-self: flex-start; }
 .fe-depth { width: 70px; }
+
+.cmd-menu { position: fixed; z-index: 50; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; box-shadow: 0 4px 14px rgba(0,0,0,.18); display: flex; flex-direction: column; min-width: 150px; padding: 2px; }
+.cmd-menu button { text-align: left; padding: 5px 10px; border: 0; background: none; cursor: pointer; border-radius: 2px; }
+.cmd-menu button:hover:not(:disabled) { background: var(--accent-soft); }
+.cmd-menu button:disabled { opacity: .5; cursor: default; }
