@@ -35,6 +35,20 @@ const Backend = {
     return window.prompt("Save family as (file path)", current || "family.oaf");
   },
 
+  // Lookup table files (.csv)
+  async pickOpenCsv() {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });
+    }
+    return window.prompt("Import lookup table (CSV file path)");
+  },
+  async pickSaveCsv(current) {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.save({ defaultPath: current || "Table.csv", filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });
+    }
+    return window.prompt("Export lookup table as (file path)", current || "table.csv");
+  },
+
   async pickOpenFamily() {
     if (this.isDesktop && window.__TAURI__.dialog) {
       return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }] });

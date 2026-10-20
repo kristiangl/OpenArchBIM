@@ -6,3 +6,4 @@ license.workspace = true
 description = "Parameter, formula and schedule engine"
 
 [dependencies]
+serde = { version = "1", features = ["derive"] }

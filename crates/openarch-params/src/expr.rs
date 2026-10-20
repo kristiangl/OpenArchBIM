@@ -394,6 +394,8 @@ pub fn names_in(expr: &Expr, out: &mut Vec<String>) {
             names_in(a, out);
             names_in(b, out);
         }
+        // the table and column of size_lookup are names of a table and a column, not parameters
+        Expr::Call(f, args) if f == "size_lookup" => args.iter().skip(2).for_each(|a| names_in(a, out)),
         Expr::Call(_, args) => args.iter().for_each(|a| names_in(a, out)),
         _ => {}
     }
@@ -567,6 +569,26 @@ fn call(
                     }
                 }
             }
+        }
+        "size_lookup" => {
+            if args.len() < 4 {
+                return bad("expects (table, column, default, value, ...)");
+            }
+            // the table and the column can be bare names or quoted text
+            let word = |e: &Expr, resolve: &mut dyn FnMut(&str) -> Result<Value, EvalError>| -> Result<String, EvalError> {
+                match e {
+                    Expr::Name(n) | Expr::Text(n) => Ok(n.clone()),
+                    other => Ok(eval(other, resolve)?.to_string()),
+                }
+            };
+            let table = word(&args[0], resolve)?;
+            let column = word(&args[1], resolve)?;
+            let default = eval(&args[2], resolve)?;
+            let mut keys = Vec::new();
+            for a in &args[3..] {
+                keys.push(eval(a, resolve)?);
+            }
+            crate::lookup::size_lookup(&table, &column, default, &keys)
         }
         other => Err(EvalError::BadCall(format!("unknown function '{other}'"))),
     }

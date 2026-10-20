@@ -324,6 +324,31 @@ mod tests {
     }
 
     #[test]
+    fn a_lookup_table_sets_a_parameter_and_follows_the_type() {
+        let mut fam = hatch_family();
+        let p = |name: &str, default| ParamDef { name: name.into(), param_kind: ParamKind::Number, instance: false, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default };
+        fam.params.push(p("Pick", ParamValue::Number(2.0)));
+        fam.params.iter_mut().find(|q| q.name == "Width").unwrap().formula = Some("size_lookup(Sizes, \"Width\", 800, [Pick])".into());
+        fam.body.lookup_tables.push(openarch_params::lookup::LookupTable::from_csv("Sizes", "Name,Pick##number,Width##length##meters\nA,1,0.7\nB,2,1.0\nC,3,1.2\n").unwrap());
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let (_, types) = d.add_family(fam, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let id = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        let width = |d: &Document| { let Some(Element::FamilyInstance(i)) = d.get(id) else { panic!() }; d.instance_opening_size(i).0 };
+        assert_eq!(width(&d), 1000.0);
+        d.patch_family_type(types[0], &json!({ "values": { "Pick": 3.0 } })).unwrap();
+        assert_eq!(width(&d), 1200.0);
+        d.patch_family_type(types[0], &json!({ "values": { "Pick": 9.0 } })).unwrap();
+        assert_eq!(width(&d), 800.0, "nothing matches: the default");
+        // the tables are stored with the family and survive a file round trip
+        let (file, _) = d.export_family(d.family_type(types[0]).unwrap().family).map(|f| (f, ())).unwrap();
+        assert_eq!(file.family.body.lookup_tables.len(), 1);
+        let old: crate::famgeom::FamilyBody = serde_json::from_str(r#"{"planes":[]}"#).unwrap();
+        assert!(old.lookup_tables.is_empty());
+    }
+
+    #[test]
     fn flipping_hand_and_facing_mirror_the_body() {
         let mut d = Document::new_project();
         let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
@@ -610,16 +635,18 @@ impl Document {
             t.values.insert(k.clone(), v.clone());
         }
         let reports = self.family_preview(family, type_id, overrides).map(|s| s.reports).unwrap_or_default();
-        Ok(fam
-            .params
-            .iter()
-            .filter_map(|p| {
-                if let Some((_, v)) = reports.iter().find(|(n, _)| *n == p.name).filter(|_| p.formula.is_none()) {
-                    return Some((p.name.clone(), ParamValue::Number(*v)));
-                }
-                self.type_param(&t, &p.name).map(|v| (p.name.clone(), v))
-            })
-            .collect())
+        let mut out = Vec::new();
+        for p in &fam.params {
+            if let Some((_, v)) = reports.iter().find(|(n, _)| *n == p.name).filter(|_| p.formula.is_none()) {
+                out.push((p.name.clone(), ParamValue::Number(*v)));
+                continue;
+            }
+            // a formula that does not work out is reported, not left blank
+            if let Some(v) = self.param_try(&t, None, &p.name, 0)? {
+                out.push((p.name.clone(), v));
+            }
+        }
+        Ok(out)
     }
 
     /// The family as it stands for one type, with `overrides` laid over the type's values (the

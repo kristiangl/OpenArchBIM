@@ -4,6 +4,7 @@
 //! schedule calculated columns, so a schedule total can be used anywhere.
 
 pub mod expr;
+pub mod lookup;
 pub mod model;
 pub mod value;
 

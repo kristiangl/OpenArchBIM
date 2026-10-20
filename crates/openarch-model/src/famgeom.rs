@@ -575,6 +575,10 @@ pub struct FamilyBody {
     pub connectors: Vec<Connector>,
     #[serde(default)]
     pub dims: Vec<DimDef>,
+    /// Lookup tables read by `size_lookup` in this family's formulas. They live with the body so they travel with it
+    /// into the editor, the family file and the project.
+    #[serde(default)]
+    pub lookup_tables: Vec<openarch_params::lookup::LookupTable>,
     /// Stays vertical when hosted on a sloped face (Always vertical).
     #[serde(default)]
     pub always_vertical: bool,
@@ -1361,6 +1365,7 @@ fn fmt_num(v: f64) -> String {
 impl FamilyBody {
     /// Positions of every reference plane, resolving offsets through `env`.
     pub fn solve_planes(&self, env: &mut Env) -> Result<BTreeMap<PlaneId, f64>, String> {
+        let _tables = self.tables_in_reach();
         let mut pos: BTreeMap<PlaneId, f64> = BTreeMap::new();
         let mut left: Vec<&RefPlane> = self.planes.iter().collect();
         while !left.is_empty() {
@@ -1445,9 +1450,15 @@ impl FamilyBody {
         }
     }
 
+    /// Puts this family's lookup tables in reach of `size_lookup` while the guard lives.
+    fn tables_in_reach(&self) -> Option<openarch_params::lookup::TablesGuard> {
+        (!self.lookup_tables.is_empty()).then(|| openarch_params::lookup::use_tables(&self.lookup_tables))
+    }
+
     /// The box the host-cutting voids span, `[min, max]` in family coordinates, without meshing
     /// anything. Used wherever only the size of the opening matters (placement, fit, dimensions).
     pub fn opening_box(&self, env: &mut Env) -> Result<Option<[[f64; 3]; 2]>, String> {
+        let _tables = self.tables_in_reach();
         let planes = self.solve_planes(env)?;
         let mut b: Option<[[f64; 3]; 2]> = None;
         for f in self.forms.iter().filter(|f| f.void && f.cuts_host) {
@@ -1495,6 +1506,7 @@ impl FamilyBody {
 
     /// Work out the whole body for one set of parameter values.
     pub fn solve(&self, env: &mut Env) -> Result<Solved, String> {
+        let _tables = self.tables_in_reach();
         let planes = self.solve_planes(env)?;
         let mut out = Solved { planes: planes.clone(), ..Default::default() };
         for d in &self.dims {

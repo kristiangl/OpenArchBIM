@@ -427,6 +427,10 @@ const FamModel = (() => {
     "f-conn-cable_tray": () => { S.connKind = "cable_tray"; setTool("conn"); },
     "f-conn-conduit": () => { S.connKind = "conduit"; setTool("conn"); },
     "f-category": () => categoryDialog(),
+    "f-lookup": () => lookupDialog({
+      tables: () => S.body.lookup_tables || [],
+      set: async (next) => { const ok = await change((b) => { b.lookup_tables = next; }); return ok ? null : S.msg || "That does not solve."; },
+    }),
     "f-del": () => deleteSel(),
     "f-eq": () => toggleEq(),
     "f-load": () => loadIntoProject(false),
@@ -1233,8 +1237,11 @@ const FamModel = (() => {
         button("A→Z", () => sortAll(1)), button("Z→A", () => sortAll(-1)),
       );
       bar.children[3].title = "Move up"; bar.children[4].title = "Move down"; bar.children[5].title = "Sort ascending"; bar.children[6].title = "Sort descending";
-      const lookups = button("Manage Lookup Tables...", () => {});
-      lookups.disabled = true; lookups.title = "Lookup tables arrive in a later step";
+      const lookups = button("Manage Lookup Tables...", () => lookupDialog({
+        tables: () => wb.lookup_tables || [],
+        set: async (next) => { wb.lookup_tables = next; try { await recalc(); draw(); } catch (e) { return String(e.message || e); } return null; },
+      }));
+      lookups.title = "Tables of sizes read from CSV files by size_lookup in formulas";
       lookups.style.marginLeft = "auto"; bar.append(lookups);
 
       body.append(top, tbl, bar, msg);
@@ -1335,6 +1342,68 @@ const FamModel = (() => {
     S.undo.push(before); S.redo = []; touch(); S.msg = "";
     props(); status(); render();
     return true;
+  }
+
+  // Manage Lookup Tables: CSV tables kept in the family and read by size_lookup(table, column, default, value1, ...).
+  // `target` reads the tables and writes a new list (it answers with an error text, or null when it worked).
+  function lookupDialog(target) {
+    openModal("Manage Lookup Tables", (body, foot, close) => {
+      let sel = 0;
+      const list = el("div", "fe-lk-list"), view = el("div", "fe-lk-view"), msg = el("div", "modal-msg");
+      const wrap = el("div", "fe-lk"); wrap.append(list, view);
+      body.append(wrap, msg);
+      const ext = el("div", "famed-hint", "In a formula: size_lookup(Table, \"Column\", default, value1, value2, ...). value1 is matched against the second column, value2 against the third. The first column only labels the row. When no row matches the default is used.");
+      body.append(ext);
+      const cellText = (c, col) => (typeof c === "number" ? String(Math.round(c * 1e6) / 1e6) : c);
+      function draw() {
+        const t = target.tables();
+        sel = Math.min(sel, Math.max(0, t.length - 1));
+        list.replaceChildren(...(t.length ? t.map((x, i) => { const b = el("button", "fe-lk-item" + (i === sel ? " on" : ""), x.name); b.onclick = () => { sel = i; draw(); }; return b; }) : [el("div", "famed-hint", "No tables yet. Import a CSV file.")]));
+        view.replaceChildren();
+        const cur = t[sel];
+        if (!cur) return;
+        view.append(el("div", "famed-hint", `${cur.name}: ${cur.rows.length} rows, ${cur.columns.length} columns. Lengths are shown in millimetres.`));
+        const tbl = el("table", "fe-lk-table");
+        const hr = el("tr"); cur.columns.forEach((c) => { const h = el("th", "", c.kind ? `${c.name} (${c.kind}${c.unit && c.kind === "length" ? ", file in " + c.unit : ""})` : c.name); hr.append(h); }); tbl.append(hr);
+        cur.rows.slice(0, 40).forEach((r) => { const tr = el("tr"); r.forEach((c, j) => tr.append(el("td", "", cellText(c, cur.columns[j])))); tbl.append(tr); });
+        view.append(tbl);
+        if (cur.rows.length > 40) view.append(el("div", "famed-hint", `${cur.rows.length - 40} more rows not shown.`));
+      }
+      draw();
+      foot.append(
+        button("Import CSV...", async () => {
+          msg.textContent = "";
+          const path = await Backend.pickOpenCsv();
+          if (!path) return;
+          try {
+            const r = await Backend.call("read_lookup_csv", { path });
+            const next = target.tables().filter((x) => x.name.toLowerCase() !== r.table.name.toLowerCase());
+            const replaced = next.length !== target.tables().length;
+            next.push(r.table);
+            const err = await target.set(next);
+            if (err) { msg.textContent = err; return; }
+            sel = target.tables().length - 1;
+            msg.textContent = replaced ? `Replaced ${r.table.name}.` : `Imported ${r.table.name}.`;
+            draw();
+          } catch (e) { msg.textContent = String(e.message || e); }
+        }),
+        button("Export CSV...", async () => {
+          const cur = target.tables()[sel];
+          if (!cur) return;
+          const path = await Backend.pickSaveCsv(cur.name + ".csv");
+          if (!path) return;
+          try { const r = await Backend.call("write_lookup_csv", { path, table: cur }); msg.textContent = `Wrote ${r.path}.`; } catch (e) { msg.textContent = String(e.message || e); }
+        }),
+        button("Delete", async () => {
+          const cur = target.tables()[sel];
+          if (!cur) return;
+          const err = await target.set(target.tables().filter((x) => x !== cur));
+          msg.textContent = err ? `${err} (A formula still uses '${cur.name}'.)` : `Deleted ${cur.name}.`;
+          draw();
+        }),
+        button("Close", close, true),
+      );
+    });
   }
 
   function categoryDialog() {

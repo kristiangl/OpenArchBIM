@@ -109,13 +109,19 @@ impl Document {
     /// Worked out like `type_param`, but a formula can also read the instance's own
     /// values (a door's Frame Type changes the hole it cuts).
     fn param_at(&self, t: &FamilyType, inst: Option<&FamilyInstance>, name: &str, depth: u8) -> Option<ParamValue> {
-        let fam = self.family(t.family)?;
+        self.param_try(t, inst, name, depth).ok().flatten()
+    }
+
+    /// `param_at` with the reason a formula did not work out.
+    pub fn param_try(&self, t: &FamilyType, inst: Option<&FamilyInstance>, name: &str, depth: u8) -> Result<Option<ParamValue>, String> {
+        let Some(fam) = self.family(t.family) else { return Ok(None) };
         let def = fam.param(name);
         if let Some(src) = def.and_then(|p| p.formula.as_deref()) {
             if depth > 8 {
-                return None; // a formula that refers back to itself
+                return Err(format!("'{name}' refers back to itself"));
             }
-            let expr = openarch_params::expr::parse(src).ok()?;
+            let expr = openarch_params::expr::parse(src).map_err(|e| format!("'{name}': {e:?}"))?;
+            let _tables = (depth == 0 && !fam.body.lookup_tables.is_empty()).then(|| openarch_params::lookup::use_tables(&fam.body.lookup_tables));
             let mut resolve = |n: &str| -> Result<openarch_params::Value, openarch_params::EvalError> {
                 use openarch_params::Value as Val;
                 let own = inst.and_then(|i| i.values.get(n)).filter(|_| fam.param(n).map_or(false, |p| p.instance && p.formula.is_none()));
@@ -126,16 +132,20 @@ impl Document {
                     None => Err(openarch_params::EvalError::UnknownName(n.to_string())),
                 }
             };
-            return Some(match openarch_params::expr::eval(&expr, &mut resolve).ok()? {
-                openarch_params::Value::Num(x) => ParamValue::Number(x),
-                openarch_params::Value::Bool(b) => ParamValue::Bool(b),
-                openarch_params::Value::Text(s) => ParamValue::Text(s),
-            });
+            return match openarch_params::expr::eval(&expr, &mut resolve) {
+                Ok(openarch_params::Value::Num(x)) => Ok(Some(ParamValue::Number(x))),
+                Ok(openarch_params::Value::Bool(b)) => Ok(Some(ParamValue::Bool(b))),
+                Ok(openarch_params::Value::Text(s)) => Ok(Some(ParamValue::Text(s))),
+                Err(e) => Err(format!("'{name}': {}", match e {
+                    openarch_params::EvalError::BadCall(m) => m,
+                    other => format!("{other:?}"),
+                })),
+            };
         }
         if let Some(v) = t.values.get(name) {
-            return Some(v.clone());
+            return Ok(Some(v.clone()));
         }
-        def.map(|p| p.default.clone())
+        Ok(def.map(|p| p.default.clone()))
     }
 
     /// An instance's value for a parameter: its own, else the type's, else the

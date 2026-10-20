@@ -549,6 +549,26 @@ impl Session {
                 Ok(json!({ "id": self.doc.import_family(f)? }))
             }
             // ---- family files (.oaf): the file and the project copy are separate; nothing stays linked ----
+            "read_lookup_csv" => {
+                // a lookup table from a CSV file; the editor adds it to the family's body
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let text = std::fs::read_to_string(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                let name = match p.get("name").and_then(|v| v.as_str()).filter(|n| !n.trim().is_empty()) {
+                    Some(n) => n.to_string(),
+                    None => path.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default(),
+                };
+                let table = openarch_params::lookup::LookupTable::from_csv(&name, &text)?;
+                Ok(json!({ "table": table }))
+            }
+            "write_lookup_csv" => {
+                let mut path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                if path.extension().is_none() {
+                    path.set_extension("csv");
+                }
+                let table: openarch_params::lookup::LookupTable = serde_json::from_value(p.get("table").cloned().ok_or("missing table")?).map_err(|e| format!("bad table: {e}"))?;
+                std::fs::write(&path, table.to_csv()).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+                Ok(json!({ "path": path.to_string_lossy() }))
+            }
             "save_family_file" => {
                 let id = id_of(p, "id")?;
                 let mut path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
@@ -3321,6 +3341,34 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn lookup_tables_import_export_and_drive_a_plane() {
+        let mut s = Session::new();
+        let dir = std::env::temp_dir().join(format!("openarch_lookup_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let csv = dir.join("Sizes.csv");
+        std::fs::write(&csv, "Name,Pick##number,Width##length##centimeters\nA,1,70\nB,2,100\n").unwrap();
+        let r = call(&mut s, "read_lookup_csv", json!({ "path": csv.to_string_lossy() }));
+        assert_eq!(r["table"]["name"], "Sizes", "the file name is the table name");
+        assert_eq!(r["table"]["rows"][1][2], 1000.0, "centimetres come in as millimetres");
+        let bad = dir.join("Bad.csv");
+        std::fs::write(&bad, "Name,Pick##number\nA,x\n").unwrap();
+        assert!(s.handle("read_lookup_csv", &json!({ "path": bad.to_string_lossy() })).unwrap_err().contains("not a number"));
+        let out = call(&mut s, "write_lookup_csv", json!({ "path": dir.join("Out").to_string_lossy(), "table": r["table"] }));
+        assert!(out["path"].as_str().unwrap().ends_with("Out.csv"));
+        let back = std::fs::read_to_string(dir.join("Out.csv")).unwrap();
+        assert!(back.contains("Width##length##centimeters") && back.contains("A,1,70"), "{back}");
+        // a body that holds the table solves a plane from size_lookup
+        let fid = call(&mut s, "new_family", json!({ "name": "Tbl", "category": "generic_models", "host": "none" }))["id"].as_u64().unwrap();
+        let mut body = call(&mut s, "family_def", json!({ "id": fid }))["body"].clone();
+        body["planes"].as_array_mut().unwrap().push(json!({ "id": 90, "name": "P", "axis": "x", "anchor": { "type": "offset", "from": 1, "by": "size_lookup(Sizes, \"Width\", 5, 2)" }, "ref_kind": "weak" }));
+        body["lookup_tables"] = json!([r["table"]]);
+        let pv = call(&mut s, "family_preview", json!({ "id": fid, "body": body }));
+        assert_eq!(pv["planes"]["90"], 1000.0, "{pv}");
+        body["lookup_tables"] = json!([]);
+        assert!(call(&mut s, "family_preview", json!({ "id": fid, "body": body }))["error"].as_str().unwrap().contains("no lookup table"));
     }
 
     #[test]

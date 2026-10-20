@@ -311,6 +311,9 @@ dependencies = [
 [[package]]
 name = "openarch-params"
 version = "0.0.1"
+dependencies = [
+ "serde",
+]
 
 [[package]]
 name = "pin-project-lite"

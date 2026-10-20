@@ -338,3 +338,12 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 .cmd-menu button { text-align: left; padding: 5px 10px; border: 0; background: none; cursor: pointer; border-radius: 2px; }
 .cmd-menu button:hover:not(:disabled) { background: var(--accent-soft); }
 .cmd-menu button:disabled { opacity: .5; cursor: default; }
+
+.fe-lk { display: flex; gap: 12px; min-width: 620px; min-height: 220px; }
+.fe-lk-list { display: flex; flex-direction: column; gap: 4px; min-width: 140px; max-width: 200px; }
+.fe-lk-item { text-align: left; padding: 4px 8px; border: 1px solid var(--line); background: var(--panel); color: var(--text); border-radius: 3px; cursor: pointer; }
+.fe-lk-item.on { border-color: var(--accent); background: var(--accent-soft, var(--panel)); }
+.fe-lk-view { flex: 1; overflow: auto; max-height: 340px; }
+.fe-lk-table { border-collapse: collapse; font-size: 12px; }
+.fe-lk-table th, .fe-lk-table td { border: 1px solid var(--line); padding: 2px 8px; text-align: left; }
+.fe-lk-table th { background: var(--panel); }
