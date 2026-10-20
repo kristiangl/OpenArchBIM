@@ -450,6 +450,40 @@ mod tests {
     }
 
     #[test]
+    fn a_placed_family_with_a_component_draws_it_in_plan_and_survives_a_file_round_trip() {
+        let mut leaf = hatch_family();
+        leaf.name = "Leaf".into();
+        leaf.host = HostKind::None;
+        let mut frame = hatch_family();
+        frame.name = "Frame".into();
+        let nid = frame.body.take_id();
+        frame.body.nested.push(Nested { id: nid, family: "Leaf".into(), type_name: "t".into(), type_param: None, name: String::new(), origin: [Coord::at(0.0), Coord::at(0.0), Coord::at(0.0)], rotation_deg: 0.0, work_plane: None, flip: false, mirror: false, params: BTreeMap::from([("Width".to_string(), "300".to_string())]), vis: Visibility::default() });
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        d.add_family(leaf, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let (fid, types) = d.add_family(frame, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        let solved = d.instance_solved(inst).unwrap();
+        let s = solved.as_ref().as_ref().unwrap();
+        assert!(s.forms.iter().any(|f| f.owner.is_some()), "the component is in the placed instance");
+        assert!(crate::symbol::plan_symbol_at(&d, inst, crate::view::DetailLevel::Medium, Some(1200.0)).is_some());
+        // the nested type's values follow an edit to the nested family
+        let narrow = |d: &Document| tri_box(d.instance_solved(inst).unwrap().as_ref().as_ref().unwrap().forms.iter().find(|f| f.owner.is_some() && !f.void).unwrap());
+        let b = narrow(&d);
+        assert!((b[1][0] - b[0][0] - 300.0).abs() < 1e-6, "{b:?}");
+        // a file round trip keeps the component
+        let file = d.export_family(fid).unwrap();
+        assert_eq!(file.family.body.nested.len(), 1);
+        let json = serde_json::to_string(&file.family.body).unwrap();
+        let back: crate::famgeom::FamilyBody = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.nested, file.family.body.nested);
+        // an older file that stored a component with only the first few fields still opens
+        let old: Nested = serde_json::from_str(r#"{"id":5,"family":"Leaf","origin":[{"off":0.0},{"off":0.0},{"off":0.0}]}"#).unwrap();
+        assert!(old.type_param.is_none() && old.work_plane.is_none() && !old.flip && !old.mirror && old.name.is_empty());
+    }
+
+    #[test]
     fn a_family_nested_inside_itself_is_stopped() {
         let mut a = hatch_family();
         a.name = "A".into();
