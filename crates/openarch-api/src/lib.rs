@@ -549,6 +549,53 @@ impl Session {
                 Ok(json!({ "id": self.doc.import_family(f)? }))
             }
             // ---- family files (.oaf): the file and the project copy are separate; nothing stays linked ----
+            "shared_params" => {
+                // one call for every operation on a shared parameter file: it is read, changed and written back each time
+                use openarch_model::sharedparams::{decode, SharedParamFile};
+                let mut path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let op = p.get("op").and_then(|v| v.as_str()).unwrap_or("read");
+                let text = |k: &str| p.get(k).and_then(|v| v.as_str());
+                let mut file = if op == "create" {
+                    if path.extension().is_none() {
+                        path.set_extension("txt");
+                    }
+                    if path.exists() {
+                        return Err(format!("{} already exists", path.display()));
+                    }
+                    SharedParamFile::default()
+                } else {
+                    let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                    SharedParamFile::parse(&decode(&bytes)?)?
+                };
+                let gid = || p.get("group").and_then(|v| v.as_u64()).map(|g| g as u32).ok_or("missing group");
+                let mut made: Option<Value> = None;
+                match op {
+                    "read" | "create" => {}
+                    "add_group" => made = Some(json!(file.add_group(text("name").ok_or("missing name")?)?)),
+                    "rename_group" => file.rename_group(gid()?, text("name").ok_or("missing name")?)?,
+                    "remove_group" => file.remove_group(gid()?)?,
+                    "add_param" => {
+                        let datatype = match (text("datatype"), p.get("kind")) {
+                            (Some(d), _) => d.to_string(),
+                            (None, Some(k)) => openarch_model::sharedparams::datatype_of(serde_json::from_value(k.clone()).map_err(|_| "unknown kind")?).to_string(),
+                            _ => return Err("missing type".into()),
+                        };
+                        made = Some(json!(file.add_param(gid()?, text("name").ok_or("missing name")?, &datatype, text("description").unwrap_or(""))?));
+                    }
+                    "edit_param" => file.edit_param(text("guid").ok_or("missing guid")?, text("name"), p.get("group").and_then(|v| v.as_u64()).map(|g| g as u32), text("description"))?,
+                    "remove_param" => file.remove_param(text("guid").ok_or("missing guid")?)?,
+                    other => return Err(format!("unknown shared parameter operation '{other}'")),
+                }
+                if op != "read" {
+                    std::fs::write(&path, file.to_text()).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+                }
+                Ok(json!({
+                    "path": path.to_string_lossy(),
+                    "made": made,
+                    "groups": file.groups,
+                    "params": file.params.iter().map(|q| json!({ "guid": q.guid, "name": q.name, "datatype": q.datatype, "kind": q.kind(), "group": q.group, "description": q.description, "visible": q.visible, "user_modifiable": q.user_modifiable })).collect::<Vec<_>>(),
+                }))
+            }
             "read_lookup_csv" => {
                 // a lookup table from a CSV file; the editor adds it to the family's body
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
@@ -3341,6 +3388,35 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn shared_parameter_files_are_made_edited_and_read() {
+        let mut s = Session::new();
+        let dir = std::env::temp_dir().join(format!("openarch_shared_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Shared").to_string_lossy().to_string();
+        let r = call(&mut s, "shared_params", json!({ "path": path, "op": "create" }));
+        let file = r["path"].as_str().unwrap().to_string();
+        assert!(file.ends_with("Shared.txt") && r["groups"].as_array().unwrap().is_empty());
+        assert!(s.handle("shared_params", &json!({ "path": file, "op": "create" })).unwrap_err().contains("already exists"));
+        let g = call(&mut s, "shared_params", json!({ "path": file, "op": "add_group", "name": "Dimensions" }))["made"].as_u64().unwrap();
+        let r = call(&mut s, "shared_params", json!({ "path": file, "op": "add_param", "group": g, "name": "Rough Width", "kind": "length", "description": "Opening width" }));
+        let guid = r["made"].as_str().unwrap().to_string();
+        let q = &r["params"][0];
+        assert_eq!(q["name"], "Rough Width");
+        assert_eq!(q["kind"], "length");
+        assert_eq!(q["datatype"], "LENGTH");
+        assert!(s.handle("shared_params", &json!({ "path": file, "op": "add_param", "group": g, "name": "rough width", "kind": "text" })).unwrap_err().contains("already"));
+        let r = call(&mut s, "shared_params", json!({ "path": file, "op": "edit_param", "guid": guid, "name": "Opening Width" }));
+        assert_eq!(r["params"][0]["name"], "Opening Width");
+        // read again from disk: the same
+        let again = call(&mut s, "shared_params", json!({ "path": file }));
+        assert_eq!(again["params"][0]["guid"], guid.as_str());
+        assert!(s.handle("shared_params", &json!({ "path": file, "op": "remove_group", "group": g })).is_err());
+        call(&mut s, "shared_params", json!({ "path": file, "op": "remove_param", "guid": guid }));
+        call(&mut s, "shared_params", json!({ "path": file, "op": "remove_group", "group": g }));
+        assert!(s.handle("shared_params", &json!({ "path": dir.join("Missing.txt").to_string_lossy(), "op": "read" })).unwrap_err().contains("could not read"));
     }
 
     #[test]

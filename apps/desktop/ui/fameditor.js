@@ -427,6 +427,7 @@ const FamModel = (() => {
     "f-conn-cable_tray": () => { S.connKind = "cable_tray"; setTool("conn"); },
     "f-conn-conduit": () => { S.connKind = "conduit"; setTool("conn"); },
     "f-category": () => categoryDialog(),
+    "f-sharedparams": () => sharedParamsDialog(null),
     "f-lookup": () => lookupDialog({
       tables: () => S.body.lookup_tables || [],
       set: async (next) => { const ok = await change((b) => { b.lookup_tables = next; }); return ok ? null : S.msg || "That does not solve."; },
@@ -1216,7 +1217,7 @@ const FamModel = (() => {
                 sel = np.name;
               }
               const t = wp.find((q) => q.name === np.name);
-              Object.assign(t, { param_kind: np.param_kind, instance: np.instance, group: np.group, discipline: np.discipline, tooltip: np.tooltip, default: np.default });
+              Object.assign(t, { param_kind: np.param_kind, instance: np.instance, group: np.group, discipline: np.discipline, tooltip: np.tooltip, default: np.default, shared_guid: np.shared_guid || null });
               if (np.instance) for (const w of work) delete w.values[t.name];
               await recalc(); draw();
             } catch (e) { msg.textContent = String(e.message || e); }
@@ -2683,34 +2684,172 @@ const FamModel = (() => {
     if (h.kind === "line" || h.kind === "val") S.drag = { dimAt: d.id, before: snapshot(), moved: false };
   }
 
-  // The Parameter Properties dialog: a new family parameter for a dimension, as a label or a reporting parameter.
+  // ---- shared parameters: a text file of parameters with fixed GUIDs, kept outside any family ----
+  const SP_KEY = "openarch.shared_params";
+  const sharedPath = () => { try { return localStorage.getItem(SP_KEY) || ""; } catch (e) { return ""; } };
+  const setSharedPath = (v) => { try { v ? localStorage.setItem(SP_KEY, v) : localStorage.removeItem(SP_KEY); } catch (e) { /* the path is not remembered */ } };
+  const SP_TYPES = [["length", "Length"], ["number", "Number"], ["integer", "Integer"], ["angle", "Angle"], ["yes_no", "Yes/No"], ["text", "Text"], ["material", "Material"]];
+  const spCall = (op, args) => Backend.call("shared_params", { path: sharedPath(), op, ...args });
+
+  // Shared Parameters: make or choose the file, then add groups and parameters to it. With `pick`, a parameter
+  // can be chosen and handed back (the Select button of Parameter Properties).
+  function sharedParamsDialog(pick) {
+    openModal(pick ? "Choose Shared Parameter" : "Shared Parameters", (body, foot, close) => {
+      let data = null, grp = null, sel = null;
+      const msg = el("div", "modal-msg");
+      const pathRow = el("div", "fe-sp-path"), cols = el("div", "fe-sp"), gcol = el("div", "fe-sp-col"), pcol = el("div", "fe-sp-col");
+      cols.append(gcol, pcol);
+      body.append(pathRow, cols, msg);
+      const run = async (op, args) => {
+        try { const r = await spCall(op, args); data = r; msg.textContent = ""; return r; } catch (e) { msg.textContent = String(e.message || e); return null; }
+      };
+      async function load() {
+        if (!sharedPath()) { data = null; draw(); return; }
+        try { data = await spCall("read", {}); msg.textContent = ""; } catch (e) { data = null; msg.textContent = String(e.message || e); }
+        draw();
+      }
+      function draw() {
+        pathRow.replaceChildren();
+        const has = !!sharedPath();
+        pathRow.append(el("span", "fe-sp-file", has ? sharedPath() : "No shared parameter file chosen."),
+          button("Create...", async () => {
+            const path = await Backend.pickSaveShared();
+            if (!path) return;
+            const r = await (async () => { try { return await Backend.call("shared_params", { path, op: "create" }); } catch (e) { msg.textContent = String(e.message || e); return null; } })();
+            if (r) { setSharedPath(r.path); data = r; grp = null; sel = null; draw(); }
+          }),
+          button("Browse...", async () => {
+            const path = await Backend.pickOpenShared();
+            if (!path) return;
+            setSharedPath(path); grp = null; sel = null; await load();
+          }));
+        gcol.replaceChildren(); pcol.replaceChildren();
+        if (!data) { gcol.append(el("div", "famed-hint", "Create a file, or browse to one.")); return; }
+        if (grp === null || !data.groups.some((g) => g.id === grp)) grp = data.groups.length ? data.groups[0].id : null;
+        gcol.append(el("div", "famed-h", "Groups"));
+        data.groups.forEach((g) => { const b = el("button", "fe-lk-item" + (g.id === grp ? " on" : ""), g.name); b.onclick = () => { grp = g.id; sel = null; draw(); }; gcol.append(b); });
+        const gb = el("div", "fe-sp-btns");
+        gb.append(
+          button("New...", () => askText("New Group", "Name", "", [], async (v) => { const r = await run("add_group", { name: v }); if (r) { grp = r.made; draw(); } else draw(); })),
+          button("Rename...", () => { const g = data.groups.find((q) => q.id === grp); if (g) askText("Rename Group", "Name", g.name, [], async (v) => { await run("rename_group", { group: grp, name: v }); draw(); }); }),
+          button("Delete", async () => { if (grp !== null) { await run("remove_group", { group: grp }); draw(); } }),
+        );
+        gcol.append(gb);
+        pcol.append(el("div", "famed-h", "Parameters"));
+        const mine = data.params.filter((q) => q.group === grp);
+        if (!mine.length) pcol.append(el("div", "famed-hint", grp === null ? "Add a group first." : "No parameters in this group."));
+        mine.forEach((q) => {
+          const b = el("button", "fe-lk-item" + (q.guid === sel ? " on" : ""), `${q.name}  (${q.kind ? (SP_TYPES.find((t) => t[0] === q.kind) || [0, q.datatype])[1] : q.datatype})`);
+          if (!q.kind) b.title = "Families cannot hold this type yet";
+          b.onclick = () => { sel = q.guid; draw(); };
+          b.ondblclick = () => { if (pick && q.kind) { close(); pick(q); } };
+          pcol.append(b);
+        });
+        const pb = el("div", "fe-sp-btns");
+        pb.append(
+          button("New...", () => { if (grp !== null) sharedParamForm(null); else msg.textContent = "Add a group first."; }),
+          button("Properties...", () => { const q = data.params.find((x) => x.guid === sel); if (q) sharedParamForm(q); }),
+          button("Delete", async () => { if (sel) { await run("remove_param", { guid: sel }); sel = null; draw(); } }),
+        );
+        pcol.append(pb);
+      }
+      function sharedParamForm(q) {
+        openModal(q ? "Shared Parameter Properties" : "New Shared Parameter", (b2, f2, close2) => {
+          const m2 = el("div", "modal-msg");
+          const st = { name: q ? q.name : "", kind: q && q.kind ? q.kind : "length", group: q ? q.group : grp, description: q ? q.description : "" };
+          b2.append(field("Name", textIn(st.name, (v) => { st.name = v; })));
+          const ty = selIn(q ? [[q.kind || "", q.kind ? (SP_TYPES.find((t) => t[0] === q.kind) || [0, q.datatype])[1] : q.datatype]] : SP_TYPES, q ? q.kind || "" : st.kind, (v) => { st.kind = v; });
+          ty.disabled = !!q;
+          b2.append(field("Type of parameter", ty));
+          b2.append(field("Group", selIn(data.groups.map((g) => [String(g.id), g.name]), String(st.group), (v) => { st.group = Number(v); })));
+          b2.append(field("Description", textIn(st.description, (v) => { st.description = v; })));
+          if (q) b2.append(field("GUID", el("span", "fe-sp-guid", q.guid)));
+          b2.append(m2);
+          f2.append(button("Cancel", close2), button("OK", async () => {
+            const r = q ? await run("edit_param", { guid: q.guid, name: st.name, group: st.group, description: st.description }) : await run("add_param", { group: st.group, name: st.name, kind: st.kind, description: st.description });
+            if (!r) { m2.textContent = msg.textContent; return; }
+            if (!q) sel = r.made;
+            grp = st.group;
+            close2(); draw();
+          }, true));
+        });
+      }
+      draw(); load();
+      if (pick) foot.append(button("Cancel", close), button("OK", () => {
+        const q = data && data.params.find((x) => x.guid === sel);
+        if (!q) { msg.textContent = "Pick a parameter."; return; }
+        if (!q.kind) { msg.textContent = "Families cannot hold that type of parameter yet."; return; }
+        close(); pick(q);
+      }, true));
+      else foot.append(button("Close", close, true));
+    }, { wide: true });
+  }
+
+  // The Parameter Properties dialog: a new family parameter for a dimension, as a label or a reporting parameter,
+  // or a parameter made by Family Types. A shared parameter takes its name, type and GUID from the shared file.
   function paramProps(opts, done) {
     openModal(opts.initial ? "Modify Parameter" : "Parameter Properties", (body, foot, close) => {
       const msg = el("div", "modal-msg");
       const ini = opts.initial;
-      const st = ini ? { name: ini.name, kind: ini.param_kind, instance: !!ini.instance, group: ini.group || "Other", reporting: !!ini.reporting, tooltip: ini.tooltip || "", discipline: ini.discipline || "common" } : { name: opts.name || "", kind: opts.kinds && opts.kinds[0] ? opts.kinds[0][0] : "length", instance: false, group: opts.group || "Dimensions", reporting: false, tooltip: "", discipline: "common" };
-      const row = (l, n) => body.append(field(l, n));
-      const fam = selIn([["family", "Family parameter"], ["shared", "Shared parameter (not built yet)"]], "family", () => {});
-      row("Parameter type", fam);
-      row("Name", textIn(st.name, (v) => { st.name = v; }));
-      row("Discipline", selIn([["common", "Common"]], st.discipline, (v) => { st.discipline = v; }));
-      row("Type of parameter", selIn(opts.kinds || KINDS, st.kind, (v) => { st.kind = v; }));
-      if (ini && opts.lockKind) body.lastChild.querySelector("select").disabled = true;
-      row("Group parameter under", textIn(st.group, (v) => { st.group = v; }, { list: ["Dimensions", "Constraints", "Construction", "Materials and Finishes", "Identity Data"] }));
-      row("Type or instance", selIn([["false", "Type"], ["true", "Instance"]], String(st.instance), (v) => { st.instance = v === "true"; }));
-      if (opts.canReport) row("Reporting parameter", checkIn(false, (v) => { st.reporting = v; }));
-      row("Tooltip description", textIn(st.tooltip, (v) => { st.tooltip = v; }));
-      body.append(msg);
+      const st = ini ? { name: ini.name, kind: ini.param_kind, instance: !!ini.instance, group: ini.group || "Other", reporting: !!ini.reporting, tooltip: ini.tooltip || "", discipline: ini.discipline || "common", guid: ini.shared_guid || null } : { name: opts.name || "", kind: opts.kinds && opts.kinds[0] ? opts.kinds[0][0] : "length", instance: false, group: opts.group || "Dimensions", reporting: false, tooltip: "", discipline: "common", guid: null };
+      let shared = !!st.guid;
+      const canShare = !opts.canReport && !st.reporting; // a dimension's own parameter cannot be shared (its value is read, not typed)
+      function draw() {
+        body.replaceChildren();
+        const row = (l, n) => { body.append(field(l, n)); return n; };
+        const fam = row("Parameter type", selIn([["family", "Family parameter"], ...(canShare ? [["shared", "Shared parameter"]] : [])], shared ? "shared" : "family", (v) => { shared = v === "shared"; if (!shared) st.guid = null; draw(); }));
+        if (ini && ini.shared_guid) fam.disabled = true;
+        if (shared) {
+          const bar = el("span");
+          bar.append(el("span", "fe-sp-guid", st.guid ? `GUID ${st.guid}` : "None chosen"));
+          if (!(ini && ini.shared_guid)) bar.append(button("Select...", () => sharedParamsDialog((q) => {
+            if (S.params.some((x) => x.shared_guid === q.guid && !(ini && x === ini))) { msg.textContent = `'${q.name}' is already in this family.`; return; }
+            st.guid = q.guid; st.name = q.name; st.kind = q.kind; st.tooltip = st.tooltip || q.description || "";
+            msg.textContent = ""; draw();
+          })));
+          row("Shared parameter", bar);
+        }
+        const nm = row("Name", textIn(st.name, (v) => { st.name = v; }));
+        row("Discipline", selIn([["common", "Common"]], st.discipline, (v) => { st.discipline = v; }));
+        const ty = row("Type of parameter", selIn(opts.kinds || KINDS, st.kind, (v) => { st.kind = v; }));
+        if (shared) { nm.disabled = true; ty.disabled = true; }
+        if (ini && opts.lockKind) ty.disabled = true;
+        row("Group parameter under", textIn(st.group, (v) => { st.group = v; }, { list: ["Dimensions", "Constraints", "Construction", "Materials and Finishes", "Identity Data"] }));
+        row("Type or instance", selIn([["false", "Type"], ["true", "Instance"]], String(st.instance), (v) => { st.instance = v === "true"; }));
+        if (opts.canReport) row("Reporting parameter", checkIn(false, (v) => { st.reporting = v; }));
+        row("Tooltip description", textIn(st.tooltip, (v) => { st.tooltip = v; }));
+        if (ini && !shared && canShare && !ini.reporting) body.append(field("Shared file", button("Export...", () => exportParam())));
+        body.append(msg);
+      }
+      // Add this parameter to the shared file (a new GUID) and make it the shared one
+      async function exportParam() {
+        if (!sharedPath()) { msg.textContent = "Choose or create a shared parameter file first (Manage > Shared Parameters)."; return; }
+        let data;
+        try { data = await spCall("read", {}); } catch (e) { msg.textContent = String(e.message || e); return; }
+        if (!data.groups.length) { msg.textContent = "The shared file has no groups yet. Add one in Manage > Shared Parameters."; return; }
+        openModal("Export Parameter", (b2, f2, close2) => {
+          let g = data.groups[0].id;
+          b2.append(field("Group", selIn(data.groups.map((x) => [String(x.id), x.name]), String(g), (v) => { g = Number(v); })));
+          const m2 = el("div", "modal-msg"); b2.append(m2);
+          f2.append(button("Cancel", close2), button("OK", async () => {
+            try {
+              const r = await spCall("add_param", { group: g, name: st.name.trim(), kind: st.kind, description: st.tooltip });
+              st.guid = r.made; shared = true; close2(); msg.textContent = `Added '${st.name.trim()}' to the shared file.`; draw();
+            } catch (e) { m2.textContent = String(e.message || e); }
+          }, true));
+        });
+      }
+      draw();
       const ok = () => {
         const name = st.name.trim();
-        if (fam.value === "shared") { msg.textContent = "Shared parameters are not built yet."; return; }
+        if (shared && !st.guid) { msg.textContent = "Choose a shared parameter with Select."; return; }
         if (!name) { msg.textContent = "Give the parameter a name."; return; }
         if ((opts.names || S.params.map((p) => p.name)).some((n) => n.toLowerCase() === name.toLowerCase() && !(ini && n === ini.name))) { msg.textContent = `A parameter called '${name}' already exists.`; return; }
         if (/[\[\]]/.test(name)) { msg.textContent = "A parameter name cannot contain [ or ]."; return; }
         close();
         const dflt = (k) => (k === "yes_no" ? opts.value === true : ["text", "material"].includes(k) ? "" : opts.value || 0);
-        if (ini) done({ ...ini, name, param_kind: st.kind, instance: st.instance, group: st.group, discipline: st.discipline, tooltip: st.tooltip, default: st.kind === ini.param_kind ? ini.default : dflt(st.kind) });
-        else done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: null, choices: [], discipline: st.discipline, tooltip: st.tooltip, locked: false, default: dflt(st.kind) });
+        if (ini) done({ ...ini, name, param_kind: st.kind, instance: st.instance, group: st.group, discipline: st.discipline, tooltip: st.tooltip, shared_guid: st.guid, default: st.kind === ini.param_kind ? ini.default : dflt(st.kind) });
+        else done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: st.guid, choices: [], discipline: st.discipline, tooltip: st.tooltip, locked: false, default: dflt(st.kind) });
       };
       foot.append(button("Cancel", close), button("OK", ok, true));
     });

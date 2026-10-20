@@ -35,6 +35,20 @@ const Backend = {
     return window.prompt("Save family as (file path)", current || "family.oaf");
   },
 
+  // Shared parameter files (.txt)
+  async pickOpenShared() {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
+    }
+    return window.prompt("Shared parameter file (path)");
+  },
+  async pickSaveShared(current) {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.save({ defaultPath: current || "Shared Parameters.txt", filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
+    }
+    return window.prompt("Create shared parameter file at (path)", current || "shared parameters.txt");
+  },
+
   // Lookup table files (.csv)
   async pickOpenCsv() {
     if (this.isDesktop && window.__TAURI__.dialog) {
