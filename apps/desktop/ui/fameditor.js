@@ -242,8 +242,17 @@ const FamModel = (() => {
   const sketchOf = (ax) => (ax === "z" ? ["x", "y"] : ax === "y" ? ["x", "z"] : ["y", "z"]);
   // a piece that came from a component belongs to it: clicking it selects the whole component
   const ownerOf = (id) => (S.owners ? S.owners[id] : undefined);
-  const ownedSel = (id) => !!(S.sel && S.sel.kind === "comp" && ownerOf(id) === S.sel.id);
-  const isSel = (kind, id) => (S.sel && S.sel.id === id && (S.sel.kind === kind || (kind === "form" && S.sel.kind === "mtext"))) || ownedSel(id);
+  // the selection: one item, or several made by a box or Ctrl+click ({ kind: "multi", items })
+  const selItems = () => (!S.sel ? [] : S.sel.kind === "multi" ? S.sel.items : [S.sel]);
+  const selHas = (kind, id) => selItems().some((x) => x.id === id && x.kind === kind);
+  const ownedSel = (id) => ownerOf(id) != null && selHas("comp", ownerOf(id));
+  const isSel = (kind, id) => selHas(kind, id) || (kind === "form" && selHas("mtext", id)) || ownedSel(id);
+  // set the selection from a list, one item standing alone
+  function setSel(items) {
+    const seen = new Set(), list = [];
+    for (const x of items) { const k = `${x.kind}:${x.id}`; if (!seen.has(k)) { seen.add(k); list.push({ kind: x.kind, id: x.id }); } }
+    S.sel = !list.length ? null : list.length === 1 ? list[0] : { kind: "multi", id: list.map((x) => `${x.kind}${x.id}`).join(","), items: list };
+  }
   // a solved 3D point as the view sees it
   const proj = (p) => (S.view === "plan" ? [p[0], p[1]] : S.view === "front" || S.view === "back" ? [p[0], p[2]] : [p[1], p[2]]);
   // What each kind of connector carries: [property, kind, default, choices]. Numbers may be formulas of the family parameters.
@@ -423,9 +432,13 @@ const FamModel = (() => {
     "f-mline": "mline", "f-control": "control", "f-mtext": "mtext", "f-comp": "comp",
   };
   function setTool(t) {
+    // in sketch mode only the sketch's own tools work, until Finish or Cancel
+    if (S.sk) { if (t !== S.tool) { S.msg = "Finish or cancel the sketch first."; status(); } return; }
     S.voidNext = false; S.openingNext = false;
     S.tool = t; S.draft = null; S.alignRef = null; S.blend = null; S.rev = null; S.picks = [];
     if (t === "comp") loadComps();
+    // Extrusion and Void Extrusion open a sketch
+    if ((t === "ext" || t === "void") && !S.editing) { startFormSketch({ kind: t }); return; }
     toolbar(); status(); render(); ctxRefresh();
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
@@ -509,6 +522,20 @@ const FamModel = (() => {
       );
     }
     if (["sym", "region", "mline", "control"].includes(S.tool)) bar.append(lockOpt());
+    if (S.sk) {
+      // sketch mode: the depth and work plane of the form, Lock, then the sketch tool's own options
+      const st = el("input"), en = el("input");
+      st.type = en.type = "text"; st.style.width = en.style.width = "60px"; st.id = "fe-sk-start"; en.id = "fe-sk-end";
+      st.value = S.sk.start; en.value = S.sk.end;
+      st.onchange = () => { S.sk.start = st.value; }; en.onchange = () => { S.sk.end = en.value; };
+      const wp = el("select");
+      const axis = (planeById(S.sk.plane) || {}).axis;
+      S.body.planes.filter((p) => p.axis === axis).forEach((p) => { const o = el("option", "", p.name); o.value = p.id; wp.append(o); });
+      wp.value = S.sk.plane; wp.onchange = () => { S.sk.plane = Number(wp.value); };
+      bar.append(el("span", "fe-opt", "Work plane"), wp, el("span", "fe-opt", "Start"), st, el("span", "fe-opt", "End"), en, lockOpt(), ...sketchBarKids(FSk));
+      bar.hidden = false;
+      return;
+    }
     if (S.editing && S.tool === "ext") {
       const sk = el("select");
       [["rect", "Rectangle"], ["circle", "Circle"], ["poly", "Polygon"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; sk.append(o); });
@@ -676,6 +703,8 @@ const FamModel = (() => {
       pickwp: "Click the reference plane to use as the work plane. Esc cancels.",
     };
     const err = !!S.msg && S.msg !== "Saved.";
+    // the sketch's own prompts, as in the project's sketch mode
+    if (app.doc === "family" && skActive()) { setPrompt(S.msgErr && S.msg ? S.msg : FSk.promptText(), !!S.msgErr); S.msgErr = false; syncTitle(); return; }
     if (app.doc === "family") setPrompt((S.msg ? S.msg + "   " : "") + (S.view === "3d" ? "Drag to turn the model." : tips[S.tool] || ""), err);
     syncTitle();
   }
@@ -712,11 +741,14 @@ const FamModel = (() => {
     const r = S.right;
     r.replaceChildren();
     const s = S.sel;
-    if (!s) {
+    if (skActive()) {
+      r.append(el("div", "famed-hint", `${FSk.title}: draw closed loops, then Finish Edit Mode or Cancel Edit Mode in the ribbon. Lines on a reference plane show a padlock; click it to lock the line to the plane.`));
+    } else if (!s) {
       r.append(el("div", "famed-hint", `Family: ${S.def.name}`));
       r.append(button("Family Category and Parameters...", () => categoryDialog()));
       for (const g of settingRows(currentSettings(), (w) => applyFamilySettings(w))) r.append(g);
-    } else if (s.kind === "dim") dimProps(r, dimById(s.id));
+    } else if (s.kind === "multi") multiProps(r, s.items);
+    else if (s.kind === "dim") dimProps(r, dimById(s.id));
     else if (s.kind === "plane") planeProps(r, planeById(s.id));
     else if (s.kind === "form") formProps(r, formById(s.id));
     else if (s.kind === "sym") symProps(r, symById(s.id));
@@ -727,6 +759,15 @@ const FamModel = (() => {
     else if (s.kind === "conn") connProps(r, connById(s.id));
     flex(r);
     ctxRefresh();
+  }
+
+  const KIND_NAMES = { plane: "Reference Planes", form: "Forms", sym: "Symbolic Lines", mline: "Model Lines", ctrl: "Controls", conn: "Connectors", mtext: "Model Text", comp: "Components", dim: "Dimensions" };
+  function multiProps(r, items) {
+    r.append(el("div", "famed-hint", `Multiple (${items.length})`));
+    const counts = {};
+    for (const x of items) counts[x.kind] = (counts[x.kind] || 0) + 1;
+    for (const [k, n] of Object.entries(counts)) r.append(field(KIND_NAMES[k] || k, el("span", "", String(n))));
+    r.append(el("div", "famed-hint", "Delete removes them all. Ctrl+click adds to the selection, Shift+click takes away."));
   }
 
   function planeProps(r, p) {
@@ -1612,7 +1653,7 @@ const FamModel = (() => {
     for (const y of S.pv.syms || []) {
       if (y.view !== S.view) continue;
       if (!y.present) continue;
-      const selected = (S.sel && S.sel.kind === "sym" && S.sel.id === y.id) || ownedSel(y.id);
+      const selected = selHas("sym", y.id) || ownedSel(y.id);
       ctx.beginPath();
       y.points.forEach(([x, yy], i) => { const p = w2s(x, yy); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
       if (y.closed) ctx.closePath();
@@ -1620,15 +1661,16 @@ const FamModel = (() => {
       ctx.strokeStyle = selected ? accent : "#2f8f5b"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
     }
     drawModelItems(accent);
+    drawSketchOverlay(accent);
     // reference planes
     ctx.font = "11px system-ui, sans-serif";
     const labelled = { v: [], h: [] };
     // the selected plane is labelled first so it always has its name
-    const ordered = [...viewPlanes()].sort((a, b) => (S.sel && S.sel.kind === "plane" ? (b.id === S.sel.id) - (a.id === S.sel.id) : 0));
+    const ordered = [...viewPlanes()].sort((a, b) => selHas("plane", b.id) - selHas("plane", a.id));
     for (const p of ordered) {
       const at = pos(p.id);
       if (at === undefined) continue;
-      const selected = (S.sel && S.sel.kind === "plane" && S.sel.id === p.id) || (S.picks || []).includes(p.id);
+      const selected = selHas("plane", p.id) || (S.picks || []).includes(p.id);
       const vertical = p.axis === V.h; // a plane normal to the view's horizontal axis is a vertical line
       ctx.beginPath();
       if (vertical) { const x = w2s(at, 0).x; ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); }
@@ -1667,6 +1709,14 @@ const FamModel = (() => {
       if (loop) { ctx.strokeStyle = accent; ctx.lineWidth = 3.5; ctx.beginPath(); flatten(loop).forEach((q, i) => { const p = w2s(q.u, q.v); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }); ctx.stroke(); }
     }
     drawLocks(accent);
+    drawShapeHandles(accent);
+    // a face being dragged onto a plane lights the plane
+    if (S.drag && S.drag.shape && S.drag.snapped != null && pos(S.drag.snapped) !== undefined) {
+      const at = pos(S.drag.snapped), p = planeById(S.drag.snapped);
+      ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.setLineDash([8, 4]); ctx.beginPath();
+      if (p.axis === V.h) { const x = w2s(at, 0).x; ctx.moveTo(x, 0); ctx.lineTo(x, canvas.height); } else { const y = w2s(0, at).y; ctx.moveTo(0, y); ctx.lineTo(canvas.width, y); }
+      ctx.stroke(); ctx.setLineDash([]);
+    }
     if (S.alignRef) {
       const r = S.alignRef;
       ctx.strokeStyle = accent; ctx.lineWidth = 2.5; ctx.setLineDash([2, 3]); ctx.beginPath();
@@ -1681,6 +1731,68 @@ const FamModel = (() => {
       ctx.fillText(`Work plane: ${wp ? wp.name : "?"}`, canvas.width - 10, 8);
     }
     drawDraft(V);
+    // a selection box: solid left to right (window), dashed right to left (crossing)
+    const bx = S.drag && (S.drag.box || S.drag.band) && S.drag.cur;
+    if (bx) {
+      const d = S.drag, crossing = bx.x < d.x;
+      ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash(crossing ? [6, 4] : []);
+      ctx.fillStyle = crossing ? "rgba(60,160,90,0.08)" : "rgba(46,111,158,0.08)";
+      ctx.fillRect(Math.min(d.x, bx.x), Math.min(d.y, bx.y), Math.abs(bx.x - d.x), Math.abs(bx.y - d.y));
+      ctx.strokeRect(Math.min(d.x, bx.x) + 0.5, Math.min(d.y, bx.y) + 0.5, Math.abs(bx.x - d.x), Math.abs(bx.y - d.y));
+      ctx.setLineDash([]);
+    }
+  }
+
+  // What a selection box takes in: with `crossing` anything it touches, otherwise only what lies wholly inside.
+  // Pieces of a component select the component. Reference planes run the width of the view, so only a
+  // crossing box picks them up.
+  function boxItems(x0, y0, x1, y1, crossing) {
+    const [lx, hx, ly, hy] = [Math.min(x0, x1), Math.max(x0, x1), Math.min(y0, y1), Math.max(y0, y1)];
+    const inBox = (p) => p.x >= lx && p.x <= hx && p.y >= ly && p.y <= hy;
+    const segHits = (a, b) => {
+      if (inBox(a) || inBox(b)) return true;
+      const cross = (p, q, r, s) => { const d = (q.x - p.x) * (s.y - r.y) - (q.y - p.y) * (s.x - r.x); if (Math.abs(d) < 1e-9) return false; const t = ((r.x - p.x) * (s.y - r.y) - (r.y - p.y) * (s.x - r.x)) / d, u = ((r.x - p.x) * (q.y - p.y) - (r.y - p.y) * (q.x - p.x)) / d; return t >= 0 && t <= 1 && u >= 0 && u <= 1; };
+      const c = [{ x: lx, y: ly }, { x: hx, y: ly }, { x: hx, y: hy }, { x: lx, y: hy }];
+      return c.some((p, i) => cross(a, b, p, c[(i + 1) % 4]));
+    };
+    // a polyline (screen points) is taken when every point is inside, or with crossing when any part is
+    const takes = (pts, closed) => {
+      if (!pts.length) return false;
+      if (!crossing) return pts.every(inBox);
+      const ring = closed ? [...pts, pts[0]] : pts;
+      if (ring.length === 1) return inBox(ring[0]);
+      for (let i = 0; i + 1 < ring.length; i++) if (segHits(ring[i], ring[i + 1])) return true;
+      return false;
+    };
+    const out = [];
+    const add = (kind, id) => { const o = ownerOf(id); out.push(o != null ? { kind: "comp", id: o } : { kind, id }); };
+    const pieces = S.pv.views[PREVIEW_KEY[S.view]] || [];
+    const byForm = new Map();
+    for (const pc of pieces) { const l = byForm.get(pc.form) || []; l.push(pc); byForm.set(pc.form, l); }
+    for (const [fid, pcs] of byForm) {
+      const rings = pcs.flatMap((pc) => pc.rings.map((r) => r.map(([x, y]) => w2s(x, y))));
+      const hit = crossing ? rings.some((r) => takes(r, true)) || pcs.some((pc) => { let ins = false; const w = s2w((lx + hx) / 2, (ly + hy) / 2); for (const r of pc.rings) if (pointIn(r, w.u, w.v)) ins = !ins; return ins; }) : rings.every((r) => takes(r, true));
+      if (hit) add(mtextById(fid) ? "mtext" : "form", fid);
+    }
+    for (const y of S.pv.syms || []) if (y.present && y.view === S.view && takes(y.points.map(([a, b]) => w2s(a, b)), y.closed)) add("sym", y.id);
+    for (const m of S.pv.model_lines || []) if (m.present && takes(m.points.map((q) => { const a = proj(q); return w2s(a[0], a[1]); }), m.closed)) add("mline", m.id);
+    for (const c of S.pv.controls || []) if (c.present && c.view === S.view && takes([w2s(c.at[0], c.at[1])], false)) out.push({ kind: "ctrl", id: c.id });
+    for (const c of S.pv.connectors || []) { const a = proj(c.origin); if (takes([w2s(a[0], a[1])], false)) out.push({ kind: "conn", id: c.id }); }
+    for (const h of S.dimHits || []) {
+      if (h.kind !== "line") continue;
+      const corners = [{ x: h.x, y: h.y }, { x: h.x + h.w, y: h.y }, { x: h.x + h.w, y: h.y + h.h }, { x: h.x, y: h.y + h.h }];
+      if (takes(corners, true) && !out.some((o) => o.kind === "dim" && o.id === h.id)) out.push({ kind: "dim", id: h.id });
+    }
+    if (crossing) {
+      const V = VIEWS[S.view];
+      for (const p of viewPlanes()) {
+        const at = pos(p.id);
+        if (at === undefined || p.anchor.type === "origin") continue;
+        const hit = p.axis === V.h ? (() => { const x = w2s(at, 0).x; return x >= lx && x <= hx; })() : (() => { const y = w2s(0, at).y; return y >= ly && y <= hy; })();
+        if (hit) out.push({ kind: "plane", id: p.id });
+      }
+    }
+    return out;
   }
 
   // Model lines, controls and connectors in a 2D view
@@ -1688,14 +1800,14 @@ const FamModel = (() => {
     const { ctx } = S;
     for (const m of S.pv.model_lines || []) {
       if (!m.present) continue;
-      const selected = (S.sel && S.sel.kind === "mline" && S.sel.id === m.id) || ownedSel(m.id);
+      const selected = selHas("mline", m.id) || ownedSel(m.id);
       ctx.beginPath();
       m.points.forEach((q, i) => { const a = proj(q), p = w2s(a[0], a[1]); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
       if (m.closed) ctx.closePath();
       ctx.strokeStyle = selected ? accent : "#7a4fb5"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
     }
     for (const c of S.pv.connectors || []) {
-      const selected = S.sel && S.sel.kind === "conn" && S.sel.id === c.id;
+      const selected = selHas("conn", c.id);
       const a = proj(c.origin), p = w2s(a[0], a[1]);
       const d = proj(c.direction), dl = Math.hypot(d[0], d[1]);
       ctx.strokeStyle = selected ? accent : "#b5651d"; ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = selected ? 2.5 : 1.5;
@@ -1715,7 +1827,7 @@ const FamModel = (() => {
     }
     for (const c of S.pv.controls || []) {
       if (c.view !== S.view || !c.present) continue;
-      const selected = S.sel && S.sel.kind === "ctrl" && S.sel.id === c.id;
+      const selected = selHas("ctrl", c.id);
       const p = w2s(c.at[0], c.at[1]);
       const vert = c.kind.endsWith("vertical"), dbl = c.kind.startsWith("double");
       ctx.strokeStyle = selected ? accent : "#1f7a8c"; ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = selected ? 2.5 : 1.5;
@@ -1760,8 +1872,8 @@ const FamModel = (() => {
       const pa = planeById(d.a);
       if (!pa || !(pa.axis === V.h || pa.axis === V.v)) continue;
       if (d.view ? d.view !== S.view : !S.show.dims) continue;
-      if (d.view && !S.show.dims && d.id !== selDim) continue;
-      drawChain(d, d.id === selDim);
+      if (d.view && !S.show.dims && !selHas("dim", d.id)) continue;
+      drawChain(d, selHas("dim", d.id));
     }
     // the dimension being made follows the pointer once two references are picked
     const picks = S.tool === "dim" ? S.picks || [] : [];
@@ -1838,7 +1950,7 @@ const FamModel = (() => {
 
   // loops of the selected form or symbolic item, with the axis of their sketch plane
   function selectedLoops() {
-    if (!S.sel) return [];
+    if (!S.sel || S.sel.kind === "multi") return [];
     if (S.sel.kind === "form") {
       const f = formById(S.sel.id);
       if (!f) return [];
@@ -1987,14 +2099,14 @@ const FamModel = (() => {
       const T = (q) => { const r = rot(q); return [ox + r[0] * k, oy - r[2] * k]; };
       for (const m of S.pv.model_lines || []) {
         if (!m.present) continue;
-        const selected = (S.sel && S.sel.kind === "mline" && S.sel.id === m.id) || ownedSel(m.id);
+        const selected = selHas("mline", m.id) || ownedSel(m.id);
         ctx.beginPath();
         m.points.forEach((q, i) => { const [x, y] = T(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
         if (m.closed) ctx.closePath();
         ctx.strokeStyle = selected ? css("--accent") : "#7a4fb5"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
       }
       for (const c of S.pv.connectors || []) {
-        const selected = S.sel && S.sel.kind === "conn" && S.sel.id === c.id;
+        const selected = selHas("conn", c.id);
         const [x, y] = T(c.origin), [x2, y2] = T(c.origin.map((v, i) => v + c.direction[i] * 120));
         ctx.strokeStyle = selected ? css("--accent") : "#b5651d"; ctx.lineWidth = 2;
         ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
@@ -2080,8 +2192,133 @@ const FamModel = (() => {
       padlock(S.ctx, px, py, e.locked, e.locked ? accent : "#999");
       S.lockHits.push({ ...e, x: px - 7, y: py - 7, w: 14, h: 15 });
     }
+    // faces seen edge-on across the work plane: the start and end, and the outermost faces of the profile
+    for (const g of faceLocks()) {
+      const m = w2s(g.mid.u, g.mid.v);
+      const px = g.key === "u" ? m.x + 14 * flipOf() * -g.dir : m.x + 16, py = g.key === "u" ? m.y + 16 : m.y + 14 * g.dir;
+      padlock(S.ctx, px, py, g.on, g.on ? accent : "#999");
+      S.lockHits.push({ ...g, face: true, x: px - 7, y: py - 7, w: 14, h: 15 });
+    }
+  }
+
+  // ---- shape handles: drag a face of the selected extrusion ----
+  // In the view facing its work plane, each straight profile edge along a view axis is a face seen edge-on. In a
+  // view across the work plane the start and end faces are, and so are the outermost faces of the profile. Each
+  // gets an arrow; dragging it snaps to reference planes, and a face left on a plane shows a padlock to lock it.
+  function shapeHandles(forLocks = false) {
+    const out = [];
+    if (!S.pv || S.view === "3d" || S.sk || S.editing || (!forLocks && S.tool !== "select") || !S.sel || S.sel.kind !== "form") return out;
+    const f = formById(S.sel.id);
+    if (!f || f.shape.type !== "extrusion") return out;
+    const V = VIEWS[S.view], wp = planeById(f.shape.plane);
+    if (!wp) return out;
+    const A = wp.axis, [su, sv] = sketchOf(A);
+    if (V.n === A) {
+      f.shape.profile.forEach((loop, li) => {
+        const nd = loop.nodes.map(nodePos), n = nd.length;
+        if (!n || nd.some((q) => !q)) return;
+        const cu = nd.reduce((s, q) => s + q.u, 0) / n, cv = nd.reduce((s, q) => s + q.v, 0) / n;
+        for (let i = 0; i < (loop.closed ? n : n - 1); i++) {
+          const j = (i + 1) % n;
+          if ((loop.bulges || [])[i] || (loop.shapes || [])[i]) continue;
+          const a = nd[i], b = nd[j];
+          for (const key of ["u", "v"]) {
+            const other = key === "u" ? "v" : "u";
+            if (Math.abs(a[key] - b[key]) > 1e-6 || Math.abs(a[other] - b[other]) < 1e-6) continue;
+            out.push({ type: "edge", form: f.id, li, nodes: [[li, i], [li, j]], sk: key, key, at: a[key], dir: Math.sign(a[key] - (key === "u" ? cu : cv)) || 1, mid: { u: (a.u + b.u) / 2, v: (a.v + b.v) / 2 }, locked: [loop.nodes[i][key], loop.nodes[j][key]].some((c) => c.plane) });
+          }
+        }
+      });
+      return out;
+    }
+    const pf = (S.pv.forms || []).find((x) => x.id === f.id);
+    const pieces = (S.pv.views[PREVIEW_KEY[S.view]] || []).filter((c) => c.form === f.id);
+    const aKey = A === V.h ? "u" : A === V.v ? "v" : null;
+    if (!pf || !pf.span || !pieces.length || !aKey) return out;
+    const bKey = aKey === "u" ? "v" : "u", bAxis = bKey === "u" ? V.h : V.v;
+    let lo = Infinity, hi = -Infinity;
+    for (const c of pieces) for (const ring of c.rings) for (const q of ring) { const t = bKey === "u" ? q[0] : q[1]; lo = Math.min(lo, t); hi = Math.max(hi, t); }
+    const mk = (aVal, bVal) => (aKey === "u" ? { u: aVal, v: bVal } : { u: bVal, v: aVal });
+    for (const which of ["start", "end"]) {
+      const at = which === "start" ? pf.span[0] : pf.span[1], other = which === "start" ? pf.span[1] : pf.span[0];
+      out.push({ type: "depth", form: f.id, which, key: aKey, at, dir: Math.sign(at - other) || (which === "end" ? 1 : -1), mid: mk(at, (lo + hi) / 2), locked: !!f.shape[which + "_lock"], driven: !/^\s*-?\d+(\.\d+)?\s*$/.test(String(f.shape[which])) });
+    }
+    const sk = bAxis === su ? "u" : bAxis === sv ? "v" : null;
+    if (!sk) return out;
+    const all = f.shape.profile.flatMap((loop, li) => loop.nodes.map((n, i) => ({ li, i, n, p: nodePos(n) })));
+    if (!all.length || all.some((x) => !x.p)) return out;
+    const vals = all.map((x) => x.p[sk]);
+    for (const [ext, dir] of [[Math.min(...vals), -1], [Math.max(...vals), 1]]) {
+      const on = all.filter((x) => Math.abs(x.p[sk] - ext) < 0.01);
+      out.push({ type: "extreme", form: f.id, key: bKey, sk, at: ext, dir, mid: mk((pf.span[0] + pf.span[1]) / 2, ext), nodes: on.map((x) => [x.li, x.i]), locked: on.some((x) => x.n[sk].plane) });
+    }
+    return out;
+  }
+  // where a handle's arrow sits on the screen: just outside the face
+  function handleAt(g) {
+    const m = w2s(g.mid.u, g.mid.v);
+    return g.key === "u" ? { x: m.x + 12 * g.dir * flipOf(), y: m.y, horiz: true } : { x: m.x, y: m.y - 12 * g.dir, horiz: false };
+  }
+  function drawShapeHandles(accent) {
+    const ctx = S.ctx;
+    S.shapeHits = [];
+    for (const g of shapeHandles()) {
+      const h = handleAt(g), s = g.key === "u" ? g.dir * flipOf() : -g.dir;
+      ctx.beginPath();
+      if (h.horiz) { ctx.moveTo(h.x + 7 * s, h.y); ctx.lineTo(h.x - 3 * s, h.y - 6); ctx.lineTo(h.x - 3 * s, h.y + 6); }
+      else { ctx.moveTo(h.x, h.y + 7 * s); ctx.lineTo(h.x - 6, h.y - 3 * s); ctx.lineTo(h.x + 6, h.y - 3 * s); }
+      ctx.closePath();
+      ctx.fillStyle = g.locked ? "#9aa7b5" : accent; ctx.fill();
+      ctx.strokeStyle = "#fff"; ctx.lineWidth = 1; ctx.stroke();
+      S.shapeHits.push({ ...g, x: h.x, y: h.y });
+    }
+  }
+  const hitShapeHandle = (sx, sy) => (S.shapeHits || []).find((g) => Math.hypot(g.x - sx, g.y - sy) <= 9) || null;
+  // The face of a drag at view coordinate `val`, from the values it had when the drag began
+  function applyFace(g, val) {
+    const f = formById(g.form);
+    if (!f) return;
+    if (g.type === "depth") {
+      f.shape[g.which] = String(Math.round((val - pos(f.shape.plane)) * 100) / 100);
+      f.shape[g.which + "_lock"] = null;
+      return;
+    }
+    for (const [li, i] of g.nodes) f.shape.profile[li].nodes[i][g.sk] = { plane: null, off: Math.round(val * 100) / 100 };
+  }
+  // the planes a face could land on: parallel to it, seen as lines in this view
+  const facePlanes = (g) => { const V = VIEWS[S.view], axis = g.key === "u" ? V.h : V.v; return viewPlanes().filter((p) => p.axis === axis && pos(p.id) !== undefined); };
+  function faceLocks() {
+    const out = [];
+    for (const g of shapeHandles(true)) {
+      if (g.type === "edge") continue; // the edge padlocks cover these
+      const f = formById(g.form), near = facePlanes(g).find((p) => Math.abs(pos(p.id) - g.at) < 0.01);
+      if (g.type === "depth") {
+        const lock = f.shape[g.which + "_lock"];
+        if (lock) out.push({ ...g, plane: lock, on: true });
+        else if (near && !g.driven) out.push({ ...g, plane: near.id, on: false });
+        continue;
+      }
+      const cs = g.nodes.map(([li, i]) => f.shape.profile[li].nodes[i][g.sk]);
+      const ps = new Set(cs.map((c) => c.plane || null));
+      if (ps.size === 1 && cs[0].plane && cs.every((c) => !c.off)) out.push({ ...g, plane: cs[0].plane, on: true });
+      else if (cs.every((c) => !c.plane) && near) out.push({ ...g, plane: near.id, on: false });
+    }
+    return out;
+  }
+  async function toggleFaceLock(h) {
+    const name = (planeById(h.plane) || {}).name, at = Math.round(pos(h.plane) * 100) / 100;
+    const ok = await change((b) => {
+      const f = b.forms.find((x) => x.id === h.form);
+      if (h.type === "depth") {
+        if (h.on) { f.shape[h.which] = String(Math.round((at - pos(f.shape.plane)) * 100) / 100); f.shape[h.which + "_lock"] = null; }
+        else f.shape[h.which + "_lock"] = h.plane;
+      } else for (const [li, i] of h.nodes) f.shape.profile[li].nodes[i][h.sk] = h.on ? { plane: null, off: at } : { plane: h.plane, off: 0 };
+    }, true);
+    if (ok) { S.msg = h.on ? `Unlocked from ${name}.` : `Locked to ${name}. The face follows the plane when it moves.`; status(); }
+    return ok;
   }
   async function toggleEdgeLock(h) {
+    if (h.face) return toggleFaceLock(h);
     const at = Math.round(pos(h.plane) * 100) / 100, name = (planeById(h.plane) || {}).name;
     const ok = await change((b) => {
       for (const n of hitEdgeNodes(b, h)) n[h.key] = h.locked ? { plane: null, off: at } : { plane: h.plane, off: 0 };
@@ -2259,15 +2496,36 @@ const FamModel = (() => {
     const m = mouse(e);
     S.mouse = m;
     if (S.view === "3d") { S.drag = { rot: true, x: m.x, y: m.y, a: S.rot.a, b: S.rot.b }; return; }
-    if (e.button === 1 || e.button === 2) { S.drag = { pan: true, x: m.x, y: m.y, ox: cam().ox, oy: cam().oy }; return; }
+    if (e.button === 1 || e.button === 2) { S.drag = { pan: true, x: m.x, y: m.y, ox: cam().ox, oy: cam().oy, button: e.button }; return; }
+    if (await skDown(e, m)) return;
     const t = S.tool;
     if (t === "select") {
       const lk = (S.lockHits || []).find((q) => m.x >= q.x && m.x <= q.x + q.w && m.y >= q.y && m.y <= q.y + q.h);
       if (lk) { await toggleEdgeLock(lk); return; }
+      const sh = hitShapeHandle(m.x, m.y);
+      if (sh) {
+        if (sh.locked) { S.msg = "That face is locked to a reference plane. Click its padlock to unlock it, or move the plane."; status(); return; }
+        if (sh.driven) { S.msg = `Extrusion ${sh.which === "start" ? "Start" : "End"} follows a parameter. Change the parameter, or take it off in Properties.`; status(); return; }
+        S.drag = { shape: sh, before: snapshot(), moved: false };
+        return;
+      }
       const h = hitHandle(m.x, m.y);
       if (h) { S.drag = { handle: h, before: snapshot(), moved: false }; return; }
       if (S.editing) { S.editing.loop = hitLoop(m.x, m.y); render(); ctxRefresh(); return; }
       const dh = hitDim(m.x, m.y);
+      // Ctrl+click adds to the selection and Shift+click takes away; a drag from empty space draws a box
+      const add = e.ctrlKey || e.metaKey, remove = e.shiftKey && !add;
+      if (add || remove) {
+        const pl0 = !dh && hitPlane(m.x, m.y);
+        const hit = dh && (dh.kind === "line" || dh.kind === "val") ? { kind: "dim", id: dh.id } : pl0 ? { kind: "plane", id: pl0.id } : !dh ? hitItem(m.x, m.y) : null;
+        if (hit) {
+          const cur = selItems();
+          setSel(remove ? cur.filter((x) => !(x.kind === hit.kind && x.id === hit.id)) : [...cur, hit]);
+          props(); render();
+          return;
+        }
+        if (!dh) { S.drag = { box: true, x: m.x, y: m.y, mode: add ? "add" : "remove" }; return; }
+      }
       if (dh) { await clickDim(dh); return; }
       const pl = hitPlane(m.x, m.y);
       if (pl) {
@@ -2278,6 +2536,7 @@ const FamModel = (() => {
         return;
       }
       S.sel = hitItem(m.x, m.y); props(); render();
+      if (!S.sel) { S.drag = { box: true, x: m.x, y: m.y, mode: "replace" }; return; }
       const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : S.sel.kind === "mtext" ? mtextById(S.sel.id) : S.sel.kind === "comp" ? compById(S.sel.id) : null);
       const wp = it && S.sel.kind !== "ctrl" && S.sel.kind !== "comp" ? planeById(it.plane) : null;
       if (it && S.sel.kind === "comp" && S.view !== "3d") S.drag = { comp: it, before: snapshot(), moved: false };
@@ -2370,6 +2629,9 @@ const FamModel = (() => {
     }
     if (t === "align") {
       const o = S.alignOpts;
+      // the padlock left by the last alignment
+      const lk0 = (S.lockHits || []).find((q) => m.x >= q.x && m.x <= q.x + q.w && m.y >= q.y && m.y <= q.y + q.h);
+      if (lk0 && !S.alignRef) { await toggleEdgeLock(lk0); render(); return; }
       if (!S.alignRef) {
         const pl = hitPlane(m.x, m.y), g = hitGeomEdge(m.x, m.y);
         const fromPlane = pl && { axis: pl.axis, pos: pos(pl.id), plane: pl.id, name: pl.name };
@@ -2393,9 +2655,10 @@ const FamModel = (() => {
         });
       } else {
         const key = ref.axis === VIEWS[S.view].h ? "u" : "v";
-        await change((b) => { for (const n of hitEdgeNodes(b, hit)) n[key] = lock ? { plane: ref.plane, off: 0 } : { plane: null, off: at }; });
+        await change((b) => { for (const n of hitEdgeNodes(b, hit)) n[key] = lock ? { plane: ref.plane, off: 0 } : { plane: null, off: at }; S.sel = { kind: hit.kind, id: hit.id }; });
       }
-      S.msg = `Aligned to ${ref.name}${lock ? " and locked" : o.lock ? ". It could not be locked: that edge is not on a reference plane" : ""}.`; status(); render();
+      // what was aligned stays selected, so its padlock shows on the plane and can be clicked to lock it
+      S.msg = `Aligned to ${ref.name}${lock ? " and locked" : ref.plane ? ". Click the padlock to lock it to the plane" : o.lock ? ". It could not be locked: that edge is not on a reference plane" : ""}.`; props(); status(); render();
       return;
     }
     if (t === "sweep" || t === "swblend") {
@@ -2457,10 +2720,25 @@ const FamModel = (() => {
     if (!S) return;
     const m = mouse(e);
     S.mouse = m;
+    if (skMove(e, m)) return;
     const d = S.drag;
     if (d) {
       if (d.rot) { S.rot = { a: d.a + (m.x - d.x) * 0.01, b: Math.max(-1.5, Math.min(1.5, d.b + (m.y - d.y) * 0.01)) }; render(); return; }
       if (d.pan) { const c = cam(); c.ox = d.ox + m.x - d.x; c.oy = d.oy + m.y - d.y; render(); return; }
+      if (d.box) { if (d.cur || Math.hypot(m.x - d.x, m.y - d.y) > 4) { d.cur = m; render(); } return; }
+      if (d.shape) {
+        // the face follows the cursor across the view, and snaps onto a parallel reference plane
+        const g = d.shape, w = s2w(m.x, m.y);
+        let val = g.key === "u" ? w.u : w.v, snapped = null, best = 8;
+        for (const p of facePlanes(g)) {
+          const at = pos(p.id), px = g.key === "u" ? Math.abs(w2s(at, 0).x - m.x) : Math.abs(w2s(0, at).y - m.y);
+          if (px < best) { best = px; val = at; snapped = p.id; }
+        }
+        if (snapped == null) val = Math.round(val);
+        applyFace(g, val);
+        d.moved = true; d.snapped = snapped;
+        await preview(); render(); return;
+      }
       if (d.plane) {
         const p = planeById(d.plane), V = VIEWS[S.view];
         const w = s2w(m.x, m.y), at = p.axis === V.h ? w.u : w.v;
@@ -2513,10 +2791,27 @@ const FamModel = (() => {
     const d = S.drag;
     S.drag = null;
     const m = mouse(e);
-    if (d && (d.plane || d.handle || d.dimAt || d.pt || d.comp) && d.moved) {
+    // a right click that did not pan ends the sketch tool's current step
+    if (d && d.pan && d.button === 2 && skHere() && Math.hypot(m.x - d.x, m.y - d.y) < 4) { FSk.rightClick(); return; }
+    if (await skUp(e, m, d)) return;
+    if (d && d.box) {
+      if (d.cur) {
+        const got = boxItems(d.x, d.y, m.x, m.y, m.x < d.x);
+        const cur = selItems();
+        const same = (a, b) => a.kind === b.kind && a.id === b.id;
+        setSel(d.mode === "add" ? [...cur, ...got] : d.mode === "remove" ? cur.filter((x) => !got.some((g) => same(g, x))) : got);
+        props();
+      }
+      render();
+      return;
+    }
+    if (d && (d.plane || d.handle || d.dimAt || d.pt || d.comp || d.shape) && d.moved) {
       const ok = await preview();
       if (!ok) { restore(d.before); S.msg = S.pvError; await preview(); }
-      else { S.undo.push(d.before); S.redo = []; touch(); }
+      else {
+        S.undo.push(d.before); S.redo = []; touch();
+        if (d.shape) { S.sel = { kind: "form", id: d.shape.form }; S.msg = d.snapped != null ? `On ${(planeById(d.snapped) || {}).name}. Click the padlock to lock the face to it.` : ""; }
+      }
       props(); status(); render();
     }
     // a drag along the line finishes the plane; a plain click leaves it waiting for the second click
@@ -2544,6 +2839,7 @@ const FamModel = (() => {
 
   async function onDbl(e) {
     if (!S) return;
+    if (skHere()) { FSk.dblclick(); return; }
     const d = S.draft;
     if (d && d.kind === "poly") { await finishPoly(); render(); }
     if (d && d.kind === "path") { await finishPath(); render(); }
@@ -2559,6 +2855,14 @@ const FamModel = (() => {
   }
 
   async function onKey(e) {
+    if (skActive()) {
+      const k = e.key.toLowerCase();
+      if ((e.ctrlKey || e.metaKey) && k === "z") { e.preventDefault(); FSk.undo(); return; }
+      if ((e.ctrlKey || e.metaKey) && k === "y") { e.preventDefault(); FSk.redo(); return; }
+      if (skHere() && FSk.key(e)) { e.preventDefault(); return; }
+      if (e.key === "Escape" || e.key === "Delete") e.preventDefault();
+      return;
+    }
     if (e.key === "Escape") { if (S.alignRef || S.blend || S.rev) { S.alignRef = null; S.blend = null; S.rev = null; S.draft = null; S.msg = "Cancelled."; status(); render(); } else if (S.draft || (S.picks && S.picks.length)) { S.draft = null; S.picks = []; render(); } else if (S.tool !== "select") { setTool("select"); } else if (S.sel && !S.editing) { S.sel = null; props(); render(); } e.preventDefault(); e.stopPropagation(); return; }
     if (e.key === "Delete") { deleteSel(); e.preventDefault(); return; }
     if (e.key === "Enter" && S.draft && S.draft.kind === "poly") { await finishPoly(); render(); e.preventDefault(); return; }
@@ -2666,15 +2970,17 @@ const FamModel = (() => {
   // What the ribbon shows for the selection: null for none. main.js draws it as a "Modify | ..." tab.
   function context() {
     const c = contextBase();
-    if (c) c.key = S.editing ? `edit:${S.editing.id}` : `${S.sel.kind}:${S.sel.id}`;
+    if (c) c.key = S.sk ? `sk:${FSk.tool}` : S.editing ? `edit:${S.editing.id}` : `${S.sel.kind}:${S.sel.id}`;
     return c;
   }
   function contextBase() {
     if (!S || app.doc !== "family") return null;
+    if (skActive()) return skContext();
     if (S.editing) return editContext();
     const sel = S.sel;
     if (!sel) return null;
     const auto = S.tool === "select";
+    if (sel.kind === "multi") return { auto, title: "Modify | Multi-Select", groups: [{ label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "form") {
       const f = formById(sel.id);
       if (!f) return null;
@@ -2727,6 +3033,7 @@ const FamModel = (() => {
   function startEdit(id) {
     const f = formById(id);
     if (!f) return;
+    if (f.shape.type === "extrusion") { startFormSketch({ kind: f.void ? "void" : "ext", form: id }); return; }
     const axis = planeById(f.shape.plane).axis;
     S.editing = { id, before: snapshot(), undoLen: S.undo.length, loop: null };
     S.sel = { kind: "form", id };
@@ -2784,6 +3091,256 @@ const FamModel = (() => {
     const li = e.loop;
     e.loop = null;
     await change((b) => { formById(e.id).shape.profile.splice(li, 1); });
+  }
+
+  // ---------------------------------------------------------------- sketch mode for forms
+  // Extrusion, Void Extrusion and Edit Extrusion sketch with the project's sketch tools: a second session of
+  // sketch.js (makeSketch) drawn on this canvas in the view's own axes, in mm. A straight sketch line lying on a
+  // reference plane shows a padlock; a locked line ties its points to the plane. Finish turns the curves into
+  // the form's loops (openarch_model::famsketch); Cancel leaves the family as it was.
+  const FSk = makeSketch();
+  const SK_DRAW = FSk.DRAW.filter((t) => t.id !== "pick_walls");
+  const SK_DRAW_IDS = new Set(SK_DRAW.map((t) => t.id));
+  const skActive = () => !!(S && S.sk && FSk.active);
+  const skHere = () => skActive() && S.view === S.sk.view;
+  // Pick Lines and Align take reference planes and the edges of the geometry drawn in this view
+  function skEdges(sx, sy) {
+    const out = [], V = VIEWS[S.view], tol = 8;
+    const segDist = (a, b) => {
+      const A = w2s(a[0], a[1]), B = w2s(b[0], b[1]), l2 = (B.x - A.x) ** 2 + (B.y - A.y) ** 2 || 1;
+      const t = Math.max(0, Math.min(1, ((sx - A.x) * (B.x - A.x) + (sy - A.y) * (B.y - A.y)) / l2));
+      return Math.hypot(A.x + t * (B.x - A.x) - sx, A.y + t * (B.y - A.y) - sy);
+    };
+    const add = (a, b) => out.push({ a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] } });
+    for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) for (const r of pc.rings) for (let i = 0; i < r.length; i++) { const a = r[i], b = r[(i + 1) % r.length]; if (segDist(a, b) <= tol) add(a, b); }
+    for (const y of S.pv.syms || []) if (y.view === S.view) for (let i = 0; i + 1 < y.points.length; i++) if (segDist(y.points[i], y.points[i + 1]) <= tol) add(y.points[i], y.points[i + 1]);
+    // a plane gives a line across what the view shows
+    const c0 = s2w(0, 0), c1 = s2w(S.canvas.width, S.canvas.height);
+    const [u0, u1, v0, v1] = [Math.min(c0.u, c1.u), Math.max(c0.u, c1.u), Math.min(c0.v, c1.v), Math.max(c0.v, c1.v)];
+    for (const p of viewPlanes()) {
+      const at = pos(p.id);
+      if (at === undefined) continue;
+      const seg = p.axis === V.h ? [[at, v0], [at, v1]] : [[u0, at], [u1, at]];
+      if (segDist(seg[0], seg[1]) <= tol) add(seg[0], seg[1]);
+    }
+    return out;
+  }
+  // The snap index while sketching: plane lines (no ends or middles of their own), and the edges drawn in the view
+  function skSnapIndex() {
+    const key = `${S.view}|${S.tick}`;
+    if (Snap.owner === "family" && S.snapKey === key) return;
+    const segs = [], V = VIEWS[S.view], R = 50000;
+    for (const p of viewPlanes()) {
+      const at = pos(p.id);
+      if (at === undefined) continue;
+      segs.push(p.axis === V.h ? [at, -R, at, R, 2] : [-R, at, R, at, 2]);
+    }
+    for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) for (const r of pc.rings) for (let i = 0; i < r.length; i++) { const a = r[i], b = r[(i + 1) % r.length]; segs.push([a[0], a[1], b[0], b[1]]); }
+    for (const y of S.pv.syms || []) if (y.view === S.view) for (let i = 0; i + 1 < y.points.length; i++) segs.push([...y.points[i], ...y.points[i + 1]]);
+    Snap.build(segs, "family");
+    S.snapKey = key;
+  }
+  function skSnap(sx, sy) {
+    skSnapIndex();
+    const w = s2w(sx, sy);
+    return Snap.resolve({ x: w.u, y: w.v }, { zoom: cam().k, last: FSk.last(), extra: FSk.segs(), points: FSk.points(), cycle: S.snapCycle || 0, shift: !!S.shift, gridStep: 0 });
+  }
+  FSk.attach({
+    get ctx() { return S && S.ctx; },
+    get canvas() { return S && S.canvas; },
+    size: () => ({ w: S.canvas.width, h: S.canvas.height }),
+    toScreen: (p) => w2s(p.x, p.y),
+    toWorld: (sx, sy) => { const w = s2w(sx, sy); return { x: w.u, y: w.v }; },
+    label: (text, at, color) => {
+      const ctx = S.ctx;
+      ctx.font = "11px system-ui, sans-serif";
+      const m = ctx.measureText(text);
+      ctx.fillStyle = css("--panel"); ctx.fillRect(at.x - m.width / 2 - 3, at.y - 8, m.width + 6, 16);
+      ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, at.x, at.y);
+    },
+    css, render: () => render(),
+    scale: () => cam().k,
+    wallAt: () => null, wallById: () => null, wallChain: (id) => [id],
+    edgeAt: (sx, sy) => skEdges(sx, sy)[0] || null,
+    edgesNear: (sx, sy) => skEdges(sx, sy),
+    cycleSnap: (d) => { S.snapCycle = (S.snapCycle || 0) + d; if (S.mouse) { S.skHover = skSnap(S.mouse.x, S.mouse.y); FSk.move(S.skHover, S.mouse.x, S.mouse.y); } render(); },
+  });
+  FSk.callbacks.finish = (out) => finishFormSketch(out);
+  FSk.callbacks.cancel = () => { endFormSketch(); S.msg = "Sketch cancelled."; status(); };
+  FSk.callbacks.prompt = (t, err) => { if (!S) return; S.msg = t; S.msgErr = !!err; status(); };
+  FSk.callbacks.change = () => {
+    if (!S || !S.sk) return;
+    const sk = S.sk, st = FSk.state();
+    if (!sk.starting) {
+      // a new line takes Lock to planes when it was drawn, or the lock of a line it replaced on the same plane
+      const now = new Set(st.curves.map((c) => c.uid));
+      const gone = [...sk.seen].filter((u) => !now.has(u) && sk.alive.has(u));
+      const goneLocked = new Set(gone.flatMap((u) => skLockCands(sk.alive.get(u)).filter((l) => l.on).map((l) => `${l.plane}|${l.coord}`)));
+      for (const c of st.curves) {
+        if (sk.seen.has(c.uid)) continue;
+        sk.seen.add(c.uid);
+        if (SK_DRAW_IDS.has(st.tool)) sk.lockDefault.set(c.uid, !!S.lockNew);
+        else for (const l of skLockCands(c)) if (goneLocked.has(`${l.plane}|${l.coord}`)) sk.locks.set(c.uid, [...(sk.locks.get(c.uid) || []), { plane: l.plane, coord: l.coord, on: true }]);
+      }
+      sk.alive = new Map(st.curves.map((c) => [c.uid, c]));
+    }
+    toolbar(); status(); ctxRefresh(); render();
+  };
+  // the planes a straight sketch line lies on, with whether it is locked to each
+  function skLockCands(c) {
+    const out = [];
+    if (!c || !c.curve || c.curve.type !== "line" || !S.sk) return out;
+    const V = VIEWS[S.sk.view], { a, b } = c.curve;
+    for (const [coord, axis, ka, kb, oa, ob] of [["u", V.h, a.x, b.x, a.y, b.y], ["v", V.v, a.y, b.y, a.x, b.x]]) {
+      if (Math.abs(ka - kb) > 0.01 || Math.abs(oa - ob) < 0.01) continue;
+      for (const p of S.body.planes) {
+        if (p.axis !== axis) continue;
+        const at = pos(p.id);
+        if (at === undefined || Math.abs(at - ka) > 0.01) continue;
+        const set = (S.sk.locks.get(c.uid) || []).find((x) => x.plane === p.id && x.coord === coord);
+        out.push({ uid: c.uid, plane: p.id, coord, a, b, on: set ? set.on : !!S.sk.lockDefault.get(c.uid) });
+      }
+    }
+    return out;
+  }
+  function drawSkLocks(accent) {
+    S.skLockHits = [];
+    const st = FSk.state();
+    for (const c of st ? st.curves : []) {
+      for (const l of skLockCands(c)) {
+        const m = w2s((l.a.x + l.b.x) / 2, (l.a.y + l.b.y) / 2);
+        const px = l.coord === "u" ? m.x + 14 : m.x, py = l.coord === "u" ? m.y : m.y - 14;
+        padlock(S.ctx, px, py, l.on, l.on ? accent : "#888");
+        S.skLockHits.push({ ...l, x: px - 7, y: py - 7, w: 14, h: 15 });
+      }
+    }
+  }
+  function toggleSkLock(h) {
+    const list = (S.sk.locks.get(h.uid) || []).filter((x) => !(x.plane === h.plane && x.coord === h.coord));
+    list.push({ plane: h.plane, coord: h.coord, on: !h.on });
+    S.sk.locks.set(h.uid, list);
+    const name = (planeById(h.plane) || {}).name;
+    S.msg = h.on ? `Unlocked from ${name}.` : `Locked to ${name}. The line follows the plane when it moves.`; status(); render();
+  }
+
+  async function startFormSketch(o) {
+    const f = o.form != null ? formById(o.form) : null;
+    const plane = f ? f.shape.plane : workPlane();
+    const axis = (planeById(plane) || {}).axis;
+    if (S.view === "3d" || !VIEWS[S.view] || VIEWS[S.view].n !== axis) openFamView(VIEW_FOR_AXIS[axis]);
+    let curves = [], locks = [], kept = [];
+    if (f) {
+      try { ({ curves, locks, kept } = await Backend.call("family_sketch_of", { loops: f.shape.profile, planes: S.pv.planes })); }
+      catch (e) { S.msg = String(e.message || e); status(); return; }
+    }
+    S.tool = o.kind;
+    S.draft = null;
+    S.sk = { form: f ? f.id : null, kind: o.kind, plane, view: S.view, start: f ? f.shape.start : S.start, end: f ? f.shape.end : S.end, locks: new Map(), lockDefault: new Map(), seen: new Set(), alive: new Map(), kept, starting: true };
+    const noun = f ? NOUN(f) : "Extrusion";
+    FSk.begin({ kind: "family", title: f ? `Edit ${noun}` : o.kind === "void" ? "Create Void Extrusion" : "Create Extrusion", curves, tool: f ? "select" : "line" });
+    const st = FSk.state();
+    for (const c of st.curves) S.sk.seen.add(c.uid);
+    for (const l of locks) { const c = st.curves[l.curve]; if (c) S.sk.locks.set(c.uid, [...(S.sk.locks.get(c.uid) || []), { plane: l.plane, coord: l.coord, on: l.on }]); }
+    S.sk.alive = new Map(st.curves.map((c) => [c.uid, c]));
+    S.sk.starting = false;
+    S.sel = f ? { kind: "form", id: f.id } : null;
+    S.msg = f ? `Editing the sketch of ${f.name}. Change it with the Draw and Modify tools, then Finish Edit Mode.` : "Sketch closed loops with the Draw tools, then Finish Edit Mode. Loops inside loops make holes.";
+    props(); toolbar(); status(); render(); ctxRefresh();
+  }
+  function endFormSketch() {
+    FSk.end();
+    if (!S) return;
+    S.sk = null; S.skHover = null; S.skLockHits = [];
+    S.tool = "select"; S.voidNext = false; S.openingNext = false; S.drag = null;
+    props(); toolbar(); render(); ctxRefresh();
+  }
+  async function finishFormSketch(out) {
+    const sk = S.sk, st = FSk.state();
+    if (!sk || !st) return false;
+    const locks = [];
+    st.curves.forEach((c, i) => { for (const l of skLockCands(c)) locks.push({ curve: i, plane: l.plane, coord: l.coord, on: l.on }); });
+    let r;
+    try { r = await Backend.call("family_sketch_loops", { curves: out.curves, locks, kept: sk.kept, planes: S.pv.planes }); }
+    catch (e) { FSk.callbacks.prompt(String(e.message || e), true); return false; }
+    if (!r.ok) { FSk.callbacks.prompt(r.error.message, true); return false; }
+    let ok, id = sk.form;
+    if (id != null) ok = await change((b) => { formById(id).shape.profile = r.loops; }, true);
+    else {
+      ok = await change((b) => {
+        id = newId();
+        const isVoid = sk.kind === "void";
+        const n = b.forms.filter((f) => !!f.void === isVoid).length + 1;
+        const no = b.forms.filter((f) => f.opening).length + 1;
+        b.forms.push({
+          id, name: S.openingNext ? `Opening ${no}` : isVoid ? `Void ${n}` : `Extrusion ${n}`, void: isVoid, cuts_host: true, opening: !!S.openingNext, cut_by: [],
+          shape: { type: "extrusion", plane: sk.plane, start: sk.start, end: sk.end, profile: r.loops },
+          material: "", material_param: null, subcategory: isVoid ? "" : "Frame/Mullion", vis: {},
+        });
+      }, true);
+      if (ok) { S.start = sk.start; S.end = sk.end; }
+    }
+    if (!ok) { FSk.callbacks.prompt(S.msg || "That sketch does not make a form.", true); return false; }
+    endFormSketch();
+    S.sel = { kind: "form", id };
+    const f = formById(id);
+    S.msg = `${f ? f.name : "The form"} ${sk.form != null ? "updated" : "made"}. Drag the arrows on its faces to stretch it; a face dropped on a reference plane offers a padlock.`;
+    props(); status(); render(); ctxRefresh();
+    return true;
+  }
+  function skContext() {
+    const t = FSk.tool;
+    return { auto: true, title: `Modify | ${FSk.title}`, groups: [
+      { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => FSk.finish() }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => FSk.cancel() }] },
+      { label: "Modify", items: FSk.MODIFY.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id })) },
+      { label: "Draw", items: SK_DRAW.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id })) },
+    ] };
+  }
+  const worldRect = (x0, y0, x1, y1) => { const a = s2w(x0, y0), b = s2w(x1, y1); return { x0: Math.min(a.u, b.u), y0: Math.min(a.v, b.v), x1: Math.max(a.u, b.u), y1: Math.max(a.v, b.v) }; };
+  // Pointer and keys while sketching (in the sketch's own view). Returns true when the sketch took the event.
+  async function skDown(e, m) {
+    if (!skActive()) return false;
+    if (S.view !== S.sk.view) { S.msg = `The sketch is in ${VIEW_TITLE[S.sk.view]}. Go back to it to keep sketching, or Finish there.`; status(); return true; }
+    const lk = (S.skLockHits || []).find((q) => m.x >= q.x && m.x <= q.x + q.w && m.y >= q.y && m.y <= q.y + q.h);
+    if (lk) { toggleSkLock(lk); return true; }
+    if (FSk.gripDown(m.x, m.y)) { S.drag = { skGrip: true }; return true; }
+    S.drag = { sk: true, x: m.x, y: m.y };
+    return true;
+  }
+  function skMove(e, m) {
+    if (!skHere() || (S.drag && (S.drag.pan || S.drag.rot))) return false;
+    S.shift = e.shiftKey;
+    const d = S.drag;
+    if (d && d.skGrip) { S.skHover = skSnap(m.x, m.y); FSk.gripMove(m.x, m.y, S.skHover); return true; }
+    if (d && d.sk && (d.band || (Math.hypot(m.x - d.x, m.y - d.y) > 5 && FSk.canBand()))) { d.band = true; d.cur = m; render(); return true; }
+    if (!S.lastSkMouse || Math.hypot(m.x - S.lastSkMouse.x, m.y - S.lastSkMouse.y) > 3) S.snapCycle = 0;
+    S.lastSkMouse = m;
+    S.skHover = skSnap(m.x, m.y);
+    FSk.move(S.skHover, m.x, m.y);
+    render();
+    return true;
+  }
+  async function skUp(e, m, d) {
+    if (!d || !(d.sk || d.skGrip)) return false;
+    if (d.skGrip) { await FSk.gripUp(); return true; }
+    if (d.band) { FSk.bandSelect(worldRect(d.x, d.y, m.x, m.y), m.x >= d.x, e); render(); return true; }
+    if (Math.hypot(m.x - d.x, m.y - d.y) < 5) {
+      const p = skSnap(m.x, m.y);
+      Snap.clearOverride(); S.snapCycle = 0;
+      await FSk.click(p, m.x, m.y, e);
+    }
+    return true;
+  }
+  function drawSketchOverlay(accent) {
+    if (!skHere()) return;
+    const ctx = S.ctx;
+    FSk.draw(ctx);
+    drawSkLocks(accent);
+    const h = S.skHover;
+    if (h && FSk.wantsSnap() && !["free", "length"].includes(h.kind)) {
+      const p = w2s(h.x, h.y);
+      Snap.glyph(ctx, h.kind, p.x, p.y);
+      if (h.label) { ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = "#d4572f"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(h.label, p.x + 10, p.y + 8); }
+    }
   }
 
   // ---------------------------------------------------------------- making things
@@ -3260,6 +3817,34 @@ const FamModel = (() => {
     if (S.editing) { await deleteLoop(); return; }
     const s = S.sel;
     if (!s) return;
+    if (s.kind === "multi") {
+      // geometry first, in one step, then dimensions, then the planes nothing holds any more
+      const items = s.items, of = (k) => new Set(items.filter((x) => x.kind === k).map((x) => x.id));
+      const forms = of("form"), syms = of("sym"), mlines = of("mline"), ctrls = of("ctrl"), comps = of("comp"), mtexts = of("mtext"), conns = of("conn");
+      S.sel = null;
+      if (forms.size || syms.size || mlines.size || ctrls.size || comps.size || mtexts.size || conns.size) {
+        await change((b) => {
+          b.forms = b.forms.filter((f) => !forms.has(f.id));
+          b.forms.forEach((f) => { f.cut_by = (f.cut_by || []).filter((x) => !forms.has(x)); });
+          b.syms = b.syms.filter((y) => !syms.has(y.id));
+          b.model_lines = (b.model_lines || []).filter((y) => !mlines.has(y.id));
+          b.controls = (b.controls || []).filter((y) => !ctrls.has(y.id));
+          b.nested = (b.nested || []).filter((y) => !comps.has(y.id));
+          b.model_texts = (b.model_texts || []).filter((y) => !mtexts.has(y.id));
+          b.connectors = (b.connectors || []).filter((y) => !conns.has(y.id));
+        });
+      }
+      for (const id of of("dim")) if (dimById(id)) await edit("remove_dim", { dim: id }, true);
+      const kept = [];
+      for (const id of of("plane")) {
+        const p = planeById(id);
+        if (!p || p.anchor.type === "origin") { if (p) kept.push(p.name); continue; }
+        if (!(await edit("remove_plane", { plane: id }, true))) kept.push(p.name);
+      }
+      S.msg = kept.length ? `Kept ${kept.join(", ")}: something still depends on ${kept.length > 1 ? "them" : "it"}.` : "";
+      props(); status(); render();
+      return;
+    }
     if (s.kind === "dim") { S.sel = null; await edit("remove_dim", { dim: s.id }); return; }
     if (s.kind === "plane") { S.sel = null; if (!(await edit("remove_plane", { plane: s.id }))) { S.sel = s; props(); } return; }
     await change((b) => {
@@ -3283,5 +3868,6 @@ const FamModel = (() => {
     });
   }
 
-  return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? { undo: S.undo.length, redo: S.redo.length } : null), undo, redo, save: saveFile, _state: () => S };
+  return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? (skActive() ? { undo: FSk.canUndo ? 1 : 0, redo: FSk.canRedo ? 1 : 0 } : { undo: S.undo.length, redo: S.redo.length }) : null),
+    undo: () => (skActive() ? FSk.undo() : undo()), redo: () => (skActive() ? FSk.redo() : redo()), save: saveFile, _state: () => S };
 })();

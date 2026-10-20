@@ -100,11 +100,11 @@ impl Default for Document {
 }
 
 fn layer(material: &str, t: f64, function: LayerFunction, core: bool) -> Layer {
-    Layer { material: material.into(), thickness_mm: t, is_void: false, function, core }
+    Layer::new(material, t, function, core)
 }
 
 fn void(name: &str, t: f64, core: bool) -> Layer {
-    Layer { material: name.into(), thickness_mm: t, is_void: true, function: LayerFunction::ThermalAir, core }
+    Layer { is_void: true, ..Layer::new(name, t, LayerFunction::ThermalAir, core) }
 }
 
 /// Floor layers carry a function too, for the same reasons.
@@ -154,13 +154,13 @@ impl Document {
                 ("Concrete 200", vec![layer("Concrete", 200.0, St, true)]),
                 ("Blockwork 190", vec![layer("Concrete Block", 190.0, St, true)]),
             ] {
-                tx.add(Element::WallType(WallType { name: name.into(), layers, wrap_ends: Wrap::None, wrap_inserts: Wrap::None, coarse_fill: default_coarse_fill() }));
+                tx.add(Element::WallType(WallType { name: name.into(), layers, wrap_ends: Wrap::None, wrap_inserts: Wrap::None, coarse_fill: default_coarse_fill(), function: WallFunction::default(), info: TypeInfo::default(), sample_height_mm: 6000.0 }));
             }
             for (name, layers) in [
                 ("Concrete Slab 200", vec![floor_layer("Concrete", 200.0, St)]),
                 ("Timber Floor 190", vec![floor_layer("Timber Flooring", 19.0, F1), floor_layer("Timber Joist", 170.0, St)]),
             ] {
-                tx.add(Element::FloorType(FloorType { name: name.into(), layers, coarse_fill: default_coarse_fill() }));
+                tx.add(Element::FloorType(FloorType { name: name.into(), layers, coarse_fill: default_coarse_fill(), function: FloorFunction::default(), info: TypeInfo::default() }));
             }
             tx.add_roof_types();
             let levels: Vec<(Id, String)> = tx
@@ -290,6 +290,40 @@ impl Document {
                 self.redo = redo;
                 Err(e)
             }
+        }
+    }
+
+    /// Where the undo history stands, for a dialog that edits live but may still be cancelled
+    /// (Type Properties): `fold_since` keeps its edits as one step, `roll_back_to` drops them.
+    pub fn edit_mark(&self) -> usize {
+        self.undo.len()
+    }
+
+    /// Fold the undo steps made since `mark` into one step called `name` (OK or Apply).
+    pub fn fold_since(&mut self, mark: usize, name: &str) {
+        let n = mark.min(self.undo.len());
+        if self.undo.len() > n + 1 {
+            let merged: Vec<Change> = self.undo.drain(n..).flat_map(|e| e.changes).collect();
+            self.undo.push(Entry {
+                name: name.to_string(),
+                changes: merged,
+            });
+        } else if self.undo.len() == n + 1 {
+            self.undo[n].name = name.to_string();
+        }
+    }
+
+    /// Undo every step made since `mark` without leaving them to redo (Cancel).
+    pub fn roll_back_to(&mut self, mark: usize) {
+        let mut changed = false;
+        while self.undo.len() > mark {
+            let en = self.undo.pop().unwrap();
+            Self::apply(&mut self.elements, &en.changes, true);
+            changed = true;
+        }
+        if changed {
+            self.revision += 1;
+            self.edit_count += 1;
         }
     }
 
@@ -691,6 +725,25 @@ impl Document {
             return Ok(());
         }
         self.transact("Change floor type", |tx| tx.update(id, Element::Floor(Floor { floor_type, ..f })))
+    }
+
+    /// Change a floor's instance properties (Height Offset From Level, Structural, Pinned) with a JSON patch.
+    pub fn patch_floor(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let Some(Element::Floor(f)) = self.get(id).cloned() else { return Err("not a floor".into()) };
+        let nf: Floor = apply_patch(&f, patch)?;
+        if nf == f {
+            return Ok(());
+        }
+        if self.floor_type(nf.floor_type).is_none() {
+            return Err("unknown floor type".into());
+        }
+        if self.level(nf.level).is_none() {
+            return Err("unknown level".into());
+        }
+        if !nf.offset_mm.is_finite() {
+            return Err("the offset must be a number".into());
+        }
+        self.transact("Change floor properties", |tx| tx.update(id, Element::Floor(nf)))
     }
 
     pub fn set_wall_height(&mut self, id: Id, height_mm: f64) -> Result<(), String> {

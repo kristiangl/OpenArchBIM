@@ -274,7 +274,19 @@ fn mat(name: &str, class: &str, shade: Color, cut: Option<&str>, surface: Option
             cut_foreground: pat(cut),
             cut_background: PatternGraphics::default(),
         },
-        physical: PhysicalAsset { density_kg_m3: Some(density), conductivity_w_mk: Some(k), specific_heat_j_kgk: None },
+        // typical specific heats by class, so a new project's assemblies report a thermal mass
+        physical: PhysicalAsset {
+            density_kg_m3: Some(density),
+            conductivity_w_mk: Some(k),
+            specific_heat_j_kgk: match class {
+                "Gypsum" => Some(1090.0),
+                "Wood" => Some(1600.0),
+                "Masonry" | "Glass" => Some(840.0),
+                "Concrete" => Some(880.0),
+                "Metal" => Some(450.0),
+                _ => None,
+            },
+        },
         identity: MaterialIdentity::default(),
     }
 }

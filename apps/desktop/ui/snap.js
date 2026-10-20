@@ -33,7 +33,10 @@ const Snap = (() => {
   let override = null; // one-shot override: a kind, or "off"
 
   const key = (cx, cy) => cx * 100003 + cy;
-  function build(list) {
+  // whose geometry the index holds: the plan, or the family editor while it sketches
+  let owner = "plan";
+  function build(list, who = "plan") {
+    owner = who;
     segs = list;
     index = new Map();
     list.forEach((sg, i) => {
@@ -241,6 +244,7 @@ const Snap = (() => {
     update(patch) { s = { ...s, ...patch }; save(); },
     reset() { s = { ...DEFAULTS }; save(); },
     build, fromPlan, resolve, glyph,
+    get owner() { return owner; },
     /** The length increment for placing along a line at this zoom: the dimension snap, never finer than a whole mm. */
     lengthStep(zoom) { return s.lengthOn && !s.off && override !== "off" ? Math.max(1, increment(s.lengths, zoom)) : 1; },
     /** Two-letter temporary overrides. They last for one pick. */

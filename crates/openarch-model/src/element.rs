@@ -83,6 +83,115 @@ pub struct Layer {
     /// Inside the core boundaries (the structural part of the wall).
     #[serde(default)]
     pub core: bool,
+    /// Wraps: this layer takes part in wrapping at ends and inserts (layers outside the core only).
+    #[serde(default = "yes")]
+    pub wraps: bool,
+    /// Structural Material: the layer whose material is the type's structural material (one at most, in the core).
+    #[serde(default)]
+    pub structural_material: bool,
+    /// Variable: the layer whose thickness changes when a floor or roof is shape edited (one at most).
+    #[serde(default)]
+    pub variable: bool,
+    /// Priority (1 joins through everything, 5 least): set to override the one the function gives.
+    #[serde(default)]
+    pub priority: Option<u8>,
+}
+
+impl Layer {
+    pub fn new(material: &str, thickness_mm: f64, function: LayerFunction, core: bool) -> Layer {
+        Layer {
+            material: material.into(),
+            thickness_mm,
+            is_void: false,
+            function,
+            core,
+            wraps: true,
+            structural_material: false,
+            variable: false,
+            priority: None,
+        }
+    }
+
+    /// The join priority this layer uses: its own, or the one its function gives.
+    pub fn join_priority(&self) -> u8 {
+        match (self.function, self.priority) {
+            (LayerFunction::Membrane, _) => crate::layers::priority(LayerFunction::Membrane),
+            (_, Some(p)) => p,
+            (f, None) => crate::layers::priority(f),
+        }
+    }
+}
+
+/// What a wall type is for (the Function type parameter): it feeds schedules, IFC and the default for new walls.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WallFunction {
+    #[default]
+    Exterior,
+    Interior,
+    Retaining,
+    Foundation,
+    Soffit,
+    CoreShaft,
+}
+
+/// Interior or exterior floor (the Function type parameter).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FloorFunction {
+    #[default]
+    Interior,
+    Exterior,
+}
+
+/// The type parameters every wall, floor and roof type carries besides its layers: analytical values and Identity Data.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TypeInfo {
+    /// Solar absorptance of the outer surface, 0 to 1.
+    #[serde(default = "default_absorptance")]
+    pub absorptance: f64,
+    /// Surface roughness, 1 (very rough) to 6 (very smooth).
+    #[serde(default = "default_roughness")]
+    pub roughness: u8,
+    #[serde(default)]
+    pub keynote: String,
+    #[serde(default)]
+    pub model: String,
+    #[serde(default)]
+    pub manufacturer: String,
+    #[serde(default)]
+    pub type_comments: String,
+    #[serde(default)]
+    pub url: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub assembly_description: String,
+    #[serde(default)]
+    pub assembly_code: String,
+    #[serde(default)]
+    pub type_mark: String,
+    #[serde(default)]
+    pub fire_rating: String,
+    #[serde(default)]
+    pub cost: Option<f64>,
+    #[serde(default)]
+    pub ifc_export_as: String,
+    #[serde(default)]
+    pub ifc_predefined_type: String,
+}
+
+fn default_absorptance() -> f64 {
+    0.7
+}
+fn default_roughness() -> u8 {
+    3
+}
+
+impl Default for TypeInfo {
+    fn default() -> Self {
+        serde_json::from_str("{}").expect("defaults")
+    }
 }
 
 /// How layers wrap round wall ends or openings (Wrapping at Ends / Inserts).
@@ -93,6 +202,8 @@ pub enum Wrap {
     None,
     Exterior,
     Interior,
+    /// Both sides wrap.
+    Both,
 }
 
 /// How two walls meet at a shared end. Square off differs from butt only in how
@@ -156,6 +267,18 @@ pub struct WallType {
     /// Fill used in plan at coarse detail (Coarse Scale Fill Pattern and Color).
     #[serde(default = "default_coarse_fill")]
     pub coarse_fill: PatternGraphics,
+    #[serde(default)]
+    pub function: WallFunction,
+    #[serde(default)]
+    pub info: TypeInfo,
+    /// Sample Height: how tall the wall is drawn in the Edit Assembly section preview (and the
+    /// height vertically compound layers are laid out over).
+    #[serde(default = "default_sample_height")]
+    pub sample_height_mm: f64,
+}
+
+fn default_sample_height() -> f64 {
+    6000.0
 }
 
 /// A grey solid fill, so coarse plans read as filled walls.
@@ -206,6 +329,10 @@ pub struct FloorType {
     pub layers: Vec<Layer>,
     #[serde(default = "default_coarse_fill")]
     pub coarse_fill: PatternGraphics,
+    #[serde(default)]
+    pub function: FloorFunction,
+    #[serde(default)]
+    pub info: TypeInfo,
 }
 
 impl FloorType {
@@ -222,6 +349,8 @@ pub struct RoofType {
     pub layers: Vec<Layer>,
     #[serde(default = "default_coarse_fill")]
     pub coarse_fill: PatternGraphics,
+    #[serde(default)]
+    pub info: TypeInfo,
 }
 
 impl RoofType {
@@ -450,11 +579,14 @@ pub struct Floor {
     /// Pinned elements refuse move, delete and flip until unpinned.
     #[serde(default)]
     pub pinned: bool,
+    /// Structural (instance): the floor is a structural slab, for the analytical model and structural schedules.
+    #[serde(default)]
+    pub structural: bool,
 }
 
 impl Floor {
     pub fn new(floor_type: Id, level: Id, loops: Vec<Vec<crate::curve::Curve>>) -> Floor {
-        Floor { floor_type, level, boundary: vec![], loops, slope: None, span: None, offset_mm: 0.0, pinned: false }
+        Floor { floor_type, level, boundary: vec![], loops, slope: None, span: None, offset_mm: 0.0, pinned: false, structural: false }
     }
 
     /// The closed loops of the floor, whichever way it was stored.

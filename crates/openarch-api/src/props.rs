@@ -175,8 +175,14 @@ pub fn floor_props(d: &Document, id: Id, f: &Floor) -> Value {
     json!({
         "id": id, "kind": "Floor", "type_id": f.floor_type,
         "title": format!("Floor: {}", t.map_or("?", |t| t.name.as_str())),
+        "target": { "method": "patch_floor", "id": id },
         "groups": [
-            group("Constraints", vec![ro("Level", d.level(f.level).map_or("?", |l| l.name.as_str())), ro("Pinned", if f.pinned { "Yes" } else { "No" })]),
+            group("Constraints", vec![
+                ro("Level", d.level(f.level).map_or("?", |l| l.name.as_str())),
+                num("Height Offset From Level", "offset_mm", f.offset_mm, !f.pinned),
+                boolean("Pinned", "pinned", f.pinned, true),
+            ]),
+            group("Structural", vec![boolean("Structural", "structural", f.structural, !f.pinned)]),
             group("Dimensions", vec![
                 ro("Area", format!("{:.2} m\u{b2}", f.area_mm2() / 1e6)),
                 ro("Thickness", format!("{:.0}", t.map_or(0.0, |t| t.thickness_mm()))),
@@ -460,6 +466,98 @@ pub fn type_props(d: &Document, id: Id, t: &FamilyType) -> Res {
         "siblings": d.family_types().iter().filter(|(_, o)| o.family == t.family).map(|(i, o)| json!({ "id": i, "name": o.name })).collect::<Vec<_>>(),
         "target": { "method": "patch_family_type", "id": id },
         "groups": groups.into_iter().map(|(n, rows)| group(&n, rows)).collect::<Vec<_>>(),
+    }))
+}
+
+/// Type Properties of a wall, floor or roof type: the assembly (Structure, edited in Edit Assembly),
+/// wrapping and function, coarse fill, the thermal values that follow from the layers, identity data
+/// and IFC export settings.
+pub fn sys_type_props(d: &Document, id: Id) -> Res {
+    use openarch_model::systypes::{assembly_values, SysKind};
+    let kind = d.sys_kind(id).ok_or("not a wall, floor or roof type")?;
+    let layers = d.sys_layers(id).unwrap_or(&[]);
+    let (name, coarse, info) = match d.get(id) {
+        Some(Element::WallType(t)) => (&t.name, &t.coarse_fill, &t.info),
+        Some(Element::FloorType(t)) => (&t.name, &t.coarse_fill, &t.info),
+        Some(Element::RoofType(t)) => (&t.name, &t.coarse_fill, &t.info),
+        _ => unreachable!(),
+    };
+    let v = assembly_values(d, layers);
+    let mut construction = vec![dialog("Structure", "assembly", "Edit...")];
+    let siblings: Vec<Value> = match kind {
+        SysKind::Wall => d.wall_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
+        SysKind::Floor => d.floor_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
+        SysKind::Roof => d.roof_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
+    };
+    let mut wall_extra = json!(null);
+    match d.get(id) {
+        Some(Element::WallType(t)) => {
+            construction.push(enum_select("Wrapping at Inserts", "wrap_inserts", &name_of(&t.wrap_inserts), &[("none", "Do not wrap"), ("exterior", "Exterior"), ("interior", "Interior"), ("both", "Both")]));
+            construction.push(enum_select("Wrapping at Ends", "wrap_ends", &name_of(&t.wrap_ends), &[("none", "None"), ("exterior", "Exterior"), ("interior", "Interior")]));
+            construction.push(ro("Width", format!("{}", v.thickness_mm)));
+            construction.push(enum_select(
+                "Function",
+                "function",
+                &name_of(&t.function),
+                &[("interior", "Interior"), ("exterior", "Exterior"), ("foundation", "Foundation"), ("retaining", "Retaining"), ("soffit", "Soffit"), ("core_shaft", "Core-shaft")],
+            ));
+            wall_extra = json!({ "wrap_ends": t.wrap_ends, "wrap_inserts": t.wrap_inserts, "sample_height_mm": t.sample_height_mm });
+        }
+        Some(Element::FloorType(t)) => {
+            construction.push(ro("Default Thickness", format!("{}", v.thickness_mm)));
+            construction.push(enum_select("Function", "function", &name_of(&t.function), &[("interior", "Interior"), ("exterior", "Exterior")]));
+        }
+        _ => construction.push(ro("Default Thickness", format!("{}", v.thickness_mm))),
+    }
+    let patterns: Vec<(String, Value, bool)> = std::iter::once(("<none>".to_string(), json!({ "coarse_fill": { "pattern": null } }), coarse.pattern.is_none()))
+        .chain(d.fill_patterns().iter().map(|(_, p)| (p.name.clone(), json!({ "coarse_fill": { "pattern": p.name } }), coarse.pattern.as_deref() == Some(p.name.as_str()))))
+        .collect();
+    let colour = coarse.color.unwrap_or([0, 0, 0]);
+    let fmt = |x: Option<f64>, digits: usize, unit: &str| x.map_or(String::new(), |x| format!("{x:.digits$} {unit}"));
+    let roughness: Vec<(String, Value, bool)> = [(1, "1 (Very Rough)"), (2, "2 (Rough)"), (3, "3 (Medium Rough)"), (4, "4 (Medium Smooth)"), (5, "5 (Smooth)"), (6, "6 (Very Smooth)")]
+        .iter()
+        .map(|(n, l)| (l.to_string(), json!({ "info": { "roughness": n } }), info.roughness == *n))
+        .collect();
+    let identity = vec![
+        text("Keynote", "info.keynote", &info.keynote),
+        text("Model", "info.model", &info.model),
+        text("Manufacturer", "info.manufacturer", &info.manufacturer),
+        text("Type Comments", "info.type_comments", &info.type_comments),
+        text("URL", "info.url", &info.url),
+        text("Description", "info.description", &info.description),
+        text("Assembly Description", "info.assembly_description", &info.assembly_description),
+        text("Assembly Code", "info.assembly_code", &info.assembly_code),
+        text("Type Mark", "info.type_mark", &info.type_mark),
+        text("Fire Rating", "info.fire_rating", &info.fire_rating),
+        num("Cost", "info.cost", info.cost.unwrap_or(0.0), true),
+    ];
+    Ok(json!({
+        "id": id, "kind": d.get(id).map(|e| e.kind()), "sys_kind": kind, "family": kind.family(), "name": name, "title": name,
+        "siblings": siblings,
+        "target": { "method": "patch_system_type", "id": id },
+        "patch": "patch_system_type", "duplicate": "duplicate_system_type",
+        "sides": [kind.sides().0, kind.sides().1],
+        "layers": layers, "wall": wall_extra, "values": v,
+        "groups": [
+            group("Construction", construction),
+            group("Graphics", vec![
+                select("Coarse Scale Fill Pattern", patterns),
+                json!({ "label": "Coarse Scale Fill Color", "value": format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2]), "raw": colour, "kind": "color", "path": "coarse_fill.color" }),
+            ]),
+            group("Materials and Finishes", vec![ro("Structural Material", v.structural_material.clone().unwrap_or_else(|| "<By Category>".into()))]),
+            group("Analytical Properties", vec![
+                ro("Heat Transfer Coefficient (U)", fmt(v.u_w_m2k, 4, "W/(m\u{b2}\u{b7}K)")),
+                ro("Thermal Resistance (R)", fmt(v.r_m2k_w, 4, "(m\u{b2}\u{b7}K)/W")),
+                ro("Thermal Mass", fmt(v.thermal_mass_kj_m2k, 2, "kJ/(m\u{b2}\u{b7}K)")),
+                num("Absorptance", "info.absorptance", info.absorptance, true),
+                select("Roughness", roughness),
+            ]),
+            group("Identity Data", identity),
+            group("IFC Parameters", vec![
+                text("Export Type to IFC As", "info.ifc_export_as", &info.ifc_export_as),
+                text("Type IFC Predefined Type", "info.ifc_predefined_type", &info.ifc_predefined_type),
+            ]),
+        ],
     }))
 }
 

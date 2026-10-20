@@ -422,3 +422,39 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 .np-levels div { padding: 3px 8px; cursor: pointer; user-select: none; }
 .np-levels div.on { background: var(--accent); color: #fff; }
 .np-levels div.has { color: var(--muted); }
+
+/* Type Properties */
+.tp-head { display: grid; gap: 6px; margin-bottom: 10px; }
+.tp-row { display: grid; grid-template-columns: 56px 1fr auto; gap: 8px; align-items: center; }
+.tp-row select { padding: 2px 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 3px; min-width: 0; }
+.tp-btns { display: flex; gap: 4px; flex-wrap: wrap; }
+.tp-btns button, .asm-btns button, .asm-box button { padding: 2px 10px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
+.tp-btns button:disabled, .asm-btns button:disabled, .asm-box button:disabled, .modal-foot button:disabled { opacity: .5; cursor: default; }
+table.tp-cols td { font-weight: 600; background: var(--panel-2); }
+.tp-params table.props { margin-bottom: 4px; }
+/* Edit Assembly */
+.modal.assembly { width: 1080px; }
+.asm { display: flex; gap: 12px; align-items: flex-start; }
+.asm-preview { flex: 0 0 auto; border: 1px solid var(--line); background: #fff; }
+.asm-preview canvas { display: block; cursor: grab; }
+.asm-main { flex: 1; min-width: 0; }
+.asm-facts { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin-bottom: 8px; }
+.asm-facts > div { display: contents; }
+.asm-facts > div > span:first-child { color: var(--muted); }
+.asm-facts input { width: 110px; padding: 1px 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 2px; }
+.asm-facts .note { grid-column: 1 / -1; color: var(--muted); }
+.asm-side { text-align: center; font-size: 11px; letter-spacing: .05em; color: var(--muted); padding: 2px 0; }
+table.asm-layers { width: 100%; border-collapse: collapse; }
+table.asm-layers th { text-align: left; font-weight: 600; background: var(--panel-2); padding: 3px 6px; border: 1px solid var(--line); font-size: 12px; }
+table.asm-layers td { padding: 1px 4px; border: 1px solid var(--line); }
+table.asm-layers td.n { width: 24px; text-align: right; color: var(--muted); }
+table.asm-layers tr.core td { background: rgba(46,111,158,.06); }
+table.asm-layers tr.boundary td { background: var(--panel-2); color: var(--muted); }
+table.asm-layers tr.sel td { outline: 1px solid var(--accent); outline-offset: -1px; }
+table.asm-layers select, table.asm-layers input.thk { width: 100%; padding: 1px 2px; background: var(--panel); border: 1px solid var(--line); border-radius: 2px; }
+table.asm-layers input.thk { width: 80px; }
+table.asm-layers select.prio { width: 52px; }
+.asm-btns { display: flex; gap: 6px; margin: 8px 0; }
+.asm-box { border: 1px solid var(--line); border-radius: 4px; padding: 6px 10px; margin: 6px 0; display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+.asm-box legend { padding: 0 4px; color: var(--muted); }
+.asm-box select { padding: 1px 4px; background: var(--panel); border: 1px solid var(--line); border-radius: 2px; }

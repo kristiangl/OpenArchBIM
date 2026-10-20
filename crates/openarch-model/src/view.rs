@@ -219,6 +219,22 @@ impl ResolvedRange {
         }
         PlanDisplay::Hidden // wholly above the cut plane
     }
+
+    /// `classify` for an element of `category`. Windows, casework and generic models wholly above the cut plane but
+    /// below the top are still shown, as seen from above (wall cupboards, high windows, a shelf modelled as a
+    /// generic model); everything else up there is hidden.
+    pub fn classify_category(&self, category: &str, z0: f64, z1: f64) -> PlanDisplay {
+        match self.classify(z0, z1) {
+            PlanDisplay::Hidden
+                if z0 > self.cut
+                    && z0 <= self.top
+                    && matches!(category, "Windows" | "Casework" | "Generic Models") =>
+            {
+                PlanDisplay::Projection
+            }
+            d => d,
+        }
+    }
 }
 
 /// Line override. `None` fields keep the default.
@@ -762,6 +778,27 @@ mod tests {
         assert_eq!(r.classify(1500.0, 2700.0), PlanDisplay::Hidden); // high-level wall above the cut plane
         assert_eq!(r.classify(2400.0, 2700.0), PlanDisplay::Hidden); // above the top
         assert_eq!(r.classify(-200.0, 0.0), PlanDisplay::Projection); // slab touching bottom plane
+    }
+
+    #[test]
+    fn windows_casework_and_generic_models_above_the_cut_are_seen() {
+        let r = range();
+        assert_eq!(
+            r.classify_category("Casework", 1500.0, 2100.0),
+            PlanDisplay::Projection
+        );
+        assert_eq!(
+            r.classify_category("Generic Models", 1500.0, 2100.0),
+            PlanDisplay::Projection
+        );
+        assert_eq!(
+            r.classify_category("Lighting Fixtures", 1500.0, 2100.0),
+            PlanDisplay::Hidden
+        );
+        assert_eq!(
+            r.classify_category("Casework", 0.0, 900.0),
+            PlanDisplay::Projection
+        );
     }
 
     #[test]

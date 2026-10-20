@@ -533,7 +533,7 @@ impl Document {
 }
 
 fn roof_layer(material: &str, t: f64, function: LayerFunction) -> Layer {
-    Layer { material: material.into(), thickness_mm: t, is_void: false, function, core: function == LayerFunction::Structure }
+    Layer::new(material, t, function, function == LayerFunction::Structure)
 }
 
 impl crate::doc::Tx<'_> {
@@ -545,7 +545,7 @@ impl crate::doc::Tx<'_> {
             ("Concrete Roof Slab 200", vec![roof_layer("Concrete", 200.0, St)]),
             ("Steel Canopy Roof 150", vec![roof_layer("Roof Sheeting", 1.0, F1), roof_layer("Steel Purlin", 150.0, St)]),
         ] {
-            self.add(Element::RoofType(RoofType { name: name.into(), layers, coarse_fill: default_coarse_fill() }));
+            self.add(Element::RoofType(RoofType { name: name.into(), layers, coarse_fill: default_coarse_fill(), info: crate::element::TypeInfo::default() }));
         }
     }
 }

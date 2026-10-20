@@ -1681,40 +1681,45 @@ function renderSketchRibbon() {
 function renderSketchBar() {
   const box = $("#ob-sketch");
   if (!Sketch.active) { box.replaceChildren(); return; }
-  const t = Sketch.tool, o = Sketch.opts;
-  const set = (p) => Sketch.setOpts(p);
+  box.replaceChildren(...sketchBarKids(Sketch));
+}
+
+// The options bar of a sketch session's tool (the project's sketch, or a family form's)
+function sketchBarKids(sk) {
+  const t = sk.tool, o = sk.opts;
+  const set = (p) => sk.setOpts(p);
   const check = (label, key, title) => el("label", { title: title || "" }, [el("input", { type: "checkbox", checked: !!o[key], onchange: (e) => set({ [key]: e.target.checked }) }), ` ${label}`]);
   const num = (label, key, unit = " mm", min = "0") => el("label", {}, [`${label} `, el("input", { type: "number", step: "any", min, value: o[key], onchange: (e) => set({ [key]: parseFloat(e.target.value) || 0 }) }), unit]);
   const radios = (key, items) => items.map(([v, l]) => el("label", {}, [el("input", { type: "radio", name: "sk-" + key, checked: o[key] === v, onchange: () => set({ [key]: v }) }), ` ${l}`]));
-  const kids = [el("b", { textContent: Sketch.TOOLS[t].label })];
+  const kids = [el("b", { textContent: sk.TOOLS[t].label })];
   if (t === "line") kids.push(check("Chain", "chain", "Keep drawing from the end of each line. Esc ends the chain."));
   if (t === "rectangle") kids.push(num("Radius", "cornerRadius"));
   if (t === "polygon_in" || t === "polygon_out") kids.push(num("Sides", "sides", "", "3"), num("Radius", "cornerRadius"));
   if (t === "arc_3pt") kids.push(check("Radius", "radiusOn", "Fix the radius instead of picking a point on the arc"), num("", "radius"));
   if (t === "arc_centre") kids.push(check("Counter-clockwise", "ccw"));
   if (t === "fillet") kids.push(num("Radius", "filletRadius", " mm", "1"));
-  if (Sketch.isRoof) {
+  if (sk.isRoof) {
     // The options bar for a roof footprint: Defines slope, then the overhang for picked walls
-    const sel = Sketch.selectedAttr();
+    const sel = sk.selectedAttr();
     if (sel && t === "select") {
       kids.push(
-        el("label", { title: "Selected edges: whether the roof slopes up from them. Off makes a gable end." }, [el("input", { type: "checkbox", checked: sel.defines_slope === true, onchange: (e) => Sketch.patchSelected({ defines_slope: e.target.checked }) }), ` Defines Slope (${sel.count} selected)`]),
-        el("label", {}, ["Slope ", el("input", { type: "number", step: "any", min: "0", max: "89", value: sel.slope_deg ?? "", placeholder: "varies", onchange: (e) => { const v = parseFloat(e.target.value); if (v >= 0 && v < 90) Sketch.patchSelected({ slope_deg: v }); } }), "\u00b0"]),
+        el("label", { title: "Selected edges: whether the roof slopes up from them. Off makes a gable end." }, [el("input", { type: "checkbox", checked: sel.defines_slope === true, onchange: (e) => sk.patchSelected({ defines_slope: e.target.checked }) }), ` Defines Slope (${sel.count} selected)`]),
+        el("label", {}, ["Slope ", el("input", { type: "number", step: "any", min: "0", max: "89", value: sel.slope_deg ?? "", placeholder: "varies", onchange: (e) => { const v = parseFloat(e.target.value); if (v >= 0 && v < 90) sk.patchSelected({ slope_deg: v }); } }), "\u00b0"]),
       );
-    } else if (Sketch.DRAW.some((d) => d.id === t)) {
+    } else if (sk.DRAW.some((d) => d.id === t)) {
       kids.push(check("Defines Slope", "definesSlope", "New edges slope up from this line. Off makes a gable end."), num("Slope", "slopeDeg", "\u00b0", "0"));
     }
   }
-  if (t === "pick_walls") kids.push(...radios("wallFace", [["exterior", "Exterior face"], ["interior", "Interior face"], ["centre", "Centreline"]]), num(Sketch.isRoof ? "Overhang" : "Offset", "wallOffset", " mm", "-100000"), check("Extend into wall (to core)", "toCore", Sketch.isRoof ? "Measure the overhang from the wall's core face instead of its finish face" : "Measure the offset from the wall's core face instead of its finish face"), el("span", { textContent: "Tab: whole run of walls" }));
+  if (t === "pick_walls") kids.push(...radios("wallFace", [["exterior", "Exterior face"], ["interior", "Interior face"], ["centre", "Centreline"]]), num(sk.isRoof ? "Overhang" : "Offset", "wallOffset", " mm", "-100000"), check("Extend into wall (to core)", "toCore", sk.isRoof ? "Measure the overhang from the wall's core face instead of its finish face" : "Measure the offset from the wall's core face instead of its finish face"), el("span", { textContent: "Tab: whole run of walls" }));
   if (t === "offset") kids.push(num("Offset", "offsetDist", " mm", "1"), check("Copy", "copy", "Keep the original"), check("Chain", "offsetChain", "Offset the whole run of connected lines (Tab turns this on and off)"));
   if (t === "align") kids.push(check("Multiple Alignment", "multiple", "Keep the same reference for several lines (Ctrl does the same for one pick)"));
   if (t === "copy") kids.push(check("Multiple", "multiple"));
   if (t === "rotate") kids.push(check("Copy", "copy"));
   if (t === "mirror") kids.push(...radios("mirrorMode", [["draw", "Draw axis"], ["pick", "Pick axis"]]), check("Copy", "mirrorCopy"));
   if (t === "trim_single") kids.push(check("Multiple", "multiple", "Keep trimming against the same boundary"));
-  if (Sketch.slope) kids.push(el("button", { textContent: "Slope Arrow...", title: "Edit the slope", onclick: openSlopeDialog }), el("button", { textContent: "Remove Slope", onclick: () => Sketch.removeSlope() }));
-  if (Sketch.span) kids.push(el("button", { textContent: "Remove Span", onclick: () => Sketch.removeSpan() }));
-  box.replaceChildren(...kids);
+  if (sk.slope) kids.push(el("button", { textContent: "Slope Arrow...", title: "Edit the slope", onclick: openSlopeDialog }), el("button", { textContent: "Remove Slope", onclick: () => sk.removeSlope() }));
+  if (sk.span) kids.push(el("button", { textContent: "Remove Span", onclick: () => sk.removeSpan() }));
+  return kids;
 }
 
 function renderSketchUI() {

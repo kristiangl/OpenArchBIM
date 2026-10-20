@@ -245,7 +245,7 @@ mod tests {
         b.add_sym(SymElement {
             id: 0,
             view: SymView::Plan,
-            path: Loop { nodes: vec![Node::new(Coord::on(left), Coord::on(PLANE_FB)), Node::new(Coord::on(right), Coord::on(PLANE_FB))], bulges: vec![], closed: false },
+            path: Loop { nodes: vec![Node::new(Coord::on(left), Coord::on(PLANE_FB)), Node::new(Coord::on(right), Coord::on(PLANE_FB))], bulges: vec![], closed: false, shapes: vec![] },
             filled: false,
             masking: false,
             subcategory: "Plan Swing".into(),
@@ -351,8 +351,8 @@ mod tests {
         let left = fam.body.planes.iter().find(|p| p.name == "Left").unwrap().id;
         let right = fam.body.planes.iter().find(|p| p.name == "Right").unwrap().id;
         // a rail drawn on the front plane at height 1000 runs across the plan; a post is a point in plan and is left out
-        let rail = Loop { nodes: vec![Node::new(Coord::on(left), Coord::from(PLANE_LEVEL, 1000.0)), Node::new(Coord::on(right), Coord::from(PLANE_LEVEL, 1000.0))], bulges: vec![], closed: false };
-        let post = Loop { nodes: vec![Node::new(Coord::from(PLANE_LR, 100.0), Coord::from(PLANE_LEVEL, 0.0)), Node::new(Coord::from(PLANE_LR, 100.0), Coord::from(PLANE_LEVEL, 500.0))], bulges: vec![], closed: false };
+        let rail = Loop { nodes: vec![Node::new(Coord::on(left), Coord::from(PLANE_LEVEL, 1000.0)), Node::new(Coord::on(right), Coord::from(PLANE_LEVEL, 1000.0))], bulges: vec![], closed: false, shapes: vec![] };
+        let post = Loop { nodes: vec![Node::new(Coord::from(PLANE_LR, 100.0), Coord::from(PLANE_LEVEL, 0.0)), Node::new(Coord::from(PLANE_LR, 100.0), Coord::from(PLANE_LEVEL, 500.0))], bulges: vec![], closed: false, shapes: vec![] };
         for (name, path) in [("Rail", rail), ("Post", post)] {
             let id = fam.body.take_id();
             fam.body.model_lines.push(ModelLine { id, name: name.into(), plane: PLANE_FB, path, subcategory: "Model Lines".into(), vis: Visibility::default() });

@@ -8,7 +8,9 @@
 // A curve entry is what the core returns: { curve, poly, closed, snaps } plus a local uid.
 // `curve` is the stored shape (type line | arc | circle | ellipse | spline).
 
-const Sketch = (() => {
+// makeSketch() gives an independent sketch session with its own host: the project's plan uses
+// `Sketch`, the family editor makes its own for sketches of forms.
+function makeSketch() {
   const cb = { finish: async () => false, cancel() {}, change() {}, prompt() {}, slope() {} };
   let host = null;
   let S = null;
@@ -1361,4 +1363,5 @@ const Sketch = (() => {
     // test hook
     state: () => S,
   };
-})();
+}
+const Sketch = makeSketch();

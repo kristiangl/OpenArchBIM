@@ -220,6 +220,7 @@ impl Node {
 /// A chain of nodes joined by line or arc segments. `bulges[i]` joins node i to
 /// node i+1 (and the last back to the first when closed): 0 is a line, otherwise the
 /// tangent of a quarter of the arc's angle, positive counter-clockwise (1 is a half circle).
+/// `shapes[i]`, when present, makes segment i a spline or part of an ellipse instead.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Loop {
     pub nodes: Vec<Node>,
@@ -227,6 +228,29 @@ pub struct Loop {
     pub bulges: Vec<f64>,
     #[serde(default = "yes")]
     pub closed: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub shapes: Vec<Option<SegShape>>,
+}
+
+/// A segment of a loop that is neither a line nor a circular arc, as the Spline, Ellipse and
+/// Partial Ellipse sketch tools make them. Its points are nodes too, so they can lock to planes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SegShape {
+    /// A smooth curve (Catmull-Rom, as sketch splines) from the segment's first node through
+    /// `through` to its last. A loop of one node and one spline segment is a closed spline.
+    Spline { through: Vec<Node> },
+    /// Part of the ellipse about `centre` with semi-axes `rx` (along `rotation_deg`) and `ry`, from
+    /// the segment's first node to its last, counter-clockwise when `ccw`.
+    Ellipse {
+        centre: Node,
+        rx: f64,
+        ry: f64,
+        #[serde(default)]
+        rotation_deg: f64,
+        #[serde(default = "yes")]
+        ccw: bool,
+    },
 }
 
 fn yes() -> bool {
@@ -265,7 +289,7 @@ impl ProfileLoop {
 
 impl Loop {
     pub fn polygon(nodes: Vec<Node>) -> Loop {
-        Loop { nodes, bulges: vec![], closed: true }
+        Loop { nodes, bulges: vec![], closed: true, shapes: vec![] }
     }
     /// A rectangle between two planes on each axis, or at fixed offsets.
     pub fn rect(u0: Coord, u1: Coord, v0: Coord, v1: Coord) -> Loop {
@@ -274,7 +298,7 @@ impl Loop {
     /// A circle (two half arcs) round a centre.
     pub fn circle(c: Node, r: f64) -> Loop {
         let at = |dx: f64| Node::new(Coord { plane: c.u.plane, off: c.u.off + dx }, c.v);
-        Loop { nodes: vec![at(r), at(-r)], bulges: vec![1.0, 1.0], closed: true }
+        Loop { nodes: vec![at(r), at(-r)], bulges: vec![1.0, 1.0], closed: true, shapes: vec![] }
     }
     fn bulge(&self, i: usize) -> f64 {
         self.bulges.get(i).copied().unwrap_or(0.0)
@@ -738,7 +762,14 @@ impl FamilyBody {
             Anchor::Mid { a, b } | Anchor::Div { a, b, .. } => a == id || b == id,
             Anchor::Origin => false,
         });
-        let in_loop = |l: &Loop| l.nodes.iter().any(|n| n.u.plane == Some(id) || n.v.plane == Some(id));
+        let on = |n: &Node| n.u.plane == Some(id) || n.v.plane == Some(id);
+        let in_loop = |l: &Loop| {
+            l.nodes.iter().any(on)
+                || l.shapes.iter().flatten().any(|s| match s {
+                    SegShape::Spline { through } => through.iter().any(on),
+                    SegShape::Ellipse { centre, .. } => on(centre),
+                })
+        };
         let used_by_form = self.forms.iter().any(|f| {
             f.shape.plane() == id
                 || match &f.shape {
@@ -1416,13 +1447,63 @@ impl Solved {
     }
 }
 
+/// A spline or ellipse segment with its points placed.
+#[derive(Debug, Clone)]
+pub enum PlacedShape {
+    Spline(Vec<Point>),
+    Ellipse { centre: Point, rx: f64, ry: f64, rotation_deg: f64, ccw: bool },
+}
+
 /// Points along the chain `l` (nodes already placed), arcs cut into short chords.
 pub fn tessellate_loop(pts: &[Point], l: &Loop, tol: f64) -> Vec<Point> {
+    tessellate_shaped(pts, &[], l, tol)
+}
+
+/// The points of a spline or ellipse segment from `p0` to `p1`, without `p1`.
+fn shape_points(p0: Point, p1: Point, sh: &PlacedShape, closed_alone: bool, tol: f64) -> Vec<Point> {
+    use crate::curve::Curve;
+    match sh {
+        PlacedShape::Spline(through) => {
+            let mut points = vec![p0];
+            points.extend(through.iter().copied());
+            if !closed_alone {
+                points.push(p1);
+            }
+            let mut v = Curve::Spline { points, closed: closed_alone }.tessellate(tol);
+            if !closed_alone {
+                v.pop();
+            }
+            v
+        }
+        PlacedShape::Ellipse { centre, rx, ry, rotation_deg, ccw } => {
+            // the parameter angle of a point on the ellipse
+            let rot = rotation_deg.to_radians();
+            let t = |p: Point| {
+                let (dx, dy) = (p.x - centre.x, p.y - centre.y);
+                let (lx, ly) = (dx * rot.cos() + dy * rot.sin(), -dx * rot.sin() + dy * rot.cos());
+                (ly / ry.max(1e-9)).atan2(lx / rx.max(1e-9)).to_degrees()
+            };
+            let mut v = Curve::Ellipse { centre: *centre, rx: *rx, ry: *ry, rotation_deg: *rotation_deg, t0_deg: Some(t(p0)), t1_deg: Some(t(p1)), ccw: *ccw }.tessellate(tol);
+            if let Some(f) = v.first_mut() {
+                *f = p0;
+            }
+            v.pop();
+            v
+        }
+    }
+}
+
+/// Like `tessellate_loop`, with segment `i` drawn from `shapes[i]` where one is given.
+pub fn tessellate_shaped(pts: &[Point], shapes: &[Option<PlacedShape>], l: &Loop, tol: f64) -> Vec<Point> {
     let n = pts.len();
     let mut out = Vec::new();
     let segs = if l.closed { n } else { n.saturating_sub(1) };
     for i in 0..segs {
         let (p0, p1) = (pts[i], pts[(i + 1) % n]);
+        if let Some(Some(sh)) = shapes.get(i) {
+            out.extend(shape_points(p0, p1, sh, n == 1 && l.closed, tol));
+            continue;
+        }
         out.push(p0);
         let b = l.bulge(i);
         let c = p0.dist(&p1);
@@ -1515,14 +1596,37 @@ impl FamilyBody {
         l.nodes.iter().map(|n| Ok(Point::new(self.coord(pos, &n.u, axes.0)?, self.coord(pos, &n.v, axes.1)?))).collect()
     }
 
+    /// The loop as points: its nodes placed, arcs, splines and ellipses cut into short chords.
+    fn ring(&self, pos: &BTreeMap<PlaneId, f64>, l: &Loop, axes: (Axis, Axis)) -> Result<Vec<Point>, String> {
+        let pts = self.place(pos, l, axes)?;
+        if l.shapes.iter().all(|s| s.is_none()) {
+            return Ok(tessellate_loop(&pts, l, TOL));
+        }
+        let pt = |n: &Node| -> Result<Point, String> { Ok(Point::new(self.coord(pos, &n.u, axes.0)?, self.coord(pos, &n.v, axes.1)?)) };
+        let mut placed = Vec::with_capacity(l.shapes.len());
+        for s in &l.shapes {
+            placed.push(match s {
+                None => None,
+                Some(SegShape::Spline { through }) => Some(PlacedShape::Spline(through.iter().map(pt).collect::<Result<_, _>>()?)),
+                Some(SegShape::Ellipse { centre, rx, ry, rotation_deg, ccw }) => {
+                    if !(*rx > 0.0 && *ry > 0.0) {
+                        return Err("an ellipse needs both radii".into());
+                    }
+                    Some(PlacedShape::Ellipse { centre: pt(centre)?, rx: *rx, ry: *ry, rotation_deg: *rotation_deg, ccw: *ccw })
+                }
+            });
+        }
+        Ok(tessellate_shaped(&pts, &placed, l, TOL))
+    }
+
     fn polys(&self, pos: &BTreeMap<PlaneId, f64>, loops: &[Loop], axes: (Axis, Axis)) -> Result<Vec<Vec<Point>>, String> {
         let mut out = Vec::new();
         for l in loops {
-            if l.nodes.len() < 3 && !(l.nodes.len() == 2 && l.bulges.iter().any(|b| b.abs() > 1e-9)) {
+            let curved = l.bulges.iter().any(|b| b.abs() > 1e-9) || l.shapes.iter().any(|s| s.is_some());
+            if l.nodes.len() < 3 && !(curved && !l.nodes.is_empty()) {
                 return Err("a sketch loop needs at least three points".into());
             }
-            let pts = self.place(pos, l, axes)?;
-            let poly = tessellate_loop(&pts, l, TOL);
+            let poly = self.ring(pos, l, axes)?;
             if poly.len() >= 3 && signed_area(&poly).abs() > 1e-6 {
                 out.push(poly);
             }
@@ -1688,12 +1792,12 @@ impl FamilyBody {
         }
         for s in &self.syms {
             let axes = s.view.normal().sketch_axes();
-            let pts = self.place(&planes, &s.path, axes).map_err(|e| format!("symbolic geometry {}: {e}", s.id))?;
+            let points = self.ring(&planes, &s.path, axes).map_err(|e| format!("symbolic geometry {}: {e}", s.id))?;
             let vis = self.resolve_vis(&s.vis, env)?;
             out.syms.push(SolvedSym {
                 id: s.id,
                 view: s.view,
-                points: tessellate_loop(&pts, &s.path, TOL),
+                points,
                 closed: s.path.closed,
                 filled: s.filled,
                 masking: s.masking,
@@ -1706,10 +1810,10 @@ impl FamilyBody {
             let wp = self.plane(m.plane).ok_or_else(|| format!("model line {}: the work plane is missing", m.id))?;
             let normal = wp.axis;
             let axes = normal.sketch_axes();
-            let pts = self.place(&planes, &m.path, axes).map_err(|e| format!("model line {}: {e}", m.id))?;
+            let flat = self.ring(&planes, &m.path, axes).map_err(|e| format!("model line {}: {e}", m.id))?;
             let w0 = planes[&wp.id];
             let vis = self.resolve_vis(&m.vis, env)?;
-            let points = tessellate_loop(&pts, &m.path, TOL).into_iter().map(|p| normal.point(p.x, p.y, w0)).collect();
+            let points = flat.into_iter().map(|p| normal.point(p.x, p.y, w0)).collect();
             out.model_lines.push(SolvedModelLine { id: m.id, name: m.name.clone(), points, closed: m.path.closed, subcategory: m.subcategory.clone(), vis, owner: None });
         }
         for c in &self.controls {
@@ -1836,8 +1940,7 @@ impl FamilyBody {
                 if path.nodes.len() < 2 {
                     return Err("a sweep needs a path of at least two points".into());
                 }
-                let pts = self.place(pos, path, axes)?;
-                let route = tessellate_loop(&pts, path, TOL);
+                let route = self.ring(pos, path, axes)?;
                 let rings = profile_rings(profile, env)?;
                 if rings.is_empty() {
                     return Err("a sweep needs a closed profile".into());
@@ -1852,8 +1955,7 @@ impl FamilyBody {
                 if path.closed {
                     return Err("a swept blend needs an open path".into());
                 }
-                let pts = self.place(pos, path, axes)?;
-                let route = tessellate_loop(&pts, path, TOL);
+                let route = self.ring(pos, path, axes)?;
                 let (r0, r1) = (profile_rings(profile, env)?, profile_rings(profile_end, env)?);
                 if r0.is_empty() || r1.is_empty() {
                     return Err("a swept blend needs a closed profile at each end".into());
@@ -1900,7 +2002,7 @@ fn profile_rings(profile: &[ProfileLoop], env: &mut Env) -> Result<Vec<Vec<Point
                 (vec![Point::new(cu + r, cv), Point::new(cu - r, cv)], vec![1.0, 1.0])
             }
         };
-        let shape = Loop { nodes: pts.iter().map(|p| Node::new(Coord::at(p.x), Coord::at(p.y))).collect(), bulges, closed: true };
+        let shape = Loop { nodes: pts.iter().map(|p| Node::new(Coord::at(p.x), Coord::at(p.y))).collect(), bulges, closed: true, shapes: vec![] };
         let poly = tessellate_loop(&pts, &shape, TOL);
         if poly.len() >= 3 && signed_area(&poly).abs() > 1e-6 {
             out.push(poly);
@@ -2560,7 +2662,7 @@ mod tests {
         let mut nodes = vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(0.0), Coord::at(0.0))];
         nodes[1].u = Coord::at(500.0);
         let id = b.take_id();
-        b.model_lines.push(ModelLine { id, name: "Edge".into(), plane: PLANE_LEVEL, path: Loop { nodes, bulges: vec![], closed: false }, subcategory: "Model Lines".into(), vis: Visibility::default() });
+        b.model_lines.push(ModelLine { id, name: "Edge".into(), plane: PLANE_LEVEL, path: Loop { nodes, bulges: vec![], closed: false, shapes: vec![] }, subcategory: "Model Lines".into(), vis: Visibility::default() });
         let cid = b.take_id();
         b.controls.push(Control { id: cid, name: String::new(), view: SymView::Plan, u: Coord::at(100.0), v: Coord::at(-200.0), kind: ControlKind::DoubleHorizontal, vis: Visibility::default() });
         let kid = b.take_id();
@@ -2606,7 +2708,7 @@ mod tests {
             subcategory: String::new(),
             vis: Visibility::default(),
         };
-        let straight = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(1000.0), Coord::at(0.0))], bulges: vec![], closed: false };
+        let straight = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(1000.0), Coord::at(0.0))], bulges: vec![], closed: false, shapes: vec![] };
         for flip in [false, true] {
             let mut b = FamilyBody::template();
             let id = b.add_form(mk(vec![ProfileLoop::rect("-50", "50", "-50", "50")], vec![ProfileLoop::rect("-25", "25", "-25", "25")], straight.clone(), flip));
@@ -2618,7 +2720,7 @@ mod tests {
             assert!(watertight(tris), "{flip}");
         }
         // a path with a corner: still closed and facing outward, with the end profile smaller
-        let bent = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(500.0), Coord::at(0.0)), Node::new(Coord::at(500.0), Coord::at(500.0))], bulges: vec![], closed: false };
+        let bent = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(500.0), Coord::at(0.0)), Node::new(Coord::at(500.0), Coord::at(500.0))], bulges: vec![], closed: false, shapes: vec![] };
         let mut b = FamilyBody::template();
         let id = b.add_form(mk(vec![ProfileLoop::rect("-40", "40", "-40", "40")], vec![ProfileLoop::rect("-20", "20", "-20", "20")], bent, false));
         let tris = b.solve(&mut params(&[])).unwrap().form(id).unwrap().solid.tris.clone();
@@ -2629,7 +2731,7 @@ mod tests {
         let e = b.solve(&mut params(&[])).err().unwrap();
         assert!(e.contains("same number of points"), "{e}");
         let mut b = FamilyBody::template();
-        let sq = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(100.0))], bulges: vec![], closed: true };
+        let sq = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(100.0))], bulges: vec![], closed: true, shapes: vec![] };
         b.add_form(mk(vec![ProfileLoop::rect("-5", "5", "-5", "5")], vec![ProfileLoop::rect("-5", "5", "-5", "5")], sq, false));
         assert!(b.solve(&mut params(&[])).err().unwrap().contains("open path"));
         // expressions in both profiles follow a renamed parameter
@@ -2645,7 +2747,7 @@ mod tests {
         for plane in [PLANE_LEVEL, PLANE_FB, PLANE_LR] {
             for flip in [false, true] {
                 let mut b = FamilyBody::template();
-                let path = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(100.0))], bulges: vec![], closed: false };
+                let path = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(100.0))], bulges: vec![], closed: false, shapes: vec![] };
                 let id = b.add_form(sweep_form(plane, path, vec![ProfileLoop::rect("-10", "10", "-10", "10")], flip));
                 let s = b.solve(&mut params(&[])).unwrap();
                 let tris = &s.form(id).unwrap().solid.tris;
@@ -2662,7 +2764,7 @@ mod tests {
         let mut b = FamilyBody::template();
         let sq = Loop::rect(Coord::at(-100.0), Coord::at(100.0), Coord::at(-100.0), Coord::at(100.0));
         let frame = b.add_form(sweep_form(PLANE_LEVEL, sq, vec![ProfileLoop::rect("-5", "5", "0", "20")], false));
-        let sq2 = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(300.0), Coord::at(0.0))], bulges: vec![], closed: false };
+        let sq2 = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(300.0), Coord::at(0.0))], bulges: vec![], closed: false, shapes: vec![] };
         let tube = b.add_form(sweep_form(
             PLANE_LEVEL,
             sq2,
@@ -2681,9 +2783,9 @@ mod tests {
     #[test]
     fn a_sweep_profile_follows_parameters() {
         let mut b = FamilyBody::template();
-        let path = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(200.0), Coord::at(0.0))], bulges: vec![], closed: false };
+        let path = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(200.0), Coord::at(0.0))], bulges: vec![], closed: false, shapes: vec![] };
         let id = b.add_form(sweep_form(PLANE_LEVEL, path, vec![ProfileLoop::rect("-[Size]/2", "[Size]/2", "0", "[Size] * 2")], false));
-        let circ = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0))], bulges: vec![], closed: false };
+        let circ = Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(100.0), Coord::at(0.0))], bulges: vec![], closed: false, shapes: vec![] };
         let rod = b.add_form(sweep_form(PLANE_LEVEL, circ, vec![ProfileLoop::Circle { u: "0".into(), v: "0".into(), r: "[Size]".into() }], false));
         for size in [20.0, 40.0] {
             let s = b.solve(&mut params(&[("Size", size)])).unwrap();
@@ -2697,7 +2799,7 @@ mod tests {
     fn a_sweep_round_a_curved_path_keeps_its_volume() {
         let mut b = FamilyBody::template();
         // a quarter circle of radius 100 turned through 90 degrees
-        let path = Loop { nodes: vec![Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(0.0), Coord::at(100.0))], bulges: vec![(std::f64::consts::PI / 8.0).tan()], closed: false };
+        let path = Loop { nodes: vec![Node::new(Coord::at(100.0), Coord::at(0.0)), Node::new(Coord::at(0.0), Coord::at(100.0))], bulges: vec![(std::f64::consts::PI / 8.0).tan()], closed: false, shapes: vec![] };
         let id = b.add_form(sweep_form(PLANE_LEVEL, path, vec![ProfileLoop::rect("-10", "10", "-10", "10")], false));
         let s = b.solve(&mut params(&[])).unwrap();
         let tris = &s.form(id).unwrap().solid.tris;

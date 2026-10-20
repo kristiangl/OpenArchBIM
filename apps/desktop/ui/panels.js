@@ -49,11 +49,20 @@ function rowCells(r, target) {
       applyPatch(target, patch);
     };
     val.append(dis(cb));
+  } else if (r.kind === "color") {
+    const inp = document.createElement("input");
+    inp.type = "color";
+    inp.value = r.value;
+    inp.onchange = () => {
+      const h = inp.value;
+      applyPatch(target, nestPatch(r.path, [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16))));
+    };
+    val.append(dis(inp));
   } else if (r.kind === "dialog") {
     const b = document.createElement("button");
     b.textContent = r.value;
     b.className = "edit-btn";
-    b.onclick = () => ({ vg: openVG, view_range: openViewRange })[r.dialog]?.();
+    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange })[r.dialog]?.());
     val.append(dis(b));
   } else {
     val.textContent = r.value;
@@ -189,10 +198,9 @@ async function renderProperties() {
   };
   // Edit Type is available for family types (doors and windows)
   const et = $("#edit-type");
-  const gridTypes = !!(d && (d.kind === "Grid" || d.type_kind === "grid"));
-  const levelTypes = !!(d && d.kind === "Level");
-  et.hidden = !(types && types.length && (types[0].family_id || gridTypes || levelTypes));
-  et.onclick = () => (levelTypes ? openEditLevelType(Number(sel.value)) : gridTypes ? openEditGridType(Number(sel.value)) : openEditType(Number(sel.value)));
+  et.hidden = !(types && types.length);
+  // OK on another type (or a duplicate) puts the selection, or the placing tool, on it
+  et.onclick = () => openTypeProperties(Number(sel.value) || current, { onType });
   // families with stored geometry open in the family editor
   const ef = $("#edit-family");
   const famOf = (tid) => { const t = (app.info.family_types || []).find((x) => x.id === tid); return t ? (app.info.families || []).find((f) => f.id === t.family_id) : null; };
@@ -335,7 +343,8 @@ function openModal(title, build, { wide = false } = {}) {
   back.append(box);
   document.body.append(back);
   const close = () => back.remove();
-  back.addEventListener("keydown", (e) => { if (e.key === "Escape") close(); });
+  // a dialog that must tidy up on Escape (Type Properties cancels its edits) sets back.onEscape
+  back.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); if (back.onEscape) back.onEscape(); else close(); } });
   back.tabIndex = -1;
   back.focus();
   build(content, foot, close);
@@ -613,48 +622,6 @@ function createTemplate() {
 
 
 // ---- Edit Type dialog ---------------------------------------------------------------
-async function openEditType(typeId) {
-  if (!typeId) return;
-  let id = typeId;
-  openModal("Type Properties", (body, foot, close) => {
-    const head = document.createElement("div");
-    head.className = "typebar";
-    const content = document.createElement("div");
-    const msg = document.createElement("div");
-    msg.className = "modal-msg";
-    body.append(head, content, msg);
-
-    const load = async () => {
-      let d;
-      try { d = await Backend.call("describe_type", { id }); } catch (e) { msg.textContent = String(e.message || e); return; }
-      const target = {
-        method: "patch_family_type", id,
-        apply: async (patch) => {
-          try { await Backend.call("patch_family_type", { id, patch }); msg.textContent = ""; } catch (e) { msg.textContent = String(e.message || e); }
-          await refresh();
-          await load();
-        },
-      };
-      head.replaceChildren();
-      const fam = document.createElement("span");
-      fam.textContent = `Family: ${d.family}`;
-      const sel = document.createElement("select");
-      for (const s2 of d.siblings) sel.add(new Option(s2.name, s2.id, false, s2.id === id));
-      sel.onchange = () => { id = Number(sel.value); msg.textContent = ""; load(); };
-      const dup = button("Duplicate...", () => duplicateTypePrompt(id, async (newId) => { id = newId; await refresh(); await load(); }));
-      head.append(fam, sel, dup);
-      // families made in set sizes list them in a catalogue
-      const family = app.info.families.find((f) => f.name === d.family);
-      const have = new Set(d.siblings.map((x) => x.name));
-      const missing = family && family.catalog ? family.catalog.filter((n) => !have.has(n)) : [];
-      if (missing.length) head.append(button("Add from catalogue...", () => catalogPrompt(family, missing, async (newId) => { id = newId; await refresh(); await load(); })));
-      content.replaceChildren(...d.groups.map((g) => groupTable(g.name, g.rows, target)));
-    };
-    foot.append(button("Close", close, true));
-    load();
-  }, { wide: false });
-}
-
 function catalogPrompt(family, names, done) {
   openModal(`${family.name}: sizes`, (body, foot, close) => {
     const sel = document.createElement("select");
@@ -694,78 +661,3 @@ function duplicateTypePrompt(typeId, done, method = "duplicate_family_type") {
   });
 }
 
-// Type Properties of a grid type: head size, centre segment and the default heads
-async function openEditGridType(typeId) {
-  if (!typeId) return;
-  let id = typeId;
-  openModal("Type Properties", (body, foot, close) => {
-    const head = document.createElement("div");
-    head.className = "typebar";
-    const content = document.createElement("div");
-    const msg = document.createElement("div");
-    msg.className = "modal-msg";
-    body.append(head, content, msg);
-    const load = async () => {
-      let d;
-      try { d = await Backend.call("describe_grid_type", { id }); } catch (e) { msg.textContent = String(e.message || e); return; }
-      const target = {
-        method: "patch_grid_type", id,
-        apply: async (patch) => {
-          try { await Backend.call("patch_grid_type", { id, patch }); msg.textContent = ""; } catch (e) { msg.textContent = String(e.message || e); }
-          await refresh();
-          await load();
-        },
-      };
-      head.replaceChildren();
-      const fam = document.createElement("span");
-      fam.textContent = "Family: Grid";
-      const sel = document.createElement("select");
-      for (const s2 of d.siblings) sel.add(new Option(s2.name, s2.id, false, s2.id === id));
-      sel.onchange = () => { id = Number(sel.value); msg.textContent = ""; load(); };
-      const dup = button("Duplicate...", () => duplicateTypePrompt(id, async (newId) => { id = newId; await refresh(); await load(); }, "duplicate_grid_type"));
-      head.append(fam, sel, dup);
-      content.replaceChildren(...d.groups.map((g) => groupTable(g.name, g.rows, target)));
-    };
-    foot.append(button("Close", close, true));
-    load();
-  }, { wide: false });
-}
-
-
-// Type Properties of a level type: the head family it uses (with a way into the family editor) and the default heads
-async function openEditLevelType(typeId) {
-  if (!typeId) return;
-  let id = typeId;
-  openModal("Type Properties", (body, foot, close) => {
-    const head = document.createElement("div");
-    head.className = "typebar";
-    const content = document.createElement("div");
-    const msg = document.createElement("div");
-    msg.className = "modal-msg";
-    body.append(head, content, msg);
-    const load = async () => {
-      let d;
-      try { d = await Backend.call("describe_level_type", { id }); } catch (e) { msg.textContent = String(e.message || e); return; }
-      const target = {
-        method: "patch_level_type", id,
-        apply: async (patch) => {
-          try { await Backend.call("patch_level_type", { id, patch }); msg.textContent = ""; } catch (e) { msg.textContent = String(e.message || e); }
-          await refresh();
-          await load();
-        },
-      };
-      head.replaceChildren();
-      const fam = document.createElement("span");
-      fam.textContent = "Family: Level";
-      const sel = document.createElement("select");
-      for (const s2 of d.siblings) sel.add(new Option(s2.name, s2.id, false, s2.id === id));
-      sel.onchange = () => { id = Number(sel.value); msg.textContent = ""; load(); };
-      const dup = button("Duplicate...", () => duplicateTypePrompt(id, async (newId) => { id = newId; await refresh(); await load(); }, "duplicate_level_type"));
-      const edit = button("Edit Symbol Family...", () => { if (d.head) FamEd.open(d.head, async () => { await refresh(); await load(); }); });
-      head.append(fam, sel, dup, edit);
-      content.replaceChildren(...d.groups.map((g) => groupTable(g.name, g.rows, target)));
-    };
-    foot.append(button("Close", close, true));
-    load();
-  }, { wide: false });
-}

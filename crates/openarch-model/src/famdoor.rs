@@ -159,7 +159,7 @@ pub fn flush_door_body(double: bool) -> FamilyBody {
         let fine_only = vis(Some(when), false, false, true, true);
         let profile: Vec<ProfileLoop> = narrow.iter().chain(full.iter()).map(|(a0, a1, b0, b1)| ProfileLoop::rect(a0, a1, b0, b1)).collect();
         let node = |x: PlaneId, z: PlaneId| Node::new(Coord::on(x), Coord::on(z));
-        let path = Loop { nodes: vec![node(reveal_l, level), node(reveal_l, head), node(reveal_r, head), node(reveal_r, level)], bulges: vec![], closed: false };
+        let path = Loop { nodes: vec![node(reveal_l, level), node(reveal_l, head), node(reveal_r, head), node(reveal_r, level)], bulges: vec![], closed: false, shapes: vec![] };
         b.form(&format!("{kind} Frame"), FormShape::Sweep { plane: centre, path, profile, profile_angle: 0.0, flip: false }, false, "Frame/Mullion", fine_only);
         // the envelope at Medium detail
         let (y_out, a_in, a_out) = if kind == "Metal" { ("([Jamb Depth]/2 + [Architrave Projection])", "-[Rib Height]", "[Architrave Width]") } else { ("[Jamb Depth]/2", "-[Stop Height]", "[Jamb Thickness]") };
@@ -203,7 +203,7 @@ pub fn flush_door_body(double: bool) -> FamilyBody {
         // from the closed end round to the open tip: anticlockwise at the left hinge, clockwise at the right
         let bulge = if inward > 0.0 { QUARTER } else { -QUARTER };
         b.sym(
-            Loop { nodes: vec![Node::new(Coord::on(closed_end), Coord::on(pivot)), Node::new(Coord::on(hinge), Coord::on(open_end))], bulges: vec![bulge], closed: false },
+            Loop { nodes: vec![Node::new(Coord::on(closed_end), Coord::on(pivot)), Node::new(Coord::on(hinge), Coord::on(open_end))], bulges: vec![bulge], closed: false, shapes: vec![] },
             false,
             "Plan Swing",
             vis(None, true, true, true, true),
@@ -242,7 +242,7 @@ fn frame_in_opening(b: &mut B, sill: bool) -> (PlaneId, PlaneId, PlaneId, PlaneI
     // the frame is swept round the opening: inside the reveal line (`u` negative), `Frame Depth` deep
     let node = |x: PlaneId, z: PlaneId| Node::new(Coord::on(x), Coord::on(z));
     let nodes = vec![node(left, level), node(left, top), node(right, top), node(right, level)];
-    let path = Loop { nodes, bulges: vec![], closed: sill };
+    let path = Loop { nodes, bulges: vec![], closed: sill, shapes: vec![] };
     let profile = vec![ProfileLoop::rect(&format!("-({fw})"), "0", "0", depth)];
     b.form("Frame", FormShape::Sweep { plane: back, path, profile, profile_angle: 0.0, flip: false }, false, "Frame/Mullion", vis(None, true, true, true, false));
     // the hole in the wall
@@ -258,7 +258,7 @@ fn frame_in_opening(b: &mut B, sill: bool) -> (PlaneId, PlaneId, PlaneId, PlaneI
 }
 
 fn line(a: (PlaneId, PlaneId), c: (PlaneId, PlaneId)) -> Loop {
-    Loop { nodes: vec![Node::new(Coord::on(a.0), Coord::on(a.1)), Node::new(Coord::on(c.0), Coord::on(c.1))], bulges: vec![], closed: false }
+    Loop { nodes: vec![Node::new(Coord::on(a.0), Coord::on(a.1)), Node::new(Coord::on(c.0), Coord::on(c.1))], bulges: vec![], closed: false, shapes: vec![] }
 }
 
 /// The body of the starter windows (`Fixed`, `Awning` and `Sliding` share it until a type of

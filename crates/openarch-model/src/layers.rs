@@ -45,8 +45,10 @@ pub fn priority(f: LayerFunction) -> u8 {
         LayerFunction::Structure => 1,
         LayerFunction::Substrate => 2,
         LayerFunction::ThermalAir => 3,
-        LayerFunction::Membrane => 4,
-        LayerFunction::Finish1 | LayerFunction::Finish2 => 5,
+        LayerFunction::Finish1 => 4,
+        LayerFunction::Finish2 => 5,
+        // a membrane has no thickness and never cuts through another layer
+        LayerFunction::Membrane => 6,
     }
 }
 
@@ -570,6 +572,8 @@ pub struct LayerGeom {
     pub function: LayerFunction,
     pub is_void: bool,
     pub core: bool,
+    /// Takes part in wrapping at ends and inserts.
+    pub wraps: bool,
     pub thickness: f64,
     pub shapes: Vec<Shape>,
 }
@@ -616,7 +620,7 @@ impl Document {
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
             let Some(t) = self.wall_type_for(w) else { continue };
-            let specs: Vec<LayerSpec> = t.layers.iter().map(|l| LayerSpec { thickness: l.thickness_mm, priority: priority(l.function), core: l.core }).collect();
+            let specs: Vec<LayerSpec> = t.layers.iter().map(|l| LayerSpec { thickness: l.thickness_mm, priority: l.join_priority(), core: l.core }).collect();
             let facets = self.wall_facets(id, w);
             facets_of.insert(id, facets.len());
             for join in facets {
@@ -647,7 +651,7 @@ impl Document {
                 .layers
                 .iter()
                 .zip(per_layer)
-                .map(|(l, shapes)| LayerGeom { material: l.material.clone(), function: l.function, is_void: l.is_void, core: l.core, thickness: l.thickness_mm, shapes })
+                .map(|(l, shapes)| LayerGeom { material: l.material.clone(), function: l.function, is_void: l.is_void, core: l.core, wraps: l.wraps, thickness: l.thickness_mm, shapes })
                 .collect();
             let f0 = free.get(&facet_id(id, 0)).copied().unwrap_or([true, true]);
             let f1 = free.get(&facet_id(id, n - 1)).copied().unwrap_or([true, true]);
@@ -660,115 +664,261 @@ impl Document {
     /// when the plan cuts the wall at `cut_z`, opened up where doors and windows
     /// span that height, with the layers wrapping into the opening if the wall
     /// type says so.
-    pub fn wall_plan_layers(&self, wall: Id, wl: &WallLayers, cut_z: Option<f64>) -> Vec<LayerGeom> {
-        let mut layers = wl.layers.clone();
-        let (Some(Element::Wall(w)), true) = (self.get(wall), !layers.is_empty()) else { return layers };
-        let Some(t) = self.wall_type_for(w) else { return layers };
-        let path = w.path();
-        let len = path.length();
-        if len < 1e-6 {
-            return layers;
-        }
-        let (left, right) = self.wall_extents(w);
-        // the frame at `u` along the wall and `u` measured in it: a straight wall has one frame
-        // for its whole length, a curved one a frame at each place it is needed
-        let straight = if path.is_straight() {
-            let dir = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
-            Some(Frame { start: w.start, dir, n: Point::new(-dir.y, dir.x) })
-        } else {
-            None
+    pub fn wall_plan_layers(
+        &self,
+        wall: Id,
+        wl: &WallLayers,
+        cut_z: Option<f64>,
+    ) -> Vec<LayerGeom> {
+        let (Some(Element::Wall(w)), true) = (self.get(wall), !wl.layers.is_empty()) else {
+            return wl.layers.clone();
         };
-        let frame_at = |u: f64| -> (Frame, f64) {
-            match &straight {
-                Some(f) => (Frame { start: f.start, dir: f.dir, n: f.n }, u),
-                None => {
-                    let (p, d) = path.at(u);
-                    (Frame { start: p, dir: d, n: Point::new(-d.y, d.x) }, 0.0)
-                }
-            }
+        let Some(t) = self.wall_type_for(w) else {
+            return wl.layers.clone();
         };
-        // layer boundaries across the wall, left to right
-        let mut bounds = vec![left];
-        for l in &layers {
-            bounds.push(bounds.last().unwrap() - l.thickness);
-        }
-
         let blocked: Vec<(f64, f64)> = cut_z
             .map(|z| self.wall_openings(wall).into_iter().filter(|o| o.z0 < z && z < o.z1).map(|o| (o.u0, o.u1)).collect())
             .unwrap_or_default();
-        // free stretches of wall between the ends and the openings
-        let mut edges = vec![];
-        let mut at = 0.0;
-        for &(a, b) in &blocked {
-            edges.push((at, a));
-            at = b;
-        }
-        edges.push((at, len));
-
-        // wrap at free ends first, then open up the openings and wrap at those
-        if wl.free[0] {
-            let (f, e) = frame_at(0.0);
-            wrap_at(&mut layers, &f, &bounds, e, 1.0, t.wrap_ends, edges.first().map_or(len, |e| e.1 - e.0));
-        }
-        if wl.free[1] {
-            let (f, e) = frame_at(len);
-            wrap_at(&mut layers, &f, &bounds, e, -1.0, t.wrap_ends, edges.last().map_or(len, |e| e.1 - e.0));
-        }
-        if !blocked.is_empty() {
-            let reach = (left + right) * 4.0 + 1000.0;
-            let boxes: Vec<Ring> = blocked
-                .iter()
-                .map(|&(a, b)| {
-                    // a curved wall's opening is cut square to the wall where it sits
-                    let (f, e) = frame_at(if straight.is_some() { 0.0 } else { (a + b) / 2.0 });
-                    if straight.is_some() { f.rect(a, b, -reach, reach) } else { f.rect(e - (b - a) / 2.0, e + (b - a) / 2.0, -reach, reach) }
-                })
-                .collect();
-            for l in layers.iter_mut() {
-                l.shapes = subtract_shapes(&l.shapes, &boxes);
-            }
-            for (i, &(a, b)) in blocked.iter().enumerate() {
-                let (before, after) = (edges[i].1 - edges[i].0, edges[i + 1].1 - edges[i + 1].0);
-                let (fa, ea) = frame_at(a);
-                wrap_at(&mut layers, &fa, &bounds, ea, -1.0, t.wrap_inserts, before);
-                let (fb, eb) = frame_at(b);
-                wrap_at(&mut layers, &fb, &bounds, eb, 1.0, t.wrap_inserts, after);
-            }
-        }
-        layers
+        plan_layers(w, &t, self.wall_extents(w), wl, &blocked)
     }
+}
+
+/// The plan layers of wall `w` of type `t` (reaching `extents` left and right of its location
+/// line): wrapped at its free ends, and opened up and wrapped at each `blocked` stretch along it.
+pub(crate) fn plan_layers(
+    w: &crate::element::Wall,
+    t: &crate::element::WallType,
+    extents: (f64, f64),
+    wl: &WallLayers,
+    blocked: &[(f64, f64)],
+) -> Vec<LayerGeom> {
+    let mut layers = wl.layers.clone();
+    let path = w.path();
+    let len = path.length();
+    if len < 1e-6 || layers.is_empty() {
+        return layers;
+    }
+    let (left, right) = extents;
+    // the frame at `u` along the wall and `u` measured in it: a straight wall has one frame
+    // for its whole length, a curved one a frame at each place it is needed
+    let straight = if path.is_straight() {
+        let dir = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+        Some(Frame {
+            start: w.start,
+            dir,
+            n: Point::new(-dir.y, dir.x),
+        })
+    } else {
+        None
+    };
+    let frame_at = |u: f64| -> (Frame, f64) {
+        match &straight {
+            Some(f) => (
+                Frame {
+                    start: f.start,
+                    dir: f.dir,
+                    n: f.n,
+                },
+                u,
+            ),
+            None => {
+                let (p, d) = path.at(u);
+                (
+                    Frame {
+                        start: p,
+                        dir: d,
+                        n: Point::new(-d.y, d.x),
+                    },
+                    0.0,
+                )
+            }
+        }
+    };
+    // layer boundaries across the wall, left to right
+    let mut bounds = vec![left];
+    for l in &layers {
+        bounds.push(bounds.last().unwrap() - l.thickness);
+    }
+
+    // free stretches of wall between the ends and the openings
+    let mut edges = vec![];
+    let mut at = 0.0;
+    for &(a, b) in blocked {
+        edges.push((at, a));
+        at = b;
+    }
+    edges.push((at, len));
+
+    // wrap at free ends first, then open up the openings and wrap at those
+    if wl.free[0] {
+        let (f, e) = frame_at(0.0);
+        wrap_at(
+            &mut layers,
+            &f,
+            &bounds,
+            e,
+            1.0,
+            t.wrap_ends,
+            edges.first().map_or(len, |e| e.1 - e.0),
+        );
+    }
+    if wl.free[1] {
+        let (f, e) = frame_at(len);
+        wrap_at(
+            &mut layers,
+            &f,
+            &bounds,
+            e,
+            -1.0,
+            t.wrap_ends,
+            edges.last().map_or(len, |e| e.1 - e.0),
+        );
+    }
+    if !blocked.is_empty() {
+        let reach = (left + right) * 4.0 + 1000.0;
+        let boxes: Vec<Ring> = blocked
+            .iter()
+            .map(|&(a, b)| {
+                // a curved wall's opening is cut square to the wall where it sits
+                let (f, e) = frame_at(if straight.is_some() {
+                    0.0
+                } else {
+                    (a + b) / 2.0
+                });
+                if straight.is_some() {
+                    f.rect(a, b, -reach, reach)
+                } else {
+                    f.rect(e - (b - a) / 2.0, e + (b - a) / 2.0, -reach, reach)
+                }
+            })
+            .collect();
+        for l in layers.iter_mut() {
+            l.shapes = subtract_shapes(&l.shapes, &boxes);
+        }
+        for (i, &(a, b)) in blocked.iter().enumerate() {
+            let (before, after) = (edges[i].1 - edges[i].0, edges[i + 1].1 - edges[i + 1].0);
+            let (fa, ea) = frame_at(a);
+            wrap_at(&mut layers, &fa, &bounds, ea, -1.0, t.wrap_inserts, before);
+            let (fb, eb) = frame_at(b);
+            wrap_at(&mut layers, &fb, &bounds, eb, 1.0, t.wrap_inserts, after);
+        }
+    }
+    layers
+}
+
+/// A straight sample of wall type `t` for the Edit Assembly preview: `len` long on its centreline
+/// along +X (exterior to +Y), both ends free, with an opening over `opening` along it.
+pub fn sample_plan_layers(
+    t: &crate::element::WallType,
+    len: f64,
+    opening: Option<(f64, f64)>,
+) -> Vec<LayerGeom> {
+    let w = crate::element::Wall::new(0, 0, Point::new(0.0, 0.0), Point::new(len, 0.0), 3000.0);
+    let (left, right) = t.extents(crate::element::LocationLine::WallCentreline);
+    let mut y = left;
+    let layers = t
+        .layers
+        .iter()
+        .map(|l| {
+            let ring = vec![
+                Point::new(0.0, y),
+                Point::new(len, y),
+                Point::new(len, y - l.thickness_mm),
+                Point::new(0.0, y - l.thickness_mm),
+            ];
+            y -= l.thickness_mm;
+            let shapes = if l.thickness_mm > 0.0 {
+                vec![vec![ring]]
+            } else {
+                vec![]
+            };
+            LayerGeom {
+                material: l.material.clone(),
+                function: l.function,
+                is_void: l.is_void,
+                core: l.core,
+                wraps: l.wraps,
+                thickness: l.thickness_mm,
+                shapes,
+            }
+        })
+        .collect();
+    let wl = WallLayers {
+        layers,
+        free: [true, true],
+    };
+    plan_layers(&w, t, (left, right), &wl, opening.as_slice())
 }
 
 /// Wrap the layers outside the core round a free boundary at `e` along the wall
 /// (a wall end or a jamb). `inward` is +1 if the wall continues to larger `u`.
-/// Each wrapped layer turns into an L: its band along the wall plus a return
-/// across the end, as deep as the layer is thick, reaching to the far boundary
-/// of the core. The layers inside it step back by the depth of the returns.
-fn wrap_at(layers: &mut [LayerGeom], f: &Frame, bounds: &[f64], e: f64, inward: f64, wrap: Wrap, room: f64) {
-    if wrap == Wrap::None {
-        return;
+/// Each wrapping layer (its Wraps box ticked) turns into an L: its band along the wall plus a return
+/// across the end, as deep as the layer is thick, reaching to the far boundary of the core. The layers
+/// inside it (wrapping or not, and the core) step back by the depth of the returns outside them.
+fn wrap_at(
+    layers: &mut [LayerGeom],
+    f: &Frame,
+    bounds: &[f64],
+    e: f64,
+    inward: f64,
+    wrap: Wrap,
+    room: f64,
+) {
+    match wrap {
+        Wrap::None => {}
+        Wrap::Exterior | Wrap::Interior => {
+            wrap_side(layers, f, bounds, e, inward, wrap == Wrap::Exterior, room)
+        }
+        Wrap::Both => {
+            wrap_side(layers, f, bounds, e, inward, true, room);
+            wrap_side(layers, f, bounds, e, inward, false, room);
+        }
     }
-    let (Some(first), Some(last)) = (layers.iter().position(|l| l.core), layers.iter().rposition(|l| l.core)) else { return };
-    // wrapped layers from the outermost one in towards the core
-    let wrapped: Vec<usize> = match wrap {
-        Wrap::Exterior => (0..first).collect(),
-        _ => (last + 1..layers.len()).rev().collect(),
+}
+
+fn wrap_side(
+    layers: &mut [LayerGeom],
+    f: &Frame,
+    bounds: &[f64],
+    e: f64,
+    inward: f64,
+    exterior: bool,
+    room: f64,
+) {
+    let (Some(first), Some(last)) = (
+        layers.iter().position(|l| l.core),
+        layers.iter().rposition(|l| l.core),
+    ) else {
+        return;
     };
-    let depth: f64 = wrapped.iter().map(|&k| layers[k].thickness).sum();
-    if wrapped.is_empty() || room < depth + 1.0 {
+    // the layers on this side, from the outermost one in towards the core
+    let side: Vec<usize> = if exterior {
+        (0..first).collect()
+    } else {
+        (last + 1..layers.len()).rev().collect()
+    };
+    let depth: f64 = side
+        .iter()
+        .filter(|&&k| layers[k].wraps)
+        .map(|&k| layers[k].thickness)
+        .sum();
+    if depth <= 0.0 || room < depth + 1.0 {
         return;
     }
-    let far = if wrap == Wrap::Exterior { bounds[last + 1] } else { bounds[first] };
+    let far = if exterior { bounds[last + 1] } else { bounds[first] };
     let x = |d: f64| e + inward * d;
     let mut done = 0.0;
-    for &k in &wrapped {
+    for &k in &side {
         let (hi, lo) = (bounds[k], bounds[k + 1]);
-        let next = done + layers[k].thickness;
         if done > 0.0 {
             // this layer's band starts behind the returns of the layers outside it
             layers[k].shapes = subtract_shapes(&layers[k].shapes, &[f.rect(e, x(done), lo, hi)]);
         }
-        let (y0, y1) = if wrap == Wrap::Exterior { (far, lo) } else { (hi, far) };
+        if !layers[k].wraps {
+            continue;
+        }
+        let next = done + layers[k].thickness;
+        let (y0, y1) = if exterior { (far, lo) } else { (hi, far) };
         let ret = f.rect(x(done), x(next), y0, y1);
         layers[k].shapes = union_with(&layers[k].shapes, &ret);
         done = next;

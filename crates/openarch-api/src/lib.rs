@@ -338,6 +338,7 @@ impl Session {
                             Some(Element::FamilyInstance(_)) => d.patch_instance(id, patch)?,
                             Some(Element::Grid(_)) => d.patch_grid(id, patch)?,
                             Some(Element::Roof(_)) => d.patch_roof(id, patch)?,
+                            Some(Element::Floor(_)) => d.patch_floor(id, patch)?,
                             _ => return Err("those properties cannot be changed for this kind of element".into()),
                         }
                     }
@@ -368,6 +369,34 @@ impl Session {
                 Ok(json!({}))
             }
             "describe_type" => self.describe_type(id_of(p, "id")?),
+            "describe_any_type" => self.describe_any_type(id_of(p, "id")?),
+            "patch_floor" => {
+                self.doc.patch_floor(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "patch_system_type" => {
+                self.doc.patch_system_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "duplicate_system_type" => Ok(json!({ "id": self.doc.duplicate_system_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
+            "rename_type" => {
+                self.doc.rename_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)?;
+                Ok(json!({}))
+            }
+            "assembly_info" => self.assembly_info(p),
+            // Type Properties edits the model as it goes so it can show what follows; Apply and OK keep
+            // the edits as one undo step, Cancel drops everything since the last Apply
+            "edit_begin" => Ok(json!({ "mark": self.doc.edit_mark() })),
+            "edit_commit" => {
+                let mark = p.get("mark").and_then(|v| v.as_u64()).ok_or("missing mark")? as usize;
+                self.doc.fold_since(mark, p.get("name").and_then(|v| v.as_str()).unwrap_or("Type Properties"));
+                Ok(json!({ "mark": self.doc.edit_mark() }))
+            }
+            "edit_cancel" => {
+                let mark = p.get("mark").and_then(|v| v.as_u64()).ok_or("missing mark")? as usize;
+                self.doc.roll_back_to(mark);
+                Ok(json!({}))
+            }
             "place_free_instance" => {
                 let pt = point_of(p.get("point").ok_or("missing point")?)?;
                 let rot = p.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0);
@@ -1167,6 +1196,26 @@ impl Session {
                 self.doc.set_floor_sketch(id_of(p, "id")?, curves_of(p, "curves")?, slope, span)?;
                 Ok(json!({}))
             }
+            // ---- family form sketches: loops to sketch curves and back (openarch_model::famsketch) ----
+            "family_sketch_of" => {
+                use openarch_model::famgeom::{Loop, PlaneId};
+                let loops: Vec<Loop> = serde_json::from_value(p.get("loops").cloned().ok_or("missing loops")?).map_err(|e| format!("bad loops: {e}"))?;
+                let planes: std::collections::BTreeMap<PlaneId, f64> = serde_json::from_value(p.get("planes").cloned().unwrap_or(json!({}))).map_err(|e| format!("bad planes: {e}"))?;
+                let (curves, locks, kept) = openarch_model::famsketch::curves_from_loops(&loops, &planes)?;
+                Ok(json!({ "curves": curves.iter().map(describe_curve).collect::<Vec<_>>(), "locks": locks, "kept": kept }))
+            }
+            "family_sketch_loops" => {
+                use openarch_model::famgeom::PlaneId;
+                use openarch_model::famsketch::{Kept, SketchLock};
+                let curves = curves_of(p, "curves")?;
+                let locks: Vec<SketchLock> = serde_json::from_value(p.get("locks").cloned().unwrap_or(json!([]))).map_err(|e| format!("bad locks: {e}"))?;
+                let kept: Vec<Kept> = serde_json::from_value(p.get("kept").cloned().unwrap_or(json!([]))).map_err(|e| format!("bad kept: {e}"))?;
+                let planes: std::collections::BTreeMap<PlaneId, f64> = serde_json::from_value(p.get("planes").cloned().unwrap_or(json!({}))).map_err(|e| format!("bad planes: {e}"))?;
+                match openarch_model::famsketch::loops_from_curves(&curves, &locks, &kept, &planes) {
+                    Ok(loops) => Ok(json!({ "ok": true, "loops": loops })),
+                    Err(e) => Ok(json!({ "ok": false, "error": { "message": e.message, "at": e.at } })),
+                }
+            }
             "floor_sketch" => {
                 let id = id_of(p, "id")?;
                 let Some(Element::Floor(f)) = self.doc.get(id) else { return Err("not a floor".into()) };
@@ -1605,7 +1654,7 @@ impl Session {
                     let Some((fam, _)) = d.instance_family(inst) else { continue };
                     let door_detail = settings.overrides.model.get(fam.category.label()).and_then(|c| c.detail_level).unwrap_or(settings.detail_level);
                     let Some(frame) = d.instance_frame(id) else { continue };
-                    let display = match range.classify(frame.z0, frame.z1) {
+                    let display = match range.classify_category(fam.category.label(), frame.z0, frame.z1) {
                         PlanDisplay::Hidden if in_underlay(inst.level) => "underlay",
                         PlanDisplay::Hidden => continue,
                         PlanDisplay::Cut => "cut",
@@ -1902,6 +1951,78 @@ impl Session {
     fn describe_type(&self, id: Id) -> Res {
         let t = self.doc.family_type(id).ok_or("not a family type")?;
         props::type_props(&self.doc, id, t)
+    }
+
+    /// Type Properties of any type, with the commands that change, duplicate and rename it, so one
+    /// dialog serves family, system, grid and level types.
+    fn describe_any_type(&self, id: Id) -> Res {
+        let d = &self.doc;
+        let mut v = match d.get(id).ok_or("no such type")? {
+            Element::FamilyType(t) => {
+                let mut v = props::type_props(d, id, t)?;
+                v["patch"] = json!("patch_family_type");
+                v["duplicate"] = json!("duplicate_family_type");
+                v["family_id"] = json!(t.family);
+                v
+            }
+            Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) => props::sys_type_props(d, id)?,
+            Element::GridType(t) => {
+                let mut v = props::grid_type_props(d, id, t);
+                v["family"] = json!("Grid");
+                v["patch"] = json!("patch_grid_type");
+                v["duplicate"] = json!("duplicate_grid_type");
+                v
+            }
+            Element::LevelType(t) => {
+                let mut v = props::level_type_props(d, id, t);
+                v["family"] = json!("Level");
+                v["patch"] = json!("patch_level_type");
+                v["duplicate"] = json!("duplicate_level_type");
+                v
+            }
+            _ => return Err("not a type".into()),
+        };
+        if v.get("name").map_or(true, |n| n.is_null()) {
+            v["name"] = v["title"].clone();
+        }
+        Ok(v)
+    }
+
+    /// What Edit Assembly shows for a layer list that is not stored yet: the check OK will make,
+    /// the thermal values, and for walls a plan sample (both ends free, an opening in the middle)
+    /// with the layers wrapped as the wrapping settings say.
+    fn assembly_info(&self, p: &Value) -> Res {
+        use openarch_model::element::{default_coarse_fill, Layer, TypeInfo, WallFunction, WallType, Wrap};
+        use openarch_model::systypes::{assembly_values, check_assembly, SysKind};
+        let kind: SysKind = serde_json::from_value(p.get("kind").cloned().ok_or("missing kind")?).map_err(|e| format!("bad kind: {e}"))?;
+        let layers: Vec<Layer> = serde_json::from_value(p.get("layers").cloned().ok_or("missing layers")?).map_err(|e| format!("bad layers: {e}"))?;
+        let error = check_assembly(&self.doc, kind, &layers).err();
+        let values = assembly_values(&self.doc, &layers);
+        let mut plan = Value::Null;
+        if kind == SysKind::Wall && error.is_none() {
+            let wrap = |k: &str| -> Result<Wrap, String> { serde_json::from_value(p.get(k).cloned().unwrap_or(json!("none"))).map_err(|e| format!("bad {k}: {e}")) };
+            let t = WallType {
+                name: String::new(),
+                layers: layers.clone(),
+                wrap_ends: wrap("wrap_ends")?,
+                wrap_inserts: wrap("wrap_inserts")?,
+                coarse_fill: default_coarse_fill(),
+                function: WallFunction::default(),
+                info: TypeInfo::default(),
+                sample_height_mm: 6000.0,
+            };
+            let (len, opening) = (1800.0, (600.0, 1200.0));
+            let pt = |q: &Point| [q.x, q.y];
+            let geo = openarch_model::layers::sample_plan_layers(&t, len, Some(opening));
+            plan = json!({
+                "length": len, "opening": [opening.0, opening.1], "extents": t.extents(LocationLine::WallCentreline),
+                "layers": geo.iter().map(|g| json!({
+                    "material": g.material, "is_void": g.is_void, "core": g.core, "function": g.function,
+                    "shapes": g.shapes.iter().map(|sh| sh.iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                })).collect::<Vec<_>>(),
+            });
+        }
+        Ok(json!({ "error": error, "values": values, "plan": plan }))
     }
 
     /// Wall and floor quantities as schedules, with rate columns and totals
@@ -3457,6 +3578,78 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn a_family_sketch_turns_into_loops_with_its_locks_and_back() {
+        let mut s = Session::new();
+        let planes = json!({ "1": 0.0, "2": 0.0, "3": 0.0, "50": 300.0 });
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let curves = json!([line([0.0, 0.0], [300.0, 0.0]), line([300.0, 0.0], [300.0, 200.0]), line([300.0, 200.0], [0.0, 200.0]), line([0.0, 200.0], [0.0, 0.0])]);
+        let r = call(&mut s, "family_sketch_loops", json!({ "curves": curves, "locks": [{ "curve": 1, "plane": 50, "coord": "u", "on": true }], "planes": planes }));
+        assert_eq!(r["ok"], true);
+        let nodes = r["loops"][0]["nodes"].as_array().unwrap();
+        assert_eq!(nodes.iter().filter(|n| n["u"]["plane"] == 50).count(), 2);
+        let back = call(&mut s, "family_sketch_of", json!({ "loops": r["loops"], "planes": planes }));
+        assert_eq!(back["curves"].as_array().unwrap().len(), 4);
+        assert_eq!(back["locks"].as_array().unwrap().len(), 1);
+        // an open sketch is refused with the place it is open
+        let open = call(&mut s, "family_sketch_loops", json!({ "curves": [line([0.0, 0.0], [300.0, 0.0]), line([300.0, 0.0], [300.0, 200.0])], "planes": planes }));
+        assert_eq!(open["ok"], false);
+        assert!(open["error"]["message"].as_str().unwrap().len() > 3);
+    }
+
+    #[test]
+    fn wall_floor_and_roof_types_edit_in_type_properties_and_cancel_drops_the_edits() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let wt = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Brick Veneer").unwrap()["id"].as_u64().unwrap();
+        let d = call(&mut s, "describe_any_type", json!({ "id": wt }));
+        assert_eq!((d["family"].as_str(), d["patch"].as_str()), (Some("Basic Wall"), Some("patch_system_type")));
+        let rows: Vec<&str> = d["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap())).collect();
+        for want in ["Structure", "Wrapping at Inserts", "Wrapping at Ends", "Width", "Function", "Coarse Scale Fill Pattern", "Thermal Resistance (R)", "Thermal Mass", "Type Mark", "Fire Rating"] {
+            assert!(rows.contains(&want), "{want} missing from {rows:?}");
+        }
+        assert!(d["values"]["r_m2k_w"].as_f64().unwrap() > 0.5);
+        // the preview of a wrapped assembly: the face brick turns into the opening
+        let mut layers = d["layers"].clone();
+        let flat = call(&mut s, "assembly_info", json!({ "kind": "wall", "layers": layers, "wrap_inserts": "none" }));
+        let wrapped = call(&mut s, "assembly_info", json!({ "kind": "wall", "layers": layers, "wrap_inserts": "exterior" }));
+        assert!(flat["error"].is_null() && flat["plan"]["layers"].as_array().unwrap().len() == 4);
+        let pts = |v: &Value| v["plan"]["layers"][0]["shapes"].to_string().len();
+        assert_ne!(pts(&flat), pts(&wrapped), "wrapping changes the outer leaf");
+        layers[0]["thickness_mm"] = json!(0.0);
+        assert!(call(&mut s, "assembly_info", json!({ "kind": "wall", "layers": layers }))["error"].as_str().unwrap().contains("membrane"));
+        // edits in a session: Cancel puts everything back, including a duplicate and a rename
+        let undo_before = call(&mut s, "doc_info", json!({}))["undo"].clone();
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        call(&mut s, "patch_system_type", json!({ "id": wt, "patch": { "info": { "type_mark": "W1" }, "wrap_ends": "interior" } }));
+        let dup = call(&mut s, "duplicate_system_type", json!({ "id": wt, "name": "Brick Veneer 2" }))["id"].as_u64().unwrap();
+        call(&mut s, "rename_type", json!({ "id": dup, "name": "Brick Veneer Custom" }));
+        call(&mut s, "edit_cancel", json!({ "mark": mark }));
+        let info = call(&mut s, "doc_info", json!({}));
+        assert!(!info["wall_types"].as_array().unwrap().iter().any(|t| t["name"] == "Brick Veneer Custom"));
+        assert_eq!(info["undo"], undo_before);
+        assert_eq!(call(&mut s, "describe_any_type", json!({ "id": wt }))["wall"]["wrap_ends"], "none");
+        // Apply then OK: one undo step per commit
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        call(&mut s, "patch_system_type", json!({ "id": wt, "patch": { "info": { "type_mark": "W1" } } }));
+        call(&mut s, "patch_system_type", json!({ "id": wt, "patch": { "function": "interior" } }));
+        call(&mut s, "edit_commit", json!({ "mark": mark, "name": "Type Properties" }));
+        assert_eq!(call(&mut s, "doc_info", json!({}))["undo"], "Type Properties");
+        call(&mut s, "undo", json!({}));
+        assert_eq!(call(&mut s, "describe_any_type", json!({ "id": wt }))["groups"][4]["rows"][8]["value"], "");
+        // floors and roofs
+        let ft = info["floor_types"][0]["id"].as_u64().unwrap();
+        let fd = call(&mut s, "describe_any_type", json!({ "id": ft }));
+        assert_eq!(fd["family"], "Floor");
+        let rt = info["roof_types"][0]["id"].as_u64().unwrap();
+        assert_eq!(call(&mut s, "describe_any_type", json!({ "id": rt }))["family"], "Basic Roof");
+        // every kind of type answers the one describe call
+        let lt = info["level_types"][0]["id"].as_u64().unwrap();
+        assert_eq!(call(&mut s, "describe_any_type", json!({ "id": lt }))["patch"], "patch_level_type");
+        let ty = info["family_types"][0]["id"].as_u64().unwrap();
+        assert_eq!(call(&mut s, "describe_any_type", json!({ "id": ty }))["duplicate"], "duplicate_family_type");
     }
 
     #[test]

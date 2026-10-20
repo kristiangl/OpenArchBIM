@@ -168,6 +168,8 @@ const Plan = (() => {
     return out;
   }
   function snap(sx, sy) {
+    // the family editor borrows the snap index while it sketches; take it back
+    if (Snap.owner !== "plan") Snap.build(Snap.fromPlan(data));
     const w = toWorld(sx, sy);
     const last = draw && draw.pts.length ? draw.pts[draw.pts.length - 1] : null;
     if (Sketch.active) return Snap.resolve(w, { zoom: cam.s, last: Sketch.last(), extra: Sketch.segs(), points: Sketch.points(), cycle: snapCycle, shift, gridStep: gridStep() });
