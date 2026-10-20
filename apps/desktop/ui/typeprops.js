@@ -424,10 +424,10 @@ async function openEditAssembly(t, onOk) {
       drawPreview();
     };
 
-    const pvBtn = button("<< Preview", () => {
+    const pvBtn = button("Preview >>", () => {
       previewOn = !previewOn;
       pv.hidden = !previewOn;
-      pvBtn.textContent = previewOn ? "Preview >>" : "<< Preview";
+      pvBtn.textContent = previewOn ? "<< Preview" : "Preview >>";
       viewSel.hidden = !previewOn;
       drawPreview();
     });
