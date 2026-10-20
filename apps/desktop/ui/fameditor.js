@@ -222,7 +222,7 @@ const FamModel = (() => {
 
   const newId = () => {
     const b = S.body;
-    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.model_lines || []).map((x) => x.id), ...(b.controls || []).map((x) => x.id), ...(b.connectors || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id));
+    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.model_lines || []).map((x) => x.id), ...(b.controls || []).map((x) => x.id), ...(b.connectors || []).map((x) => x.id), ...(b.model_texts || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id));
   };
   const planeById = (id) => S.body.planes.find((p) => p.id === id);
   const formById = (id) => S.body.forms.find((f) => f.id === id);
@@ -230,6 +230,8 @@ const FamModel = (() => {
   const mlineById = (id) => (S.body.model_lines || []).find((f) => f.id === id);
   const ctrlById = (id) => (S.body.controls || []).find((f) => f.id === id);
   const connById = (id) => (S.body.connectors || []).find((f) => f.id === id);
+  const mtextById = (id) => (S.body.model_texts || []).find((f) => f.id === id);
+  const isSel = (kind, id) => S.sel && S.sel.id === id && (S.sel.kind === kind || (kind === "form" && S.sel.kind === "mtext"));
   // a solved 3D point as the view sees it
   const proj = (p) => (S.view === "plan" ? [p[0], p[1]] : S.view === "front" || S.view === "back" ? [p[0], p[2]] : [p[1], p[2]]);
   // What each kind of connector carries: [property, kind, default, choices]. Numbers may be formulas of the family parameters.
@@ -404,7 +406,7 @@ const FamModel = (() => {
   const TOOL_OF = {
     "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
     "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-swblend": "swblend", "f-sym": "sym", "f-region": "region",
-    "f-mline": "mline", "f-control": "control",
+    "f-mline": "mline", "f-control": "control", "f-mtext": "mtext",
   };
   function setTool(t) {
     S.voidNext = false; S.openingNext = false;
@@ -465,6 +467,7 @@ const FamModel = (() => {
       bar.append(el("span", "fe-opt", "Draw"), mode);
       if (S.tool === "mline") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
     }
+    if (S.tool === "mtext") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
     if (S.tool === "control") bar.append(el("span", "fe-opt", "Control"), selIn(CONTROL_KINDS, S.ctrlKind, (v) => { S.ctrlKind = v; }));
     if (S.tool === "conn") bar.append(el("span", "fe-opt", "Connector"), selIn(Object.entries(CONN).map(([k, c]) => [k, c.label]), S.connKind, (v) => { S.connKind = v; status(); }), el("span", "fe-opt", "Face (work plane)"), planeSel());
     if (S.tool === "sweep" || S.tool === "swblend") sweepBar(bar);
@@ -638,6 +641,7 @@ const FamModel = (() => {
       align: "Click a reference plane or the edge of a form to align to, then click the edge to move to it. Lock in the options bar ties it to a reference plane; Multiple Alignment (or Ctrl) keeps the same reference.",
       sym: "Line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. Shows only in this kind of view.",
       mline: "Model line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. It is 3D, so it shows in every view its visibility settings allow.",
+      mtext: "Click where the text starts (its baseline). Type the text, then change font, size, depth and alignment in Properties.",
       control: "Click where the flip arrows go in this view. Choose the kind in the options bar.",
       conn: `${(CONN[S.connKind] || CONN.duct).label}: click where it sits on the face (the work plane). It points out of that plane; flip it in Properties.`,
       region: "Click two corners for a filled region that shows only in this kind of view.",
@@ -690,6 +694,7 @@ const FamModel = (() => {
     else if (s.kind === "sym") symProps(r, symById(s.id));
     else if (s.kind === "mline") mlineProps(r, mlineById(s.id));
     else if (s.kind === "ctrl") ctrlProps(r, ctrlById(s.id));
+    else if (s.kind === "mtext") mtextProps(r, mtextById(s.id));
     else if (s.kind === "conn") connProps(r, connById(s.id));
     flex(r);
     ctxRefresh();
@@ -735,7 +740,7 @@ const FamModel = (() => {
   }
 
   // ---- Associate Family Parameter: a property row that a family parameter can drive ----
-  const KIND_NAME = { length: "Length", yes_no: "Yes/No", material: "Material" };
+  const KIND_NAME = { length: "Length", yes_no: "Yes/No", material: "Material", text: "Text" };
   // The family parameter a value names on its own (`Width` or `[Width]`), or null when it is a number or a formula
   function assocOf(v, kind) {
     const m = /^\s*\[?([^\[\]]+?)\]?\s*$/.exec(String(v ?? ""));
@@ -775,7 +780,7 @@ const FamModel = (() => {
         }
       };
       draw();
-      const group = { length: "Dimensions", yes_no: "Graphics", material: "Materials and Finishes" }[kind];
+      const group = { length: "Dimensions", yes_no: "Graphics", material: "Materials and Finishes", text: "Identity Data" }[kind];
       foot.append(
         button("New Parameter...", () => paramProps({ kinds: [[kind, KIND_NAME[kind]]], group, value: seed }, (param) => { close(); apply(param.name, param); })),
         button("Cancel", close),
@@ -984,6 +989,29 @@ const FamModel = (() => {
     const off = textIn(String(c.off || 0), (v) => set({ plane: c.plane || null, off: num(v) }));
     const w = el("span", "fe-coord"); w.append(sel, off);
     r.append(field(label + (pl ? "" : ""), w));
+  }
+  function mtextProps(r, t) {
+    if (!t) return;
+    const wp = planeById(t.plane);
+    const set = (fn) => change((b) => { fn(mtextById(t.id)); });
+    r.append(el("div", "famed-hint", `Model text on ${wp ? wp.name : "a missing plane"}. It stands out from the plane by its depth.`));
+    r.append(field("Name", textIn(t.name || "", (v) => set((x) => { x.name = v; }))));
+    const tp = t.text_param && S.params.find((p) => p.name === t.text_param && p.param_kind === "text") ? t.text_param : null;
+    const box = el("textarea"); box.value = t.text || ""; box.rows = 2; box.onchange = () => set((x) => { x.text = box.value; });
+    r.append(assocRow("Text", "text", tp, box, (name, add) => change((b) => { if (add) S.params.push(add); mtextById(t.id).text_param = name; })));
+    r.append(field("Font", textIn(t.font || "", (v) => set((x) => { x.font = v; }), { list: ["DejaVu Sans"] })));
+    r.append(field("Text size", textIn(t.size, (v) => set((x) => { x.size = v; }), { list: lengthParams() })));
+    r.append(el("div", "famed-hint", "Text size is the height of a capital letter."));
+    r.append(field("Depth", textIn(t.depth, (v) => set((x) => { x.depth = v; }), { list: lengthParams() })));
+    r.append(field("Bold", checkIn(t.bold, (v) => set((x) => { x.bold = v; }))));
+    r.append(field("Italic", checkIn(t.italic, (v) => set((x) => { x.italic = v; }))));
+    r.append(field("Horizontal align", selIn([["left", "Left"], ["center", "Center"], ["right", "Right"]], t.align || "left", (v) => set((x) => { x.align = v; }))));
+    coordRow(r, "Horizontal", t.u, (v) => change((b) => { mtextById(t.id).u = v; }));
+    coordRow(r, "Vertical", t.v, (v) => change((b) => { mtextById(t.id).v = v; }));
+    const mp = t.material_param && S.params.find((p) => p.name === t.material_param && p.param_kind === "material") ? t.material_param : null;
+    r.append(assocRow("Material", "material", mp, textIn(t.material || "", (v) => set((x) => { x.material = v; }), { list: (app.info.materials || []).map((m) => m.name || m) }), (name, add) => change((b) => { if (add) S.params.push(add); mtextById(t.id).material_param = name; })));
+    r.append(field("Subcategory", textIn(t.subcategory || "", (v) => set((x) => { x.subcategory = v; }), { list: SUBS })));
+    graphicsRows(r, t, (b) => mtextById(t.id));
   }
   function ctrlProps(r, c) {
     if (!c) return;
@@ -1495,7 +1523,7 @@ const FamModel = (() => {
     for (const pass of ["solid", "void"]) {
       for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) {
         if ((pc.void ? "void" : "solid") !== pass) continue;
-        const selected = S.sel && S.sel.kind === "form" && S.sel.id === pc.form;
+        const selected = isSel("form", pc.form);
         ctx.beginPath();
         for (const ring of pc.rings) { ring.forEach(([x, y], i) => { const p = w2s(x, y); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }); ctx.closePath(); }
         ctx.fillStyle = pc.void ? "rgba(200,60,150,0.16)" : pc.sub === "Glass" ? "rgba(110,190,230,0.35)" : "rgba(120,150,190,0.30)";
@@ -1866,7 +1894,7 @@ const FamModel = (() => {
       ctx.beginPath();
       t.p.forEach((q, i) => { const x = ox + q[0] * k, y = oy - q[2] * k; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
       ctx.closePath();
-      const sel = S.sel && S.sel.kind === "form" && S.sel.id === t.id;
+      const sel = isSel("form", t.id);
       const g = Math.round(150 + 90 * t.shade);
       ctx.fillStyle = t.void ? "rgba(200,60,150,0.18)" : t.glass ? "rgba(110,190,230,0.4)" : sel ? `rgb(${g - 40},${g},${g + 15})` : `rgb(${g - 30},${g - 10},${g})`;
       ctx.fill();
@@ -2144,7 +2172,7 @@ const FamModel = (() => {
     for (const pc of pieces) {
       let inside = false;
       for (const ring of pc.rings) if (pointIn(ring, w.u, w.v)) inside = !inside;
-      if (inside) return { kind: "form", id: pc.form };
+      if (inside) return mtextById(pc.form) ? { kind: "mtext", id: pc.form } : { kind: "form", id: pc.form };
     }
     return null;
   }
@@ -2174,9 +2202,24 @@ const FamModel = (() => {
         return;
       }
       S.sel = hitItem(m.x, m.y); props(); render();
-      const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : null);
-      const wp = it && S.sel.kind === "conn" ? planeById(it.plane) : null;
+      const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : S.sel.kind === "mtext" ? mtextById(S.sel.id) : null);
+      const wp = it && S.sel.kind !== "ctrl" ? planeById(it.plane) : null;
       if (it && (S.sel.kind === "ctrl" || (wp && wp.axis === VIEWS[S.view].n))) S.drag = { pt: it, before: snapshot(), moved: false };
+      return;
+    }
+    if (t === "mtext") {
+      const sp = snapPoint(m.x, m.y);
+      const plane = workPlane();
+      askText("Model Text", "Text", "Text", [], async (txt) => {
+        if (!txt.trim()) return;
+        await change((b) => {
+          const id = newId();
+          const n = (b.model_texts || []).length + 1;
+          (b.model_texts = b.model_texts || []).push({ id, name: `Text ${n}`, plane, u: coordOf(sp.u), v: coordOf(sp.v), text: txt, text_param: null, font: "DejaVu Sans", size: "100", depth: "20", bold: false, italic: false, align: "left", material: "", material_param: null, subcategory: "", vis: {} });
+          S.sel = { kind: "mtext", id };
+        });
+        S.msg = "Text placed. Change its size, depth, font and alignment in Properties."; status(); render();
+      });
       return;
     }
     if (t === "control") {
@@ -2548,6 +2591,7 @@ const FamModel = (() => {
       ] };
     }
     if (sel.kind === "mline") return { auto, title: "Modify | Model Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mlineById(sel.id)) }] }, { label: "Modify", items: [{ label: "Align", ico: "Al", big: true, onclick: () => setTool("align") }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
+    if (sel.kind === "mtext") return { auto, title: "Modify | Model Text", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mtextById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "ctrl") return { auto, title: "Modify | Controls", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => ctrlById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "conn") return { auto, title: "Modify | Connectors", groups: [{ label: "Modify", items: [{ label: "Flip", ico: "Fl", big: true, onclick: () => change((b) => { const c = connById(sel.id); c.flip = !c.flip; }) }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "sym") return { auto, title: "Modify | Symbolic Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => symById(sel.id)) }] }] };
@@ -3133,6 +3177,7 @@ const FamModel = (() => {
       } else if (s.kind === "sym") b.syms = b.syms.filter((y) => y.id !== s.id);
       else if (s.kind === "mline") b.model_lines = (b.model_lines || []).filter((y) => y.id !== s.id);
       else if (s.kind === "ctrl") b.controls = (b.controls || []).filter((y) => y.id !== s.id);
+      else if (s.kind === "mtext") b.model_texts = (b.model_texts || []).filter((y) => y.id !== s.id);
       else if (s.kind === "conn") b.connectors = (b.connectors || []).filter((y) => y.id !== s.id);
       S.sel = null;
     });

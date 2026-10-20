@@ -479,6 +479,47 @@ pub struct ModelLine {
     pub vis: Visibility,
 }
 
+fn default_font() -> String {
+    crate::famtext::DEFAULT_FONT.to_string()
+}
+
+/// Letters that stand out from a work plane (Model Text). `size` is the height of a capital letter and
+/// `depth` how far the letters stand out along the plane's normal; both are formulas of the parameters.
+/// The text itself can come from a Text parameter.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelText {
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    pub plane: PlaneId,
+    /// Where the first line starts (left align), centres or ends (right align), on its baseline.
+    pub u: Coord,
+    pub v: Coord,
+    #[serde(default)]
+    pub text: String,
+    /// The Text parameter the string is taken from, when there is one.
+    #[serde(default)]
+    pub text_param: Option<String>,
+    #[serde(default = "default_font")]
+    pub font: String,
+    pub size: String,
+    pub depth: String,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub align: crate::famtext::TextAlign,
+    #[serde(default)]
+    pub material: String,
+    #[serde(default)]
+    pub material_param: Option<String>,
+    #[serde(default)]
+    pub subcategory: String,
+    #[serde(default)]
+    pub vis: Visibility,
+}
+
 /// The flip arrows a door or window shows in a view (Control).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -574,6 +615,8 @@ pub struct FamilyBody {
     #[serde(default)]
     pub connectors: Vec<Connector>,
     #[serde(default)]
+    pub model_texts: Vec<ModelText>,
+    #[serde(default)]
     pub dims: Vec<DimDef>,
     /// Lookup tables read by `size_lookup` in this family's formulas. They live with the body so they travel with it
     /// into the editor, the family file and the project.
@@ -596,7 +639,7 @@ pub const PLANE_LEVEL: PlaneId = 3;
 
 impl FamilyBody {
     pub fn is_empty(&self) -> bool {
-        self.planes.is_empty() && self.forms.is_empty() && self.syms.is_empty() && self.nested.is_empty() && self.model_lines.is_empty() && self.controls.is_empty() && self.connectors.is_empty()
+        self.planes.is_empty() && self.forms.is_empty() && self.syms.is_empty() && self.nested.is_empty() && self.model_lines.is_empty() && self.controls.is_empty() && self.connectors.is_empty() && self.model_texts.is_empty()
     }
 
     /// A new body with the three origin planes: Center (Left/Right), Center (Front/Back), Ref. Level.
@@ -610,7 +653,7 @@ impl FamilyBody {
     }
 
     pub fn take_id(&mut self) -> u32 {
-        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.model_lines.iter().map(|m| m.id)).chain(self.controls.iter().map(|c| c.id)).chain(self.connectors.iter().map(|c| c.id)).chain(self.dims.iter().map(|d| d.id)).max().unwrap_or(0);
+        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.model_lines.iter().map(|m| m.id)).chain(self.controls.iter().map(|c| c.id)).chain(self.connectors.iter().map(|c| c.id)).chain(self.model_texts.iter().map(|t| t.id)).chain(self.dims.iter().map(|d| d.id)).max().unwrap_or(0);
         self.next_id = self.next_id.max(used) + 1;
         self.next_id
     }
@@ -679,7 +722,8 @@ impl FamilyBody {
         let used_by_sym = self.syms.iter().any(|s| in_loop(&s.path))
             || self.model_lines.iter().any(|m| m.plane == id || in_loop(&m.path))
             || self.controls.iter().any(|c| c.u.plane == Some(id) || c.v.plane == Some(id))
-            || self.connectors.iter().any(|c| c.plane == id || c.u.plane == Some(id) || c.v.plane == Some(id));
+            || self.connectors.iter().any(|c| c.plane == id || c.u.plane == Some(id) || c.v.plane == Some(id))
+            || self.model_texts.iter().any(|t| t.plane == id || t.u.plane == Some(id) || t.v.plane == Some(id));
         if used_by_plane || used_by_form || used_by_sym {
             return Err("something is locked to this reference plane".into());
         }
@@ -1109,6 +1153,14 @@ impl FamilyBody {
                 f(format!("model line {} (visible when)", ml.id), w);
             }
         }
+        for t in &mut self.model_texts {
+            let what = format!("model text {}", t.id);
+            f(format!("{what} (size)"), &mut t.size);
+            f(format!("{what} (depth)"), &mut t.depth);
+            if let Some(w) = &mut t.vis.when {
+                f(format!("{what} (visible when)"), w);
+            }
+        }
         for c in &mut self.controls {
             if let Some(w) = &mut c.vis.when {
                 f(format!("control {} (visible when)", c.id), w);
@@ -1173,6 +1225,14 @@ impl FamilyBody {
         for f in &mut self.forms {
             if f.material_param.as_deref() == Some(old) {
                 f.material_param = Some(new.to_string());
+            }
+        }
+        for t in &mut self.model_texts {
+            if t.text_param.as_deref() == Some(old) {
+                t.text_param = Some(new.to_string());
+            }
+            if t.material_param.as_deref() == Some(old) {
+                t.material_param = Some(new.to_string());
             }
         }
         for d in &mut self.dims {
@@ -1255,6 +1315,8 @@ pub struct SolvedForm {
     pub solid: Solid,
     /// Where an extrusion starts and ends along its normal (absolute, in the order drawn).
     pub span: Option<(f64, f64)>,
+    /// Letters of a Model Text rather than a form.
+    pub text: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1532,7 +1594,7 @@ impl FamilyBody {
                 }
                 _ => None,
             };
-            out.forms.push(SolvedForm { id: f.id, name: f.name.clone(), void: f.void, cuts_host: f.void && f.cuts_host, material, subcategory: f.subcategory.clone(), vis, solid, span });
+            out.forms.push(SolvedForm { id: f.id, name: f.name.clone(), void: f.void, cuts_host: f.void && f.cuts_host, material, subcategory: f.subcategory.clone(), vis, solid, span, text: false });
         }
         // voids cut the solids that name them
         for (i, f) in self.forms.iter().enumerate() {
@@ -1546,6 +1608,45 @@ impl FamilyBody {
                     Err(w) => out.warnings.push(format!("{}: {w}", label(f))),
                 }
             }
+        }
+        for t in &self.model_texts {
+            let wp = self.plane(t.plane).ok_or_else(|| format!("model text {}: the work plane is missing", t.id))?;
+            let normal = wp.axis;
+            let axes = normal.sketch_axes();
+            let w0 = planes[&wp.id];
+            let vis = self.resolve_vis(&t.vis, env)?;
+            let what = if t.name.is_empty() { format!("model text {}", t.id) } else { t.name.clone() };
+            let size = eval_num(&t.size, env).map_err(|e| format!("{what}: size {e}"))?;
+            let depth = eval_num(&t.depth, env).map_err(|e| format!("{what}: depth {e}"))?;
+            if depth <= 1e-6 {
+                return Err(format!("{what}: the depth must be above zero"));
+            }
+            let string = match &t.text_param {
+                Some(p) => match env(p) {
+                    Ok(openarch_params::Value::Text(s)) => s,
+                    Ok(other) => other.to_string(),
+                    Err(e) => return Err(format!("{what}: {e:?}")),
+                },
+                None => t.text.clone(),
+            };
+            let material = match &t.material_param {
+                Some(p) => match env(p) {
+                    Ok(openarch_params::Value::Text(s)) => s,
+                    _ => t.material.clone(),
+                },
+                None => t.material.clone(),
+            };
+            let laid = crate::famtext::layout(&t.font, t.bold, t.italic, &string, size, t.align).map_err(|e| format!("{what}: {e}"))?;
+            out.warnings.extend(laid.warnings.into_iter().map(|w| format!("{what}: {w}")));
+            if laid.rings.is_empty() {
+                continue;
+            }
+            let (ou, ov) = (self.coord(&planes, &t.u, axes.0).map_err(|e| format!("{what}: {e}"))?, self.coord(&planes, &t.v, axes.1).map_err(|e| format!("{what}: {e}"))?);
+            let rings: Vec<Vec<Point>> = laid.rings.iter().map(|r| r.iter().map(|p| Point::new(p.x + ou, p.y + ov)).collect()).collect();
+            let shapes: Vec<Shape> = regions(&rings).into_iter().map(|r| std::iter::once(r.outer).chain(r.holes).collect()).collect();
+            let part = PrismPart { lo: w0, hi: w0 + depth, shapes };
+            let tris = prism_tris(normal, &part);
+            out.forms.push(SolvedForm { id: t.id, name: what, void: false, cuts_host: false, material, subcategory: t.subcategory.clone(), vis, solid: Solid { axis: Some(normal), parts: vec![part], tris }, span: Some((w0, w0 + depth)), text: true });
         }
         for s in &self.syms {
             let axes = s.view.normal().sketch_axes();
@@ -2294,6 +2395,67 @@ mod tests {
         assert!(serde_json::from_str::<Visibility>(&js).unwrap().visible);
         b.forms[0].vis.visible = false;
         assert!(!b.solve(&mut params(&[("H", 300.0)])).unwrap().form(id).unwrap().vis.present);
+    }
+
+    #[test]
+    fn model_text_stands_out_from_its_plane_and_follows_a_text_parameter() {
+        let mut b = FamilyBody::template();
+        let id = b.take_id();
+        b.model_texts.push(ModelText {
+            id,
+            name: "Label".into(),
+            plane: PLANE_LEVEL,
+            u: Coord::at(50.0),
+            v: Coord::at(-20.0),
+            text: "H".into(),
+            text_param: None,
+            font: "DejaVu Sans".into(),
+            size: "Size".into(),
+            depth: "20".into(),
+            bold: false,
+            italic: false,
+            align: crate::famtext::TextAlign::Left,
+            material: "Brass".into(),
+            material_param: None,
+            subcategory: "Lettering".into(),
+            vis: Visibility::default(),
+        });
+        let text = |s: &Solved| s.form(id).unwrap().clone();
+        let s = b.solve(&mut params(&[("Size", 100.0)])).unwrap();
+        let f = text(&s);
+        assert!(f.text && !f.void && f.material == "Brass" && f.subcategory == "Lettering");
+        assert_eq!(f.span, Some((0.0, 20.0)));
+        assert!(watertight(&f.solid.tris) && volume(&f.solid.tris) > 0.0);
+        let bb = f.solid.bounds().unwrap();
+        assert!((bb[1][2] - bb[0][2] - 20.0).abs() < 1e-6, "stands out by the depth");
+        assert!((bb[1][1] - bb[0][1] - 100.0).abs() < 1.0 && (bb[0][1] + 20.0).abs() < 1.0, "a capital 100 tall, baseline at v = -20");
+        assert!(bb[0][0] >= 50.0 - 1.0 && bb[0][0] < 80.0, "starts at u = 50");
+        // double the size: four times the letter area
+        let s2 = b.solve(&mut params(&[("Size", 200.0)])).unwrap();
+        assert!((volume(&text(&s2).solid.tris) / volume(&f.solid.tris) - 4.0).abs() < 0.05);
+        // plan sees the letters cut at mid depth; the front sees them as a thin slab
+        assert!(!s.section(Axis::Z, 10.0).is_empty());
+        // the text from a Text parameter, and the parameter renamed
+        b.model_texts[0].text_param = Some("Label".into());
+        let mut env = |n: &str| -> Result<Value, EvalError> { match n { "Size" => Ok(Value::Num(100.0)), "Label" => Ok(Value::Text("O".into())), other => Err(EvalError::UnknownName(other.into())) } };
+        let o = b.solve(&mut env).unwrap();
+        assert_eq!(text(&o).solid.parts[0].shapes[0].len(), 2, "the O has an opening");
+        b.rename_param("Label", "Sign");
+        assert_eq!(b.model_texts[0].text_param.as_deref(), Some("Sign"));
+        b.rename_param("Size", "Height");
+        assert_eq!(b.model_texts[0].size, "Height");
+        // a depth of nothing, an unknown size and a plane in use are refused with a name
+        b.model_texts[0].depth = "0".into();
+        assert!(b.solve(&mut params(&[("Height", 100.0)])).unwrap_err().contains("depth"));
+        b.model_texts[0].depth = "20".into();
+        b.model_texts[0].text_param = None;
+        assert!(b.solve(&mut params(&[])).unwrap_err().contains("Label"));
+        assert!(b.remove_plane(PLANE_LEVEL).is_err());
+        // text that is only spaces draws nothing and is not an error
+        b.model_texts[0].text = "  ".into();
+        assert!(b.solve(&mut params(&[("Height", 100.0)])).unwrap().form(id).is_none());
+        let old: FamilyBody = serde_json::from_str(r#"{"planes":[]}"#).unwrap();
+        assert!(old.model_texts.is_empty());
     }
 
     #[test]

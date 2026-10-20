@@ -2114,7 +2114,7 @@ fn family_preview_json(solved: Result<openarch_model::famgeom::Solved, String>) 
     json!({
         "planes": s.planes,
         "forms": s.forms.iter().map(|f| json!({
-            "id": f.id, "name": f.name, "void": f.void, "cuts_host": f.cuts_host, "material": f.material, "sub": f.subcategory, "present": f.vis.present, "span": f.span,
+            "id": f.id, "name": f.name, "void": f.void, "cuts_host": f.cuts_host, "material": f.material, "sub": f.subcategory, "present": f.vis.present, "span": f.span, "text": f.text,
             "tris": f.solid.tris.iter().flat_map(|t| t.iter().flatten().copied()).collect::<Vec<f64>>(),
         })).collect::<Vec<_>>(),
         "syms": s.syms.iter().map(|y| json!({ "id": y.id, "view": y.view, "points": y.points.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>(), "closed": y.closed, "filled": y.filled, "sub": y.subcategory, "present": y.vis.present })).collect::<Vec<_>>(),
