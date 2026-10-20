@@ -40,15 +40,16 @@ const FamModel = (() => {
           for (const f of fams) {
             const row = el("div", "famed-list-row");
             const n = el("span", "", f.name + (f.has_body ? "" : "  (drawn by code, not editable)"));
+            if (f.source_path) n.title = `File: ${f.source_path}`;
             row.append(n);
             if (f.has_body) row.append(button("Edit...", () => { close(); open(f.id); }));
             if (f.has_body) row.append(button("Duplicate...", () => duplicateTypePrompt(f.id, async () => { await load(); }, "duplicate_family")));
-            row.append(button("Export...", () => exportFamily(f.id, f.name)));
+            row.append(button("Save as File...", () => exportFamily(f.id, f.name)));
             box.append(row);
           }
         }
       };
-      foot.append(button("New Family...", () => newFamily(close)), button("Load Family...", () => loadFile(load)), button("Close", close, true));
+      foot.append(button("New Family...", () => newFamily(close)), button("Open File...", () => openFile(close)), button("Load Family...", () => loadFile(load)), button("Close", close, true));
       load();
     });
   }
@@ -94,30 +95,62 @@ const FamModel = (() => {
     });
   }
 
+  // Write a project family to a file (the project's copy remembers where, nothing stays linked)
   async function exportFamily(id, name) {
     try {
-      const file = await Backend.call("export_family", { id });
-      const blob = new Blob([JSON.stringify(file, null, 1)], { type: "application/json" });
-      const a = el("a"); a.href = URL.createObjectURL(blob); a.download = `${name}.oaf`; document.body.append(a); a.click(); a.remove();
-      setPrompt(`Exported ${name}.oaf`);
+      const path = await Backend.pickSaveFamily(`${name}.oaf`);
+      if (!path) return;
+      const r = await Backend.call("save_family_file", { id, path, loaded_at: today() });
+      await refresh();
+      setPrompt(`Saved ${r.path}`);
     } catch (e) { setPrompt(String(e.message || e), true); }
   }
 
-  function loadFile(after) {
-    const inp = el("input"); inp.type = "file"; inp.accept = ".oaf,.ibfam,.json,application/json"; // .ibfam: the old extension
-    inp.onchange = async () => {
-      const f = inp.files[0];
-      if (!f) return;
-      try {
-        const file = JSON.parse(await f.text());
-        const r = await Backend.call("import_family", { file });
-        await refresh();
-        setPrompt(`Loaded ${file.family.name}.`);
-        if (after) after();
-        return r;
-      } catch (e) { setPrompt(String(e.message || e), true); }
-    };
-    inp.click();
+  // Loading a file over a family the project already has: say which copy wins (the type values too, or not)
+  function askReplace(info) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (v, close) => { settled = true; if (close) close(); resolve(v); };
+      openModal("Family Already Exists", (body, foot, close) => {
+        body.append(el("div", "modal-msg", `A family called "${info.name}" is already in this project. Placed copies keep their place and take the loaded family.`));
+        foot.append(button("Cancel", () => done(null, close)));
+        foot.append(button("Overwrite the Existing Version", () => done("keep_values", close)));
+        foot.append(button("Overwrite the Existing Version and its Parameter Values", () => done("overwrite", close), true));
+      });
+      const back = [...document.querySelectorAll(".modal-back")].pop();
+      const watch = new MutationObserver(() => { if (!back.isConnected) { watch.disconnect(); if (!settled) resolve(null); } });
+      watch.observe(document.body, { childList: true });
+    });
+  }
+
+  // Load a family file into the project: the project gets its own copy that remembers the file's place.
+  // Returns the family id, or null when nothing was loaded.
+  async function loadFile(after, { quiet } = {}) {
+    const path = await Backend.pickOpenFamily();
+    if (!path) return null;
+    try {
+      const info = await Backend.call("family_file_info", { path });
+      let mode = "refuse";
+      if (info.exists != null) {
+        if (S && S.id === info.exists) { setPrompt(`Close "${S.def.name}" in the family editor before loading a file over it.`, true); return null; }
+        mode = await askReplace(info);
+        if (!mode) return null;
+      }
+      const r = await Backend.call("import_family_file", { path, mode, loaded_at: today() });
+      await refresh();
+      if (!quiet) setPrompt(`${r.replaced ? "Reloaded" : "Loaded"} ${info.name}.`);
+      if (after) after();
+      return r.id;
+    } catch (e) { setPrompt(String(e.message || e), true); return null; }
+  }
+
+  // Open a family file for editing. The project keeps a copy of it while it is open (a family with no project behind it comes later).
+  async function openFile(closeList) {
+    if (S) { activate(); setPrompt(`Close "${S.def.name}" before opening another family.`, true); return; }
+    const id = await loadFile(null, { quiet: true });
+    if (id == null) return;
+    if (closeList) closeList();
+    open(id);
   }
 
   // ---------------------------------------------------------------- the editor
@@ -129,7 +162,7 @@ const FamModel = (() => {
     const first = def.types[0];
     S = {
       id: familyId, def, body: clone(def.body), params: clone(def.params), settings: clone(def.settings || {}), types: clone(def.types),
-      typeId: first ? first.id : null, values: {}, view: "plan", tool: "select", sketch: "rect", sel: null,
+      typeId: first ? first.id : null, values: {}, sourcePath: def.source_path || null, fileDirty: false, projDirty: false, view: "plan", tool: "select", sketch: "rect", sel: null,
       draft: null, pv: null, cams: {}, dirty: false, undo: [], redo: [], mouse: null, tick: 0, rot: { a: -0.6, b: 0.5 }, drag: null,
       start: "0", end: "100", a0: "0", a1: "360", pathMode: "line", pathClosed: false, blend: null, rev: null, wp: null, msg: "",
       show: { names: true, dims: def.body.planes.length <= 14 }, symMode: "line", open: ["plan", "front"],
@@ -143,7 +176,11 @@ const FamModel = (() => {
   }
 
   function snapshot() { return JSON.stringify({ body: S.body, params: S.params, settings: S.settings }); }
-  function pushUndo() { S.undo.push(snapshot()); if (S.undo.length > 100) S.undo.shift(); S.redo = []; S.dirty = true; }
+  // Unsaved changes: ones the project copy has not got (Load into Project) and ones the family file has not got (Save)
+  function touch() { S.projDirty = true; S.fileDirty = true; }
+  const isDirty = () => !!(S && (S.projDirty || S.fileDirty));
+  const today = () => new Date().toISOString().slice(0, 10);
+  function pushUndo() { S.undo.push(snapshot()); if (S.undo.length > 100) S.undo.shift(); S.redo = []; touch(); }
   function restore(js) { const o = JSON.parse(js); S.body = o.body; S.params = o.params; if (o.settings) S.settings = o.settings; S.sel = null; }
   async function undo() { if (!S.undo.length) return; S.redo.push(snapshot()); restore(S.undo.pop()); await preview(); props(); render(); }
   async function redo() { if (!S.redo.length) return; S.undo.push(snapshot()); restore(S.redo.pop()); await preview(); props(); render(); }
@@ -155,7 +192,7 @@ const FamModel = (() => {
     try { fn(S.body); } catch (e) { restore(before); S.sel = sel; S.msg = String(e.message || e); status(); render(); return false; }
     const ok = await preview();
     if (!ok) { restore(before); S.sel = sel; S.msg = S.pvError || "That change does not solve."; await preview(); }
-    else { S.undo.push(before); S.redo = []; S.dirty = true; S.msg = ""; }
+    else { S.undo.push(before); S.redo = []; touch(); S.msg = ""; }
     if (!keep) props();
     status();
     render();
@@ -174,7 +211,7 @@ const FamModel = (() => {
     S.body = r.body;
     const ok = await preview();
     if (!ok) { restore(before); S.sel = sel; S.msg = S.pvError || "That change does not solve."; await preview(); status(); render(); return null; }
-    S.undo.push(before); S.redo = []; S.dirty = true; S.msg = "";
+    S.undo.push(before); S.redo = []; touch(); S.msg = "";
     if (!keep) props();
     status(); render(); ctxRefresh();
     return r;
@@ -258,21 +295,28 @@ const FamModel = (() => {
 
   function closeEditor(force) {
     if (!S) return;
-    if (!force && S.dirty) { askSave(); return; }
+    if (!force && isDirty()) { askSave(); return; }
     S = null;
     setDoc("project");
     refresh(true);
   }
 
+  // Closing with changes: the project copy and the family file are separate, so each can be saved on its own.
   function askSave() {
     activate();
     openModal(`Close ${S.def.name}`, (body, foot, close) => {
-      body.append(el("div", "modal-msg", "Save the changes to this family before closing it?"));
-      foot.append(button("Cancel", close), button("Don't Save", () => { close(); closeEditor(true); }), button("Save", async () => { close(); await save(true); }, true));
+      const gaps = [];
+      if (S.projDirty) gaps.push("loaded into the project");
+      if (S.fileDirty) gaps.push(S.sourcePath ? "saved to its family file" : "saved to a family file");
+      body.append(el("div", "modal-msg", `This family has changes that are not ${gaps.join(" and not ")}.`));
+      foot.append(button("Cancel", close), button("Don't Save", () => { close(); closeEditor(true); }));
+      if (S.fileDirty) foot.append(button(S.sourcePath ? "Save Family File" : "Save Family File...", async () => { close(); if (await saveFile(false)) { if (S.projDirty) askSave(); else closeEditor(true); } }, !S.projDirty));
+      if (S.projDirty) foot.append(button("Load into Project and Close", async () => { close(); await loadIntoProject(true); }, true));
     });
   }
 
-  async function save(close) {
+  // Write the editor's state into this project's copy of the family (not into any file).
+  async function commitToProject() {
     try {
       await Backend.call("set_family_def", { id: S.id, params: S.params, body: S.body, settings: S.settings });
       for (const t of S.types) {
@@ -280,22 +324,66 @@ const FamModel = (() => {
         for (const [k, v] of Object.entries(S.saveVals || {})) if (t.id === S.typeId) changed[k] = v;
         if (Object.keys(changed).length) await Backend.call("patch_family_type", { id: t.id, patch: { values: changed } });
       }
-      S.saveVals = {}; S.dirty = false; S.msg = "Saved.";
+      S.saveVals = {}; S.projDirty = false; S.msg = "";
       await refresh(true);
-      if (close) { closeEditor(true); return true; }
-      status();
       return true;
     } catch (e) { S.msg = String(e.message || e); status(); return false; }
   }
 
-  // Load into Project: the family goes into the project and the project shows; the family stays open.
-  // (The family is stored inside the project file for now; a file of its own comes later.)
+  // Save: write the family file. A family with no file yet (or Save As) asks where. The project's copy is not touched.
+  async function saveFile(asNew) {
+    const safe = (S.def.name || "Family").replace(/[\\/:*?"<>|]/g, "_");
+    const write = async (path) => {
+      const values = S.typeId && S.saveVals && Object.keys(S.saveVals).length ? { [S.typeId]: S.saveVals } : null;
+      const r = await Backend.call("save_family_file", { id: S.id, path, params: S.params, body: S.body, settings: S.settings, values, loaded_at: today() });
+      S.sourcePath = r.path; S.fileDirty = false; S.msg = `Saved ${r.path}`;
+      await refresh(true);
+      status();
+      return true;
+    };
+    try {
+      if (S.sourcePath && !asNew) {
+        try { return await write(S.sourcePath); } catch (e) { S.msg = `${String(e.message || e)} Choose another place.`; status(); }
+      }
+      const path = await Backend.pickSaveFamily(S.sourcePath || `${safe}.oaf`);
+      if (!path) return false;
+      return await write(path);
+    } catch (e) { S.msg = String(e.message || e); status(); return false; }
+  }
+
+  // Load into Project: the project's copy updates first. The family file is then offered the same changes.
+  // Saying no keeps them in this project only, so one project can use a customised copy of a shared family.
   async function loadIntoProject(close) {
-    if (!(await save(false))) return;
+    if (!(await commitToProject())) return;
     const name = S.def.name;
+    if (S.fileDirty) await offerFileSave();
     if (close) closeEditor(true); else setDoc("project");
     await refresh(true);
     setPrompt(`Loaded ${name} into the project.`);
+  }
+
+  function offerFileSave() {
+    return new Promise(async (resolve) => {
+      let st = { source_path: null, found: false };
+      try { st = await Backend.call("family_file_status", { id: S.id }); } catch { /* treated as no file */ }
+      const path = st.source_path;
+      let settled = false;
+      const settle = resolve;
+      resolve = (v) => { settled = true; settle(v); };
+      openModal(path ? (st.found ? "Overwrite Family File" : "Family File Not Found") : "Save Family File", (body, foot, close) => {
+        const done = (v) => { close(); resolve(v); };
+        body.append(el("div", "modal-msg", path
+          ? (st.found ? `${S.def.name} was loaded from ${path}. Overwrite that file with these changes?` : `${S.def.name} was loaded from ${path}, which cannot be found now. Save the family to a file?`)
+          : `${S.def.name} has no family file yet. Save it to a file as well?`),
+          el("div", "modal-msg", "Choosing project only keeps the changes in this project. Other projects that use the file are not touched."));
+        foot.append(button("Project Only", () => { S.fileDirty = false; done(false); }));
+        foot.append(button(path && st.found ? "Overwrite File" : "Save As...", async () => { close(); const ok = await saveFile(!(path && st.found)); if (!ok) S.fileDirty = false; resolve(ok); }, true));
+      });
+      // Esc closes a dialog without a button: count that as "project only" so Load into Project goes on
+      const back = [...document.querySelectorAll(".modal-back")].pop();
+      const watch = new MutationObserver(() => { if (!back.isConnected) { watch.disconnect(); if (!settled) { S.fileDirty = false; resolve(false); } } });
+      watch.observe(document.body, { childList: true });
+    });
   }
 
   // ---- ribbon commands ----
@@ -514,11 +602,11 @@ const FamModel = (() => {
 
   function syncTitle() {
     if (!S || app.doc !== "family") return;
-    $q("#doc-title").textContent = `Family: ${S.def.name}${S.dirty ? " *" : ""} - ${VIEW_TITLE[S.view]}`;
+    $q("#doc-title").textContent = `Family: ${S.def.name}${isDirty() ? " *" : ""} - ${VIEW_TITLE[S.view]}`;
     renderDocTabs();
     updateUndoButtons();
   }
-  const docInfo = () => (S ? { name: S.def.name, dirty: S.dirty } : null);
+  const docInfo = () => (S ? { name: S.def.name, dirty: isDirty(), path: S.sourcePath } : null);
 
   // ---------------------------------------------------------------- properties
   function field(label, node) { const r = el("div", "famed-row"); r.append(el("span", "", label), node); return r; }
@@ -846,7 +934,7 @@ const FamModel = (() => {
     r.append(button("Apply to this type", async () => {
       S.saveVals = { ...(S.saveVals || {}) };
       for (const [k, v] of Object.entries(S.values)) { const d = S.params.find((p) => p.name === k); if (d && !d.instance) S.saveVals[k] = v; }
-      S.dirty = true; S.msg = "Type values are written when you save."; status();
+      touch(); S.msg = "Type values are written when you save."; status();
     }));
   }
   async function setFlex(p, v) {
@@ -862,6 +950,7 @@ const FamModel = (() => {
       await Backend.call("set_family_meta", { id: S.id, ...patch });
       if (patch.category) { S.def.category = patch.category; const c = (S.def.categories || []).find((x) => x.id === patch.category); S.def.category_label = c ? c.label : patch.category; const tag = document.querySelector(".fe-cat"); if (tag) tag.textContent = S.def.category_label; }
       if (patch.host) S.def.host = patch.host;
+      S.fileDirty = true;
       S.msg = "";
       await refresh(true);
     } catch (e) { S.msg = String(e.message || e); props(); status(); return false; }
@@ -1072,7 +1161,7 @@ const FamModel = (() => {
           for (const g of gone) await Backend.call("delete_family_type", { id: g.id });
         } catch (e) { msg.textContent = String(e.message || e); await reloadTypes(); return false; }
         const keep = work[cur].name;
-        S.undo.push(before); S.redo = [];
+        S.undo.push(before); S.redo = []; S.fileDirty = true;
         if (renames.length) { S.undo = []; }
         renames = []; gone = [];
         await reloadTypes();
@@ -1147,7 +1236,7 @@ const FamModel = (() => {
     if (same) { props(); return true; }
     S.body.always_vertical = w.always_vertical; S.body.cut_with_voids = w.cut_with_voids;
     S.settings = { ...S.settings, can_host_rebar: w.can_host_rebar, part_type: w.part_type, shared: w.shared, room_calculation_point: w.room_calculation_point, room_point: w.room_point, maintain_annotation_orientation: w.maintain_annotation_orientation };
-    S.undo.push(before); S.redo = []; S.dirty = true; S.msg = "";
+    S.undo.push(before); S.redo = []; touch(); S.msg = "";
     props(); status(); render();
     return true;
   }
@@ -1998,7 +2087,7 @@ const FamModel = (() => {
     if (d && (d.plane || d.handle || d.dimAt) && d.moved) {
       const ok = await preview();
       if (!ok) { restore(d.before); S.msg = S.pvError; await preview(); }
-      else { S.undo.push(d.before); S.redo = []; S.dirty = true; }
+      else { S.undo.push(d.before); S.redo = []; touch(); }
       props(); status(); render();
     }
     // a drag along the line finishes the plane; a plain click leaves it waiting for the second click
@@ -2284,7 +2373,7 @@ const FamModel = (() => {
       const p = S.params.find((q) => q.name === label);
       askText("Dimension", label, String(Math.round(val * 100) / 100), [], async (v) => {
         await setFlex(p, num(v));
-        S.saveVals = { ...(S.saveVals || {}), ...(p.instance ? {} : { [p.name]: num(v) }) }; S.dirty = true;
+        S.saveVals = { ...(S.saveVals || {}), ...(p.instance ? {} : { [p.name]: num(v) }) }; touch();
       });
       return;
     }
@@ -2601,5 +2690,5 @@ const FamModel = (() => {
     });
   }
 
-  return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? { undo: S.undo.length, redo: S.redo.length } : null), undo, redo, save, _state: () => S };
+  return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? { undo: S.undo.length, redo: S.redo.length } : null), undo, redo, save: saveFile, _state: () => S };
 })();

@@ -213,8 +213,52 @@ mod tests {
             built_in: false,
             catalog: vec![],
             settings: Default::default(),
+            source_path: None,
+            loaded_at: None,
             body: b,
         }
+    }
+
+    #[test]
+    fn loading_a_family_file_over_the_project_copy_keeps_placed_instances() {
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let mut vals = BTreeMap::new();
+        vals.insert("Width".to_string(), ParamValue::Number(800.0));
+        let (fid, types) = d.add_family(hatch_family(), vec![("800".into(), vals)]).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        // the file: the same family with a second type, a new parameter, and Width 1000 on type "800"
+        let mut file = d.export_family(fid).unwrap();
+        assert!(file.family.source_path.is_none(), "a file never carries the project's path");
+        file.types[0].values.insert("Width".into(), ParamValue::Number(1000.0));
+        file.types.push(FamilyFileType { name: "1200".into(), values: BTreeMap::from([("Width".to_string(), ParamValue::Number(1200.0))]) });
+        file.family.params.push(ParamDef { name: "Note".into(), param_kind: ParamKind::Text, instance: false, group: "Identity Data".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default: ParamValue::Text(String::new()) });
+        let src = Some(("C:/families/Hatch.oaf".to_string(), Some("2026-10-20".to_string())));
+        assert!(d.import_family_with(file.clone(), ImportMode::Refuse, src.clone()).is_err(), "same name is refused");
+        // keep the project's values: type "800" stays 800, "1200" is added
+        let (id, replaced) = d.import_family_with(file.clone(), ImportMode::KeepValues, src.clone()).unwrap();
+        assert!(id == fid && replaced);
+        let ts: Vec<_> = d.family_types().into_iter().filter(|(_, t)| t.family == fid).map(|(_, t)| (t.name.clone(), t.values.get("Width").and_then(|v| v.as_f64()))).collect();
+        assert!(ts.contains(&("800".to_string(), Some(800.0))) && ts.contains(&("1200".to_string(), Some(1200.0))), "{ts:?}");
+        assert!(d.family(fid).unwrap().param("Note").is_some());
+        assert_eq!(d.family(fid).unwrap().source_path.as_deref(), Some("C:/families/Hatch.oaf"));
+        assert!(d.get(inst).is_some(), "the placed instance is still there");
+        // overwrite with the file's values: type "800" becomes 1000
+        d.import_family_with(file, ImportMode::Overwrite, src).unwrap();
+        let w800 = d.family_types().into_iter().find(|(_, t)| t.family == fid && t.name == "800").unwrap().1.values.get("Width").and_then(|v| v.as_f64());
+        assert_eq!(w800, Some(1000.0));
+        // one undo step brings the earlier copy back
+        d.undo().unwrap();
+        let w800 = d.family_types().into_iter().find(|(_, t)| t.family == fid && t.name == "800").unwrap().1.values.get("Width").and_then(|v| v.as_f64());
+        assert_eq!(w800, Some(800.0));
+        // Save from the editor: the file holds the editor's values without touching the project
+        let tid = types[0];
+        let f2 = d.export_family_with(fid, None, None, None, &BTreeMap::from([(tid, BTreeMap::from([("Width".to_string(), ParamValue::Number(950.0))]))])).unwrap();
+        assert_eq!(f2.types.iter().find(|t| t.name == "800").unwrap().values.get("Width").and_then(|v| v.as_f64()), Some(950.0));
+        assert_eq!(d.family_type(tid).unwrap().values.get("Width").and_then(|v| v.as_f64()), Some(800.0));
+        d.set_family_source(fid, Some("D:/x.oaf".into()), None).unwrap();
+        assert_eq!(d.family(fid).unwrap().source_path.as_deref(), Some("D:/x.oaf"));
     }
 
     #[test]
@@ -384,6 +428,19 @@ pub struct FamilyFileType {
     pub values: std::collections::BTreeMap<String, ParamValue>,
 }
 
+/// What loading a family file does when the project already has a family of that name.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ImportMode {
+    /// Refuse, so nothing is replaced silently.
+    #[default]
+    Refuse,
+    /// Replace the project copy, including the values of types the file also has.
+    Overwrite,
+    /// Replace the project copy but keep the project's own type values.
+    KeepValues,
+}
+
 impl Document {
     /// A new family of its own kind, with the origin planes, the usual size parameters and one type.
     /// Door and window families are hosted in walls and start with a Width, Height and Sill Height.
@@ -419,7 +476,7 @@ impl Document {
         }
         let mut body = crate::famgeom::FamilyBody::template();
         body.cut_with_voids = hosted;
-        let family = Family { name: name.into(), category, host, plan_symbol: PlanSymbol::None, params, built_in: false, catalog: vec![], settings: Default::default(), body };
+        let family = Family { name: name.into(), category, host, plan_symbol: PlanSymbol::None, params, built_in: false, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body };
         let (id, _) = self.add_family(family, vec![("Type 1".into(), Default::default())])?;
         Ok(id)
     }
@@ -597,11 +654,59 @@ impl Document {
     }
 
     pub fn export_family(&self, family: Id) -> Result<FamilyFile, String> {
+        self.export_family_with(family, None, None, None, &Default::default())
+    }
+
+    /// The file for a family, with the editor's unsaved parameters, body, settings and type values laid
+    /// over what the project holds (so Save writes what is on screen without touching the project copy).
+    /// The file never carries the project's remembered path.
+    pub fn export_family_with(
+        &self,
+        family: Id,
+        params: Option<Vec<crate::family::ParamDef>>,
+        body: Option<crate::famgeom::FamilyBody>,
+        settings: Option<crate::family::FamilySettings>,
+        values: &std::collections::BTreeMap<Id, std::collections::BTreeMap<String, ParamValue>>,
+    ) -> Result<FamilyFile, String> {
         let fam = self.family(family).ok_or("no such family")?;
         let mut f = fam.clone();
         f.built_in = false;
-        let types = self.family_types().into_iter().filter(|(_, t)| t.family == family).map(|(_, t)| FamilyFileType { name: t.name.clone(), values: t.values.clone() }).collect();
+        f.source_path = None;
+        f.loaded_at = None;
+        if let Some(p) = params {
+            f.params = p;
+        }
+        if let Some(b) = body {
+            f.body = b;
+        }
+        if let Some(s) = settings {
+            f.settings = s;
+        }
+        let types = self
+            .family_types()
+            .into_iter()
+            .filter(|(_, t)| t.family == family)
+            .map(|(tid, t)| {
+                let mut v = t.values.clone();
+                for (k, x) in values.get(&tid).into_iter().flatten() {
+                    v.insert(k.clone(), x.clone());
+                }
+                FamilyFileType { name: t.name.clone(), values: v }
+            })
+            .collect();
         Ok(FamilyFile { openarch_family: 1, family: f, types })
+    }
+
+    /// Record where a family's file sits. One undo step; nothing else about the family changes.
+    pub fn set_family_source(&mut self, family: Id, path: Option<String>, loaded_at: Option<String>) -> Result<(), String> {
+        let Some(Element::Family(f)) = self.get(family) else { return Err("no such family".into()) };
+        if f.source_path == path && f.loaded_at == loaded_at {
+            return Ok(());
+        }
+        let mut f = f.clone();
+        f.source_path = path;
+        f.loaded_at = loaded_at;
+        self.transact("Family file location", |tx| tx.update(family, Element::Family(f)))
     }
 
     /// A copy of a family and its types under a new name, to start a custom family from a shipped one.
@@ -618,14 +723,82 @@ impl Document {
 
     /// Load a family file into the project. A family of the same name is refused so nothing is replaced silently.
     pub fn import_family(&mut self, file: FamilyFile) -> Result<Id, String> {
+        Ok(self.import_family_with(file, ImportMode::Refuse, None)?.0)
+    }
+
+    /// Load a family file, replacing the project's copy when one of that name exists and `mode` allows it.
+    /// `source` is the file's path and a note of when it was loaded; it is remembered on the project copy
+    /// and nothing else is linked. Replacing keeps the placed instances: types of the same name take the
+    /// file's values (`Overwrite`) or keep their own (`KeepValues`), types the file lacks stay, and the
+    /// whole load is refused if a placed instance would no longer fit. One undo step.
+    /// Returns the family and whether it replaced an existing copy.
+    pub fn import_family_with(&mut self, file: FamilyFile, mode: ImportMode, source: Option<(String, Option<String>)>) -> Result<(Id, bool), String> {
         if file.openarch_family != 1 {
             return Err("this is not an OpenArch BIM family file".into());
         }
-        let FamilyFile { family, types, .. } = file;
+        let FamilyFile { family: mut nf, types, .. } = file;
         let types = if types.is_empty() { vec![FamilyFileType { name: "Type 1".into(), values: Default::default() }] } else { types };
-        let (id, _) = self.add_family(family, types.into_iter().map(|t| (t.name, t.values)).collect())?;
-        Ok(id)
+        nf.built_in = false;
+        let (path, at) = source.map_or((None, None), |(p, a)| (Some(p), a));
+        nf.source_path = path;
+        nf.loaded_at = at;
+        let Some(existing) = self.families().into_iter().find(|(_, f)| f.name == nf.name).map(|(id, _)| id) else {
+            let (id, _) = self.add_family(nf, types.into_iter().map(|t| (t.name, t.values)).collect())?;
+            return Ok((id, false));
+        };
+        if mode == ImportMode::Refuse {
+            return Err(format!("a family called '{}' already exists", nf.name));
+        }
+        for p in &nf.params {
+            if let Some(src) = &p.formula {
+                openarch_params::expr::parse(src).map_err(|e| format!("formula of '{}': {e:?}", p.name))?;
+            }
+        }
+        let names: std::collections::BTreeSet<String> = nf.params.iter().map(|p| p.name.clone()).collect();
+        let keep = |m: &std::collections::BTreeMap<String, ParamValue>| -> std::collections::BTreeMap<String, ParamValue> { m.iter().filter(|(k, _)| names.contains(*k)).map(|(k, v)| (k.clone(), v.clone())).collect() };
+        let mut updates: Vec<(Id, Element)> = Vec::new();
+        let mut adds: Vec<crate::family::FamilyType> = Vec::new();
+        for (tid, t) in self.family_types().into_iter().filter(|(_, t)| t.family == existing) {
+            let from_file = types.iter().find(|ft| ft.name == t.name);
+            let values = match (mode, from_file) {
+                (ImportMode::Overwrite, Some(ft)) => keep(&ft.values),
+                _ => keep(&t.values),
+            };
+            updates.push((tid, Element::FamilyType(crate::family::FamilyType { family: existing, name: t.name.clone(), values })));
+        }
+        for ft in &types {
+            if !self.family_types().iter().any(|(_, t)| t.family == existing && t.name == ft.name) {
+                adds.push(crate::family::FamilyType { family: existing, name: ft.name.clone(), values: keep(&ft.values) });
+            }
+        }
+        for (iid, i) in self.instances() {
+            if self.family_type(i.type_id).map_or(false, |t| t.family == existing) {
+                let mut i = i.clone();
+                i.values = keep(&i.values);
+                updates.push((iid, Element::FamilyInstance(i)));
+            }
+        }
+        let mut probe = self.clone();
+        probe.elements.insert(existing, Element::Family(nf.clone()));
+        for (id, e) in &updates {
+            probe.elements.insert(*id, e.clone());
+        }
+        for (iid, i) in probe.instances() {
+            if probe.family_type(i.type_id).map_or(false, |t| t.family == existing) {
+                probe.fits(i, Some(iid)).map_err(|e| format!("a placed instance would no longer fit the loaded family: {e}"))?;
+            }
+        }
+        self.transact("Load family", |tx| {
+            tx.update(existing, Element::Family(nf))?;
+            for (id, e) in updates {
+                tx.update(id, e)?;
+            }
+            for t in adds {
+                tx.add(Element::FamilyType(t));
+            }
+            Ok(())
+        })?;
+        Ok((existing, true))
     }
-
 
 }

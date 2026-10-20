@@ -46,6 +46,12 @@ fn ids_of(p: &Value, key: &str) -> Result<Vec<Id>, String> {
 pub const SITE_BASE_ID: u64 = 4_503_599_627_370_001;
 pub const SITE_SURVEY_ID: u64 = 4_503_599_627_370_002;
 
+/// Read a family file (.oaf; the older .ibfam files are the same JSON).
+fn read_family_file(path: &std::path::Path) -> Result<openarch_model::faminst::FamilyFile, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    serde_json::from_str(&text).map_err(|e| format!("{} is not a family file: {e}", path.display()))
+}
+
 fn id_of(p: &Value, key: &str) -> Result<Id, String> {
     p.get(key).and_then(|v| v.as_u64()).ok_or_else(|| format!("missing {key}"))
 }
@@ -384,7 +390,7 @@ impl Session {
                 let mut body = f.body.clone();
                 body.fix_dim_ids();
                 let types: Vec<Value> = self.doc.family_types().into_iter().filter(|(_, t)| t.family == id).map(|(tid, t)| json!({ "id": tid, "name": t.name, "values": t.values })).collect();
-                Ok(json!({ "id": id, "name": f.name, "category": f.category, "category_label": f.category.label(), "host": f.host, "built_in": f.built_in, "params": f.params, "body": body, "settings": f.settings, "types": types,
+                Ok(json!({ "id": id, "name": f.name, "category": f.category, "category_label": f.category.label(), "host": f.host, "built_in": f.built_in, "source_path": f.source_path, "loaded_at": f.loaded_at, "params": f.params, "body": body, "settings": f.settings, "types": types,
                     "categories": openarch_model::family::FamilyCategory::all().iter().map(|c| json!({ "id": c, "label": c.label(), "discipline": c.discipline() })).collect::<Vec<_>>() }))
             }
             "set_family_def" => {
@@ -541,6 +547,67 @@ impl Session {
             "import_family" => {
                 let f = serde_json::from_value(p.get("file").cloned().ok_or("missing file")?).map_err(|e| format!("not a family file: {e}"))?;
                 Ok(json!({ "id": self.doc.import_family(f)? }))
+            }
+            // ---- family files (.oaf): the file and the project copy are separate; nothing stays linked ----
+            "save_family_file" => {
+                let id = id_of(p, "id")?;
+                let mut path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                if path.extension().is_none() {
+                    path.set_extension("oaf");
+                }
+                let params = match p.get("params").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad params: {e}"))?),
+                    None => None,
+                };
+                let body = match p.get("body").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad body: {e}"))?),
+                    None => None,
+                };
+                let settings = match p.get("settings").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad settings: {e}"))?),
+                    None => None,
+                };
+                let values: std::collections::BTreeMap<Id, std::collections::BTreeMap<String, openarch_model::ParamValue>> = match p.get("values").filter(|v| !v.is_null()) {
+                    Some(v) => {
+                        let m: std::collections::BTreeMap<String, std::collections::BTreeMap<String, openarch_model::ParamValue>> = serde_json::from_value(v.clone()).map_err(|e| format!("bad values: {e}"))?;
+                        m.into_iter().map(|(k, v)| k.parse::<Id>().map(|k| (k, v)).map_err(|_| format!("bad type id '{k}'"))).collect::<Result<_, _>>()?
+                    }
+                    None => Default::default(),
+                };
+                let file = self.doc.export_family_with(id, params, body, settings, &values)?;
+                let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+                // write beside the target first so a failed write never leaves half a family file
+                let tmp = path.with_extension("oaf.tmp");
+                std::fs::write(&tmp, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                std::fs::rename(&tmp, &path).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                let at = p.get("loaded_at").and_then(|v| v.as_str()).map(String::from);
+                self.doc.set_family_source(id, Some(path.to_string_lossy().into_owned()), at)?;
+                Ok(json!({ "path": path.to_string_lossy() }))
+            }
+            "family_file_info" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let file = read_family_file(&path)?;
+                let exists = self.doc.families().into_iter().find(|(_, f)| f.name == file.family.name).map(|(id, _)| id);
+                Ok(json!({
+                    "name": file.family.name, "category": file.family.category, "category_label": file.family.category.label(),
+                    "types": file.types.iter().map(|t| t.name.clone()).collect::<Vec<_>>(), "exists": exists,
+                }))
+            }
+            "import_family_file" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let mode = match p.get("mode").filter(|v| !v.is_null()) {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad mode: {e}"))?,
+                    None => openarch_model::faminst::ImportMode::Refuse,
+                };
+                let file = read_family_file(&path)?;
+                let at = p.get("loaded_at").and_then(|v| v.as_str()).map(String::from);
+                let (id, replaced) = self.doc.import_family_with(file, mode, Some((path.to_string_lossy().into_owned(), at)))?;
+                Ok(json!({ "id": id, "replaced": replaced }))
+            }
+            "family_file_status" => {
+                let f = self.doc.family(id_of(p, "id")?).ok_or("no such family")?;
+                let found = f.source_path.as_ref().map_or(false, |s| std::path::Path::new(s).is_file());
+                Ok(json!({ "source_path": f.source_path, "found": found, "loaded_at": f.loaded_at }))
             }
             "delete_family_type" => {
                 self.doc.delete_family_type(id_of(p, "id")?)?;
@@ -1149,7 +1216,7 @@ impl Session {
             "location_lines": LOCATION_LINES.iter().map(|ll| json!({ "value": ll.0, "label": ll.2 })).collect::<Vec<_>>(),
             "families": d.families().iter().map(|(id, f)| json!({
                 "id": id, "name": f.name, "category": f.category.label(), "host": f.host, "plan_symbol": f.plan_symbol,
-                "built_in": f.built_in, "has_body": !f.body.is_empty(),
+                "built_in": f.built_in, "has_body": !f.body.is_empty(), "source_path": f.source_path,
                 "catalog": f.catalog.iter().map(|r| r.name.clone()).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
             "family_types": d.family_types().iter().filter_map(|(id, t)| {
@@ -3251,6 +3318,42 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn family_files_save_and_load_without_linking() {
+        let mut s = Session::new();
+        let fid = call(&mut s, "new_family", json!({ "name": "Gate", "category": "doors", "host": "wall" }))["id"].as_u64().unwrap();
+        let def = call(&mut s, "family_def", json!({ "id": fid }));
+        assert!(def["source_path"].is_null(), "a new family has no file yet");
+        let tid = def["types"][0]["id"].as_u64().unwrap();
+        let dir = std::env::temp_dir().join(format!("openarch_famfile_{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Gate");
+        // save: the editor's unsaved value goes into the file, the project copy is not changed, the path is remembered
+        let r = call(&mut s, "save_family_file", json!({ "id": fid, "path": path.to_string_lossy(), "values": { tid.to_string(): { "Width": 1234 } }, "loaded_at": "2026-10-20" }));
+        let written = std::path::PathBuf::from(r["path"].as_str().unwrap());
+        assert_eq!(written.extension().unwrap(), "oaf", "the extension is added");
+        let text = std::fs::read_to_string(&written).unwrap();
+        assert!(text.contains("1234") && !text.contains("source_path\": \"") , "the file holds the value and not the path");
+        let def = call(&mut s, "family_def", json!({ "id": fid }));
+        assert_eq!(def["source_path"].as_str().unwrap(), written.to_string_lossy());
+        assert_ne!(def["types"][0]["values"]["Width"], json!(1234.0), "the project copy is untouched by Save");
+        let st = call(&mut s, "family_file_status", json!({ "id": fid }));
+        assert_eq!(st["found"], json!(true));
+        // loading the same file over the copy is refused until a mode is given
+        let info = call(&mut s, "family_file_info", json!({ "path": written.to_string_lossy() }));
+        assert_eq!(info["name"], json!("Gate"));
+        assert_eq!(info["exists"].as_u64(), Some(fid));
+        assert!(s.handle("import_family_file", &json!({ "path": written.to_string_lossy() })).is_err());
+        let r = call(&mut s, "import_family_file", json!({ "path": written.to_string_lossy(), "mode": "overwrite" }));
+        assert_eq!(r["replaced"], json!(true));
+        assert_eq!(call(&mut s, "family_def", json!({ "id": fid }))["types"][0]["values"]["Width"], json!(1234.0));
+        // a missing file is reported, and the status says it cannot be found
+        std::fs::remove_file(&written).unwrap();
+        assert_eq!(call(&mut s, "family_file_status", json!({ "id": fid }))["found"], json!(false));
+        assert!(s.handle("family_file_info", &json!({ "path": written.to_string_lossy() })).is_err());
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -26,4 +26,19 @@ const Backend = {
     }
     return window.prompt("Open (file path)");
   },
+
+  // Family files (.oaf; .ibfam is the old extension and still opens)
+  async pickSaveFamily(current) {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.save({ defaultPath: current || "Family.oaf", filters: [{ name: "OpenArch BIM family", extensions: ["oaf"] }] });
+    }
+    return window.prompt("Save family as (file path)", current || "family.oaf");
+  },
+
+  async pickOpenFamily() {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }] });
+    }
+    return window.prompt("Load family (file path)");
+  },
 };

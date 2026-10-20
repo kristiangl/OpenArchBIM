@@ -1302,7 +1302,7 @@ function updateUndoButtons() {
 }
 
 async function save(asNew) {
-  if (app.doc === "family") { await FamModel.save(false); return; }
+  if (app.doc === "family") { await FamModel.save(!!asNew); return; }
   let path = app.info.path;
   if (!path || asNew) path = await Backend.pickSavePath(path);
   if (!path) return;

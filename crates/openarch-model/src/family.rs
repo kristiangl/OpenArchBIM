@@ -338,6 +338,14 @@ pub struct Family {
     pub body: crate::famgeom::FamilyBody,
     #[serde(default)]
     pub settings: FamilySettings,
+    /// Where the family file this copy was loaded from (or last saved to) sits. Nothing follows
+    /// from it: the copy is not linked to the file. It is only offered again when the family is
+    /// loaded back after an edit.
+    #[serde(default)]
+    pub source_path: Option<String>,
+    /// A note of when the copy was loaded or saved (text the app supplies).
+    #[serde(default)]
+    pub loaded_at: Option<String>,
 }
 
 /// One row of a family's type catalogue: a type name and its type parameter values.
@@ -633,11 +641,11 @@ fn sized(w: f64, h: f64, extra: &[(&str, ParamValue)]) -> BTreeMap<String, Param
 /// The Australian starter set of door and window families.
 pub fn starter_families() -> Vec<StarterFamily> {
     let door = |name: &str, symbol: PlanSymbol, types: Vec<(String, BTreeMap<String, ParamValue>)>| StarterFamily {
-        family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: door_params(), built_in: true, catalog: vec![], settings: Default::default(), body: if symbol == PlanSymbol::Sliding { crate::famdoor::sliding_door_body() } else { Default::default() } },
+        family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: door_params(), built_in: true, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body: if symbol == PlanSymbol::Sliding { crate::famdoor::sliding_door_body() } else { Default::default() } },
         types,
     };
     let window = |name: &str, types: Vec<(String, BTreeMap<String, ParamValue>)>| StarterFamily {
-        family: Family { name: name.into(), category: FamilyCategory::Windows, host: HostKind::Wall, plan_symbol: PlanSymbol::Window, params: window_params(), built_in: true, catalog: vec![], settings: Default::default(), body: crate::famdoor::window_body() },
+        family: Family { name: name.into(), category: FamilyCategory::Windows, host: HostKind::Wall, plan_symbol: PlanSymbol::Window, params: window_params(), built_in: true, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body: crate::famdoor::window_body() },
         types,
     };
     let ext = |w: f64, h: f64| (format!("{w:.0} x {h:.0} Exterior"), sized(w, h, &[("Function", txt("Exterior"))]));
@@ -647,7 +655,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
         let catalog = framed_catalog(double);
         let types = catalog.iter().filter(|r| first.contains(&r.name.as_str())).map(|r| (r.name.clone(), r.values.clone())).collect();
         StarterFamily {
-            family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: framed_door_params(), built_in: true, catalog, settings: Default::default(), body: crate::famdoor::flush_door_body(double) },
+            family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: framed_door_params(), built_in: true, catalog, settings: Default::default(), source_path: None, loaded_at: None, body: crate::famdoor::flush_door_body(double) },
             types,
         }
     };
