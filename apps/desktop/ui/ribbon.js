@@ -142,7 +142,9 @@ const FAM_RIBBON = {
       { id: "f-mline", label: "Model Line" }, { id: "f-comp", label: "Component" }, { id: "f-mtext", label: "Model Text" },
       { id: "f-opening", label: "Opening" }, { id: "f-mgroup", label: "Model Group" } ] },
     { label: "Control", items: [{ id: "f-control", label: "Control", big: true }] },
-    { label: "Connectors", items: [{ id: "f-conn", label: "Connectors", big: true }] },
+    { label: "Connectors", items: [{ id: "f-conn", label: "Connectors", big: true, menu: [
+      { id: "f-conn-electrical", label: "Electrical Connector" }, { id: "f-conn-duct", label: "Duct Connector" }, { id: "f-conn-pipe", label: "Pipe Connector" },
+      { id: "f-conn-cable_tray", label: "Cable Tray Connector" }, { id: "f-conn-conduit", label: "Conduit Connector" } ] }] },
     { label: "Datum", items: [{ id: "f-refline", label: "Reference Line", big: true }, { id: "f-plane", label: "Reference Plane", big: true }] },
     { label: "Work Plane", items: [{ id: "f-wpset", label: "Set" }, { id: "f-wpshow", label: "Show" }, { id: "f-wpviewer", label: "Viewer" }] },
     FAM_EDITOR_GROUP,

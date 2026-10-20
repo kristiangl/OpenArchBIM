@@ -178,7 +178,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     fn form(shape: FormShape, void: bool, subcategory: &str) -> Form {
-        Form { id: 0, name: String::new(), shape, void, cuts_host: true, cut_by: vec![], material: "Timber".into(), material_param: None, subcategory: subcategory.into(), vis: Visibility::default() }
+        Form { id: 0, name: String::new(), shape, void, cuts_host: true, cut_by: vec![], opening: false, material: "Timber".into(), material_param: None, subcategory: subcategory.into(), vis: Visibility::default() }
     }
 
     /// A hand-made door: a slab leaf in an opening void, with a line across it in plan.
@@ -291,6 +291,36 @@ mod tests {
         // undo brings the old size back
         d.undo();
         assert_eq!(d.wall_openings(w)[0].u1 - d.wall_openings(w)[0].u0, 900.0);
+    }
+
+    #[test]
+    fn model_lines_show_in_plan_flattened_and_an_opening_sets_the_hole() {
+        let mut fam = hatch_family();
+        let left = fam.body.planes.iter().find(|p| p.name == "Left").unwrap().id;
+        let right = fam.body.planes.iter().find(|p| p.name == "Right").unwrap().id;
+        // a rail drawn on the front plane at height 1000 runs across the plan; a post is a point in plan and is left out
+        let rail = Loop { nodes: vec![Node::new(Coord::on(left), Coord::from(PLANE_LEVEL, 1000.0)), Node::new(Coord::on(right), Coord::from(PLANE_LEVEL, 1000.0))], bulges: vec![], closed: false };
+        let post = Loop { nodes: vec![Node::new(Coord::from(PLANE_LR, 100.0), Coord::from(PLANE_LEVEL, 0.0)), Node::new(Coord::from(PLANE_LR, 100.0), Coord::from(PLANE_LEVEL, 500.0))], bulges: vec![], closed: false };
+        for (name, path) in [("Rail", rail), ("Post", post)] {
+            let id = fam.body.take_id();
+            fam.body.model_lines.push(ModelLine { id, name: name.into(), plane: PLANE_FB, path, subcategory: "Model Lines".into(), vis: Visibility::default() });
+        }
+        // the rectangular void is replaced by an opening: a narrower profile whose depth no longer matters
+        fam.body.forms.retain(|f| !f.void);
+        let hole = vec![Loop::rect(Coord::from(PLANE_LR, -300.0), Coord::from(PLANE_LR, 300.0), Coord::on(PLANE_LEVEL), Coord::from(PLANE_LEVEL, 1800.0))];
+        let id = fam.body.take_id();
+        fam.body.forms.push(Form { id, name: "Opening 1".into(), shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_FB, start: "0".into(), end: "1".into(), profile: hole }, void: true, cuts_host: true, opening: true, cut_by: vec![], material: String::new(), material_param: None, subcategory: String::new(), vis: Visibility::default() });
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let (_, types) = d.add_family(fam, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        let Some(Element::FamilyInstance(i)) = d.get(inst) else { panic!() };
+        assert_eq!(d.instance_opening_size(i), (600.0, 1800.0, 0.0));
+        let sym = crate::symbol::plan_symbol_at(&d, inst, crate::view::DetailLevel::Medium, Some(1200.0)).unwrap();
+        let lines: Vec<_> = sym.parts.iter().filter(|p| p.subcategory == "Model Lines").collect();
+        assert_eq!(lines.len(), 1, "the rail shows, the post flattens to a point and is dropped");
+        assert_eq!(lines[0].rings[0].len(), 2);
     }
 
     #[test]

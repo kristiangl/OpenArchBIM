@@ -80,7 +80,7 @@ impl B {
     }
 
     fn form(&mut self, name: &str, shape: FormShape, void: bool, sub: &str, vis: Visibility) {
-        self.body.add_form(Form { id: 0, name: name.into(), shape, void, cuts_host: true, cut_by: vec![], material: String::new(), material_param: None, subcategory: sub.into(), vis });
+        self.body.add_form(Form { id: 0, name: name.into(), shape, void, cuts_host: true, cut_by: vec![], opening: false, material: String::new(), material_param: None, subcategory: sub.into(), vis });
     }
 
     fn sym(&mut self, path: Loop, filled: bool, sub: &str, vis: Visibility) {

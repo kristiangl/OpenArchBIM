@@ -253,7 +253,7 @@ mod tests {
     }
 
     fn form(shape: FormShape, void: bool) -> Form {
-        Form { id: 0, name: String::new(), shape, void, cuts_host: true, cut_by: vec![], material: String::new(), material_param: None, subcategory: String::new(), vis: Visibility::default() }
+        Form { id: 0, name: String::new(), shape, void, cuts_host: true, cut_by: vec![], opening: false, material: String::new(), material_param: None, subcategory: String::new(), vis: Visibility::default() }
     }
 
     fn area(s: &Shape) -> f64 {

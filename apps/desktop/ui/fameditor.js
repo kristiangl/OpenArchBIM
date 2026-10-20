@@ -165,7 +165,7 @@ const FamModel = (() => {
       typeId: first ? first.id : null, values: {}, sourcePath: def.source_path || null, fileDirty: false, projDirty: false, view: "plan", tool: "select", sketch: "rect", sel: null,
       draft: null, pv: null, cams: {}, dirty: false, undo: [], redo: [], mouse: null, tick: 0, rot: { a: -0.6, b: 0.5 }, drag: null,
       start: "0", end: "100", a0: "0", a1: "360", pathMode: "line", pathClosed: false, blend: null, rev: null, wp: null, msg: "",
-      show: { names: true, dims: def.body.planes.length <= 14 }, symMode: "line", open: ["plan", "front"],
+      show: { names: true, dims: def.body.planes.length <= 14 }, symMode: "line", ctrlKind: "single_horizontal", connKind: "duct", open: ["plan", "front"],
       lockNew: true, alignOpts: { multiple: false, lock: false, prefer: "planes" }, alignRef: null, wps: {}, showWp: false, editing: null, lockHits: [],
     };
     mount();
@@ -222,11 +222,25 @@ const FamModel = (() => {
 
   const newId = () => {
     const b = S.body;
-    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id));
+    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.model_lines || []).map((x) => x.id), ...(b.controls || []).map((x) => x.id), ...(b.connectors || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id));
   };
   const planeById = (id) => S.body.planes.find((p) => p.id === id);
   const formById = (id) => S.body.forms.find((f) => f.id === id);
   const symById = (id) => S.body.syms.find((f) => f.id === id);
+  const mlineById = (id) => (S.body.model_lines || []).find((f) => f.id === id);
+  const ctrlById = (id) => (S.body.controls || []).find((f) => f.id === id);
+  const connById = (id) => (S.body.connectors || []).find((f) => f.id === id);
+  // a solved 3D point as the view sees it
+  const proj = (p) => (S.view === "plan" ? [p[0], p[1]] : S.view === "front" || S.view === "back" ? [p[0], p[2]] : [p[1], p[2]]);
+  // What each kind of connector carries: [property, kind, default, choices]. Numbers may be formulas of the family parameters.
+  const CONN = {
+    electrical: { label: "Electrical Connector", props: [["System Type", "choice", "Power - Balanced", ["Power - Balanced", "Power - Unbalanced", "Data", "Telephone", "Fire Alarm", "Security", "Communication", "Controls", "Nurse Call"]], ["Voltage", "num", "230"], ["Apparent Load", "num", "100"], ["Number of Poles", "choice", "1", ["1", "2", "3"]]] },
+    duct: { label: "Duct Connector", props: [["System Type", "choice", "Supply Air", ["Supply Air", "Return Air", "Exhaust Air", "Global"]], ["Shape", "choice", "Round", ["Round", "Rectangular", "Oval"]], ["Diameter", "num", "150"], ["Width", "num", "150"], ["Height", "num", "150"], ["Flow", "num", "0"], ["Flow Direction", "choice", "Bidirectional", ["In", "Out", "Bidirectional"]]] },
+    pipe: { label: "Pipe Connector", props: [["System Type", "choice", "Domestic Cold Water", ["Domestic Hot Water", "Domestic Cold Water", "Sanitary", "Hydronic Supply", "Hydronic Return", "Fire Protection Wet", "Vent", "Other"]], ["Diameter", "num", "20"], ["Flow", "num", "0"], ["Flow Direction", "choice", "Bidirectional", ["In", "Out", "Bidirectional"]]] },
+    cable_tray: { label: "Cable Tray Connector", props: [["Width", "num", "100"], ["Height", "num", "50"]] },
+    conduit: { label: "Conduit Connector", props: [["Diameter", "num", "20"]] },
+  };
+  const CONTROL_KINDS = [["single_vertical", "Single Vertical"], ["double_vertical", "Double Vertical"], ["single_horizontal", "Single Horizontal"], ["double_horizontal", "Double Horizontal"]];
   const pos = (id) => (S.pv && S.pv.planes ? S.pv.planes[id] : undefined);
   // The plane new sketches go on in the view showing: the one chosen with Work Plane > Set or in the options bar,
   // otherwise the origin plane facing the view.
@@ -390,9 +404,10 @@ const FamModel = (() => {
   const TOOL_OF = {
     "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
     "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-swblend": "swblend", "f-sym": "sym", "f-region": "region",
+    "f-mline": "mline", "f-control": "control",
   };
   function setTool(t) {
-    S.voidNext = false;
+    S.voidNext = false; S.openingNext = false;
     S.tool = t; S.draft = null; S.alignRef = null; S.blend = null; S.rev = null; S.picks = [];
     toolbar(); status(); render(); ctxRefresh();
   }
@@ -405,6 +420,12 @@ const FamModel = (() => {
     "f-void-revolve": () => { setTool("revolve"); S.voidNext = true; toolbar(); status(); },
     "f-void-sweep": () => { setTool("sweep"); S.voidNext = true; toolbar(); status(); },
     "f-void-swblend": () => { setTool("swblend"); S.voidNext = true; toolbar(); status(); },
+    "f-opening": () => { setTool("void"); S.openingNext = true; toolbar(); status(); },
+    "f-conn-electrical": () => { S.connKind = "electrical"; setTool("conn"); },
+    "f-conn-duct": () => { S.connKind = "duct"; setTool("conn"); },
+    "f-conn-pipe": () => { S.connKind = "pipe"; setTool("conn"); },
+    "f-conn-cable_tray": () => { S.connKind = "cable_tray"; setTool("conn"); },
+    "f-conn-conduit": () => { S.connKind = "conduit"; setTool("conn"); },
     "f-category": () => categoryDialog(),
     "f-del": () => deleteSel(),
     "f-eq": () => toggleEq(),
@@ -423,7 +444,7 @@ const FamModel = (() => {
   function syncRibbon() {
     document.querySelectorAll("#ribbon button.cmd[data-id^='f-']").forEach((b) => {
       const id = b.dataset.id;
-      b.classList.toggle("on", S ? (TOOL_OF[id] ? TOOL_OF[id] === S.tool : (id === "f-names" ? S.show.names : id === "f-dims" ? S.show.dims : id === "f-wpshow" ? S.showWp : id === "f-void-menu" ? (S.tool === "void" || !!S.voidNext) : false)) : false);
+      b.classList.toggle("on", S ? (TOOL_OF[id] ? TOOL_OF[id] === S.tool : (id === "f-names" ? S.show.names : id === "f-dims" ? S.show.dims : id === "f-wpshow" ? S.showWp : id === "f-void-menu" ? ((S.tool === "void" && !S.openingNext) || !!S.voidNext) : id === "f-opening" ? !!S.openingNext : id === "f-conn" ? S.tool === "conn" : false)) : false);
     });
   }
 
@@ -432,12 +453,15 @@ const FamModel = (() => {
     syncRibbon();
     const bar = S.opts;
     bar.replaceChildren();
-    if (S.tool === "sym") {
+    if (S.tool === "sym" || S.tool === "mline") {
       const mode = el("select");
       [["line", "Line"], ["arc", "3-Point Arc"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; mode.append(o); });
       mode.value = S.symMode; mode.onchange = () => { S.symMode = mode.value; S.draft = null; status(); render(); };
       bar.append(el("span", "fe-opt", "Draw"), mode);
+      if (S.tool === "mline") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
     }
+    if (S.tool === "control") bar.append(el("span", "fe-opt", "Control"), selIn(CONTROL_KINDS, S.ctrlKind, (v) => { S.ctrlKind = v; }));
+    if (S.tool === "conn") bar.append(el("span", "fe-opt", "Connector"), selIn(Object.entries(CONN).map(([k, c]) => [k, c.label]), S.connKind, (v) => { S.connKind = v; status(); }), el("span", "fe-opt", "Face (work plane)"), planeSel());
     if (S.tool === "sweep" || S.tool === "swblend") sweepBar(bar);
     if (S.tool === "align") {
       const o = S.alignOpts;
@@ -449,7 +473,7 @@ const FamModel = (() => {
         el("span", "fe-opt", "Pattern"), selIn([["entire", "Entire Surface"]], "entire", () => {}),
       );
     }
-    if (["sym", "region"].includes(S.tool)) bar.append(lockOpt());
+    if (["sym", "region", "mline", "control"].includes(S.tool)) bar.append(lockOpt());
     if (S.editing && S.tool === "ext") {
       const sk = el("select");
       [["rect", "Rectangle"], ["circle", "Circle"], ["poly", "Polygon"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; sk.append(o); });
@@ -477,6 +501,13 @@ const FamModel = (() => {
     }
     if (["ext", "void", "blend", "revolve", "sweep", "swblend"].includes(S.tool)) bar.append(lockOpt());
     bar.hidden = !bar.children.length;
+  }
+  function planeSel() {
+    const axis = VIEWS[S.view] ? VIEWS[S.view].n : "z";
+    const wp = el("select");
+    S.body.planes.filter((p) => p.axis === axis).forEach((p) => { const o = el("option", "", p.name); o.value = p.id; wp.append(o); });
+    wp.value = workPlane(); wp.onchange = () => { S.wps[S.view] = Number(wp.value); };
+    return wp;
   }
   function lockOpt() {
     const l = el("label", "fe-opt", "Lock to planes");
@@ -601,6 +632,9 @@ const FamModel = (() => {
       sweep: "Draw the path: click points, double-click or press Enter to finish. In 3-Point Arc mode click the end, then a point on the arc. Then set the profile in Properties.",
       align: "Click a reference plane or the edge of a form to align to, then click the edge to move to it. Lock in the options bar ties it to a reference plane; Multiple Alignment (or Ctrl) keeps the same reference.",
       sym: "Line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. Shows only in this kind of view.",
+      mline: "Model line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. It is 3D, so it shows in every view its visibility settings allow.",
+      control: "Click where the flip arrows go in this view. Choose the kind in the options bar.",
+      conn: `${(CONN[S.connKind] || CONN.duct).label}: click where it sits on the face (the work plane). It points out of that plane; flip it in Properties.`,
       region: "Click two corners for a filled region that shows only in this kind of view.",
       pickwp: "Click the reference plane to use as the work plane. Esc cancels.",
     };
@@ -649,6 +683,9 @@ const FamModel = (() => {
     else if (s.kind === "plane") planeProps(r, planeById(s.id));
     else if (s.kind === "form") formProps(r, formById(s.id));
     else if (s.kind === "sym") symProps(r, symById(s.id));
+    else if (s.kind === "mline") mlineProps(r, mlineById(s.id));
+    else if (s.kind === "ctrl") ctrlProps(r, ctrlById(s.id));
+    else if (s.kind === "conn") connProps(r, connById(s.id));
     flex(r);
     ctxRefresh();
   }
@@ -924,6 +961,51 @@ const FamModel = (() => {
     r.append(field("Filled", checkIn(y.filled, (v) => change((b) => { symById(y.id).filled = v; }, true))));
     r.append(field("Masking", checkIn(y.masking, (v) => change((b) => { symById(y.id).masking = v; }, true))));
     graphicsRows(r, y, (b) => symById(y.id));
+  }
+
+  function mlineProps(r, m) {
+    if (!m) return;
+    const wp = planeById(m.plane);
+    r.append(el("div", "famed-hint", `Model line on ${wp ? wp.name : "a missing plane"}. It is 3D and shows in every view its visibility settings allow.`));
+    r.append(field("Name", textIn(m.name || "", (v) => change((b) => { mlineById(m.id).name = v; }))));
+    r.append(field("Subcategory", textIn(m.subcategory || "", (v) => change((b) => { mlineById(m.id).subcategory = v; }), { list: ["Model Lines", ...SUBS] })));
+    graphicsRows(r, m, (b) => mlineById(m.id));
+  }
+  // A coordinate as text: a number, or a reference plane and an offset from it
+  function coordRow(r, label, c, set) {
+    const pl = c.plane ? planeById(c.plane) : null;
+    const opts = [["", "(free)"], ...S.body.planes.map((p) => [String(p.id), p.name])];
+    const sel = selIn(opts, c.plane ? String(c.plane) : "", (v) => set({ plane: v ? Number(v) : null, off: c.off || 0 }));
+    const off = textIn(String(c.off || 0), (v) => set({ plane: c.plane || null, off: num(v) }));
+    const w = el("span", "fe-coord"); w.append(sel, off);
+    r.append(field(label + (pl ? "" : ""), w));
+  }
+  function ctrlProps(r, c) {
+    if (!c) return;
+    r.append(el("div", "famed-hint", `Control, ${c.view} views only. It shows the flip arrows in the project.`));
+    r.append(field("Kind", selIn(CONTROL_KINDS, c.kind, (v) => change((b) => { ctrlById(c.id).kind = v; }))));
+    coordRow(r, "Horizontal", c.u, (v) => change((b) => { ctrlById(c.id).u = v; }));
+    coordRow(r, "Vertical", c.v, (v) => change((b) => { ctrlById(c.id).v = v; }));
+    graphicsRows(r, c, (b) => ctrlById(c.id));
+  }
+  function connProps(r, c) {
+    if (!c) return;
+    const def = CONN[c.kind] || CONN.duct, wp = planeById(c.plane);
+    r.append(el("div", "famed-hint", `${def.label} on ${wp ? wp.name : "a missing plane"}`));
+    r.append(field("Name", textIn(c.name || "", (v) => change((b) => { connById(c.id).name = v; }))));
+    r.append(field("Flip direction", checkIn(c.flip, (v) => change((b) => { connById(c.id).flip = v; }))));
+    coordRow(r, "Horizontal", c.u, (v) => change((b) => { connById(c.id).u = v; }));
+    coordRow(r, "Vertical", c.v, (v) => change((b) => { connById(c.id).v = v; }));
+    const showShape = c.kind === "duct" ? (c.props.Shape || "Round") : null;
+    const hidden = (name) => (showShape === "Round" && (name === "Width" || name === "Height")) || (showShape && showShape !== "Round" && name === "Diameter");
+    for (const [name, kind, , choices] of def.props) {
+      if (hidden(name)) continue;
+      const cur = c.props[name] ?? "";
+      const set = (v) => change((b) => { connById(c.id).props[name] = v; });
+      r.append(field(name, kind === "choice" ? selIn(choices.map((x) => [x, x]), cur, set) : textIn(cur, set, { list: lengthParams() })));
+    }
+    const got = ((S.pv && S.pv.connectors) || []).find((q) => q.id === c.id);
+    if (got) for (const [k, v] of Object.entries(got.numbers)) if (!hidden(k) && !/^\d+(\.\d+)?$/.test(String(c.props[k]).trim())) r.append(field(k + " (worked out)", el("span", "", String(Math.round(v * 100) / 100))));
   }
 
   // the flex panel: values of the parameters for the chosen type, to try sizes without saving
@@ -1363,6 +1445,7 @@ const FamModel = (() => {
       if (y.filled) { ctx.fillStyle = "rgba(60,60,60,0.35)"; ctx.fill(); }
       ctx.strokeStyle = selected ? accent : "#2f8f5b"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
     }
+    drawModelItems(accent);
     // reference planes
     ctx.font = "11px system-ui, sans-serif";
     const labelled = { v: [], h: [] };
@@ -1424,6 +1507,50 @@ const FamModel = (() => {
       ctx.fillText(`Work plane: ${wp ? wp.name : "?"}`, canvas.width - 10, 8);
     }
     drawDraft(V);
+  }
+
+  // Model lines, controls and connectors in a 2D view
+  function drawModelItems(accent) {
+    const { ctx } = S;
+    for (const m of S.pv.model_lines || []) {
+      if (!m.present) continue;
+      const selected = S.sel && S.sel.kind === "mline" && S.sel.id === m.id;
+      ctx.beginPath();
+      m.points.forEach((q, i) => { const a = proj(q), p = w2s(a[0], a[1]); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
+      if (m.closed) ctx.closePath();
+      ctx.strokeStyle = selected ? accent : "#7a4fb5"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
+    }
+    for (const c of S.pv.connectors || []) {
+      const selected = S.sel && S.sel.kind === "conn" && S.sel.id === c.id;
+      const a = proj(c.origin), p = w2s(a[0], a[1]);
+      const d = proj(c.direction), dl = Math.hypot(d[0], d[1]);
+      ctx.strokeStyle = selected ? accent : "#b5651d"; ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = selected ? 2.5 : 1.5;
+      ctx.beginPath(); ctx.arc(p.x, p.y, 7, 0, Math.PI * 2); ctx.stroke();
+      if (dl < 0.2) {
+        // pointing into or out of the view: a dot for out, a cross for in
+        const out = (S.view === "plan" ? c.direction[2] : S.view === "front" || S.view === "right" ? -c.direction[1] : c.direction[1]) > 0;
+        ctx.beginPath();
+        if (out) ctx.arc(p.x, p.y, 2, 0, Math.PI * 2); else { ctx.moveTo(p.x - 4, p.y - 4); ctx.lineTo(p.x + 4, p.y + 4); ctx.moveTo(p.x + 4, p.y - 4); ctx.lineTo(p.x - 4, p.y + 4); }
+        out ? ctx.fill() : ctx.stroke();
+      } else {
+        const b = w2s(a[0] + (d[0] / dl) * 1, a[1] + (d[1] / dl) * 1), bx = b.x - p.x, by = b.y - p.y, bl = Math.hypot(bx, by) || 1;
+        const ex = p.x + (bx / bl) * 24, ey = p.y + (by / bl) * 24;
+        ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(ex, ey); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(ex, ey); ctx.lineTo(ex - (bx / bl) * 6 + (by / bl) * 4, ey - (by / bl) * 6 - (bx / bl) * 4); ctx.lineTo(ex - (bx / bl) * 6 - (by / bl) * 4, ey - (by / bl) * 6 + (bx / bl) * 4); ctx.closePath(); ctx.fill();
+      }
+    }
+    for (const c of S.pv.controls || []) {
+      if (c.view !== S.view || !c.present) continue;
+      const selected = S.sel && S.sel.kind === "ctrl" && S.sel.id === c.id;
+      const p = w2s(c.at[0], c.at[1]);
+      const vert = c.kind.endsWith("vertical"), dbl = c.kind.startsWith("double");
+      ctx.strokeStyle = selected ? accent : "#1f7a8c"; ctx.fillStyle = ctx.strokeStyle; ctx.lineWidth = selected ? 2.5 : 1.5;
+      const L = 18, ax = vert ? 0 : 1, ay = vert ? 1 : 0;
+      const tip = (sx) => { const x = p.x + ax * L * sx, y = p.y + ay * L * sx; ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x - ax * 6 * sx + ay * 4, y - ay * 6 * sx + ax * 4); ctx.lineTo(x - ax * 6 * sx - ay * 4, y - ay * 6 * sx - ax * 4); ctx.closePath(); ctx.fill(); };
+      ctx.beginPath(); ctx.moveTo(p.x - ax * L * (dbl ? 1 : 0), p.y - ay * L * (dbl ? 1 : 0)); ctx.lineTo(p.x + ax * L, p.y + ay * L); ctx.stroke();
+      tip(1); if (dbl) tip(-1);
+      if (!dbl) { ctx.beginPath(); ctx.arc(p.x, p.y, 2.5, 0, Math.PI * 2); ctx.fill(); }
+    }
   }
 
   // Dimension objects draw only in their own view. S.dimHits keeps what can be clicked for the select tool.
@@ -1546,6 +1673,10 @@ const FamModel = (() => {
       if (f.shape.type === "blend") return [...f.shape.base, ...f.shape.top].map((loop) => ({ loop, plane: ax }));
       if (f.shape.type === "revolve") return [...f.shape.profile.map((loop) => ({ loop, plane: ax })), { loop: { nodes: [f.shape.axis_a, f.shape.axis_b], bulges: [], closed: false }, plane: ax }];
       return f.shape.profile.map((loop) => ({ loop, plane: ax }));
+    }
+    if (S.sel.kind === "mline") {
+      const m = mlineById(S.sel.id), wp = m && planeById(m.plane);
+      return m && wp ? [{ loop: m.path, plane: wp.axis }] : [];
     }
     if (S.sel.kind === "sym") {
       const y = symById(S.sel.id);
@@ -1678,6 +1809,24 @@ const FamModel = (() => {
         ctx.beginPath(); ctx.moveTo(ox + a0[0] * k, oy - a0[2] * k); ctx.lineTo(ox + a1[0] * k, oy - a1[2] * k); ctx.stroke();
       }
     }
+    {
+      const T = (q) => { const r = rot(q); return [ox + r[0] * k, oy - r[2] * k]; };
+      for (const m of S.pv.model_lines || []) {
+        if (!m.present) continue;
+        const selected = S.sel && S.sel.kind === "mline" && S.sel.id === m.id;
+        ctx.beginPath();
+        m.points.forEach((q, i) => { const [x, y] = T(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+        if (m.closed) ctx.closePath();
+        ctx.strokeStyle = selected ? css("--accent") : "#7a4fb5"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
+      }
+      for (const c of S.pv.connectors || []) {
+        const selected = S.sel && S.sel.kind === "conn" && S.sel.id === c.id;
+        const [x, y] = T(c.origin), [x2, y2] = T(c.origin.map((v, i) => v + c.direction[i] * 120));
+        ctx.strokeStyle = selected ? css("--accent") : "#b5651d"; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x2, y2); ctx.stroke();
+      }
+    }
     if (S.showWp) {
       // the work plane as a sheet a little larger than the model
       const id = S.wps["3d"] !== undefined ? S.wps["3d"] : VIEWS.plan.origin, p = planeById(id), at = pos(id);
@@ -1726,7 +1875,7 @@ const FamModel = (() => {
   // locked to it. A closed padlock is a lock; an open one marks an edge that sits on the plane but is free of it.
   function edgeLocks() {
     const V = VIEWS[S.view], out = [];
-    if (S.view === "3d" || !S.sel || (S.sel.kind !== "form" && S.sel.kind !== "sym")) return out;
+    if (S.view === "3d" || !S.sel || (S.sel.kind !== "form" && S.sel.kind !== "sym" && S.sel.kind !== "mline")) return out;
     for (const it of viewLoops()) {
       if (it.kind !== S.sel.kind || it.id !== S.sel.id) continue;
       const nd = it.loop.nodes, n = nd.length, bl = it.loop.bulges || [];
@@ -1828,6 +1977,10 @@ const FamModel = (() => {
     for (const y of S.body.syms) {
       if (y.view === S.view) out.push({ kind: "sym", id: y.id, li: 0, loop: y.path });
     }
+    for (const m of S.body.model_lines || []) {
+      const wp = planeById(m.plane);
+      if (wp && wp.axis === V.n) out.push({ kind: "mline", id: m.id, li: 0, loop: m.path });
+    }
     return out;
   }
   function hitEdge(sx, sy, pl) {
@@ -1876,7 +2029,7 @@ const FamModel = (() => {
     return best;
   }
   function hitEdgeNodes(b, h) {
-    const owner = h.kind === "form" ? (({ shape: sh }) => (sh.type === "sweep" || sh.type === "swept_blend" ? [sh.path] : sh.type === "blend" ? (h.which === "top" ? sh.top : sh.base) : sh.profile)[h.li])(b.forms.find((f) => f.id === h.id)) : b.syms.find((y) => y.id === h.id).path;
+    const owner = h.kind === "form" ? (({ shape: sh }) => (sh.type === "sweep" || sh.type === "swept_blend" ? [sh.path] : sh.type === "blend" ? (h.which === "top" ? sh.top : sh.base) : sh.profile)[h.li])(b.forms.find((f) => f.id === h.id)) : h.kind === "mline" ? b.model_lines.find((y) => y.id === h.id).path : b.syms.find((y) => y.id === h.id).path;
     return [owner.nodes[h.i], owner.nodes[h.j]];
   }
   function pointIn(ring, x, y) {
@@ -1889,6 +2042,25 @@ const FamModel = (() => {
   }
   function hitItem(sx, sy) {
     const w = s2w(sx, sy);
+    for (const c of S.pv.controls || []) {
+      if (c.view !== S.view || !c.present) continue;
+      const p = w2s(c.at[0], c.at[1]);
+      if (Math.abs(p.x - sx) < 22 && Math.abs(p.y - sy) < 22) return { kind: "ctrl", id: c.id };
+    }
+    for (const c of S.pv.connectors || []) {
+      const a = proj(c.origin), p = w2s(a[0], a[1]);
+      if (Math.hypot(p.x - sx, p.y - sy) < 11) return { kind: "conn", id: c.id };
+    }
+    for (const m of [...(S.pv.model_lines || [])].reverse()) {
+      if (!m.present) continue;
+      const pts = m.closed ? [...m.points, m.points[0]] : m.points;
+      for (let i = 0; i + 1 < pts.length; i++) {
+        const a0 = proj(pts[i]), b0 = proj(pts[i + 1]), a = w2s(a0[0], a0[1]), b = w2s(b0[0], b0[1]);
+        const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+        const t = Math.max(0, Math.min(1, ((sx - a.x) * (b.x - a.x) + (sy - a.y) * (b.y - a.y)) / l2));
+        if (Math.hypot(a.x + t * (b.x - a.x) - sx, a.y + t * (b.y - a.y) - sy) < 5) return { kind: "mline", id: m.id };
+      }
+    }
     for (const y of [...(S.pv.syms || [])].reverse()) {
       if (!y.present || y.view !== S.view) continue;
       for (let i = 0; i + 1 < y.points.length; i++) {
@@ -1932,6 +2104,32 @@ const FamModel = (() => {
         return;
       }
       S.sel = hitItem(m.x, m.y); props(); render();
+      const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : null);
+      const wp = it && S.sel.kind === "conn" ? planeById(it.plane) : null;
+      if (it && (S.sel.kind === "ctrl" || (wp && wp.axis === VIEWS[S.view].n))) S.drag = { pt: it, before: snapshot(), moved: false };
+      return;
+    }
+    if (t === "control") {
+      const sp = snapPoint(m.x, m.y);
+      await change((b) => {
+        const id = newId();
+        (b.controls = b.controls || []).push({ id, name: "", view: S.view, u: coordOf(sp.u), v: coordOf(sp.v), kind: S.ctrlKind, vis: {} });
+        S.sel = { kind: "ctrl", id };
+      });
+      S.msg = "Control placed. Drag it, or change the kind in Properties."; status(); render();
+      return;
+    }
+    if (t === "conn") {
+      const sp = snapPoint(m.x, m.y);
+      const k = S.connKind, wp = workPlane();
+      await change((b) => {
+        const id = newId();
+        const props = {};
+        for (const [name, kind, def] of CONN[k].props) props[name] = def;
+        (b.connectors = b.connectors || []).push({ id, name: "", kind: k, plane: wp, u: coordOf(sp.u), v: coordOf(sp.v), flip: false, props });
+        S.sel = { kind: "conn", id };
+      });
+      S.msg = `${CONN[k].label} placed on ${(planeById(wp) || {}).name}. Set its size and system in Properties.`; status(); render();
       return;
     }
     if (t === "pickwp") {
@@ -2027,7 +2225,7 @@ const FamModel = (() => {
       render();
       return;
     }
-    if (t === "sym" && S.symMode === "arc") {
+    if ((t === "sym" || t === "mline") && S.symMode === "arc") {
       const sp = snapPoint(m.x, m.y);
       S.draft = S.draft && S.draft.kind === "arc" ? S.draft : { kind: "arc", pts: [] };
       S.draft.pts.push(sp);
@@ -2035,7 +2233,7 @@ const FamModel = (() => {
       render();
       return;
     }
-    if (t === "sym") {
+    if (t === "sym" || t === "mline") {
       const sp = snapPoint(m.x, m.y);
       S.draft = S.draft && S.draft.kind === "poly" ? S.draft : { kind: "poly", pts: [] };
       S.draft.pts.push(sp);
@@ -2071,6 +2269,12 @@ const FamModel = (() => {
         if (dm) { dm.at = Math.round(planeById(dm.a).axis === VIEWS[S.view].h ? w.v : w.u); d.moved = true; render(); }
         return;
       }
+      if (d.pt) {
+        const sp = snapPoint(m.x, m.y);
+        d.pt.u = coordOf(sp.u); d.pt.v = coordOf(sp.v);
+        d.moved = true;
+        await preview(); render(); return;
+      }
       if (d.handle) {
         const sp = snapPoint(m.x, m.y);
         moveNode(d.handle, sp);
@@ -2098,7 +2302,7 @@ const FamModel = (() => {
     const d = S.drag;
     S.drag = null;
     const m = mouse(e);
-    if (d && (d.plane || d.handle || d.dimAt) && d.moved) {
+    if (d && (d.plane || d.handle || d.dimAt || d.pt) && d.moved) {
       const ok = await preview();
       if (!ok) { restore(d.before); S.msg = S.pvError; await preview(); }
       else { S.undo.push(d.before); S.redo = []; touch(); }
@@ -2273,6 +2477,9 @@ const FamModel = (() => {
         { label: "Modify", items: [{ label: "Align", ico: "Al", big: true, onclick: () => setTool("align") }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] },
       ] };
     }
+    if (sel.kind === "mline") return { auto, title: "Modify | Model Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mlineById(sel.id)) }] }, { label: "Modify", items: [{ label: "Align", ico: "Al", big: true, onclick: () => setTool("align") }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
+    if (sel.kind === "ctrl") return { auto, title: "Modify | Controls", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => ctrlById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
+    if (sel.kind === "conn") return { auto, title: "Modify | Connectors", groups: [{ label: "Modify", items: [{ label: "Flip", ico: "Fl", big: true, onclick: () => change((b) => { const c = connById(sel.id); c.flip = !c.flip; }) }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "sym") return { auto, title: "Modify | Symbolic Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => symById(sel.id)) }] }] };
     if (sel.kind === "dim") {
       const d = dimById(sel.id);
@@ -2518,7 +2725,7 @@ const FamModel = (() => {
     if (!d || d.kind !== "poly") return;
     const q = d.pts, k = q.length;
     if (k > 1 && q[k - 1].pt.u === q[k - 2].pt.u && q[k - 1].pt.v === q[k - 2].pt.v) q.pop(); // a double click adds its point twice
-    if (S.tool === "sym") {
+    if (S.tool === "sym" || S.tool === "mline") {
       if (d.pts.length < 2) return;
       await addSym({ nodes: d.pts.map((p) => ({ u: coordOf(p.u), v: coordOf(p.v) })), bulges: [], closed: false }, false);
       return;
@@ -2588,8 +2795,9 @@ const FamModel = (() => {
     const ok = await change((b) => {
       const id = newId();
       const n = b.forms.filter((f) => !!f.void === (S.tool === "void")).length + 1;
+      const no = b.forms.filter((f) => f.opening).length + 1;
       b.forms.push({
-        id, name: S.tool === "void" ? `Void ${n}` : `Extrusion ${n}`, void: S.tool === "void", cuts_host: true, cut_by: [],
+        id, name: S.openingNext ? `Opening ${no}` : S.tool === "void" ? `Void ${n}` : `Extrusion ${n}`, void: S.tool === "void", cuts_host: true, opening: !!S.openingNext, cut_by: [],
         shape: { type: "extrusion", plane: wp, start: S.start, end: S.end, profile },
         material: "", material_param: null, subcategory: S.tool === "void" ? "" : "Frame/Mullion", vis: {},
       });
@@ -2678,6 +2886,17 @@ const FamModel = (() => {
   }
   async function addSym(path, filled) {
     const view = S.view;
+    if (S.tool === "mline") {
+      const plane = workPlane();
+      const ok = await change((b) => {
+        const id = newId();
+        const n = (b.model_lines || []).length + 1;
+        (b.model_lines = b.model_lines || []).push({ id, name: `Model Line ${n}`, plane, path, subcategory: "Model Lines", vis: {} });
+        S.sel = { kind: "mline", id };
+      });
+      if (ok) lockNote();
+      return;
+    }
     const ok = await change((b) => {
       const id = newId();
       b.syms.push({ id, view, path, filled, masking: false, subcategory: filled ? "Panel" : "Plan Swing", vis: {} });
@@ -2704,6 +2923,9 @@ const FamModel = (() => {
         b.forms = b.forms.filter((f) => f.id !== s.id);
         b.forms.forEach((f) => { f.cut_by = (f.cut_by || []).filter((x) => x !== s.id); });
       } else if (s.kind === "sym") b.syms = b.syms.filter((y) => y.id !== s.id);
+      else if (s.kind === "mline") b.model_lines = (b.model_lines || []).filter((y) => y.id !== s.id);
+      else if (s.kind === "ctrl") b.controls = (b.controls || []).filter((y) => y.id !== s.id);
+      else if (s.kind === "conn") b.connectors = (b.connectors || []).filter((y) => y.id !== s.id);
       S.sel = null;
     });
   }

@@ -174,5 +174,17 @@ fn body_symbol(doc: &Document, id: Id, f: &crate::hosting::InstanceFrame, detail
         }
         g.parts.push(SymPart { subcategory: sym.subcategory.clone(), rings: vec![world(&sym.points)], closed: sym.closed, filled: sym.filled, cut: false, masking: sym.masking });
     }
+    // Model lines are 3D, so the plan sees them flattened onto the floor.
+    for m in &s.model_lines {
+        if !shows(&m.vis) || m.points.len() < 2 {
+            continue;
+        }
+        let flat: Vec<Point> = m.points.iter().map(|p| Point::new(p[0], p[1])).collect();
+        let span = flat.iter().map(|q| (q.x - flat[0].x).abs().max((q.y - flat[0].y).abs())).fold(0.0, f64::max);
+        if span < 1e-6 {
+            continue;
+        }
+        g.parts.push(SymPart { subcategory: m.subcategory.clone(), rings: vec![world(&flat)], closed: m.closed, filled: false, cut: false, masking: false });
+    }
     Some(g)
 }

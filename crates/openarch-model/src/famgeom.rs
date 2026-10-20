@@ -412,6 +412,9 @@ pub struct Form {
     /// A void that also cuts the host element (the opening of a door or window).
     #[serde(default = "yes")]
     pub cuts_host: bool,
+    /// An opening: a void whose profile cuts clean through the host whatever its depth.
+    #[serde(default)]
+    pub opening: bool,
     /// Voids that cut this solid (Cut Geometry).
     #[serde(default)]
     pub cut_by: Vec<FormId>,
@@ -461,6 +464,99 @@ pub struct Nested {
     pub vis: Visibility,
 }
 
+/// A line, arc or chain of them drawn on a work plane. It is 3D geometry (a model line), so it shows
+/// in every view the visibility settings allow, unlike symbolic lines that belong to one view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ModelLine {
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    pub plane: PlaneId,
+    pub path: Loop,
+    #[serde(default)]
+    pub subcategory: String,
+    #[serde(default)]
+    pub vis: Visibility,
+}
+
+/// The flip arrows a door or window shows in a view (Control).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlKind {
+    SingleVertical,
+    DoubleVertical,
+    SingleHorizontal,
+    DoubleHorizontal,
+}
+
+impl ControlKind {
+    /// Flips the family up and down (vertical) or left and right (horizontal).
+    pub fn vertical(self) -> bool {
+        matches!(self, ControlKind::SingleVertical | ControlKind::DoubleVertical)
+    }
+    pub fn double(self) -> bool {
+        matches!(self, ControlKind::DoubleVertical | ControlKind::DoubleHorizontal)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Control {
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    pub view: SymView,
+    pub u: Coord,
+    pub v: Coord,
+    pub kind: ControlKind,
+    #[serde(default)]
+    pub vis: Visibility,
+}
+
+/// What a connector joins to (Electrical, Duct, Pipe, Cable Tray, Conduit).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorKind {
+    Electrical,
+    Duct,
+    Pipe,
+    CableTray,
+    Conduit,
+}
+
+impl ConnectorKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ConnectorKind::Electrical => "Electrical Connector",
+            ConnectorKind::Duct => "Duct Connector",
+            ConnectorKind::Pipe => "Pipe Connector",
+            ConnectorKind::CableTray => "Cable Tray Connector",
+            ConnectorKind::Conduit => "Conduit Connector",
+        }
+    }
+}
+
+/// A point on a face of the family where a service meets it. `props` holds what the kind needs (system
+/// type, size, flow, voltage and so on) as text; those in `NUMERIC_CONNECTOR_PROPS` are formulas worked out when solving.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Connector {
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    pub kind: ConnectorKind,
+    /// The face it sits on: a reference plane, the connector points along its normal.
+    pub plane: PlaneId,
+    pub u: Coord,
+    pub v: Coord,
+    /// Points the other way along the plane's normal.
+    #[serde(default)]
+    pub flip: bool,
+    #[serde(default)]
+    pub props: BTreeMap<String, String>,
+}
+
+/// Connector properties that hold a length or number and may be a formula using family parameters.
+pub const NUMERIC_CONNECTOR_PROPS: [&str; 7] = ["Diameter", "Width", "Height", "Radius", "Flow", "Voltage", "Apparent Load"];
+
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct FamilyBody {
     #[serde(default)]
@@ -471,6 +567,12 @@ pub struct FamilyBody {
     pub syms: Vec<SymElement>,
     #[serde(default)]
     pub nested: Vec<Nested>,
+    #[serde(default)]
+    pub model_lines: Vec<ModelLine>,
+    #[serde(default)]
+    pub controls: Vec<Control>,
+    #[serde(default)]
+    pub connectors: Vec<Connector>,
     #[serde(default)]
     pub dims: Vec<DimDef>,
     /// Stays vertical when hosted on a sloped face (Always vertical).
@@ -490,7 +592,7 @@ pub const PLANE_LEVEL: PlaneId = 3;
 
 impl FamilyBody {
     pub fn is_empty(&self) -> bool {
-        self.planes.is_empty() && self.forms.is_empty() && self.syms.is_empty() && self.nested.is_empty()
+        self.planes.is_empty() && self.forms.is_empty() && self.syms.is_empty() && self.nested.is_empty() && self.model_lines.is_empty() && self.controls.is_empty() && self.connectors.is_empty()
     }
 
     /// A new body with the three origin planes: Center (Left/Right), Center (Front/Back), Ref. Level.
@@ -503,8 +605,8 @@ impl FamilyBody {
         }
     }
 
-    fn take_id(&mut self) -> u32 {
-        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.dims.iter().map(|d| d.id)).max().unwrap_or(0);
+    pub fn take_id(&mut self) -> u32 {
+        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.model_lines.iter().map(|m| m.id)).chain(self.controls.iter().map(|c| c.id)).chain(self.connectors.iter().map(|c| c.id)).chain(self.dims.iter().map(|d| d.id)).max().unwrap_or(0);
         self.next_id = self.next_id.max(used) + 1;
         self.next_id
     }
@@ -570,7 +672,10 @@ impl FamilyBody {
                     FormShape::Sweep { path, .. } | FormShape::SweptBlend { path, .. } => in_loop(path),
                 }
         });
-        let used_by_sym = self.syms.iter().any(|s| in_loop(&s.path));
+        let used_by_sym = self.syms.iter().any(|s| in_loop(&s.path))
+            || self.model_lines.iter().any(|m| m.plane == id || in_loop(&m.path))
+            || self.controls.iter().any(|c| c.u.plane == Some(id) || c.v.plane == Some(id))
+            || self.connectors.iter().any(|c| c.plane == id || c.u.plane == Some(id) || c.v.plane == Some(id));
         if used_by_plane || used_by_form || used_by_sym {
             return Err("something is locked to this reference plane".into());
         }
@@ -995,6 +1100,23 @@ impl FamilyBody {
                 f(format!("{what} (visible when)"), w);
             }
         }
+        for ml in &mut self.model_lines {
+            if let Some(w) = &mut ml.vis.when {
+                f(format!("model line {} (visible when)", ml.id), w);
+            }
+        }
+        for c in &mut self.controls {
+            if let Some(w) = &mut c.vis.when {
+                f(format!("control {} (visible when)", c.id), w);
+            }
+        }
+        for c in &mut self.connectors {
+            for k in NUMERIC_CONNECTOR_PROPS {
+                if let Some(x) = c.props.get_mut(k) {
+                    f(format!("{} ({k})", c.kind.label()), x);
+                }
+            }
+        }
         for sy in &mut self.syms {
             let what = format!("symbolic geometry {}", sy.id);
             if let Some(w) = &mut sy.vis.when {
@@ -1144,6 +1266,38 @@ pub struct SolvedSym {
     pub vis: SolvedVis,
 }
 
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolvedModelLine {
+    pub id: u32,
+    pub name: String,
+    /// The line in family coordinates, arcs cut into short chords.
+    pub points: Vec<[f64; 3]>,
+    pub closed: bool,
+    pub subcategory: String,
+    pub vis: SolvedVis,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolvedControl {
+    pub id: u32,
+    pub view: SymView,
+    pub at: Point,
+    pub kind: ControlKind,
+    pub vis: SolvedVis,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolvedConnector {
+    pub id: u32,
+    pub name: String,
+    pub kind: ConnectorKind,
+    pub origin: [f64; 3],
+    /// Unit vector out of the face.
+    pub direction: [f64; 3],
+    /// The numeric properties worked out; the rest stay as text in the body.
+    pub numbers: BTreeMap<String, f64>,
+}
+
 #[derive(Debug, Clone, Default)]
 pub struct Solved {
     pub planes: BTreeMap<PlaneId, f64>,
@@ -1151,6 +1305,9 @@ pub struct Solved {
     pub reports: Vec<(String, f64)>,
     pub forms: Vec<SolvedForm>,
     pub syms: Vec<SolvedSym>,
+    pub model_lines: Vec<SolvedModelLine>,
+    pub controls: Vec<SolvedControl>,
+    pub connectors: Vec<SolvedConnector>,
     pub warnings: Vec<String>,
 }
 
@@ -1294,6 +1451,8 @@ impl FamilyBody {
         let planes = self.solve_planes(env)?;
         let mut b: Option<[[f64; 3]; 2]> = None;
         for f in self.forms.iter().filter(|f| f.void && f.cuts_host) {
+            // an opening cuts the full thickness of the host, so only its profile sets the size
+            let through = f.opening;
             if !self.resolve_vis(&f.vis, env)?.present {
                 continue;
             }
@@ -1306,7 +1465,7 @@ impl FamilyBody {
             let mut hi = [f64::NEG_INFINITY; 3];
             for ring in self.polys(&planes, profile, axes)? {
                 for p in ring {
-                    for w in [a, c] {
+                    for w in if through { vec![a] } else { vec![a, c] } {
                         let q = wp.axis.point(p.x, p.y, w);
                         for k in 0..3 {
                             lo[k] = lo[k].min(q[k]);
@@ -1390,6 +1549,40 @@ impl FamilyBody {
                 subcategory: s.subcategory.clone(),
                 vis,
             });
+        }
+        for m in &self.model_lines {
+            let wp = self.plane(m.plane).ok_or_else(|| format!("model line {}: the work plane is missing", m.id))?;
+            let normal = wp.axis;
+            let axes = normal.sketch_axes();
+            let pts = self.place(&planes, &m.path, axes).map_err(|e| format!("model line {}: {e}", m.id))?;
+            let w0 = planes[&wp.id];
+            let vis = self.resolve_vis(&m.vis, env)?;
+            let points = tessellate_loop(&pts, &m.path, TOL).into_iter().map(|p| normal.point(p.x, p.y, w0)).collect();
+            out.model_lines.push(SolvedModelLine { id: m.id, name: m.name.clone(), points, closed: m.path.closed, subcategory: m.subcategory.clone(), vis });
+        }
+        for c in &self.controls {
+            let axes = c.view.normal().sketch_axes();
+            let at = Point::new(self.coord(&planes, &c.u, axes.0).map_err(|e| format!("control {}: {e}", c.id))?, self.coord(&planes, &c.v, axes.1).map_err(|e| format!("control {}: {e}", c.id))?);
+            let vis = self.resolve_vis(&c.vis, env)?;
+            out.controls.push(SolvedControl { id: c.id, view: c.view, at, kind: c.kind, vis });
+        }
+        for c in &self.connectors {
+            let wp = self.plane(c.plane).ok_or_else(|| format!("{}: the face plane is missing", c.kind.label()))?;
+            let normal = wp.axis;
+            let axes = normal.sketch_axes();
+            let u = self.coord(&planes, &c.u, axes.0).map_err(|e| format!("{}: {e}", c.kind.label()))?;
+            let v = self.coord(&planes, &c.v, axes.1).map_err(|e| format!("{}: {e}", c.kind.label()))?;
+            let origin = normal.point(u, v, planes[&wp.id]);
+            let zero = normal.point(0.0, 0.0, 0.0);
+            let one = normal.point(0.0, 0.0, if c.flip { -1.0 } else { 1.0 });
+            let direction = [one[0] - zero[0], one[1] - zero[1], one[2] - zero[2]];
+            let mut numbers = BTreeMap::new();
+            for k in NUMERIC_CONNECTOR_PROPS {
+                if let Some(src) = c.props.get(k).filter(|x| !x.trim().is_empty()) {
+                    numbers.insert(k.to_string(), eval_num(src, env).map_err(|e| format!("{} {k}: {e}", c.kind.label()))?);
+                }
+            }
+            out.connectors.push(SolvedConnector { id: c.id, name: c.name.clone(), kind: c.kind, origin, direction, numbers });
         }
         Ok(out)
     }
@@ -1843,7 +2036,7 @@ mod tests {
             },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: "Timber".into(),
             material_param: None,
             subcategory: "Frame".into(),
@@ -1873,7 +2066,7 @@ mod tests {
             shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_LEVEL, start: "0".into(), end: "10".into(), profile: vec![outer, hole] },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -1895,7 +2088,7 @@ mod tests {
                 shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane, start: "0".into(), end: "30".into(), profile: vec![Loop::rect(Coord::at(0.0), Coord::at(10.0), Coord::at(0.0), Coord::at(20.0))] },
                 void: false,
                 cuts_host: true,
-                cut_by: vec![],
+                cut_by: vec![], opening: false,
                 material: String::new(),
                 material_param: None,
                 subcategory: String::new(),
@@ -1921,7 +2114,7 @@ mod tests {
             },
             void: true,
             cuts_host: false,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -1939,7 +2132,7 @@ mod tests {
             shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_LEVEL, start: "0".into(), end: "100".into(), profile: vec![Loop::rect(Coord::at(0.0), Coord::at(10.0), Coord::at(0.0), Coord::at(10.0))] },
             void: true,
             cuts_host: false,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -1965,7 +2158,7 @@ mod tests {
             shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_LEVEL, start: "0".into(), end: "10".into(), profile: vec![Loop::rect(Coord::on(PLANE_LEVEL), Coord::at(5.0), Coord::at(0.0), Coord::at(5.0))] },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -2017,7 +2210,7 @@ mod tests {
             shape: FormShape::Sweep { plane, path, profile, profile_angle: 0.0, flip },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -2042,7 +2235,7 @@ mod tests {
             },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -2073,7 +2266,7 @@ mod tests {
             shape: FormShape::Blend { plane: PLANE_LEVEL, start: "0".into(), end: "50".into(), start_lock: None, end_lock: Some(top), base: vec![sq(100.0)], top: vec![sq(50.0)] },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -2092,6 +2285,45 @@ mod tests {
     }
 
     #[test]
+    fn model_lines_controls_and_connectors_solve_and_follow_parameters() {
+        let mut b = FamilyBody::template();
+        // a line along the width drawn on the level plane: from (0,0) to (Width, 0)
+        let mut nodes = vec![Node::new(Coord::at(0.0), Coord::at(0.0)), Node::new(Coord::at(0.0), Coord::at(0.0))];
+        nodes[1].u = Coord::at(500.0);
+        let id = b.take_id();
+        b.model_lines.push(ModelLine { id, name: "Edge".into(), plane: PLANE_LEVEL, path: Loop { nodes, bulges: vec![], closed: false }, subcategory: "Model Lines".into(), vis: Visibility::default() });
+        let cid = b.take_id();
+        b.controls.push(Control { id: cid, name: String::new(), view: SymView::Plan, u: Coord::at(100.0), v: Coord::at(-200.0), kind: ControlKind::DoubleHorizontal, vis: Visibility::default() });
+        let kid = b.take_id();
+        let mut props = BTreeMap::new();
+        props.insert("Diameter".to_string(), "Size * 2".to_string());
+        props.insert("System Type".to_string(), "Supply Air".to_string());
+        b.connectors.push(Connector { id: kid, name: String::new(), kind: ConnectorKind::Duct, plane: PLANE_FB, u: Coord::at(10.0), v: Coord::at(20.0), flip: true, props });
+        let s = b.solve(&mut params(&[("Size", 75.0)])).unwrap();
+        let m = &s.model_lines[0];
+        assert_eq!(m.points.len(), 2);
+        assert!((m.points[1][0] - 500.0).abs() < 1e-6 && m.points[1][2].abs() < 1e-6);
+        assert_eq!(s.controls[0].at, Point::new(100.0, -200.0));
+        let k = &s.connectors[0];
+        assert_eq!(k.numbers["Diameter"], 150.0);
+        assert!(!k.numbers.contains_key("System Type"));
+        // pointing the other way along the front plane's normal
+        assert!((k.direction[1].abs() - 1.0).abs() < 1e-9 && k.direction[0].abs() < 1e-9);
+        let flipped = { let mut b2 = b.clone(); b2.connectors[0].flip = false; b2.solve(&mut params(&[("Size", 75.0)])).unwrap().connectors[0].direction };
+        assert!((flipped[1] + k.direction[1]).abs() < 1e-9);
+        // renaming a parameter reaches connector properties; a bad formula is an error naming the connector
+        b.rename_param("Size", "Bore");
+        assert_eq!(b.connectors[0].props["Diameter"], "Bore * 2");
+        let err = b.solve(&mut params(&[("Size", 75.0)])).unwrap_err();
+        assert!(err.contains("Duct Connector"), "{err}");
+        // a plane in use by one of them cannot be deleted
+        assert!(b.remove_plane(PLANE_FB).is_err());
+        // older bodies without these lists still load
+        let old: FamilyBody = serde_json::from_str(r#"{"planes":[],"forms":[],"syms":[]}"#).unwrap();
+        assert!(old.model_lines.is_empty() && old.controls.is_empty() && old.connectors.is_empty());
+    }
+
+    #[test]
     fn a_swept_blend_changes_its_profile_along_the_path() {
         let mk = |start: Vec<ProfileLoop>, end: Vec<ProfileLoop>, path: Loop, flip: bool| Form {
             id: 0,
@@ -2099,7 +2331,7 @@ mod tests {
             shape: FormShape::SweptBlend { plane: PLANE_LEVEL, path, profile: start, profile_end: end, profile_angle: 0.0, flip },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -2215,7 +2447,7 @@ mod tests {
             shape: FormShape::Blend { plane: PLANE_LEVEL, start: "0".into(), end: "100".into(), start_lock: None, end_lock: None, base: vec![sq(100.0)], top: vec![sq(50.0)] },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
@@ -2234,7 +2466,7 @@ mod tests {
             },
             void: false,
             cuts_host: true,
-            cut_by: vec![],
+            cut_by: vec![], opening: false,
             material: String::new(),
             material_param: None,
             subcategory: String::new(),
