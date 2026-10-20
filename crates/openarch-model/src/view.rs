@@ -239,10 +239,6 @@ pub struct FillOverride {
     pub pattern: Option<String>,
 }
 
-fn yes() -> bool {
-    true
-}
-
 impl Default for FillOverride {
     fn default() -> Self {
         FillOverride { visible: true, color: None, pattern: None }
@@ -621,6 +617,27 @@ pub struct View {
     /// The section a section view shows.
     #[serde(default)]
     pub section: Option<Id>,
+    /// The view type it was made from (Floor Plan, Ceiling Plan and so on), when it has one.
+    #[serde(default)]
+    pub view_type: Option<Id>,
+}
+
+/// A view type: what the New Plan dialog's Type list offers. Each kind of plan has at least one, and a type can
+/// give its new views a view template.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ViewType {
+    pub name: String,
+    pub view_kind: ViewKind,
+    /// View Template applied to new views of this type.
+    #[serde(default)]
+    pub template_for_new: Option<Id>,
+    /// New views stay linked to that template (dependent on it) rather than taking a copy of its settings.
+    #[serde(default = "yes")]
+    pub new_views_dependent: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 /// An elevation view's place in an elevation marker. `crop` is how far the view reaches to the
@@ -671,7 +688,16 @@ impl View {
             hidden_elements: BTreeSet::new(),
             elevation: None,
             section: None,
+            view_type: None,
         }
+    }
+
+    /// A reflected ceiling plan of a level. It draws as a plan for now; looking up through the cut plane comes with ceilings.
+    pub fn ceiling_plan(name: &str, level: Id) -> View {
+        let mut v = View::floor_plan(name, level);
+        v.view_kind = ViewKind::CeilingPlan;
+        v.settings.overrides.model.remove("Floors");
+        v
     }
 
     /// An elevation looking out of slot `slot` of `marker`.
@@ -702,10 +728,13 @@ impl View {
 /// Model categories listed in the Visibility/Graphics dialog. Categories are
 /// plain names so that families and links can add their own later.
 pub const MODEL_CATEGORIES: &[&str] = &[
-    "Casework", "Ceilings", "Columns", "Curtain Panels", "Curtain Systems", "Curtain Wall Mullions", "Doors", "Electrical Equipment",
-    "Electrical Fixtures", "Floors", "Furniture", "Generic Models", "Lighting Fixtures", "Mass", "Parking", "Planting", "Plumbing Fixtures",
-    "Project Base Point", "Ramps", "Railings", "Roofs", "Rooms", "Site", "Specialty Equipment", "Stairs", "Structural Columns", "Structural Foundations",
-    "Structural Framing", "Survey Point", "Topography", "Walls", "Windows",
+    "Air Terminals", "Casework", "Ceilings", "Columns", "Communication Devices", "Curtain Panels", "Curtain Systems",
+    "Curtain Wall Mullions", "Data Devices", "Doors", "Electrical Equipment", "Electrical Fixtures", "Entourage", "Fire Alarm Devices",
+    "Fire Protection", "Floors", "Food Service Equipment", "Furniture", "Furniture Systems", "Generic Models", "Hardscape",
+    "Lighting Devices", "Lighting Fixtures", "Mass", "Mechanical Control Devices", "Mechanical Equipment", "Parking", "Planting",
+    "Plumbing Fixtures", "Project Base Point", "Railings", "Ramps", "Roofs", "Rooms", "Security Devices", "Signage", "Site",
+    "Specialty Equipment", "Stairs", "Structural Columns", "Structural Foundations", "Structural Framing", "Survey Point", "Topography",
+    "Walls", "Windows",
 ];
 
 /// The project base point and survey point are non-printing symbols: each has its own category, and they are

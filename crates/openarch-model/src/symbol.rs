@@ -144,9 +144,40 @@ fn body_symbol(doc: &Document, id: Id, f: &crate::hosting::InstanceFrame, detail
     let (xa, xb) = (f.x_off - f.width / 2.0, f.x_off + f.width / 2.0);
     let (yr, yl) = (-f.wall_right, f.wall_left);
     let mut g = SymbolGeom::default();
-    g.footprint = vec![f.world(xa, yr), f.world(xb, yr), f.world(xb, yl), f.world(xa, yl)];
-    g.lines.push([f.world(xa, yr), f.world(xa, yl)]);
-    g.lines.push([f.world(xb, yr), f.world(xb, yl)]);
+    if f.free {
+        // a free standing instance is picked by the box its plan takes up, turned with it
+        let mut b: Option<[f64; 4]> = None;
+        let mut grow = |x: f64, y: f64| {
+            let r = b.get_or_insert([x, y, x, y]);
+            r[0] = r[0].min(x);
+            r[1] = r[1].min(y);
+            r[2] = r[2].max(x);
+            r[3] = r[3].max(y);
+        };
+        for form in s.forms.iter().filter(|x| !x.void && x.vis.present) {
+            for t in &form.solid.tris {
+                for p in t {
+                    grow(p[0], p[1]);
+                }
+            }
+        }
+        for sym in s.syms.iter().filter(|y| y.view == crate::famgeom::SymView::Plan && y.vis.present) {
+            for p in &sym.points {
+                grow(p.x, p.y);
+            }
+        }
+        for m in s.model_lines.iter().filter(|m| m.vis.present) {
+            for p in &m.points {
+                grow(p[0], p[1]);
+            }
+        }
+        let [x0, y0, x1, y1] = b.unwrap_or([-150.0, -150.0, 150.0, 150.0]);
+        g.footprint = vec![f.fam_world(x0, y0), f.fam_world(x1, y0), f.fam_world(x1, y1), f.fam_world(x0, y1)];
+    } else {
+        g.footprint = vec![f.world(xa, yr), f.world(xb, yr), f.world(xb, yl), f.world(xa, yl)];
+        g.lines.push([f.world(xa, yr), f.world(xa, yl)]);
+        g.lines.push([f.world(xb, yr), f.world(xb, yl)]);
+    }
     let shows = |v: &SolvedVis| {
         v.present
             && v.plan

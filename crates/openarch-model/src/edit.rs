@@ -499,7 +499,11 @@ impl Document {
                 }
             } else {
                 ni.location = x.apply(i.location);
-                ni.rotation_deg = if mirror { 2.0 * axis_deg - i.rotation_deg } else { i.rotation_deg + turn };
+                ni.rotation_deg = if mirror { 2.0 * axis_deg - i.rotation_deg } else { i.rotation_deg + turn }.rem_euclid(360.0);
+                // a reflection is a turn plus a flip across the instance's own x axis
+                if mirror {
+                    ni.flip_facing = !ni.flip_facing;
+                }
             }
             if opt.copy {
                 ni.pinned = false;
@@ -831,6 +835,7 @@ impl Document {
                         d.transact("Move", |tx| tx.update(id, Element::Floor(f)))?;
                     }
                     Some(Element::Roof(r)) => d.patch_roof(id, &serde_json::json!({ "base_offset_mm": r.base_offset_mm + dz }))?,
+                    Some(Element::FamilyInstance(i)) if i.host.is_none() => d.patch_instance(id, &serde_json::json!({ "offset_mm": i.offset_mm + dz }))?,
                     Some(Element::FamilyInstance(i)) => {
                         let (_, _, sill) = d.instance_opening_size(&i);
                         d.patch_instance(id, &serde_json::json!({ "values": { "Sill Height": sill + dz } }))?;

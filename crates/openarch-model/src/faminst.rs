@@ -483,6 +483,52 @@ mod tests {
         assert!(old.type_param.is_none() && old.work_plane.is_none() && !old.flip && !old.mirror && old.name.is_empty());
     }
 
+    /// A free standing desk: a 1200 x 600 top 750 high.
+    fn desk_family() -> Family {
+        let mut b = FamilyBody::template();
+        let rect = vec![Loop::rect(Coord::at(-600.0), Coord::at(600.0), Coord::at(-300.0), Coord::at(300.0))];
+        b.add_form(form(FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_LEVEL, start: "0".into(), end: "750".into(), profile: rect }, false, ""));
+        Family { name: "Desk".into(), category: FamilyCategory::Furniture, host: HostKind::None, plan_symbol: PlanSymbol::None, params: vec![], built_in: false, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body: b }
+    }
+
+    #[test]
+    fn a_free_standing_family_places_draws_turns_mirrors_and_moves_up() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let (_, types) = d.add_family(desk_family(), vec![("Standard".into(), BTreeMap::new())]).unwrap();
+        let id = d.place_free(types[0], lvl, Point::new(2000.0, 1000.0), 90.0, 0.0).unwrap();
+        // plan: cut at 1200 is above the desk, so it is seen; the footprint is the desk turned a quarter
+        let sym = crate::symbol::plan_symbol_at(&d, id, crate::view::DetailLevel::Medium, None).unwrap();
+        let xs: Vec<f64> = sym.footprint.iter().map(|p| p.x).collect();
+        let ys: Vec<f64> = sym.footprint.iter().map(|p| p.y).collect();
+        let span = |v: &[f64]| v.iter().cloned().fold(f64::MIN, f64::max) - v.iter().cloned().fold(f64::MAX, f64::min);
+        assert!((span(&xs) - 600.0).abs() < 1e-6 && (span(&ys) - 1200.0).abs() < 1e-6, "{:?}", sym.footprint);
+        assert!(sym.lines.is_empty(), "no jamb lines without a wall");
+        assert!(!sym.parts.is_empty());
+        let f = d.instance_frame(id).unwrap();
+        assert!(f.free && (f.z1 - f.z0 - 750.0).abs() < 1e-6);
+        let (cat, solid, _) = crate::mesh::instance_meshes(&d, id).unwrap();
+        assert_eq!(cat, FamilyCategory::Furniture);
+        assert!(!solid.is_empty());
+        // mirror across a vertical line through x = 0: it lands at x = -2000, turned to 90 and flipped
+        d.transform_elements(&[id], crate::edit::Xform::Mirror { ax: 0.0, ay: 0.0, bx: 0.0, by: 1.0 }, Default::default()).unwrap();
+        let Some(Element::FamilyInstance(i)) = d.get(id) else { panic!() };
+        assert!((i.location.x + 2000.0).abs() < 1e-6 && i.flip_facing);
+        assert!((i.rotation_deg - 90.0).abs() < 1e-6, "{}", i.rotation_deg);
+        // up and down in an elevation: Elevation from Level
+        d.move_vertical(&[id], 450.0).unwrap();
+        let Some(Element::FamilyInstance(i)) = d.get(id) else { panic!() };
+        assert!((i.offset_mm - 450.0).abs() < 1e-6);
+        assert!((d.instance_frame(id).unwrap().z0 - 450.0).abs() < 1e-6);
+        // a wall-hosted family is placed on a wall, not free
+        let (_, door) = d.add_family(hatch_family(), vec![("t".into(), BTreeMap::new())]).unwrap();
+        assert!(d.place_free(door[0], lvl, Point::new(0.0, 0.0), 0.0, 0.0).unwrap_err().contains("walls"));
+        assert!(d.patch_instance(id, &json!({ "type_id": door[0] })).is_err(), "a free desk cannot become a door");
+        // elevations draw it
+        let south = d.views().into_iter().filter(|(_, v)| v.view_kind == crate::view::ViewKind::Elevation).map(|(vid, _)| vid).collect::<Vec<_>>();
+        assert!(south.iter().any(|vid| d.elevation_data(*vid).unwrap().items.iter().any(|it| it.id == id && it.category == "Furniture")));
+    }
+
     #[test]
     fn a_family_nested_inside_itself_is_stopped() {
         let mut a = hatch_family();

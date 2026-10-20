@@ -151,6 +151,12 @@ impl Session {
                 Ok(json!({}))
             }
             "duplicate_view" => Ok(json!({ "id": self.doc.duplicate_view(id_of(p, "id")?)? })),
+            "create_plan_views" => {
+                let levels: Vec<Id> = p.get("levels").and_then(|v| v.as_array()).ok_or("missing levels")?.iter().filter_map(|v| v.as_u64()).collect();
+                let skip = p.get("skip_existing").and_then(|v| v.as_bool()).unwrap_or(true);
+                let scale = p.get("scale").and_then(|v| v.as_u64()).map(|s| s as u32);
+                Ok(json!({ "ids": self.doc.create_plan_views(id_of(p, "view_type")?, &levels, skip, scale)? }))
+            }
             "add_floor_plan" => {
                 let name = p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
                 Ok(json!({ "id": self.doc.add_floor_plan(id_of(p, "level_id")?, name)? }))
@@ -178,7 +184,8 @@ impl Session {
             "add_level" => {
                 let name = p.get("name").and_then(|v| v.as_str());
                 let elev = num_of(p, "elevation")?;
-                let make_plan = p.get("make_plan").and_then(|v| v.as_bool()).unwrap_or(true);
+                // plans are made when wanted (View > Plan Views), unless the Level tool's Make Plan View asks
+                let make_plan = p.get("make_plan").and_then(|v| v.as_bool()).unwrap_or(false);
                 Ok(json!({ "id": self.doc.add_level(name, elev, make_plan)? }))
             }
             "patch_level" => {
@@ -361,6 +368,26 @@ impl Session {
                 Ok(json!({}))
             }
             "describe_type" => self.describe_type(id_of(p, "id")?),
+            "place_free_instance" => {
+                let pt = point_of(p.get("point").ok_or("missing point")?)?;
+                let rot = p.get("rotation").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                let off = p.get("offset").and_then(|v| v.as_f64()).unwrap_or(0.0);
+                Ok(json!({ "id": self.doc.place_free(id_of(p, "type_id")?, id_of(p, "level_id")?, pt, rot, off)? }))
+            }
+            "type_plan_preview" => {
+                // what a type looks like in plan, in its own axes, for the placing ghost: placed once in a copy
+                let tid = id_of(p, "type_id")?;
+                let detail: openarch_model::view::DetailLevel = serde_json::from_value(p.get("detail").cloned().unwrap_or(json!("medium"))).unwrap_or_default();
+                let mut d2 = self.doc.clone();
+                let lvl = d2.levels().first().map(|(id, _)| *id).ok_or("no level")?;
+                let id = d2.place_free(tid, lvl, Point::new(0.0, 0.0), 0.0, 0.0)?;
+                let sym = symbol::plan_symbol_at(&d2, id, detail, None).ok_or("nothing to draw in plan")?;
+                let pt = |q: &Point| [q.x, q.y];
+                Ok(json!({
+                    "parts": sym.parts.iter().map(|p| json!({ "sub": p.subcategory, "rings": p.rings.iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "closed": p.closed, "filled": p.filled })).collect::<Vec<_>>(),
+                    "footprint": sym.footprint.iter().map(pt).collect::<Vec<_>>(),
+                }))
+            }
             "place_instance" => {
                 let flag = |k: &str| p.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
                 let id = self.doc.place_on_wall_flipped(id_of(p, "type_id")?, id_of(p, "host_id")?, point_of(p.get("point").ok_or("missing point")?)?, flag("flip_hand"), flag("flip_facing"))?;
@@ -1302,9 +1329,10 @@ impl Session {
             "path": self.path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "views": d.views().iter().map(|(id, v)| json!({
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template,
-                "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section,
+                "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
             "grid_types": d.grid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
+            "view_types": d.view_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind, "template_for_new": t.template_for_new })).collect::<Vec<_>>(),
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
             "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
@@ -1828,7 +1856,11 @@ impl Session {
                     if !glass.is_empty() {
                         meshes.push(json!({ "id": id, "kind": "Glass", "verts": glass }));
                     }
-                    let kind = if cat == FamilyCategory::Doors { "Door" } else { "Window" };
+                    let kind = match cat {
+                        FamilyCategory::Doors => "Door",
+                        FamilyCategory::Windows => "Window",
+                        _ => "Component",
+                    };
                     (kind, Some(frame))
                 }
                 Element::Floor(f) if shown("Floors") => ("Floor", mesh::floor_mesh(d, f)),
@@ -3425,6 +3457,39 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn components_place_free_and_plans_are_made_on_request() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let lvl = info["levels"][0]["id"].as_u64().unwrap();
+        let fid = call(&mut s, "new_family", json!({ "name": "Bench", "category": "furniture", "host": "none" }))["id"].as_u64().unwrap();
+        let mut body = call(&mut s, "family_def", json!({ "id": fid }))["body"].clone();
+        let pt = |x: f64, y: f64| json!({ "u": { "plane": null, "off": x }, "v": { "plane": null, "off": y } });
+        body["forms"] = json!([{ "id": 50, "name": "Seat", "shape": { "type": "extrusion", "plane": 3, "start": "0", "end": "450", "profile": [{ "nodes": [pt(-900.0, -200.0), pt(900.0, -200.0), pt(900.0, 200.0), pt(-900.0, 200.0)], "bulges": [], "closed": true }] }, "void": false, "cuts_host": false, "cut_by": [], "material": "", "subcategory": "", "vis": {} }]);
+        call(&mut s, "set_family_def", json!({ "id": fid, "body": body }));
+        let info = call(&mut s, "doc_info", json!({}));
+        let tid = info["family_types"].as_array().unwrap().iter().find(|t| t["family_id"].as_u64() == Some(fid)).unwrap()["id"].as_u64().unwrap();
+        let pv = call(&mut s, "type_plan_preview", json!({ "type_id": tid }));
+        assert_eq!(pv["footprint"].as_array().unwrap().len(), 4, "{pv}");
+        let id = call(&mut s, "place_free_instance", json!({ "type_id": tid, "level_id": lvl, "point": [1000, 2000], "rotation": 0 }))["id"].as_u64().unwrap();
+        let plan_view = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"].as_u64() == Some(lvl)).unwrap()["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": plan_view }));
+        assert!(plan["inserts"].as_array().unwrap().iter().any(|i| i["id"].as_u64() == Some(id) && i["category"] == "Furniture"));
+        let d = call(&mut s, "describe", json!({ "id": id }));
+        assert!(d.to_string().contains("Elevation from Level"));
+        call(&mut s, "patch_instance", json!({ "id": id, "patch": { "offset_mm": 300.0 } }));
+        let scene = call(&mut s, "scene", json!({}));
+        assert!(scene["meshes"].as_array().unwrap().iter().any(|m| m["id"].as_u64() == Some(id) && m["kind"] == "Component"));
+        // plans: a level makes none until asked
+        let l2 = call(&mut s, "add_level", json!({ "elevation": 7000.0, "name": "Roof" }))["id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        assert!(!info["views"].as_array().unwrap().iter().any(|v| v["level_id"].as_u64() == Some(l2)));
+        let fp = info["view_types"].as_array().unwrap().iter().find(|t| t["view_kind"] == "floor_plan").unwrap()["id"].as_u64().unwrap();
+        let made = call(&mut s, "create_plan_views", json!({ "view_type": fp, "levels": [l2], "scale": 50 }));
+        assert_eq!(made["ids"].as_array().unwrap().len(), 1);
+        assert!(s.handle("create_plan_views", &json!({ "view_type": fp, "levels": [l2] })).is_err());
     }
 
     #[test]

@@ -14,8 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::element::{new_ifc_guid, Id, IfcParams};
 use crate::geom::Point;
 
-/// Categories a family can belong to. Doors and windows can be placed today; the rest
-/// can be authored and saved and are placed once the Component tool exists.
+/// Categories a family can belong to. Doors and windows have their own tools; the rest are placed with Component.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FamilyCategory {
@@ -392,6 +391,13 @@ pub struct FamilyInstance {
     pub location: Point,
     #[serde(default)]
     pub rotation_deg: f64,
+    /// Elevation from Level: how far a free standing instance stands above its level (mm).
+    /// Hosted doors and windows use their Sill Height instead.
+    #[serde(default)]
+    pub offset_mm: f64,
+    /// Moves With Nearby Elements: follow a wall that moves near it. Stored; nothing moves it yet.
+    #[serde(default)]
+    pub moves_with_nearby: bool,
     /// Which way the instance faces across its host wall. False: towards the
     /// left of the wall (the exterior side).
     #[serde(default)]
@@ -425,6 +431,8 @@ impl FamilyInstance {
             host: None,
             location: Point::new(0.0, 0.0),
             rotation_deg: 0.0,
+            offset_mm: 0.0,
+            moves_with_nearby: false,
             flip_facing: false,
             flip_hand: false,
             values: BTreeMap::new(),

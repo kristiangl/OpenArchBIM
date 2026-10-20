@@ -54,6 +54,7 @@ const COMMANDS = {
   "v-elev": () => startElevationTool(),
   "v-section": () => startSectionTool(),
   door: () => startPlacement("door"),
+  component: () => startComponentTool(),
   window: () => startPlacement("window"),
   wjoin: async () => { if (await ensurePlan("Wall Joins")) Plan.setTool("joins"); },
   del: () => deleteSelection(),
@@ -89,7 +90,64 @@ const COMMANDS = {
   "m-fillpatterns": () => openPatterns("fill"),
   "v-template": () => createTemplate(),
   "v-dup": () => duplicateView(),
+  "v-floorplan": () => newPlanDialog("floor_plan"),
+  "v-ceilingplan": () => newPlanDialog("ceiling_plan"),
 };
+
+// New Plan (View > Plan Views): pick a view type, the levels and the scale. With "Do not duplicate existing views"
+// the list holds only the levels that have no plan of this kind yet.
+function newPlanDialog(kind) {
+  const types = (app.info.view_types || []).filter((t) => t.view_kind === kind);
+  const what = kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan";
+  openModal(`New ${what}`, (body, foot, close) => {
+    const row = (label, ctl) => { const r = document.createElement("div"); r.className = "new-row"; const l = document.createElement("span"); l.textContent = label; r.append(l, ctl); return r; };
+    const ts = document.createElement("select");
+    types.forEach((t) => ts.add(new Option(t.name, t.id)));
+    const list = document.createElement("div"); list.className = "np-levels";
+    const skip = document.createElement("input"); skip.type = "checkbox"; skip.checked = true;
+    const skipL = document.createElement("label"); skipL.append(skip, " Do not duplicate existing views");
+    const scale = document.createElement("select");
+    [1, 2, 5, 10, 20, 25, 50, 100, 200, 250, 500, 1000].forEach((n) => scale.add(new Option(`1 : ${n}`, n, false, n === 100)));
+    const msg = document.createElement("div"); msg.className = "modal-msg";
+    body.append(row("Type", ts), document.createTextNode("Select one or more levels for new views."), list, skipL, row("Scale", scale), msg);
+    const picked = new Set();
+    let last = null;
+    const levels = [...app.info.levels].sort((a, b) => a.elevation_mm - b.elevation_mm);
+    const has = (l) => app.info.views.some((v) => v.view_kind === kind && v.level_id === l.id);
+    const draw = () => {
+      list.replaceChildren();
+      const shown = levels.filter((l) => !skip.checked || !has(l));
+      for (const l of shown) {
+        const d = document.createElement("div");
+        d.textContent = l.name + (has(l) ? "  (has a plan)" : "");
+        d.classList.toggle("on", picked.has(l.id)); d.classList.toggle("has", has(l));
+        d.onclick = (e) => {
+          if (e.shiftKey && last != null) {
+            const ids = shown.map((x) => x.id), a = ids.indexOf(last), b = ids.indexOf(l.id);
+            ids.slice(Math.min(a, b), Math.max(a, b) + 1).forEach((i) => picked.add(i));
+          } else if (e.ctrlKey || e.metaKey) { picked.has(l.id) ? picked.delete(l.id) : picked.add(l.id); }
+          else { picked.clear(); picked.add(l.id); }
+          last = l.id; draw();
+        };
+        list.append(d);
+      }
+      if (!shown.length) { const n = document.createElement("div"); n.textContent = "Every level has a plan of this kind."; n.className = "has"; list.append(n); }
+    };
+    skip.onchange = () => { if (skip.checked) for (const l of levels) if (has(l)) picked.delete(l.id); draw(); };
+    draw();
+    const ok = async () => {
+      if (!picked.size) { msg.textContent = "Select a level."; return; }
+      try {
+        const r = await Backend.call("create_plan_views", { view_type: Number(ts.value), levels: [...picked], skip_existing: skip.checked, scale: Number(scale.value) });
+        close(); await refresh();
+        const id = r.ids[r.ids.length - 1];
+        if (id != null) openView("plan", id);
+        setPrompt(`Made ${r.ids.length} ${what.toLowerCase()}${r.ids.length === 1 ? "" : "s"}.`);
+      } catch (e) { msg.textContent = String(e.message || e); }
+    };
+    foot.append(button("Cancel", close), button("OK", ok, true));
+  });
+}
 
 // Elements whose boundary can be edited, by category: the button's name says which. Ceilings and
 // openings join this table when they are built on the same sketch session.
@@ -228,7 +286,7 @@ function menuButton(item, small) {
   b.dataset.id = item.id;
   const ico = document.createElement("span");
   ico.className = "ico";
-  ico.textContent = item.ico || item.label.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  setIcon(ico, item);
   const lab = document.createElement("span");
   lab.textContent = item.label + " \u25BE";
   b.append(ico, lab);
@@ -265,7 +323,7 @@ function cmdButton(item, small) {
   b.dataset.id = item.id;
   const ico = document.createElement("span");
   ico.className = "ico";
-  ico.textContent = item.ico || item.label.split(/\s+/).map((w) => w[0]).join("").slice(0, 2).toUpperCase();
+  setIcon(ico, item);
   const lab = document.createElement("span");
   lab.textContent = item.label;
   b.append(ico, lab);
@@ -342,13 +400,18 @@ function renderTree() {
       { name: "Schedules / Quantities", children: [leaf("Wall and Floor Quantities", v.kind === "schedule", () => openView("schedule"))] },
       { name: "Sheets", children: [] },
     ] },
-    { name: "Families", children: [
-      { name: "Doors", children: app.info.families.filter((f) => f.category === "Doors").map((f) => ({ name: f.name, children: app.info.family_types.filter((t) => t.family_id === f.id).map((t) => leaf(t.name)) })) },
-      { name: "Floors", children: app.info.floor_types.map((t) => leaf(t.name)) },
-      { name: "Roofs", children: app.info.roof_types.map((t) => leaf(t.name)) },
-      { name: "Walls", children: app.info.wall_types.map((t) => leaf(t.name)) },
-      { name: "Windows", children: app.info.families.filter((f) => f.category === "Windows").map((f) => ({ name: f.name, children: app.info.family_types.filter((t) => t.family_id === f.id).map((t) => leaf(t.name)) })) },
-    ] },
+    { name: "Families", children: (() => {
+      // every category that has a family, in name order, with the system families among them
+      const byCat = new Map();
+      for (const f of app.info.families) {
+        if (!byCat.has(f.category)) byCat.set(f.category, []);
+        byCat.get(f.category).push({ name: f.name, children: app.info.family_types.filter((t) => t.family_id === f.id).map((t) => leaf(t.name)) });
+      }
+      byCat.set("Floors", [{ name: "Floor", children: app.info.floor_types.map((t) => leaf(t.name)) }]);
+      byCat.set("Roofs", [{ name: "Basic Roof", children: app.info.roof_types.map((t) => leaf(t.name)) }]);
+      byCat.set("Walls", [{ name: "Basic Wall", children: app.info.wall_types.map((t) => leaf(t.name)) }]);
+      return [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([cat, fams]) => ({ name: cat, children: fams.sort((a, b) => a.name.localeCompare(b.name)) }));
+    })() },
     { name: "View Templates", children: app.info.view_templates.map((t) => leaf(t.name)) },
     { name: "Groups", children: [] },
     { name: "Links", children: [] },
@@ -558,7 +621,7 @@ function updateTitle() {
   if (app.doc === "family") return;
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
-  const vn = app.view.kind === "plan" && v ? `Floor Plan: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : "Schedule: Wall and Floor Quantities";
+  const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : "Schedule: Wall and Floor Quantities";
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
   updateUndoButtons();
@@ -849,7 +912,58 @@ Plan.callbacks.prompt = (t) => setPrompt(t);
 // ---- doors and windows -----------------------------------------------------------
 const familyTypes = (category) => app.info.family_types.filter((t) => t.category === category);
 const placeCategory = (tool) => (tool === "door" ? "Doors" : "Windows");
-const placeTypeId = (tool) => (tool === "door" ? app.doorTypeId : app.windowTypeId);
+const placeTypeId = (tool) => (tool === "door" ? app.doorTypeId : tool === "hosted" || tool === "component" ? app.componentTypeId : app.windowTypeId);
+
+// ---- Component: place any loaded family that is not a door or window ----------------------
+// Free standing and work-plane-based families follow the cursor and drop on the view's level; wall-hosted ones are
+// placed by clicking a wall, as doors are. The type selector lists every such family and type, searchable.
+const componentTypes = () => {
+  const fams = new Map((app.info.families || []).map((f) => [f.id, f]));
+  return app.info.family_types.filter((t) => { const f = fams.get(t.family_id); return f && !["Doors", "Windows"].includes(f.category) && (f.has_body || f.host === "wall"); });
+};
+const familyOfType = (tid) => { const t = (app.info.family_types || []).find((x) => x.id === tid); return t ? (app.info.families || []).find((f) => f.id === t.family_id) : null; };
+app.componentOffset = 0;
+async function startComponentTool() {
+  const types = componentTypes();
+  if (!types.length) {
+    openModal("No Component Families", (body, foot, close) => {
+      const m = document.createElement("div"); m.className = "modal-msg";
+      m.textContent = "No component families are loaded in the project. Load one from a family file, or make a new family.";
+      body.append(m);
+      const b = (t, fn, primary) => { const x = document.createElement("button"); x.textContent = t; if (primary) x.className = "primary"; x.onclick = () => { close(); fn && fn(); }; return x; };
+      foot.append(b("Cancel"), b("New Family...", () => FamModel.newFamily()), b("Load Family...", () => FamModel.loadFile(async () => { await refresh(); startComponentTool(); }), true));
+    });
+    return;
+  }
+  if (!(await ensurePlan("A component"))) return;
+  if (!types.some((t) => t.id === app.componentTypeId)) app.componentTypeId = (mruTypes().find((id) => types.some((t) => t.id === id))) ?? types[0].id;
+  await useComponentType(app.componentTypeId);
+  renderProperties();
+}
+async function useComponentType(tid) {
+  app.componentTypeId = tid;
+  const f = familyOfType(tid), t = app.info.family_types.find((x) => x.id === tid);
+  if (f && f.host === "wall") {
+    Plan.setTool("hosted");
+    Plan.setPlacement(t && t.width > 0 ? t.width : 600, f.name);
+    return;
+  }
+  if (Plan.tool !== "component") Plan.setTool("component");
+  const pv = await run("type_plan_preview", { type_id: tid, detail: (app.settings && app.settings.detail_level) || "medium" });
+  Plan.setComponent(pv || { parts: [], footprint: [] });
+}
+Plan.callbacks.placeComponent = async (point, rot) => {
+  const r = await run("place_free_instance", { type_id: app.componentTypeId, level_id: curLevelId(), point: [point.x, point.y], rotation: rot, offset: app.componentOffset || 0 });
+  if (r) { noteTypeUsed(app.componentTypeId); await refresh(); const f = familyOfType(app.componentTypeId); setPrompt(`Placed ${f ? f.name : "a component"}. Click to place another, Space turns it, Esc stops.`); }
+};
+
+// Most Recently Used Types: kept per user in the browser, by type id within the open project
+function mruTypes() { try { return JSON.parse(localStorage.getItem("openarch.mruTypes") || "[]"); } catch { return []; } }
+function noteTypeUsed(id) {
+  if (id == null) return;
+  const list = [id, ...mruTypes().filter((x) => x !== id)].slice(0, 10);
+  try { localStorage.setItem("openarch.mruTypes", JSON.stringify(list)); } catch { /* storage off: not kept */ }
+}
 
 function syncPlacement(tool) {
   const t = app.info.family_types.find((x) => x.id === placeTypeId(tool));
@@ -866,7 +980,8 @@ Plan.callbacks.placeInstance = async (wallId, point) => {
   const tool = Plan.tool;
   const [flip_hand, flip_facing] = [[false, false], [true, false], [true, true], [false, true]][app.placeFlip || 0];
   const r = await run("place_instance", { type_id: placeTypeId(tool), host_id: wallId, point: [point.x, point.y], flip_hand, flip_facing });
-  if (r) { await refresh(); setPrompt(r.warning ? `Placed a ${tool}. ${r.warning}` : `Placed a ${tool}. Click another wall or press Esc.`); }
+  const what = tool === "hosted" ? "component" : tool;
+  if (r) { noteTypeUsed(placeTypeId(tool)); await refresh(); setPrompt(r.warning ? `Placed a ${what}. ${r.warning}` : `Placed a ${what}. Click another wall or press Esc.`); }
 };
 
 // options bar: wall options while the wall tool is active, join options for the Wall Joins tool
@@ -876,6 +991,7 @@ function renderOptionsBar() {
   const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && Plan.isEditTool(), sketchTool = inPlan && Plan.sketching;
   const levelTool = app.view.kind === "elevation" && Elev.tool === "level", elevTool = inPlan && Plan.tool === "elevation", gridTool = inPlan && Plan.tool === "grid";
   renderWallRibbon();
+  renderComponentRibbon();
   bar.hidden = !(wallTool || joinTool || editTool || sketchTool || levelTool || elevTool || gridTool);
   $("#ob-grid").hidden = !gridTool;
   $("#ob-level").hidden = !levelTool;
@@ -971,6 +1087,42 @@ function renderWallRibbon() {
   $("#ribbon").replaceChildren(
     mk("Select", [{ big: true, node: sketchButton({ label: "Modify", ico: "Se" }, false, () => Plan.setTool("select"), false) }]),
     mk("Draw", draws),
+  );
+}
+
+// Modify | Place Component: shown while placing a component, with Load Family and the placement choice
+let compReturnTab = "Architecture";
+function renderComponentRibbon() {
+  const tabs = $("#tabs");
+  let ctx = tabs.querySelector("button.contextual");
+  const on = app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted");
+  if (!on) {
+    if (ctx && ctx.dataset.kind === "component") { ctx.remove(); selectTab(compReturnTab); }
+    return;
+  }
+  if (Sketch.active || (ctx && ctx.dataset.kind !== "component")) return;
+  if (!ctx) {
+    compReturnTab = [...tabs.querySelectorAll("button")].find((b) => b.classList.contains("active"))?.textContent || "Architecture";
+    ctx = document.createElement("button"); ctx.className = "contextual"; ctx.dataset.kind = "component";
+    ctx.onclick = () => renderComponentRibbon();
+    tabs.append(ctx);
+  }
+  ctx.textContent = "Modify | Place Component";
+  tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === ctx));
+  const mk = (label, nodes) => {
+    const grp = el("div", { className: "group" });
+    const items = el("div", { className: "items" });
+    items.append(...nodes);
+    grp.append(items, el("div", { className: "label", textContent: label }));
+    return grp;
+  };
+  const hosted = Plan.tool === "hosted";
+  const face = sketchButton({ label: "Place on Face", icon: "pickFaces" }, false, () => {}, false);
+  face.disabled = true; face.title = "Place on Face: not built yet";
+  $("#ribbon").replaceChildren(
+    mk("Select", [sketchButton({ label: "Modify", ico: "Se" }, false, () => Plan.setTool("select"), false)]),
+    mk("Mode", [sketchButton({ label: "Load Family", icon: "loadFamily" }, false, () => FamModel.loadFile(async () => { await refresh(); renderProperties(); }), false)]),
+    mk("Placement", hosted ? [sketchButton({ label: "Place on Wall", icon: "wall" }, false, () => {}, true)] : [sketchButton({ label: "Place on Work Plane", icon: "setWp" }, false, () => {}, true), face]),
   );
 }
 
@@ -1127,7 +1279,8 @@ async function flipAction() {
     setPrompt(app.flipped ? "Wall flipped: the exterior side is on the right of the drawing direction. Space flips it back." : "Wall exterior side is on the left of the drawing direction. Space flips it.");
     return true;
   }
-  if (tool === "door" || tool === "window") {
+  if (tool === "component") { Plan.rotateComponent(); return true; }
+  if (tool === "door" || tool === "window" || tool === "hosted") {
     app.placeFlip = ((app.placeFlip || 0) + 1) % 4;
     const [h, f] = [[false, false], [true, false], [true, true], [false, true]][app.placeFlip];
     setPrompt(`Swing: ${h ? "hand flipped" : "normal hand"}, ${f ? "facing flipped" : "normal facing"}. Space steps through the options.`);
@@ -1352,14 +1505,62 @@ async function openProject() {
   if (await run("open", { path })) { app.selection = []; app.tdimMemory = {}; Plan.setSelection([]); await refresh(true); setPrompt(`Opened ${path}`); }
 }
 
-async function newProject() {
-  if (app.info.dirty && !confirm("Discard unsaved changes?")) return;
+async function newProject(confirmed) {
+  if (!confirmed && app.info.dirty && !confirm("Discard unsaved changes?")) return;
   await run("new_project", {});
   app.selection = []; app.tdimMemory = {}; Plan.setSelection([]);
   await refresh(true);
 }
 
-$("#qa-new").onclick = newProject;
+// New: a project, or a family from a template. A family needs a project behind it, so it is made in the open one.
+const FAMILY_TEMPLATES = [
+  ["Generic Model", "generic_models", "none"], ["Generic Model face based", "generic_models", "face"], ["Furniture", "furniture", "none"],
+  ["Casework", "casework", "none"], ["Specialty Equipment", "specialty_equipment", "none"], ["Plumbing Fixture", "plumbing_fixtures", "none"],
+  ["Lighting Fixture", "lighting_fixtures", "face"], ["Electrical Fixture", "electrical_fixtures", "face"], ["Mechanical Equipment", "mechanical_equipment", "none"],
+  ["Planting", "planting", "none"], ["Entourage", "entourage", "none"], ["Signage", "signage", "none"], ["Door", "doors", "wall"], ["Window", "windows", "wall"],
+];
+function newDocument() {
+  openModal("New", (body, foot, close) => {
+    let kind = "project";
+    const choice = document.createElement("div"); choice.className = "new-choice";
+    const pick = (k, label, icon) => {
+      const b = document.createElement("button"); b.type = "button"; b.dataset.kind = k;
+      const ic = document.createElement("span"); ic.className = "ico"; setIcon(ic, { id: icon });
+      const t = document.createElement("span"); t.textContent = label;
+      b.append(ic, t);
+      b.onclick = () => { kind = k; draw(); };
+      return b;
+    };
+    const bp = pick("project", "Project", "planView"), bf = pick("family", "Family", "component");
+    choice.append(bp, bf);
+    const opts = document.createElement("div");
+    const msg = document.createElement("div"); msg.className = "modal-msg";
+    body.append(choice, opts, msg);
+    const row = (label, ctl) => { const r = document.createElement("div"); r.className = "new-row"; const l = document.createElement("span"); l.textContent = label; r.append(l, ctl); return r; };
+    const tplP = document.createElement("select"); tplP.add(new Option("Australian (metric)", "au"));
+    const tplF = document.createElement("select");
+    FAMILY_TEMPLATES.forEach(([label, cat, host], i) => tplF.add(new Option(label + (host === "wall" ? " (hosted in a wall)" : host === "face" ? " (work plane based)" : ""), i)));
+    const name = document.createElement("input"); name.type = "text"; name.value = "New Family";
+    tplF.onchange = () => { const t = FAMILY_TEMPLATES[Number(tplF.value)]; if (/^New /.test(name.value) || !name.value.trim()) name.value = `New ${t[0]}`; };
+    const draw = () => {
+      bp.classList.toggle("on", kind === "project"); bf.classList.toggle("on", kind === "family");
+      opts.replaceChildren(...(kind === "project" ? [row("Template", tplP)] : [row("Template", tplF), row("Name", name)]));
+      msg.textContent = kind === "project" ? (app.info.dirty ? "The open project has unsaved changes; they will be lost." : "") : "The family opens in the family editor. Load into Project puts it in this project.";
+    };
+    draw();
+    const go = async () => {
+      if (kind === "project") { close(); app.info.dirty = false; await newProject(true); return; }
+      const [, category, host] = FAMILY_TEMPLATES[Number(tplF.value)];
+      try {
+        const r = await Backend.call("new_family", { name: name.value.trim() || "New Family", category, host });
+        close(); await refresh(); FamModel.open(r.id);
+      } catch (e) { msg.textContent = String(e.message || e); }
+    };
+    const b = (t, fn, primary) => { const x = document.createElement("button"); x.textContent = t; if (primary) x.className = "primary"; x.onclick = fn; return x; };
+    foot.append(b("Cancel", close), b("OK", go, true));
+  });
+}
+$("#qa-new").onclick = newDocument;
 $("#qa-open").onclick = openProject;
 $("#qa-save").onclick = () => save(false);
 $("#qa-undo").onclick = undo;
@@ -1437,7 +1638,7 @@ function sketchButton(item, small, onclick, on, extra = "") {
   b.className = "cmd" + (small ? " small" : "") + (on ? " on" : "") + (extra ? " " + extra : "");
   b.title = item.label;
   const ico = document.createElement("span");
-  ico.className = "ico"; ico.textContent = item.ico || item.label.slice(0, 2);
+  ico.className = "ico"; setIcon(ico, item);
   const lab = document.createElement("span");
   lab.textContent = item.label;
   b.append(ico, lab);

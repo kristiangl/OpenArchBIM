@@ -11,7 +11,7 @@
   <header id="titlebar">
     <span class="logo">OpenArch BIM</span>
     <span class="qa">
-      <button id="qa-new" title="New project">New</button>
+      <button id="qa-new" title="New project or family">New</button>
       <button id="qa-open" title="Open project">Open</button>
       <button id="qa-save" title="Save (Ctrl+S)">Save</button>
       <button id="qa-undo" title="Undo (Ctrl+Z)">Undo</button>
@@ -31,7 +31,7 @@
     <aside id="left">
       <div class="panel" id="properties">
         <div class="panel-title">Properties</div>
-        <div class="type-selector"><select id="type-select"></select><button id="edit-type" hidden title="Edit the type's parameters">Edit Type</button><button id="edit-family" hidden title="Open the family in the family editor">Edit Family</button></div>
+        <div class="type-selector"><div id="type-picker" class="type-picker"></div><select id="type-select" class="tp-native" tabindex="-1" aria-hidden="true"></select><button id="edit-type" hidden title="Edit the type's parameters">Edit Type</button><button id="edit-family" hidden title="Open the family in the family editor">Edit Family</button></div>
         <div class="prop-scroll" id="prop-body"></div>
         <div class="panel-foot"><a href="#">Properties help</a></div>
       </div>
@@ -55,7 +55,7 @@
           <div id="ob-edit" hidden></div>
           <div id="ob-sketch" hidden></div>
           <div id="ob-level" hidden>
-            <label title="Also make a floor plan for each new level"><input id="ob-level-plan" type="checkbox" checked> Make Plan View</label>
+            <label title="Also make a floor plan for each new level"><input id="ob-level-plan" type="checkbox"> Make Plan View</label>
             <span class="ob-hint">Click at a height, or type an elevation and press Enter.</span>
           </div>
           <div id="ob-grid" hidden>
@@ -133,6 +133,7 @@
 </div>
 <script src="terms.js"></script>
 <script src="backend.js"></script>
+<script src="icons.js"></script>
 <script src="ribbon.js"></script>
 <script src="units.js"></script>
 <script src="snap.js"></script>

@@ -82,7 +82,7 @@ const Sketch = (() => {
     S.curves = (o.curves || []).map((d) => wrap(d));
     setTool(o.tool || "line");
   }
-  function end() { S = null; seq++; }
+  function end() { closeTdInput(); S = null; seq++; }
 
   const snapshot = () => { S.hist.push({ curves: S.curves.slice(), slope: S.slope, span: S.span }); S.redo = []; S.cancelArmed = false; S.err = null; };
   function undo() {
@@ -534,7 +534,10 @@ const Sketch = (() => {
   }
 
   function gripDown(sx, sy) {
-    if (!S || S.tool !== "select" || !S.gripBoxes) return false;
+    if (!S) return false;
+    const box = tdHit(sx, sy);
+    if (box) { openTdInput(box); return true; }
+    if (S.tool !== "select" || !S.gripBoxes) return false;
     const b = S.gripBoxes.find((q) => Math.hypot(sx - q.sx, sy - q.sy) <= 9);
     if (!b) return false;
     S.grip = { g: b.g, moved: false, sx, sy, cur: { x: b.g.x, y: b.g.y } };
@@ -587,6 +590,175 @@ const Sketch = (() => {
       } catch (e) { cb.prompt(String(e.message || e), true); }
       host.render();
     });
+  }
+
+  // ---- temporary dimensions -------------------------------------------------------------------
+  // While drawing: a line's length and its angle from horizontal, a rectangle's two sides, a circle's or polygon's
+  // radius, drawn as dimensions that follow the cursor (a typed length shows in the box). With one straight line
+  // selected: its length and its distance to the nearest parallel sketch line on each side. Click a value to type a
+  // new one: the length moves the line's far end (lines joined there follow it); a distance moves the line.
+  const TD_BLUE = "#1d6fb8";
+  function tempDims() {
+    const out = [];
+    if (!S) return out;
+    const t = S.tool;
+    if (S.pts.length === 1 && S.hover) {
+      const a = S.pts[0], b = S.hover, typed = S.typed ? `${S.typed}|` : null;
+      if (t === "line" && dist(a, b) > 1e-6) out.push({ a, b, value: dist(a, b), text: typed, offset: 22, angle: true });
+      if (t === "rectangle") {
+        const x0 = Math.min(a.x, b.x), x1 = Math.max(a.x, b.x), y0 = Math.min(a.y, b.y), y1 = Math.max(a.y, b.y);
+        if (x1 - x0 > 1e-6) out.push({ a: { x: x0, y: y1 }, b: { x: x1, y: y1 }, value: x1 - x0, offset: 22, side: { x: 0, y: 1 } });
+        if (y1 - y0 > 1e-6) out.push({ a: { x: x1, y: y0 }, b: { x: x1, y: y1 }, value: y1 - y0, offset: 22, side: { x: 1, y: 0 } });
+      }
+      if (["circle", "polygon_in", "polygon_out"].includes(t) && dist(a, b) > 1e-6) out.push({ a, b, value: dist(a, b), text: typed ? `R ${typed}` : null, prefix: "R ", offset: 0 });
+    }
+    if (t === "select" && S.sel.size === 1 && !S.grip && !S.pts.length) {
+      const c = byUid([...S.sel][0]);
+      if (isLine(c)) {
+        const a = c.curve.a, b = c.curve.b, L = dist(a, b);
+        if (L > 1e-6) {
+          const u = { x: (b.x - a.x) / L, y: (b.y - a.y) / L }, nrm = { x: -u.y, y: u.x }, m = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+          // the length stands outside the sketch: on the side away from the middle of everything drawn
+          const all = S.curves.flatMap((x) => x.poly);
+          const cen = all.length ? { x: all.reduce((t, q) => t + q[0], 0) / all.length, y: all.reduce((t, q) => t + q[1], 0) / all.length } : m;
+          const inSide = (cen.x - m.x) * nrm.x + (cen.y - m.y) * nrm.y;
+          out.push({ a, b, value: L, offset: 22, edit: "length", uid: c.uid, side: inSide > 0 ? { x: -nrm.x, y: -nrm.y } : nrm });
+          const best = { 1: null, [-1]: null };
+          for (const n of S.curves) {
+            if (n.uid === c.uid || !isLine(n)) continue;
+            const ln = dist(n.curve.a, n.curve.b);
+            if (ln < 1e-6) continue;
+            const un = { x: (n.curve.b.x - n.curve.a.x) / ln, y: (n.curve.b.y - n.curve.a.y) / ln };
+            if (Math.abs(u.x * un.y - u.y * un.x) > 0.0087) continue; // not within half a degree of parallel
+            const sd = (n.curve.a.x - a.x) * nrm.x + (n.curve.a.y - a.y) * nrm.y;
+            if (Math.abs(sd) < 0.5) continue;
+            const side = sd > 0 ? 1 : -1;
+            if (!best[side] || Math.abs(sd) < Math.abs(best[side])) best[side] = sd;
+          }
+          for (const side of [1, -1]) {
+            const sd = best[side];
+            if (sd == null) continue;
+            out.push({ a: m, b: { x: m.x + nrm.x * sd, y: m.y + nrm.y * sd }, value: Math.abs(sd), offset: 0, edit: "offset", uid: c.uid, dir: { x: nrm.x * side, y: nrm.y * side } });
+          }
+        }
+      }
+    }
+    return out;
+  }
+  function drawTempDims(ctx) {
+    S.tdBoxes = [];
+    const list = tempDims();
+    if (!list.length) return;
+    ctx.save();
+    ctx.font = "11px system-ui, sans-serif"; ctx.lineWidth = 1; ctx.setLineDash([]);
+    for (const d of list) {
+      const A = host.toScreen(d.a), B = host.toScreen(d.b);
+      const len = Math.hypot(B.x - A.x, B.y - A.y);
+      if (len < 2) continue;
+      const ux = (B.x - A.x) / len, uy = (B.y - A.y) / len;
+      // the dimension stands off to one side (screen left of a to b, or the side asked for), with witness lines back
+      let nx = uy, ny = -ux;
+      if (d.side) { const sw = host.toScreen({ x: d.a.x + d.side.x, y: d.a.y + d.side.y }); const sx = sw.x - A.x, sy = sw.y - A.y; if (nx * sx + ny * sy < 0) { nx = -nx; ny = -ny; } }
+      const off = d.offset || 0;
+      const A2 = { x: A.x + nx * off, y: A.y + ny * off }, B2 = { x: B.x + nx * off, y: B.y + ny * off };
+      ctx.strokeStyle = TD_BLUE; ctx.fillStyle = TD_BLUE;
+      if (off) {
+        ctx.globalAlpha = 0.55; ctx.beginPath();
+        ctx.moveTo(A.x + nx * 3, A.y + ny * 3); ctx.lineTo(A2.x + nx * 5, A2.y + ny * 5);
+        ctx.moveTo(B.x + nx * 3, B.y + ny * 3); ctx.lineTo(B2.x + nx * 5, B2.y + ny * 5);
+        ctx.stroke(); ctx.globalAlpha = 1;
+      } else ctx.setLineDash([5, 3]);
+      ctx.beginPath(); ctx.moveTo(A2.x, A2.y); ctx.lineTo(B2.x, B2.y); ctx.stroke(); ctx.setLineDash([]);
+      const tx = (ux - uy) * 0.7071 * 5, ty = (ux + uy) * 0.7071 * 5;
+      ctx.beginPath();
+      for (const q of [A2, B2]) { ctx.moveTo(q.x - tx, q.y - ty); ctx.lineTo(q.x + tx, q.y + ty); }
+      ctx.stroke();
+      if (d.angle) {
+        // the angle from horizontal, measured the short way round
+        let deg = (Math.atan2(d.b.y - d.a.y, d.b.x - d.a.x) * 180) / Math.PI;
+        const ref = Math.abs(deg) > 90 ? 180 : 0; // the horizontal on the side the line goes
+        const sweep = ref === 0 ? deg : deg > 0 ? deg - 180 : deg + 180;
+        const r = 30, a0 = (-ref * Math.PI) / 180, a1 = (-(ref + sweep) * Math.PI) / 180;
+        ctx.globalAlpha = 0.55; ctx.setLineDash([3, 3]);
+        ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(A.x + Math.cos(a0) * (r + 10), A.y + Math.sin(a0) * (r + 10)); ctx.stroke();
+        ctx.setLineDash([]); ctx.globalAlpha = 1;
+        ctx.beginPath(); ctx.arc(A.x, A.y, r, a0, a1, sweep > 0); ctx.stroke();
+        const am = (a0 + a1) / 2, at = `${Math.abs(sweep).toFixed(1)}\u00b0`, aw = ctx.measureText(at).width + 8;
+        const ax = A.x + Math.cos(am) * (r + 16), ay = A.y + Math.sin(am) * (r + 16);
+        ctx.fillStyle = "#ffffff"; ctx.fillRect(ax - aw / 2, ay - 8, aw, 16);
+        ctx.fillStyle = TD_BLUE; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(at, ax, ay + 0.5);
+      }
+      const text = d.text || `${d.prefix || ""}${Math.round(d.value)}`;
+      const tw = ctx.measureText(text).width + 12, cx = (A2.x + B2.x) / 2, cy = (A2.y + B2.y) / 2;
+      ctx.fillStyle = "#ffffff"; ctx.strokeStyle = TD_BLUE;
+      ctx.fillRect(cx - tw / 2, cy - 9, tw, 18); ctx.strokeRect(cx - tw / 2 + 0.5, cy - 8.5, tw, 18);
+      ctx.fillStyle = TD_BLUE; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+      ctx.fillText(text, cx, cy + 0.5);
+      if (d.edit) S.tdBoxes.push({ x: cx, y: cy, w: tw, h: 18, d });
+    }
+    ctx.restore();
+  }
+  function tdHit(sx, sy) {
+    return (S && S.tdBoxes || []).find((u) => Math.abs(sx - u.x) <= u.w / 2 && Math.abs(sy - u.y) <= u.h / 2) || null;
+  }
+  let tdInput = null;
+  function closeTdInput() { const i = tdInput; tdInput = null; if (i && i.parentNode) i.parentNode.removeChild(i); }
+  function openTdInput(box) {
+    closeTdInput();
+    const cv = host.canvas;
+    if (!cv) return;
+    const inp = document.createElement("input");
+    const r = cv.getBoundingClientRect();
+    inp.type = "text"; inp.id = "sk-tdim-input"; inp.setAttribute("aria-label", "Dimension value");
+    inp.value = String(Math.round(box.d.value));
+    inp.style.cssText = `position:fixed;left:${r.left + box.x - 38}px;top:${r.top + box.y - 12}px;width:76px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid ${TD_BLUE};border-radius:3px;background:#fff;color:#111;`;
+    document.body.appendChild(inp);
+    tdInput = inp;
+    const d = box.d;
+    inp.onkeydown = (e) => {
+      e.stopPropagation();
+      if (e.key === "Escape") { closeTdInput(); host.render(); }
+      if (e.key === "Enter") {
+        const v = parseLengthMM(inp.value);
+        closeTdInput();
+        if (!(v > 0)) { cb.prompt("Type a length, such as 2400 or 2.4m.", true); host.render(); return; }
+        applyTdEdit(d, v);
+      }
+    };
+    inp.onblur = () => { if (tdInput === inp) closeTdInput(); };
+    setTimeout(() => { inp.focus(); inp.select(); }, 0);
+  }
+  async function applyTdEdit(d, v) {
+    try {
+      const c = byUid(d.uid);
+      if (!c) return;
+      if (d.edit === "length") {
+        const a = c.curve.a, b = c.curve.b, L = dist(a, b);
+        const nb = pt({ x: a.x + ((b.x - a.x) / L) * v, y: a.y + ((b.y - a.y) / L) * v });
+        const map = new Map([[c.uid, { a, b: nb }]]);
+        // the lines joined at the end that moves keep hold of it
+        for (const n of S.curves) {
+          if (n.uid === c.uid || !isLine(n)) continue;
+          for (const e of ["a", "b"]) {
+            if (dist(n.curve[e], b) >= 0.5) continue;
+            const l = map.get(n.uid) || { a: n.curve.a, b: n.curve.b };
+            l[e] = nb;
+            if (dist(l.a, l.b) < 1) { cb.prompt("That would leave a joined line with no length.", true); return; }
+            map.set(n.uid, l);
+          }
+        }
+        const made = await rebuildLines(map);
+        snapshot();
+        S.curves = S.curves.map((x) => (made.has(x.uid) ? { ...made.get(x.uid), uid: x.uid, attr: x.attr } : x));
+        cb.change(); cb.prompt(`Length set to ${Math.round(v * 10) / 10}.`);
+      } else if (d.edit === "offset") {
+        const delta = v - d.value;
+        if (Math.abs(delta) < 1e-6) return;
+        const out = await transformSel({ kind: "move", dx: -d.dir.x * delta, dy: -d.dir.y * delta });
+        await applyTransform(out, false);
+      }
+    } catch (e) { cb.prompt(String(e.message || e), true); }
+    host.render();
   }
 
   // ---- input ------------------------------------------------------------------------------------
@@ -1127,18 +1299,6 @@ const Sketch = (() => {
       ctx.setLineDash([]);
       ctx.fillStyle = accent;
       for (const q of S.pts) { const s = host.toScreen(q); ctx.fillRect(s.x - 3, s.y - 3, 6, 6); }
-      const a = S.pts[S.pts.length - 1], b = S.hover;
-      const t = S.tool;
-      if (["line"].includes(t) && S.pts.length === 1) {
-        const L = dist(a, b);
-        let deg = (Math.atan2(b.y - a.y, b.x - a.x) * 180) / Math.PI; if (deg < 0) deg += 360;
-        const m = host.toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 });
-        host.label(S.typed ? `${S.typed}|` : `${Math.round(L)}  ${deg.toFixed(1)}°`, m, accent);
-      } else if (["circle", "polygon_in", "polygon_out"].includes(t) && S.pts.length === 1) {
-        host.label(S.typed ? `R ${S.typed}|` : `R ${Math.round(dist(a, b))}`, host.toScreen(b), accent);
-      } else if (t === "rectangle" && S.pts.length === 1) {
-        host.label(`${Math.round(Math.abs(b.x - a.x))} x ${Math.round(Math.abs(b.y - a.y))}`, host.toScreen(b), accent);
-      }
     }
     // the transform in progress: the reference line
     if ((["move", "copy"].includes(S.tool) && S.mod.stage === "b") || (S.tool === "rotate" && S.mod.stage === "b") || (S.tool === "mirror" && S.mod.stage === "b" && S.opts.mirrorMode === "draw")) {
@@ -1165,6 +1325,7 @@ const Sketch = (() => {
       arrow(ctx, S.span.b, S.span.a, MAGENTA, 9);
       host.label("Span", host.toScreen({ x: (S.span.a.x + S.span.b.x) / 2, y: (S.span.a.y + S.span.b.y) / 2 }), MAGENTA);
     }
+    drawTempDims(ctx);
     // where the check found trouble
     if (S.err && S.err.at) {
       const s = host.toScreen(S.err.at);

@@ -180,6 +180,7 @@ impl Document {
         .expect("default project");
         d.ensure_site_defaults();
         d.ensure_annotation_defaults();
+        d.ensure_view_types();
         d.undo.clear(); // starting state is not undoable
         d
     }
@@ -760,8 +761,108 @@ impl Document {
         }
     }
 
-    fn view_name_taken(&self, name: &str, except: Option<Id>) -> bool {
-        self.views().iter().any(|(id, v)| v.name == name && Some(*id) != except)
+    /// View names are unique within a kind of view: a floor plan and a ceiling plan can both be called "Level 1".
+    fn view_name_taken(&self, name: &str, kind: ViewKind, except: Option<Id>) -> bool {
+        self.views().iter().any(|(id, v)| v.name == name && v.view_kind == kind && Some(*id) != except)
+    }
+
+    pub fn view_types(&self) -> Vec<(Id, &crate::view::ViewType)> {
+        self.elements.iter().filter_map(|(id, e)| if let Element::ViewType(t) = e { Some((*id, t)) } else { None }).collect()
+    }
+
+    pub fn view_type(&self, id: Id) -> Option<&crate::view::ViewType> {
+        match self.get(id) {
+            Some(Element::ViewType(t)) => Some(t),
+            _ => None,
+        }
+    }
+
+    /// Give a project the view types it needs (new projects, and projects saved before view types), and point
+    /// the plans that have none at the type of their kind. Not an undo step.
+    pub fn ensure_view_types(&mut self) {
+        let have = |d: &Document, k: ViewKind| d.view_types().iter().any(|(_, t)| t.view_kind == k);
+        if have(self, ViewKind::FloorPlan) && have(self, ViewKind::CeilingPlan) {
+            return;
+        }
+        let _ = self.transact("View types", |tx| {
+            let mut ids = Vec::new();
+            for (name, kind) in [("Floor Plan", ViewKind::FloorPlan), ("Ceiling Plan", ViewKind::CeilingPlan)] {
+                if !have(tx.doc_ref(), kind) {
+                    ids.push((kind, tx.add(Element::ViewType(crate::view::ViewType { name: name.into(), view_kind: kind, template_for_new: None, new_views_dependent: true }))));
+                }
+            }
+            let plans: Vec<(Id, View)> = tx.doc_ref().views().into_iter().filter(|(_, v)| v.view_type.is_none()).map(|(i, v)| (i, v.clone())).collect();
+            for (vid, mut v) in plans {
+                if let Some((_, t)) = ids.iter().find(|(k, _)| *k == v.view_kind) {
+                    v.view_type = Some(*t);
+                    tx.update(vid, Element::View(v))?;
+                }
+            }
+            Ok(())
+        });
+        self.clear_history();
+    }
+
+    /// New Plan: a plan of `view_type`'s kind for each of `levels`. With `skip_existing` a level that already has a
+    /// plan of that kind is left alone; otherwise a further one is made and numbered, "Level 1(1)". `scale` is 1:n.
+    /// One undo step; the new views in level order.
+    pub fn create_plan_views(&mut self, view_type: Id, levels: &[Id], skip_existing: bool, scale: Option<u32>) -> Result<Vec<Id>, String> {
+        let vt = self.view_type(view_type).ok_or("unknown view type")?.clone();
+        if !matches!(vt.view_kind, ViewKind::FloorPlan | ViewKind::CeilingPlan) {
+            return Err("only floor plans and ceiling plans can be made here so far".into());
+        }
+        if levels.is_empty() {
+            return Err("pick at least one level".into());
+        }
+        if scale == Some(0) {
+            return Err("scale must be positive".into());
+        }
+        let mut todo: Vec<(Id, String)> = Vec::new();
+        for &l in levels {
+            let lv = self.level(l).ok_or("unknown level")?;
+            let has = self.views().iter().any(|(_, v)| v.view_kind == vt.view_kind && v.level == Some(l));
+            if has && skip_existing {
+                continue;
+            }
+            if !todo.iter().any(|(x, _)| *x == l) {
+                todo.push((l, lv.name.clone()));
+            }
+        }
+        todo.sort_by(|a, b| {
+            let z = |id: Id| self.level(id).map_or(0.0, |l| l.elevation_mm);
+            z(a.0).total_cmp(&z(b.0))
+        });
+        let template = vt.template_for_new.filter(|t| self.view_template(*t).is_some_and(|x| x.view_kind == vt.view_kind));
+        let mut made: Vec<(Id, View)> = Vec::new();
+        let mut names: Vec<String> = Vec::new();
+        for (l, base) in todo {
+            let taken = |d: &Document, n: &str, names: &[String]| d.view_name_taken(n, vt.view_kind, None) || names.iter().any(|x| x == n);
+            let mut name = base.clone();
+            let mut k = 1;
+            while taken(self, &name, &names) {
+                name = format!("{base}({k})");
+                k += 1;
+            }
+            let mut v = if vt.view_kind == ViewKind::CeilingPlan { View::ceiling_plan(&name, l) } else { View::floor_plan(&name, l) };
+            v.view_type = Some(view_type);
+            if let Some(s) = scale {
+                v.settings.scale = s;
+            }
+            if let Some(t) = template {
+                if vt.new_views_dependent {
+                    v.template = Some(t);
+                } else if let Some(tt) = self.view_template(t) {
+                    v.settings = tt.settings.clone();
+                }
+            }
+            names.push(name);
+            made.push((0, v));
+        }
+        if made.is_empty() {
+            return Err("every level picked already has a plan of this kind (clear Do not duplicate existing views to make another)".into());
+        }
+        let label = if vt.view_kind == ViewKind::CeilingPlan { "Create ceiling plan" } else { "Create floor plan" };
+        self.transact(label, |tx| Ok(made.into_iter().map(|(_, v)| tx.add(Element::View(v))).collect()))
     }
 
     /// Apply a JSON merge patch to a view (name, scale, view range, crop,
@@ -775,7 +876,7 @@ impl Document {
         if nv.name.trim().is_empty() {
             return Err("a view needs a name".into());
         }
-        if self.view_name_taken(&nv.name, Some(id)) {
+        if self.view_name_taken(&nv.name, nv.view_kind, Some(id)) {
             return Err(format!("a view named '{}' already exists", nv.name));
         }
         if let Some(l) = nv.level {
@@ -833,7 +934,7 @@ impl Document {
         let mut n = 1;
         let name = loop {
             let c = format!("{} Copy {n}", v.name);
-            if !self.view_name_taken(&c, None) {
+            if !self.view_name_taken(&c, v.view_kind, None) {
                 break c;
             }
             n += 1;
@@ -845,7 +946,7 @@ impl Document {
         if self.level(level).is_none() {
             return Err("unknown level".into());
         }
-        if name.trim().is_empty() || self.view_name_taken(name, None) {
+        if name.trim().is_empty() || self.view_name_taken(name, ViewKind::FloorPlan, None) {
             return Err("view name is empty or already used".into());
         }
         self.transact("Create floor plan", |tx| Ok(tx.add(Element::View(View::floor_plan(name, level)))))

@@ -389,10 +389,18 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
         "Constraints",
         select("Level", levels.iter().map(|(lid, l)| (l.name.clone(), nest("level", json!(lid)), *lid == i.level)).collect()),
     );
-    if let Some(h) = i.host {
-        add("Constraints", ro("Host", format!("Basic Wall ({})", h.wall)));
+    match i.host {
+        Some(h) => {
+            add("Constraints", ro("Host", format!("Basic Wall ({})", h.wall)));
+            add("Constraints", ro("Head Height", format!("{:.0}", sill + height)));
+        }
+        None => {
+            let lv = d.level(i.level).map_or(String::new(), |l| l.name.clone());
+            add("Constraints", ro("Host", format!("Level : {lv}")));
+            add("Constraints", num("Elevation from Level", "offset_mm", i.offset_mm, true));
+            add("Constraints", boolean("Moves With Nearby Elements", "moves_with_nearby", i.moves_with_nearby, true));
+        }
     }
-    add("Constraints", ro("Head Height", format!("{:.0}", sill + height)));
     if let Some(msg) = d.frame_fit(id) {
         add("Construction", ro("Frame Fit", msg));
     }

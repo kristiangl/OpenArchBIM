@@ -520,6 +520,7 @@ pub enum Element {
     Spot(crate::spot::Spot),
     SpotType(crate::spot::SpotType),
     Section(crate::section::Section),
+    ViewType(crate::view::ViewType),
 }
 
 impl Element {
@@ -553,6 +554,7 @@ impl Element {
             Element::Spot(_) => "Spot",
             Element::SpotType(_) => "SpotType",
             Element::Section(_) => "Section",
+            Element::ViewType(_) => "ViewType",
         }
     }
 }

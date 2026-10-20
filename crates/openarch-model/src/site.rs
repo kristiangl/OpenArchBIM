@@ -335,7 +335,9 @@ impl Document {
         self.transact("Create level", |tx| {
             let id = tx.add(Element::Level(l));
             if make_plan {
-                tx.add(Element::View(View::floor_plan(&name, id)));
+                let mut v = View::floor_plan(&name, id);
+                v.view_type = tx.doc_ref().view_types().into_iter().find(|(_, t)| t.view_kind == ViewKind::FloorPlan).map(|(t, _)| t);
+                tx.add(Element::View(v));
             }
             Ok(id)
         })
@@ -398,7 +400,7 @@ impl Document {
         let plans: Vec<(Id, View)> = self
             .views()
             .into_iter()
-            .filter(|(_, v)| v.view_kind == ViewKind::FloorPlan && v.level == Some(id) && v.name == old.name)
+            .filter(|(_, v)| matches!(v.view_kind, ViewKind::FloorPlan | ViewKind::CeilingPlan) && v.level == Some(id) && v.name == old.name)
             .map(|(i, v)| (i, v.clone()))
             .collect();
         let moved = (new.elevation_mm - old.elevation_mm).abs() > 1e-9;
@@ -1204,6 +1206,58 @@ impl Document {
                 items.push(ElevItem { id: iid, category: "Windows", depth, polys, lines: vec![[[uc, z0 + inset], [uc, z1 - inset]]], fill: [190, 218, 236], stroke: true , ..Default::default() });
             }
         }
+        // free standing families (furniture, fixtures, generic models): their solids as seen from the view. Seen square
+        // on, each solid is its exact projection; seen at an angle, the outline of its corners.
+        for (iid, i) in self.instances() {
+            if hidden(iid) || i.host.is_some() {
+                continue;
+            }
+            let Some(f) = self.instance_frame(iid) else { continue };
+            let Some(solved) = self.instance_solved(iid) else { continue };
+            let Ok(s) = solved.as_ref() else { continue };
+            let Some((fam, _)) = self.instance_family(i) else { continue };
+            let cat = fam.category.label();
+            let Some(b) = self.instance_body_bounds(iid) else { continue };
+            let corners = [f.fam_world(b[0][0], b[0][1]), f.fam_world(b[1][0], b[0][1]), f.fam_world(b[1][0], b[1][1]), f.fam_world(b[0][0], b[1][1])];
+            let ds: Vec<f64> = corners.iter().map(|p| d_of(*p)).collect();
+            if !visible(ds.iter().cloned().fold(f64::INFINITY, f64::min), ds.iter().cloned().fold(f64::NEG_INFINITY, f64::max)) {
+                continue;
+            }
+            if let Some(slc) = &sl {
+                if slc.clip_ring(&corners).len() < 3 {
+                    continue;
+                }
+            }
+            let hand = if f.flip_hand { -1.0 } else { 1.0 };
+            let swing = if f.flip_facing { -1.0 } else { 1.0 };
+            let (ax, ay) = (Point::new(f.dir.x * hand, f.dir.y * hand), Point::new(f.left.x * swing, f.left.y * swing));
+            let (lx, ly) = (look.x * ax.x + look.y * ax.y, look.x * ay.x + look.y * ay.y);
+            let mut shown: Vec<(f64, Vec<Vec<[f64; 2]>>)> = vec![];
+            let centre = |form: &crate::famgeom::SolvedForm| form.solid.bounds().map_or(f.origin, |bb| f.fam_world((bb[0][0] + bb[1][0]) / 2.0, (bb[0][1] + bb[1][1]) / 2.0));
+            if lx.abs() > 0.999 || ly.abs() > 0.999 {
+                use crate::famgeom::Axis;
+                let along_y = ly.abs() > 0.999;
+                for p in s.project(if along_y { Axis::Y } else { Axis::X }) {
+                    let Some(form) = s.form(p.form) else { continue };
+                    if p.void || !form.vis.present || !(if along_y { form.vis.front_back } else { form.vis.left_right }) {
+                        continue;
+                    }
+                    let polys = p.shape.iter().map(|ring| ring.iter().map(|q| [u_of(if along_y { f.fam_world(q.x, 0.0) } else { f.fam_world(0.0, q.x) }), f.z_ref + q.y]).collect()).collect();
+                    shown.push((d_of(centre(form)), polys));
+                }
+            } else {
+                for form in s.forms.iter().filter(|x| !x.void && x.vis.present) {
+                    let pts: Vec<[f64; 2]> = form.solid.tris.iter().flatten().map(|q| { let w = f.fam_point(*q); [u_of(Point::new(w[0], w[1])), w[2]] }).collect();
+                    let hull = convex_hull_2d(pts);
+                    if hull.len() >= 3 {
+                        shown.push((d_of(centre(form)), vec![hull]));
+                    }
+                }
+            }
+            for (d, polys) in shown {
+                items.push(ElevItem { id: iid, category: cat, depth: d, polys, lines: vec![], fill: [205, 196, 180], stroke: true, ..Default::default() });
+            }
+        }
         // floors seen edge on
         for (id, e) in self.iter() {
             let Element::Floor(fl) = e else { continue };
@@ -1539,4 +1593,29 @@ mod tests {
         assert!(e.refs.iter().any(|r| r.id == north_wall && r.label == "Wall end"));
         assert!(e.refs.iter().any(|r| r.id == north_wall && r.label == "Top" && !r.vertical));
     }
+    #[test]
+    fn plans_are_made_on_demand_and_numbered_when_duplicated() {
+        let mut d = Document::new_project();
+        let l3 = d.add_level(Some("Level 2"), 6000.0, false).unwrap();
+        assert!(!d.views().iter().any(|(_, v)| v.level == Some(l3)), "a new level makes no plan unless asked");
+        let fp = d.view_types().into_iter().find(|(_, t)| t.view_kind == ViewKind::FloorPlan).unwrap().0;
+        let cp = d.view_types().into_iter().find(|(_, t)| t.view_kind == ViewKind::CeilingPlan).unwrap().0;
+        let made = d.create_plan_views(fp, &[l3], true, Some(50)).unwrap();
+        let v = d.view(made[0]).unwrap();
+        assert_eq!((v.name.as_str(), v.settings.scale, v.view_type, v.level), ("Level 2", 50, Some(fp), Some(l3)));
+        assert!(d.create_plan_views(fp, &[l3], true, None).is_err(), "nothing new to make");
+        let again = d.create_plan_views(fp, &[l3], false, None).unwrap();
+        assert_eq!(d.view(again[0]).unwrap().name, "Level 2(1)");
+        // a ceiling plan can share the level's name, since it is another kind of view
+        let rcp = d.create_plan_views(cp, &[l3], true, None).unwrap();
+        assert_eq!(d.view(rcp[0]).unwrap().name, "Level 2");
+        assert_eq!(d.view(rcp[0]).unwrap().view_kind, ViewKind::CeilingPlan);
+        // renaming the level renames the plans that carry its name
+        d.patch_level(l3, &serde_json::json!({ "name": "Roof" })).unwrap();
+        assert_eq!(d.view(made[0]).unwrap().name, "Roof");
+        assert_eq!(d.view(rcp[0]).unwrap().name, "Roof");
+        // every plan in a new project has a type
+        assert!(d.views().iter().filter(|(_, v)| v.view_kind.is_plan()).all(|(_, v)| v.view_type.is_some()));
+    }
+
 }

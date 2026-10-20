@@ -10,7 +10,10 @@ use crate::geom::Point;
 /// plan symbol and the 3D mesh need.
 #[derive(Debug, Clone, Copy)]
 pub struct InstanceFrame {
+    /// The host wall; 0 for a free standing instance.
     pub wall: Id,
+    /// A free standing instance: no host, placed at a point on its level and turned by its rotation.
+    pub free: bool,
     /// Centre of the instance on the wall's drawn path.
     pub origin: Point,
     /// Unit vector along the wall (start to end).
@@ -184,7 +187,7 @@ impl Document {
     /// the host has gone.
     pub fn instance_frame(&self, id: Id) -> Option<InstanceFrame> {
         let Some(Element::FamilyInstance(i)) = self.get(id) else { return None };
-        let host = i.host?;
+        let Some(host) = i.host else { return self.free_frame(id, i) };
         let Some(Element::Wall(w)) = self.get(host.wall) else { return None };
         let path = w.path();
         if path.length() < 1e-6 {
@@ -204,6 +207,7 @@ impl Document {
         let x_off = cut.map_or(0.0, |b| hand * (b[0][0] + b[1][0]) / 2.0);
         Some(InstanceFrame {
             wall: host.wall,
+            free: false,
             origin,
             dir,
             left,
@@ -218,6 +222,95 @@ impl Document {
             flip_facing: i.flip_facing,
             flip_hand: i.flip_hand,
         })
+    }
+
+    /// Where a free standing instance sits: at its location on its level (plus Elevation from Level), turned by
+    /// its rotation. Width and height are the extent of its solved body, so views can tell what the cut plane crosses.
+    fn free_frame(&self, id: Id, i: &FamilyInstance) -> Option<InstanceFrame> {
+        let (fam, _) = self.instance_family(i)?;
+        if fam.body.is_empty() {
+            return None;
+        }
+        let level_z = self.level(i.level)?.elevation_mm;
+        let z_ref = level_z + i.offset_mm;
+        let a = i.rotation_deg.to_radians();
+        let dir = Point::new(a.cos(), a.sin());
+        let left = Point::new(-dir.y, dir.x);
+        let b = self.instance_body_bounds(id).unwrap_or([[0.0; 3]; 2]);
+        Some(InstanceFrame {
+            wall: 0,
+            free: true,
+            origin: i.location,
+            dir,
+            left,
+            wall_left: 0.0,
+            wall_right: 0.0,
+            width: b[1][0] - b[0][0],
+            height: b[1][2] - b[0][2],
+            z0: z_ref + b[0][2],
+            z1: z_ref + b[1][2],
+            z_ref,
+            x_off: 0.0,
+            flip_facing: i.flip_facing,
+            flip_hand: i.flip_hand,
+        })
+    }
+
+    /// The box the visible solids of an instance's body take up, in the family's own axes.
+    pub fn instance_body_bounds(&self, id: Id) -> Option<[[f64; 3]; 2]> {
+        let solved = self.instance_solved(id)?;
+        let s = solved.as_ref().as_ref().ok()?;
+        let mut out: Option<[[f64; 3]; 2]> = None;
+        let mut grow = |p: [f64; 3]| {
+            let b = out.get_or_insert([p, p]);
+            for k in 0..3 {
+                b[0][k] = b[0][k].min(p[k]);
+                b[1][k] = b[1][k].max(p[k]);
+            }
+        };
+        for f in s.forms.iter().filter(|f| !f.void && f.vis.present) {
+            for t in &f.solid.tris {
+                for p in t {
+                    grow(*p);
+                }
+            }
+        }
+        for m in s.model_lines.iter().filter(|m| m.vis.present) {
+            for p in &m.points {
+                grow(*p);
+            }
+        }
+        out
+    }
+
+    /// Place a free standing family (furniture, fixtures, generic models and the like) at `point` on `level`,
+    /// turned `rotation_deg` anticlockwise. A work-plane-based family is placed on the level's plane. One undo step.
+    pub fn place_free(&mut self, type_id: Id, level: Id, point: Point, rotation_deg: f64, offset_mm: f64) -> Result<Id, String> {
+        let ft = self.family_type(type_id).ok_or("unknown family type")?.clone();
+        let fam = self.family(ft.family).ok_or("type has no family")?;
+        match fam.host {
+            HostKind::None | HostKind::Face => {}
+            HostKind::Wall => return Err(format!("{} is hosted in walls: click a wall to place it", fam.name)),
+            HostKind::Floor => return Err(format!("{} is hosted in floors, and placing in floors is not built yet", fam.name)),
+            HostKind::Ceiling => return Err(format!("{} is hosted in ceilings, and placing in ceilings is not built yet", fam.name)),
+            HostKind::Roof => return Err(format!("{} is hosted in roofs, and placing in roofs is not built yet", fam.name)),
+        }
+        if fam.body.is_empty() {
+            return Err(format!("{} has no geometry of its own to place", fam.name));
+        }
+        if self.level(level).is_none() {
+            return Err("pick a level to place it on".into());
+        }
+        if !(point.x.is_finite() && point.y.is_finite() && rotation_deg.is_finite() && offset_mm.is_finite()) {
+            return Err("the position must be numbers".into());
+        }
+        let mut inst = FamilyInstance::new(type_id, level);
+        inst.location = point;
+        inst.rotation_deg = rotation_deg.rem_euclid(360.0);
+        inst.offset_mm = offset_mm;
+        inst.ifc.export_as = fam.category.ifc_class().to_string();
+        inst.ifc.predefined_type = fam.category.ifc_predefined().to_string();
+        self.transact("Place component", |tx| Ok(tx.add(Element::FamilyInstance(inst))))
     }
 
     /// Openings cut in a wall by the doors and windows hosted in it, in order
@@ -509,6 +602,18 @@ impl Document {
         if let Some(h) = ni.host {
             if !matches!(self.get(h.wall), Some(Element::Wall(_))) {
                 return Err("the host must be a wall".into());
+            }
+        }
+        // a type swap keeps to families that host the same way
+        if ni.type_id != i.type_id {
+            if let Some((fam, _)) = self.instance_family(&ni) {
+                let free = matches!(fam.host, HostKind::None | HostKind::Face) && !fam.body.is_empty();
+                if ni.host.is_some() && fam.host != HostKind::Wall {
+                    return Err(format!("{} is not hosted in walls", fam.name));
+                }
+                if ni.host.is_none() && !free {
+                    return Err(format!("{} cannot stand free", fam.name));
+                }
             }
         }
         // only instance parameters can be set on an instance

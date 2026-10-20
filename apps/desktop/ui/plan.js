@@ -5,7 +5,7 @@
 const Plan = (() => {
   const canvas = document.getElementById("plan");
   const ctx = canvas.getContext("2d");
-  const cb = { addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
+  const cb = { addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
 
   let cam = { x: 3000, y: 2000, s: 0.1 }; // centre in mm, pixels per mm
   let data = { walls: [], floors: [], roofs: [], inserts: [], view: {}, crop: {} };
@@ -27,6 +27,8 @@ const Plan = (() => {
   let joinSel = []; // the wall ends whose joins are being edited, the last one is the primary
   let thin = false; // Thin Lines: every line draws one pixel wide whatever the view scale
   let place = { width: 900, label: "door" }; // size and name of the family being placed
+  const hostedTool = (t) => t === "door" || t === "window" || t === "hosted"; // placed by clicking a wall
+  let comp = null; // a free standing component being placed: { parts, footprint } in its own axes, and its turn { rot }
   let placeHover = null; // { wall, u, p:{x,y}, quad } while a door or window tool hovers a wall
   let tdims = []; // temporary dimensions of the single selected element, from the model
   let placeDims = [], placeKey = "", placeSeq = 0; // the same for the door or window about to be placed
@@ -1340,7 +1342,26 @@ const Plan = (() => {
     }
 
     // door / window placement preview
-    if ((tool === "door" || tool === "window") && placeHover) {
+    if (tool === "component" && comp && hover) {
+      // the component's plan follows the cursor, turned by Space
+      const a = (comp.rot * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a);
+      const T = (q) => toScreen({ x: hover.x + q[0] * c - q[1] * sn, y: hover.y + q[0] * sn + q[1] * c });
+      ctx.save();
+      ctx.strokeStyle = accent; ctx.lineWidth = 1.2; ctx.fillStyle = "rgba(46,111,158,0.16)";
+      for (const pt of comp.parts || []) for (const ring of pt.rings) {
+        ctx.beginPath();
+        ring.forEach((q, i) => { const v = T(q); i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y); });
+        if (pt.closed) { ctx.closePath(); if (pt.filled) ctx.fill(); }
+        ctx.stroke();
+      }
+      if (comp.footprint && comp.footprint.length) {
+        ctx.setLineDash([5, 4]); ctx.beginPath();
+        comp.footprint.forEach((q, i) => { const v = T(q); i ? ctx.lineTo(v.x, v.y) : ctx.moveTo(v.x, v.y); });
+        ctx.closePath(); ctx.stroke(); ctx.setLineDash([]);
+      }
+      ctx.restore();
+    }
+    if (hostedTool(tool) && placeHover) {
       polyPath(placeHover.quad);
       ctx.fillStyle = "rgba(46,111,158,0.30)"; ctx.fill();
       ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.stroke();
@@ -1357,7 +1378,7 @@ const Plan = (() => {
 
     // temporary dimensions: of the selected element, and of the door or window being placed
     if (tool === "select" && tdims.length && !band && !dragging) drawTempDims(tdims, true);
-    if ((tool === "door" || tool === "window") && placeHover && placeDims.length) drawTempDims(placeDims, false);
+    if (hostedTool(tool) && placeHover && placeDims.length) drawTempDims(placeDims, false);
 
     // snap marker: the glyph for the kind of snap, with its name beside it
     if (hover && snapGlyphWanted()) {
@@ -1387,6 +1408,7 @@ const Plan = (() => {
     ed = isEditTool(t) ? newEdit(t) : null;
     edHover = null;
     placeHover = null;
+    if (t !== "component") comp = null;
     placeDims = []; placeKey = ""; closeTdimInput();
     joinHover = null;
     if (t !== "joins") joinSel = [];
@@ -1420,7 +1442,8 @@ const Plan = (() => {
     if (tool === "wall") return draw ? "Click to place the next wall point. Esc finishes the chain. Hold Shift for 45 degree angles." : "Click to start a wall. Esc or right-click to stop.";
     if (ed) return editPrompt();
     if (tool === "joins") return "Click a wall end to edit its join. Use Next / Previous to step through the configurations. Esc to stop.";
-    if (tool === "door" || tool === "window") return `Click on a wall to place the ${place.label}. The swing follows the side of the wall you click. Esc to stop.`;
+    if (hostedTool(tool)) return `Click on a wall to place the ${place.label}. ${tool === "hosted" ? "It faces the side of the wall you click." : "The swing follows the side of the wall you click."} Esc to stop.`;
+    if (tool === "component") return comp ? "Click to place the component. Space turns it 90 degrees. Esc to stop." : "Pick a component in the type selector.";
     return "Click to select. Shift adds to the selection. Delete removes. Wall: WA, Door: DR, Window: WN";
   }
 
@@ -1466,7 +1489,7 @@ const Plan = (() => {
   function snapGlyphWanted() {
     if (tool === "sketch") return Sketch.wantsSnap();
     if (tool === "dimension" || tool === "spot") return false;
-    if (["select", "door", "window", "joins", "elevation"].includes(tool)) return false;
+    if (["select", "door", "window", "hosted", "joins", "elevation"].includes(tool)) return false;
     if (tool === "grid" && gridShape === "pick") return false;
     if (ed) {
       if (tool === "align" || tool === "trim" || ed.stage === "pick") return false;
@@ -1811,7 +1834,12 @@ const Plan = (() => {
     if (ed && editClick(sx, sy, ev)) return;
     if (tool === "dimension") { Dims.click(sx, sy, ev); cb.prompt(promptText()); return; }
     if (tool === "spot") { Spots.click(sx, sy, ev); cb.prompt(promptText()); return; }
-    if (tool === "door" || tool === "window") {
+    if (tool === "component") {
+      const p = hover || toWorld(sx, sy);
+      if (comp) cb.placeComponent({ x: p.x, y: p.y }, comp.rot);
+      return;
+    }
+    if (hostedTool(tool)) {
       const ph = placementAt(sx, sy);
       if (ph) cb.placeInstance(ph.wall, { x: toWorld(sx, sy).x, y: toWorld(sx, sy).y });
       return;
@@ -2019,7 +2047,7 @@ const Plan = (() => {
     if (tool === "spot") Spots.move(e.offsetX, e.offsetY);
     if (tool === "joins") { joinHover = endAt(e.offsetX, e.offsetY); canvas.style.cursor = joinHover ? "pointer" : "crosshair"; }
     if (tool === "grid" && gridShape === "pick") { gridHover = gridPickAt(e.offsetX, e.offsetY); canvas.style.cursor = gridHover ? "pointer" : "crosshair"; }
-    if (tool === "door" || tool === "window") { placeHover = placementAt(e.offsetX, e.offsetY); canvas.style.cursor = placeHover ? "crosshair" : "not-allowed"; updatePlaceDims(); }
+    if (hostedTool(tool)) { placeHover = placementAt(e.offsetX, e.offsetY); canvas.style.cursor = placeHover ? "crosshair" : "not-allowed"; updatePlaceDims(); }
     if (!lastMouse || Math.hypot(e.offsetX - lastMouse.x, e.offsetY - lastMouse.y) > 3) { snapCycle = 0; tabIdx = 0; }
     editMove(e.offsetX, e.offsetY);
     if (tool === "select") { const c = candidates(e.offsetX, e.offsetY); selHover = c.length ? c[tabIdx % c.length] : null; }
@@ -2179,6 +2207,7 @@ const Plan = (() => {
 
   Sketch.attach({
     get ctx() { return ctx; },
+    get canvas() { return canvas; },
     size, toScreen, toWorld, label, css, render: () => render(),
     scale: () => cam.s,
     wallAt: (sx, sy) => wallAt(sx, sy),
@@ -2264,6 +2293,9 @@ const Plan = (() => {
     isPinned: (id) => elements().some((e) => e.id === id && e.pinned),
     setExtents(left, right) { extents = { left, right }; render(); },
     setPlacement(width, label) { place = { width, label }; placeHover = null; render(); },
+    // the component about to be placed: its plan in its own axes, from the core
+    setComponent(c) { comp = c ? { parts: c.parts || [], footprint: c.footprint || [], rot: comp ? comp.rot : 0 } : null; cb.prompt(promptText()); render(); },
+    rotateComponent() { if (comp) { comp.rot = (comp.rot + 90) % 360; render(); return true; } return false; },
     bounds() {
       const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points)];
       if (!pts.length) return null;

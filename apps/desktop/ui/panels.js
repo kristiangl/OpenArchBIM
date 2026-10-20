@@ -141,6 +141,16 @@ async function renderProperties() {
       { label: "Top Constraint", kind: "select", options: wallTopOptions(), value: "" },
       { label: "Unconnected Height", kind: "number", raw: app.height, value: String(app.height), path: "h" },
     ] });
+  } else if (tool === "component" || tool === "hosted") {
+    types = componentTypes(); current = app.componentTypeId;
+    onType = async (id) => { await useComponentType(id); renderProperties(); };
+    title = "Place Component";
+    if (tool === "hosted") groups.push({ name: "Constraints", rows: [{ label: "Host", value: "Wall (click to place)", kind: "ro" }] });
+    else groups.push({ name: "Constraints", target: { apply: (patch) => { if (Number.isFinite(patch.offset)) app.componentOffset = patch.offset; renderProperties(); } }, rows: [
+      { label: "Level", value: currentLevel().name, kind: "ro" },
+      { label: "Host", value: `Level : ${currentLevel().name}`, kind: "ro" },
+      { label: "Elevation from Level", kind: "number", raw: app.componentOffset || 0, value: String(app.componentOffset || 0), path: "offset" },
+    ] });
   } else if (tool === "door" || tool === "window") {
     types = familyTypes(placeCategory(tool)); current = placeTypeId(tool);
     onType = (id) => { if (tool === "door") app.doorTypeId = id; else app.windowTypeId = id; syncPlacement(tool); renderProperties(); };
@@ -171,6 +181,7 @@ async function renderProperties() {
     sel.disabled = true;
     sel.add(new Option(d && d.type_label ? d.type_label : title, ""));
   }
+  renderTypePicker(types, current, onType, d && d.type_label ? d.type_label : title);
 
   // while drawing walls, the palette edits the tool's own settings
   const toolTarget = {
@@ -195,7 +206,7 @@ async function renderProperties() {
   body.append(hint);
   for (const g of groups) {
     const isTool = !d && tool === "wall" && g.name === "Constraints";
-    const table = groupTable(g.name, g.rows, isTool ? toolTarget : d ? d.target : null);
+    const table = groupTable(g.name, g.rows, g.target || (isTool ? toolTarget : d ? d.target : null));
     if (isTool) wireToolRows(table);
     body.append(table);
   }
@@ -209,6 +220,83 @@ async function renderProperties() {
     };
     syncViewBar();
   }
+}
+
+// ---- Type Selector ----------------------------------------------------------------
+// A button showing the family and type, and a drop-down that lists every type under its family, with a search box
+// and the most recently used types at the bottom. The native select stays (hidden) as the value holder.
+const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
+function typeEntries(types) {
+  const group = TYPE_GROUP().get(types) || "";
+  return (types || []).map((t) => ({ id: t.id, family: t.family || group, name: t.name, category: t.category || "" }));
+}
+function renderTypePicker(types, current, onType, title) {
+  const host = $("#type-picker");
+  if (!host) return;
+  host.replaceChildren();
+  const entries = typeEntries(types);
+  const cur = entries.find((e) => e.id === current);
+  const btn = document.createElement("button");
+  btn.className = "tp-btn"; btn.type = "button";
+  const thumb = document.createElement("span"); thumb.className = "tp-thumb";
+  setIcon(thumb, { id: iconForCategory(cur ? cur.category || cur.family : title) });
+  const words = document.createElement("span"); words.className = "tp-words";
+  const fam = document.createElement("span"); fam.className = "tp-fam";
+  const typ = document.createElement("span"); typ.className = "tp-type";
+  if (!types) { fam.textContent = title; typ.textContent = ""; btn.disabled = true; }
+  else if (!cur) { fam.textContent = current == null && entries.length ? "*Varies*" : title; typ.textContent = ""; }
+  else { fam.textContent = cur.family; typ.textContent = cur.name; }
+  words.append(fam, typ);
+  const caret = document.createElement("span"); caret.className = "tp-caret"; caret.textContent = "\u25be";
+  btn.append(thumb, words, caret);
+  host.append(btn);
+  if (!types || !onType) return;
+  btn.onclick = () => openTypePop(host, entries, current, onType);
+}
+function openTypePop(host, entries, current, onType) {
+  const old = document.querySelector(".tp-pop");
+  if (old) { old.remove(); return; }
+  const pop = document.createElement("div"); pop.className = "tp-pop";
+  const search = document.createElement("input"); search.className = "tp-search"; search.type = "search"; search.placeholder = "Search";
+  const list = document.createElement("div"); list.className = "tp-list";
+  const close = () => { pop.remove(); document.removeEventListener("mousedown", outside, true); };
+  const outside = (e) => { if (!pop.contains(e.target) && !host.contains(e.target)) close(); };
+  const choose = (id) => { close(); if (id !== current) onType(id); };
+  const draw = () => {
+    const q = search.value.trim().toLowerCase();
+    list.replaceChildren();
+    let fam = null;
+    for (const e of entries) {
+      if (q && !(e.family.toLowerCase().includes(q) || e.name.toLowerCase().includes(q))) continue;
+      if (e.family !== fam) {
+        fam = e.family;
+        const h = document.createElement("div"); h.className = "tp-family";
+        const ic = document.createElement("span"); ic.className = "tp-ficon"; setIcon(ic, { id: iconForCategory(e.category || e.family) });
+        h.append(ic, document.createTextNode(e.family || "Types"));
+        list.append(h);
+      }
+      const it = document.createElement("div"); it.className = "tp-item" + (e.id === current ? " cur" : "");
+      it.textContent = e.name; it.dataset.id = e.id;
+      it.onclick = () => choose(e.id);
+      list.append(it);
+    }
+    if (!list.children.length) { const n = document.createElement("div"); n.className = "tp-none"; n.textContent = "No types match."; list.append(n); }
+  };
+  // families sorted by name, types under each by name, as the selector lists them
+  entries.sort((a, b) => a.family.localeCompare(b.family) || a.name.localeCompare(b.name, undefined, { numeric: true }));
+  search.oninput = draw;
+  search.onkeydown = (e) => { if (e.key === "Escape") close(); if (e.key === "Enter") { const f = list.querySelector(".tp-item"); if (f) choose(Number(f.dataset.id)); } };
+  pop.append(search, list);
+  const mru = (typeof mruTypes === "function" ? mruTypes() : []).map((id) => entries.find((e) => e.id === id)).filter(Boolean);
+  if (mru.length) {
+    const h = document.createElement("div"); h.className = "tp-mru-title"; h.textContent = "Most Recently Used Types";
+    pop.append(h);
+    for (const e of mru) { const it = document.createElement("div"); it.className = "tp-mru"; it.textContent = `${e.family} : ${e.name}`; it.onclick = () => choose(e.id); pop.append(it); }
+  }
+  draw();
+  host.append(pop);
+  document.addEventListener("mousedown", outside, true);
+  setTimeout(() => { search.focus(); const c = list.querySelector(".tp-item.cur"); if (c) c.scrollIntoView({ block: "nearest" }); }, 0);
 }
 
 // the wall tool's palette rows act on app state, not on a stored element
