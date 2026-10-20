@@ -9,6 +9,7 @@ pub mod doc;
 pub mod edit;
 pub mod element;
 pub mod famgeom;
+pub mod famnest;
 pub mod famtext;
 pub mod famdoor;
 pub mod faminst;

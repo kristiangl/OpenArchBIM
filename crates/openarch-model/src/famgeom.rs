@@ -447,22 +447,51 @@ pub struct SymElement {
     pub vis: Visibility,
 }
 
-/// Another family placed inside this one. Stored now so files written today can be
-/// read when nesting is drawn; parameters map a nested parameter to an expression here.
+/// Another family placed inside this one (a Component). `family` is its name in the project and
+/// `type_name` the type used. `params` maps a parameter of the nested family to an expression over this
+/// family's parameters (the Associate Family Parameter buttons), so a nested leaf can follow the
+/// parent's Width. `origin` is where the component's own origin stands (reference planes plus offsets);
+/// a component on a work plane also records `work_plane`, which decides its orientation when its
+/// family is work-plane-based.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Nested {
     pub id: u32,
     pub family: String,
     #[serde(default)]
     pub type_name: String,
+    /// A Text parameter of this family that names the type to use (a family-type parameter); wins over `type_name` when set and non-empty.
+    #[serde(default)]
+    pub type_param: Option<String>,
+    #[serde(default)]
+    pub name: String,
     pub origin: [Coord; 3],
+    /// Turn about the component's own up (the plane's normal when it stands on a plane).
     #[serde(default)]
     pub rotation_deg: f64,
+    #[serde(default)]
+    pub work_plane: Option<PlaneId>,
+    /// Face the other way across the work plane.
+    #[serde(default)]
+    pub flip: bool,
+    /// Swap left and right.
+    #[serde(default)]
+    pub mirror: bool,
     #[serde(default)]
     pub params: BTreeMap<String, String>,
     #[serde(default)]
     pub vis: Visibility,
 }
+
+/// A nested family worked out by whoever holds the project: its solved body and whether its family is work-plane-based.
+pub struct NestedSolved {
+    pub solved: Solved,
+    pub work_plane_based: bool,
+}
+
+/// Works out one nested family. It is given the component, the values its `params` expressions came to,
+/// and the type name to use. `Ok(None)` leaves the component out without a message (the body is
+/// being solved without a project behind it).
+pub type NestedResolver<'a> = dyn FnMut(&Nested, &BTreeMap<String, openarch_params::Value>, &str) -> Result<Option<NestedSolved>, String> + 'a;
 
 /// A line, arc or chain of them drawn on a work plane. It is 3D geometry (a model line), so it shows
 /// in every view the visibility settings allow, unlike symbolic lines that belong to one view.
@@ -1317,6 +1346,8 @@ pub struct SolvedForm {
     pub span: Option<(f64, f64)>,
     /// Letters of a Model Text rather than a form.
     pub text: bool,
+    /// The component (nested family) this piece belongs to, when it came from one.
+    pub owner: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1330,6 +1361,7 @@ pub struct SolvedSym {
     pub masking: bool,
     pub subcategory: String,
     pub vis: SolvedVis,
+    pub owner: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1341,6 +1373,7 @@ pub struct SolvedModelLine {
     pub closed: bool,
     pub subcategory: String,
     pub vis: SolvedVis,
+    pub owner: Option<u32>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1568,6 +1601,11 @@ impl FamilyBody {
 
     /// Work out the whole body for one set of parameter values.
     pub fn solve(&self, env: &mut Env) -> Result<Solved, String> {
+        self.solve_with(env, &mut |_, _, _| Ok(None))
+    }
+
+    /// `solve`, with `nested` working out the components placed in the body.
+    pub fn solve_with(&self, env: &mut Env, nested: &mut NestedResolver) -> Result<Solved, String> {
         let _tables = self.tables_in_reach();
         let planes = self.solve_planes(env)?;
         let mut out = Solved { planes: planes.clone(), ..Default::default() };
@@ -1594,7 +1632,7 @@ impl FamilyBody {
                 }
                 _ => None,
             };
-            out.forms.push(SolvedForm { id: f.id, name: f.name.clone(), void: f.void, cuts_host: f.void && f.cuts_host, material, subcategory: f.subcategory.clone(), vis, solid, span, text: false });
+            out.forms.push(SolvedForm { id: f.id, name: f.name.clone(), void: f.void, cuts_host: f.void && f.cuts_host, material, subcategory: f.subcategory.clone(), vis, solid, span, text: false, owner: None });
         }
         // voids cut the solids that name them
         for (i, f) in self.forms.iter().enumerate() {
@@ -1646,7 +1684,7 @@ impl FamilyBody {
             let shapes: Vec<Shape> = regions(&rings).into_iter().map(|r| std::iter::once(r.outer).chain(r.holes).collect()).collect();
             let part = PrismPart { lo: w0, hi: w0 + depth, shapes };
             let tris = prism_tris(normal, &part);
-            out.forms.push(SolvedForm { id: t.id, name: what, void: false, cuts_host: false, material, subcategory: t.subcategory.clone(), vis, solid: Solid { axis: Some(normal), parts: vec![part], tris }, span: Some((w0, w0 + depth)), text: true });
+            out.forms.push(SolvedForm { id: t.id, name: what, void: false, cuts_host: false, material, subcategory: t.subcategory.clone(), vis, solid: Solid { axis: Some(normal), parts: vec![part], tris }, span: Some((w0, w0 + depth)), text: true, owner: None });
         }
         for s in &self.syms {
             let axes = s.view.normal().sketch_axes();
@@ -1661,6 +1699,7 @@ impl FamilyBody {
                 masking: s.masking,
                 subcategory: s.subcategory.clone(),
                 vis,
+                owner: None,
             });
         }
         for m in &self.model_lines {
@@ -1671,7 +1710,7 @@ impl FamilyBody {
             let w0 = planes[&wp.id];
             let vis = self.resolve_vis(&m.vis, env)?;
             let points = tessellate_loop(&pts, &m.path, TOL).into_iter().map(|p| normal.point(p.x, p.y, w0)).collect();
-            out.model_lines.push(SolvedModelLine { id: m.id, name: m.name.clone(), points, closed: m.path.closed, subcategory: m.subcategory.clone(), vis });
+            out.model_lines.push(SolvedModelLine { id: m.id, name: m.name.clone(), points, closed: m.path.closed, subcategory: m.subcategory.clone(), vis, owner: None });
         }
         for c in &self.controls {
             let axes = c.view.normal().sketch_axes();
@@ -1696,6 +1735,62 @@ impl FamilyBody {
                 }
             }
             out.connectors.push(SolvedConnector { id: c.id, name: c.name.clone(), kind: c.kind, origin, direction, numbers });
+        }
+        for n in &self.nested {
+            let what = if n.name.is_empty() { format!("component '{}'", n.family) } else { format!("component '{}'", n.name) };
+            // a problem inside a component is reported, and the rest of the body still shows
+            let mut note = |e: String| out.warnings.push(format!("{what}: {e}"));
+            let vis = match self.resolve_vis(&n.vis, env) {
+                Ok(v) => v,
+                Err(e) => {
+                    note(e);
+                    continue;
+                }
+            };
+            if !vis.present {
+                continue;
+            }
+            let mut origin = [0.0; 3];
+            let mut ok = true;
+            for (i, ax) in [Axis::X, Axis::Y, Axis::Z].into_iter().enumerate() {
+                match self.coord(&planes, &n.origin[i], ax) {
+                    Ok(v) => origin[i] = v,
+                    Err(e) => {
+                        note(e);
+                        ok = false;
+                    }
+                }
+            }
+            if !ok {
+                continue;
+            }
+            let mut values = BTreeMap::new();
+            for (k, src) in &n.params {
+                if src.trim().is_empty() {
+                    continue;
+                }
+                let got = openarch_params::expr::parse(src.trim()).map_err(|e| format!("'{src}': {e:?}")).and_then(|ex| openarch_params::expr::eval(&ex, env).map_err(|e| format!("'{src}': {e:?}")));
+                match got {
+                    Ok(v) => {
+                        values.insert(k.clone(), v);
+                    }
+                    Err(e) => note(format!("{k}: {e}")),
+                }
+            }
+            let type_name = match n.type_param.as_deref().map(|p| env(p)) {
+                Some(Ok(openarch_params::Value::Text(t))) if !t.trim().is_empty() => t,
+                _ => n.type_name.clone(),
+            };
+            match nested(n, &values, &type_name) {
+                Ok(None) => {}
+                Ok(Some(r)) => {
+                    let plane = n.work_plane.and_then(|id| self.plane(id)).map(|p| p.axis);
+                    let b = crate::famnest::basis(origin, plane, r.work_plane_based, n.flip, n.rotation_deg, n.mirror);
+                    out.warnings.extend(r.solved.warnings.iter().map(|w| format!("{what}: {w}")));
+                    crate::famnest::place(r.solved, n, &b, &vis, &mut out);
+                }
+                Err(e) => out.warnings.push(format!("{what}: {e}")),
+            }
         }
         Ok(out)
     }

@@ -170,11 +170,17 @@ const FamModel = (() => {
     };
     mount();
     await preview();
+    loadComps();
     activate();
     fitAll();
     render();
   }
 
+  // The families of the project that can be placed in this one
+  async function loadComps() {
+    try { S.comps = (await Backend.call("family_components", { id: S.id })).families; } catch (e) { S.comps = []; }
+    if (S.tool === "comp") toolbar();
+  }
   function snapshot() { return JSON.stringify({ body: S.body, params: S.params, settings: S.settings }); }
   // Unsaved changes: ones the project copy has not got (Load into Project) and ones the family file has not got (Save)
   function touch() { S.projDirty = true; S.fileDirty = true; }
@@ -231,7 +237,13 @@ const FamModel = (() => {
   const ctrlById = (id) => (S.body.controls || []).find((f) => f.id === id);
   const connById = (id) => (S.body.connectors || []).find((f) => f.id === id);
   const mtextById = (id) => (S.body.model_texts || []).find((f) => f.id === id);
-  const isSel = (kind, id) => S.sel && S.sel.id === id && (S.sel.kind === kind || (kind === "form" && S.sel.kind === "mtext"));
+  const compById = (id) => (S.body.nested || []).find((f) => f.id === id);
+  const AXI = { x: 0, y: 1, z: 2 };
+  const sketchOf = (ax) => (ax === "z" ? ["x", "y"] : ax === "y" ? ["x", "z"] : ["y", "z"]);
+  // a piece that came from a component belongs to it: clicking it selects the whole component
+  const ownerOf = (id) => (S.owners ? S.owners[id] : undefined);
+  const ownedSel = (id) => !!(S.sel && S.sel.kind === "comp" && ownerOf(id) === S.sel.id);
+  const isSel = (kind, id) => (S.sel && S.sel.id === id && (S.sel.kind === kind || (kind === "form" && S.sel.kind === "mtext"))) || ownedSel(id);
   // a solved 3D point as the view sees it
   const proj = (p) => (S.view === "plan" ? [p[0], p[1]] : S.view === "front" || S.view === "back" ? [p[0], p[2]] : [p[1], p[2]]);
   // What each kind of connector carries: [property, kind, default, choices]. Numbers may be formulas of the family parameters.
@@ -261,6 +273,8 @@ const FamModel = (() => {
       if (my !== S.tick) return true;
       if (pv.error) { S.pvError = pv.error; return false; }
       S.pv = pv; S.pvError = null;
+      S.owners = {};
+      for (const k of ["forms", "syms", "model_lines"]) for (const x of pv[k] || []) if (x.owner != null) S.owners[x.id] = x.owner;
       return true;
     } catch (e) { S.pvError = String(e.message || e); return false; }
   }
@@ -406,11 +420,12 @@ const FamModel = (() => {
   const TOOL_OF = {
     "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
     "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-swblend": "swblend", "f-sym": "sym", "f-region": "region",
-    "f-mline": "mline", "f-control": "control", "f-mtext": "mtext",
+    "f-mline": "mline", "f-control": "control", "f-mtext": "mtext", "f-comp": "comp",
   };
   function setTool(t) {
     S.voidNext = false; S.openingNext = false;
     S.tool = t; S.draft = null; S.alignRef = null; S.blend = null; S.rev = null; S.picks = [];
+    if (t === "comp") loadComps();
     toolbar(); status(); render(); ctxRefresh();
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
@@ -466,6 +481,18 @@ const FamModel = (() => {
       mode.value = S.symMode; mode.onchange = () => { S.symMode = mode.value; S.draft = null; status(); render(); };
       bar.append(el("span", "fe-opt", "Draw"), mode);
       if (S.tool === "mline") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
+    }
+    if (S.tool === "comp") {
+      const fams = S.comps || [];
+      if (!fams.length) bar.append(el("span", "fe-opt", "No other families in the project to place. Load one into the project first."));
+      else {
+        const pick = fams.find((f) => f.name === (S.compPick && S.compPick.family)) || fams[0];
+        const type = pick.types.includes(S.compPick && S.compPick.type) ? S.compPick.type : pick.types[0] || "";
+        S.compPick = { family: pick.name, type };
+        const fs = selIn(fams.map((f) => [f.name, f.name]), pick.name, (v) => { S.compPick = { family: v, type: "" }; toolbar(); });
+        const ts = selIn(pick.types.map((t) => [t, t]), type, (v) => { S.compPick.type = v; });
+        bar.append(el("span", "fe-opt", "Family"), fs, el("span", "fe-opt", "Type"), ts, el("span", "fe-opt", "Work plane"), planeSel());
+      }
     }
     if (S.tool === "mtext") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
     if (S.tool === "control") bar.append(el("span", "fe-opt", "Control"), selIn(CONTROL_KINDS, S.ctrlKind, (v) => { S.ctrlKind = v; }));
@@ -641,6 +668,7 @@ const FamModel = (() => {
       align: "Click a reference plane or the edge of a form to align to, then click the edge to move to it. Lock in the options bar ties it to a reference plane; Multiple Alignment (or Ctrl) keeps the same reference.",
       sym: "Line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. Shows only in this kind of view.",
       mline: "Model line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. It is 3D, so it shows in every view its visibility settings allow.",
+      comp: "Pick the family and type in the options bar, then click where the component goes. Its parameters can follow this family's in Properties.",
       mtext: "Click where the text starts (its baseline). Type the text, then change font, size, depth and alignment in Properties.",
       control: "Click where the flip arrows go in this view. Choose the kind in the options bar.",
       conn: `${(CONN[S.connKind] || CONN.duct).label}: click where it sits on the face (the work plane). It points out of that plane; flip it in Properties.`,
@@ -695,6 +723,7 @@ const FamModel = (() => {
     else if (s.kind === "mline") mlineProps(r, mlineById(s.id));
     else if (s.kind === "ctrl") ctrlProps(r, ctrlById(s.id));
     else if (s.kind === "mtext") mtextProps(r, mtextById(s.id));
+    else if (s.kind === "comp") compProps(r, compById(s.id));
     else if (s.kind === "conn") connProps(r, connById(s.id));
     flex(r);
     ctxRefresh();
@@ -740,7 +769,7 @@ const FamModel = (() => {
   }
 
   // ---- Associate Family Parameter: a property row that a family parameter can drive ----
-  const KIND_NAME = { length: "Length", yes_no: "Yes/No", material: "Material", text: "Text" };
+  const KIND_NAME = { length: "Length", number: "Number", integer: "Integer", angle: "Angle", yes_no: "Yes/No", material: "Material", text: "Text" };
   // The family parameter a value names on its own (`Width` or `[Width]`), or null when it is a number or a formula
   function assocOf(v, kind) {
     const m = /^\s*\[?([^\[\]]+?)\]?\s*$/.exec(String(v ?? ""));
@@ -780,7 +809,7 @@ const FamModel = (() => {
         }
       };
       draw();
-      const group = { length: "Dimensions", yes_no: "Graphics", material: "Materials and Finishes", text: "Identity Data" }[kind];
+      const group = { length: "Dimensions", yes_no: "Graphics", material: "Materials and Finishes", text: "Identity Data" }[kind] || "Other";
       foot.append(
         button("New Parameter...", () => paramProps({ kinds: [[kind, KIND_NAME[kind]]], group, value: seed }, (param) => { close(); apply(param.name, param); })),
         button("Cancel", close),
@@ -982,9 +1011,9 @@ const FamModel = (() => {
     graphicsRows(r, m, (b) => mlineById(m.id));
   }
   // A coordinate as text: a number, or a reference plane and an offset from it
-  function coordRow(r, label, c, set) {
+  function coordRow(r, label, c, set, axis) {
     const pl = c.plane ? planeById(c.plane) : null;
-    const opts = [["", "(free)"], ...S.body.planes.map((p) => [String(p.id), p.name])];
+    const opts = [["", "(free)"], ...S.body.planes.filter((p) => !axis || p.axis === axis).map((p) => [String(p.id), p.name])];
     const sel = selIn(opts, c.plane ? String(c.plane) : "", (v) => set({ plane: v ? Number(v) : null, off: c.off || 0 }));
     const off = textIn(String(c.off || 0), (v) => set({ plane: c.plane || null, off: num(v) }));
     const w = el("span", "fe-coord"); w.append(sel, off);
@@ -1006,19 +1035,65 @@ const FamModel = (() => {
     r.append(field("Bold", checkIn(t.bold, (v) => set((x) => { x.bold = v; }))));
     r.append(field("Italic", checkIn(t.italic, (v) => set((x) => { x.italic = v; }))));
     r.append(field("Horizontal align", selIn([["left", "Left"], ["center", "Center"], ["right", "Right"]], t.align || "left", (v) => set((x) => { x.align = v; }))));
-    coordRow(r, "Horizontal", t.u, (v) => change((b) => { mtextById(t.id).u = v; }));
-    coordRow(r, "Vertical", t.v, (v) => change((b) => { mtextById(t.id).v = v; }));
+    const tax = wp ? sketchOf(wp.axis) : [];
+    coordRow(r, "Horizontal", t.u, (v) => change((b) => { mtextById(t.id).u = v; }), tax[0]);
+    coordRow(r, "Vertical", t.v, (v) => change((b) => { mtextById(t.id).v = v; }), tax[1]);
     const mp = t.material_param && S.params.find((p) => p.name === t.material_param && p.param_kind === "material") ? t.material_param : null;
     r.append(assocRow("Material", "material", mp, textIn(t.material || "", (v) => set((x) => { x.material = v; }), { list: (app.info.materials || []).map((m) => m.name || m) }), (name, add) => change((b) => { if (add) S.params.push(add); mtextById(t.id).material_param = name; })));
     r.append(field("Subcategory", textIn(t.subcategory || "", (v) => set((x) => { x.subcategory = v; }), { list: SUBS })));
     graphicsRows(r, t, (b) => mtextById(t.id));
   }
+  // A component's text-like values are stored as expressions: a [Parameter] or a quoted string
+  const litShow = (v) => { const m = /^\s*"(.*)"\s*$/.exec(v || ""); return m ? m[1] : v || ""; };
+  const litStore = (v) => (/^\s*\[[^\[\]]+\]\s*$/.test(v) ? v : JSON.stringify(v));
+  function compProps(r, n) {
+    if (!n) return;
+    const fams = S.comps || [];
+    const fam = fams.find((f) => f.name === n.family);
+    const set = (fn) => change((b) => { fn(compById(n.id)); });
+    r.append(el("div", "famed-hint", fam ? `Component. Its own parameters can take their values from this family's.` : `The family "${n.family}" is not in the project, so this component is not drawn.`));
+    r.append(field("Name", textIn(n.name || "", (v) => set((x) => { x.name = v; }))));
+    const names = fams.map((f) => [f.name, f.name]);
+    if (!fam) names.unshift([n.family, n.family]);
+    r.append(field("Family", selIn(names, n.family, (v) => set((x) => { x.family = v; const f2 = fams.find((f) => f.name === v); x.type_name = f2 && f2.types[0] || ""; x.params = {}; x.type_param = null; }))));
+    const tp = n.type_param && S.params.find((p) => p.name === n.type_param && p.param_kind === "text") ? n.type_param : null;
+    const types = (fam ? fam.types : []).map((t) => [t, t]);
+    r.append(assocRow("Type", "text", tp, selIn(types, n.type_name, (v) => set((x) => { x.type_name = v; })), (name, add) => change((b) => { if (add) S.params.push(add); compById(n.id).type_param = name; })));
+    const wps = [["", "(none)"], ...S.body.planes.map((p) => [String(p.id), p.name])];
+    r.append(field("Work plane", selIn(wps, n.work_plane ? String(n.work_plane) : "", (v) => set((x) => { x.work_plane = v ? Number(v) : null; }))));
+    r.append(el("div", "famed-h", "Position"));
+    [["x", "X (left/right)"], ["y", "Y (front/back)"], ["z", "Z (height)"]].forEach(([ax, label]) => coordRow(r, label, n.origin[AXI[ax]], (v) => change((b) => { compById(n.id).origin[AXI[ax]] = v; }), ax));
+    r.append(field("Rotation (degrees)", textIn(String(n.rotation_deg || 0), (v) => set((x) => { x.rotation_deg = num(v); }))));
+    r.append(field("Flip", checkIn(n.flip, (v) => set((x) => { x.flip = v; }))));
+    r.append(field("Mirror", checkIn(n.mirror, (v) => set((x) => { x.mirror = v; }))));
+    const ps = fam ? fam.params : [];
+    if (ps.length) {
+      r.append(el("div", "famed-h", "Parameters"));
+      r.append(el("div", "famed-hint", "Blank keeps the component's own value."));
+    }
+    for (const p of ps) {
+      const kind = p.kind;
+      const cur = (n.params || {})[p.name] || "";
+      const lit = kind === "text" || kind === "material";
+      const apply = (name, add) => change((b) => {
+        if (add) S.params.push(add);
+        const c = compById(n.id); c.params = c.params || {};
+        if (name) c.params[p.name] = `[${name}]`; else delete c.params[p.name];
+      });
+      const store = (v) => set((x) => { x.params = x.params || {}; if (!String(v).trim()) delete x.params[p.name]; else x.params[p.name] = lit ? litStore(v) : v; });
+      const ctrl = kind === "yes_no" ? selIn([["", "(its own)"], ["true", "Yes"], ["false", "No"]], cur.trim(), store) : textIn(lit ? litShow(cur) : cur, store, { list: kind === "length" ? lengthParams() : [] });
+      const assocKind = KIND_NAME[kind] ? kind : null;
+      if (assocKind) r.append(assocRow(p.name + (p.instance ? "" : " (type)"), assocKind, assocOf(cur, assocKind), ctrl, apply));
+      else r.append(field(p.name, ctrl));
+    }
+    graphicsRows(r, n, (b) => compById(n.id));
+  }
   function ctrlProps(r, c) {
     if (!c) return;
     r.append(el("div", "famed-hint", `Control, ${c.view} views only. It shows the flip arrows in the project.`));
     r.append(field("Kind", selIn(CONTROL_KINDS, c.kind, (v) => change((b) => { ctrlById(c.id).kind = v; }))));
-    coordRow(r, "Horizontal", c.u, (v) => change((b) => { ctrlById(c.id).u = v; }));
-    coordRow(r, "Vertical", c.v, (v) => change((b) => { ctrlById(c.id).v = v; }));
+    coordRow(r, "Horizontal", c.u, (v) => change((b) => { ctrlById(c.id).u = v; }), VIEWS[c.view].h);
+    coordRow(r, "Vertical", c.v, (v) => change((b) => { ctrlById(c.id).v = v; }), VIEWS[c.view].v);
     graphicsRows(r, c, (b) => ctrlById(c.id));
   }
   function connProps(r, c) {
@@ -1027,8 +1102,9 @@ const FamModel = (() => {
     r.append(el("div", "famed-hint", `${def.label} on ${wp ? wp.name : "a missing plane"}`));
     r.append(field("Name", textIn(c.name || "", (v) => change((b) => { connById(c.id).name = v; }))));
     r.append(field("Flip direction", checkIn(c.flip, (v) => change((b) => { connById(c.id).flip = v; }))));
-    coordRow(r, "Horizontal", c.u, (v) => change((b) => { connById(c.id).u = v; }));
-    coordRow(r, "Vertical", c.v, (v) => change((b) => { connById(c.id).v = v; }));
+    const cax = wp ? sketchOf(wp.axis) : [];
+    coordRow(r, "Horizontal", c.u, (v) => change((b) => { connById(c.id).u = v; }), cax[0]);
+    coordRow(r, "Vertical", c.v, (v) => change((b) => { connById(c.id).v = v; }), cax[1]);
     const showShape = c.kind === "duct" ? (c.props.Shape || "Round") : null;
     const hidden = (name) => (showShape === "Round" && (name === "Width" || name === "Height")) || (showShape && showShape !== "Round" && name === "Diameter");
     for (const [name, kind, , choices] of def.props) {
@@ -1536,7 +1612,7 @@ const FamModel = (() => {
     for (const y of S.pv.syms || []) {
       if (y.view !== S.view) continue;
       if (!y.present) continue;
-      const selected = S.sel && S.sel.kind === "sym" && S.sel.id === y.id;
+      const selected = (S.sel && S.sel.kind === "sym" && S.sel.id === y.id) || ownedSel(y.id);
       ctx.beginPath();
       y.points.forEach(([x, yy], i) => { const p = w2s(x, yy); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
       if (y.closed) ctx.closePath();
@@ -1612,7 +1688,7 @@ const FamModel = (() => {
     const { ctx } = S;
     for (const m of S.pv.model_lines || []) {
       if (!m.present) continue;
-      const selected = S.sel && S.sel.kind === "mline" && S.sel.id === m.id;
+      const selected = (S.sel && S.sel.kind === "mline" && S.sel.id === m.id) || ownedSel(m.id);
       ctx.beginPath();
       m.points.forEach((q, i) => { const a = proj(q), p = w2s(a[0], a[1]); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
       if (m.closed) ctx.closePath();
@@ -1911,7 +1987,7 @@ const FamModel = (() => {
       const T = (q) => { const r = rot(q); return [ox + r[0] * k, oy - r[2] * k]; };
       for (const m of S.pv.model_lines || []) {
         if (!m.present) continue;
-        const selected = S.sel && S.sel.kind === "mline" && S.sel.id === m.id;
+        const selected = (S.sel && S.sel.kind === "mline" && S.sel.id === m.id) || ownedSel(m.id);
         ctx.beginPath();
         m.points.forEach((q, i) => { const [x, y] = T(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
         if (m.closed) ctx.closePath();
@@ -2156,7 +2232,7 @@ const FamModel = (() => {
         const a0 = proj(pts[i]), b0 = proj(pts[i + 1]), a = w2s(a0[0], a0[1]), b = w2s(b0[0], b0[1]);
         const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
         const t = Math.max(0, Math.min(1, ((sx - a.x) * (b.x - a.x) + (sy - a.y) * (b.y - a.y)) / l2));
-        if (Math.hypot(a.x + t * (b.x - a.x) - sx, a.y + t * (b.y - a.y) - sy) < 5) return { kind: "mline", id: m.id };
+        if (Math.hypot(a.x + t * (b.x - a.x) - sx, a.y + t * (b.y - a.y) - sy) < 5) return ownerOf(m.id) != null ? { kind: "comp", id: ownerOf(m.id) } : { kind: "mline", id: m.id };
       }
     }
     for (const y of [...(S.pv.syms || [])].reverse()) {
@@ -2165,14 +2241,14 @@ const FamModel = (() => {
         const a = w2s(...y.points[i]), b = w2s(...y.points[i + 1]);
         const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
         const t = Math.max(0, Math.min(1, ((sx - a.x) * (b.x - a.x) + (sy - a.y) * (b.y - a.y)) / l2));
-        if (Math.hypot(a.x + t * (b.x - a.x) - sx, a.y + t * (b.y - a.y) - sy) < 5) return { kind: "sym", id: y.id };
+        if (Math.hypot(a.x + t * (b.x - a.x) - sx, a.y + t * (b.y - a.y) - sy) < 5) return ownerOf(y.id) != null ? { kind: "comp", id: ownerOf(y.id) } : { kind: "sym", id: y.id };
       }
     }
     const pieces = [...(S.pv.views[PREVIEW_KEY[S.view]] || [])].reverse();
     for (const pc of pieces) {
       let inside = false;
       for (const ring of pc.rings) if (pointIn(ring, w.u, w.v)) inside = !inside;
-      if (inside) return mtextById(pc.form) ? { kind: "mtext", id: pc.form } : { kind: "form", id: pc.form };
+      if (inside) return ownerOf(pc.form) != null ? { kind: "comp", id: ownerOf(pc.form) } : mtextById(pc.form) ? { kind: "mtext", id: pc.form } : { kind: "form", id: pc.form };
     }
     return null;
   }
@@ -2202,9 +2278,25 @@ const FamModel = (() => {
         return;
       }
       S.sel = hitItem(m.x, m.y); props(); render();
-      const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : S.sel.kind === "mtext" ? mtextById(S.sel.id) : null);
-      const wp = it && S.sel.kind !== "ctrl" ? planeById(it.plane) : null;
-      if (it && (S.sel.kind === "ctrl" || (wp && wp.axis === VIEWS[S.view].n))) S.drag = { pt: it, before: snapshot(), moved: false };
+      const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : S.sel.kind === "mtext" ? mtextById(S.sel.id) : S.sel.kind === "comp" ? compById(S.sel.id) : null);
+      const wp = it && S.sel.kind !== "ctrl" && S.sel.kind !== "comp" ? planeById(it.plane) : null;
+      if (it && S.sel.kind === "comp" && S.view !== "3d") S.drag = { comp: it, before: snapshot(), moved: false };
+      else if (it && (S.sel.kind === "ctrl" || (wp && wp.axis === VIEWS[S.view].n))) S.drag = { pt: it, before: snapshot(), moved: false };
+      return;
+    }
+    if (t === "comp") {
+      if (S.view === "3d") { S.msg = "Place components in a plan or an elevation."; status(); return; }
+      const pick = S.compPick;
+      if (!pick || !pick.family) { S.msg = "Pick a family in the options bar first."; status(); return; }
+      const sp = snapPoint(m.x, m.y), V = VIEWS[S.view], plane = workPlane();
+      await change((b) => {
+        const id = newId();
+        const origin = [null, null, null];
+        origin[AXI[V.h]] = coordOf(sp.u); origin[AXI[V.v]] = coordOf(sp.v); origin[AXI[V.n]] = { plane, off: 0 };
+        (b.nested = b.nested || []).push({ id, family: pick.family, type_name: pick.type || "", type_param: null, name: "", origin, rotation_deg: 0, work_plane: plane, flip: false, mirror: false, params: {}, vis: {} });
+        S.sel = { kind: "comp", id };
+      });
+      S.msg = "Component placed. Its parameters are in Properties."; status(); render();
       return;
     }
     if (t === "mtext") {
@@ -2382,6 +2474,12 @@ const FamModel = (() => {
         if (dm) { dm.at = Math.round(planeById(dm.a).axis === VIEWS[S.view].h ? w.v : w.u); d.moved = true; render(); }
         return;
       }
+      if (d.comp) {
+        const sp = snapPoint(m.x, m.y), V = VIEWS[S.view];
+        d.comp.origin[AXI[V.h]] = coordOf(sp.u); d.comp.origin[AXI[V.v]] = coordOf(sp.v);
+        d.moved = true;
+        await preview(); render(); return;
+      }
       if (d.pt) {
         const sp = snapPoint(m.x, m.y);
         d.pt.u = coordOf(sp.u); d.pt.v = coordOf(sp.v);
@@ -2415,7 +2513,7 @@ const FamModel = (() => {
     const d = S.drag;
     S.drag = null;
     const m = mouse(e);
-    if (d && (d.plane || d.handle || d.dimAt || d.pt) && d.moved) {
+    if (d && (d.plane || d.handle || d.dimAt || d.pt || d.comp) && d.moved) {
       const ok = await preview();
       if (!ok) { restore(d.before); S.msg = S.pvError; await preview(); }
       else { S.undo.push(d.before); S.redo = []; touch(); }
@@ -2591,6 +2689,7 @@ const FamModel = (() => {
       ] };
     }
     if (sel.kind === "mline") return { auto, title: "Modify | Model Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mlineById(sel.id)) }] }, { label: "Modify", items: [{ label: "Align", ico: "Al", big: true, onclick: () => setTool("align") }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
+    if (sel.kind === "comp") return { auto, title: "Modify | Components", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => compById(sel.id)) }] }, { label: "Modify", items: [{ label: "Rotate 90", ico: "Ro", big: true, onclick: () => change((b) => { const c = compById(sel.id); c.rotation_deg = ((c.rotation_deg || 0) + 90) % 360; }) }, { label: "Mirror", ico: "Mi", big: true, onclick: () => change((b) => { const c = compById(sel.id); c.mirror = !c.mirror; }) }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "mtext") return { auto, title: "Modify | Model Text", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mtextById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "ctrl") return { auto, title: "Modify | Controls", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => ctrlById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
     if (sel.kind === "conn") return { auto, title: "Modify | Connectors", groups: [{ label: "Modify", items: [{ label: "Flip", ico: "Fl", big: true, onclick: () => change((b) => { const c = connById(sel.id); c.flip = !c.flip; }) }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
@@ -3177,6 +3276,7 @@ const FamModel = (() => {
       } else if (s.kind === "sym") b.syms = b.syms.filter((y) => y.id !== s.id);
       else if (s.kind === "mline") b.model_lines = (b.model_lines || []).filter((y) => y.id !== s.id);
       else if (s.kind === "ctrl") b.controls = (b.controls || []).filter((y) => y.id !== s.id);
+      else if (s.kind === "comp") b.nested = (b.nested || []).filter((y) => y.id !== s.id);
       else if (s.kind === "mtext") b.model_texts = (b.model_texts || []).filter((y) => y.id !== s.id);
       else if (s.kind === "conn") b.connectors = (b.connectors || []).filter((y) => y.id !== s.id);
       S.sel = null;

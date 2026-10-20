@@ -109,6 +109,58 @@ impl Document {
         solved.reports.iter().find(|(n, _)| n == name).map(|(_, v)| *v)
     }
 
+    /// Work out a body with its components: each nested family is solved with its own type and the
+    /// values its associations give it, then placed in this body. `stack` holds the families being
+    /// solved, so a family that holds itself (directly or through another) is stopped.
+    pub(crate) fn solve_family_body(&self, name: &str, body: &crate::famgeom::FamilyBody, env: &mut crate::famgeom::Env, stack: &mut Vec<String>) -> Result<Solved, String> {
+        if body.nested.is_empty() {
+            return body.solve(env);
+        }
+        stack.push(name.to_string());
+        let r = body.solve_with(env, &mut |n, values, type_name| self.solve_nested(n, values, type_name, stack));
+        stack.pop();
+        r
+    }
+
+    fn solve_nested(&self, n: &crate::famgeom::Nested, values: &std::collections::BTreeMap<String, Value>, type_name: &str, stack: &mut Vec<String>) -> Result<Option<crate::famgeom::NestedSolved>, String> {
+        let Some((fid, fam)) = self.families().into_iter().find(|(_, f)| f.name == n.family) else {
+            return Err(format!("the family '{}' is not in the project", n.family));
+        };
+        if stack.iter().any(|s| *s == fam.name) || stack.len() >= 6 {
+            return Err(format!("'{}' is nested inside itself", fam.name));
+        }
+        if fam.body.is_empty() {
+            return Ok(None);
+        }
+        let mut types: Vec<&crate::family::FamilyType> = self.family_types().into_iter().filter(|(_, t)| t.family == fid).map(|(_, t)| t).collect();
+        types.sort_by(|a, b| a.name.cmp(&b.name));
+        let mut t = types.iter().find(|t| t.name == type_name).or_else(|| types.first()).map(|t| (*t).clone()).unwrap_or(crate::family::FamilyType { family: fid, name: String::new(), values: Default::default() });
+        for (k, v) in values {
+            let pv = match v {
+                Value::Num(x) => ParamValue::Number(*x),
+                Value::Bool(b) => ParamValue::Bool(*b),
+                Value::Text(s) => ParamValue::Text(s.clone()),
+            };
+            t.values.insert(k.clone(), pv);
+        }
+        let mut env = |name: &str| -> Result<Value, EvalError> {
+            match name {
+                "Host Thickness" | "Host Core Thickness" => return Ok(Value::Num(100.0)),
+                "Host Core Offset" => return Ok(Value::Num(0.0)),
+                _ if fam.body.reports(name) => return Err(EvalError::UnknownName(name.to_string())),
+                _ => {}
+            }
+            match self.type_param(&t, name) {
+                Some(ParamValue::Number(x)) => Ok(Value::Num(x)),
+                Some(ParamValue::Bool(b)) => Ok(Value::Bool(b)),
+                Some(ParamValue::Text(s)) => Ok(Value::Text(s)),
+                None => Err(EvalError::UnknownName(name.to_string())),
+            }
+        };
+        let solved = self.solve_family_body(&fam.name, &fam.body, &mut env, stack)?;
+        Ok(Some(crate::famgeom::NestedSolved { solved, work_plane_based: fam.host == crate::family::HostKind::Face }))
+    }
+
     /// The solved body of a placed instance, or `None` when its family has no body.
     pub fn instance_solved(&self, id: Id) -> Option<Arc<Result<Solved, String>>> {
         let Some(Element::FamilyInstance(inst)) = self.get(id) else { return None };
@@ -125,7 +177,7 @@ impl Document {
                 return Some(hit.clone());
             }
         }
-        let solved = Arc::new(fam.body.solve(&mut self.body_env(inst)));
+        let solved = Arc::new(self.solve_family_body(&fam.name, &fam.body, &mut self.body_env(inst), &mut Vec::new()));
         if let Ok(mut c) = self.solve_cache.0.lock() {
             if c.0 == self.edit_count {
                 c.1.insert(id, solved.clone());
@@ -321,6 +373,97 @@ mod tests {
         let lines: Vec<_> = sym.parts.iter().filter(|p| p.subcategory == "Model Lines").collect();
         assert_eq!(lines.len(), 1, "the rail shows, the post flattens to a point and is dropped");
         assert_eq!(lines[0].rings[0].len(), 2);
+    }
+
+    fn tri_box(f: &SolvedForm) -> [[f64; 3]; 2] {
+        let mut b = [[f64::MAX; 3], [f64::MIN; 3]];
+        for t in &f.solid.tris {
+            for p in t {
+                for i in 0..3 {
+                    b[0][i] = b[0][i].min(p[i]);
+                    b[1][i] = b[1][i].max(p[i]);
+                }
+            }
+        }
+        b
+    }
+
+    #[test]
+    fn a_component_is_solved_with_its_own_type_and_placed_in_the_parent() {
+        let mut leaf = hatch_family();
+        leaf.name = "Leaf".into();
+        leaf.host = HostKind::None;
+        let mut frame = hatch_family();
+        frame.name = "Frame".into();
+        let nid = frame.body.take_id();
+        frame.body.nested.push(Nested {
+            id: nid,
+            family: "Leaf".into(),
+            type_name: "t".into(),
+            type_param: None,
+            name: String::new(),
+            origin: [Coord::at(2000.0), Coord::at(0.0), Coord::at(0.0)],
+            rotation_deg: 0.0,
+            work_plane: None,
+            flip: false,
+            mirror: false,
+            params: BTreeMap::from([("Width".to_string(), "[Width] / 2".to_string())]),
+            vis: Visibility::default(),
+        });
+        let mut d = Document::new_project();
+        d.add_family(leaf, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let (fid, _) = d.add_family(frame, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let none = BTreeMap::new();
+        let s = d.family_preview(fid, None, &none).unwrap();
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        let mine: Vec<_> = s.forms.iter().filter(|f| f.owner == Some(nid)).collect();
+        assert_eq!(mine.len(), 2, "the leaf's panel and its void");
+        let panel = mine.iter().find(|f| !f.void).unwrap();
+        let b = tri_box(panel);
+        // the leaf is 450 wide here (half of 900) and its centre stands at x = 2000
+        assert!((b[0][0] - 1775.0).abs() < 1e-6 && (b[1][0] - 2225.0).abs() < 1e-6, "{b:?}");
+        assert!(panel.cuts_host == false && panel.solid.axis.is_some(), "a plain move keeps the exact prism");
+        assert!(s.forms.iter().any(|f| f.owner.is_none()), "the parent's own pieces are still there");
+        assert!(mine.iter().all(|f| f.id >= 1_000_000));
+        // the leaf's plan line is carried into the parent's plan
+        assert!(s.syms.iter().any(|y| y.owner == Some(nid) && y.view == SymView::Plan && (y.points[0].x - 1775.0).abs() < 1e-6));
+        // a quarter turn: the 450 width now runs along Y
+        let mut f2 = d.family(fid).unwrap().clone();
+        f2.body.nested[0].rotation_deg = 90.0;
+        d.set_family_def(fid, None, Some(f2.body.clone())).unwrap();
+        let s = d.family_preview(fid, None, &none).unwrap();
+        let panel = s.forms.iter().find(|f| f.owner == Some(nid) && !f.void).unwrap();
+        let b = tri_box(panel);
+        assert!((b[0][1] + 225.0).abs() < 1e-6 && (b[1][1] - 225.0).abs() < 1e-6, "{b:?}");
+        assert!(panel.solid.axis.is_none(), "a turned piece is a mesh");
+        // not visible: gone
+        f2.body.nested[0].vis.visible = false;
+        d.set_family_def(fid, None, Some(f2.body.clone())).unwrap();
+        assert!(d.family_preview(fid, None, &none).unwrap().forms.iter().all(|f| f.owner.is_none()));
+        // a family that is not in the project is reported and the rest still solves
+        f2.body.nested[0].vis.visible = true;
+        f2.body.nested[0].family = "Nothing".into();
+        d.set_family_def(fid, None, Some(f2.body.clone())).unwrap();
+        let s = d.family_preview(fid, None, &none).unwrap();
+        assert!(s.warnings.iter().any(|w| w.contains("Nothing")), "{:?}", s.warnings);
+        assert!(!s.forms.is_empty());
+    }
+
+    #[test]
+    fn a_family_nested_inside_itself_is_stopped() {
+        let mut a = hatch_family();
+        a.name = "A".into();
+        let mut b = hatch_family();
+        b.name = "B".into();
+        let mk = |id: u32, fam: &str| Nested { id, family: fam.into(), type_name: String::new(), type_param: None, name: String::new(), origin: [Coord::at(0.0), Coord::at(0.0), Coord::at(0.0)], rotation_deg: 0.0, work_plane: None, flip: false, mirror: false, params: BTreeMap::new(), vis: Visibility::default() };
+        let (ida, idb) = (a.body.take_id(), b.body.take_id());
+        a.body.nested.push(mk(ida, "B"));
+        b.body.nested.push(mk(idb, "A"));
+        let mut d = Document::new_project();
+        let (fa, _) = d.add_family(a, vec![("t".into(), BTreeMap::new())]).unwrap();
+        d.add_family(b, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let s = d.family_preview(fa, None, &BTreeMap::new()).unwrap();
+        assert!(s.warnings.iter().any(|w| w.contains("inside itself")), "{:?}", s.warnings);
     }
 
     #[test]
@@ -676,7 +819,7 @@ impl Document {
                 None => Err(EvalError::UnknownName(n.to_string())),
             }
         };
-        fam.body.solve(&mut env)
+        self.solve_family_body(&fam.name, &fam.body, &mut env, &mut Vec::new())
     }
 
     /// Run an edit on a copy of a family body with the parameter values of one type (and

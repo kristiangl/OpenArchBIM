@@ -485,6 +485,43 @@ impl Session {
                 };
                 Ok(family_preview_json(solved))
             }
+            "family_components" => {
+                // the families that can be placed inside the one being edited: the project's other
+                // families, minus any that already hold this one (that would nest a family in itself)
+                let id = id_of(p, "id")?;
+                let me = self.doc.family(id).ok_or("no such family")?.name.clone();
+                let all = self.doc.families();
+                let holds = |start: &str| -> bool {
+                    let mut todo = vec![start.to_string()];
+                    let mut seen: Vec<String> = Vec::new();
+                    while let Some(n) = todo.pop() {
+                        if n == me {
+                            return true;
+                        }
+                        if seen.contains(&n) {
+                            continue;
+                        }
+                        if let Some((_, f)) = all.iter().find(|(_, f)| f.name == n) {
+                            todo.extend(f.body.nested.iter().map(|x| x.family.clone()));
+                        }
+                        seen.push(n);
+                    }
+                    false
+                };
+                let mut out = Vec::new();
+                for (fid, f) in &all {
+                    if *fid == id || holds(&f.name) {
+                        continue;
+                    }
+                    let mut types: Vec<String> = self.doc.family_types().into_iter().filter(|(_, t)| t.family == *fid).map(|(_, t)| t.name.clone()).collect();
+                    types.sort();
+                    out.push(json!({
+                        "name": f.name, "category": f.category, "host": f.host, "built_in": f.built_in, "types": types,
+                        "params": f.params.iter().filter(|q| !q.reporting).map(|q| json!({ "name": q.name, "kind": q.param_kind, "instance": q.instance, "group": q.group })).collect::<Vec<_>>(),
+                    }));
+                }
+                Ok(json!({ "families": out }))
+            }
             "family_edit" => {
                 // edits that depend on where the planes stand: dimensions and plane moves. The body
                 // and parameters come from the editor as they stand, unsaved; the new body goes back.
@@ -2114,11 +2151,11 @@ fn family_preview_json(solved: Result<openarch_model::famgeom::Solved, String>) 
     json!({
         "planes": s.planes,
         "forms": s.forms.iter().map(|f| json!({
-            "id": f.id, "name": f.name, "void": f.void, "cuts_host": f.cuts_host, "material": f.material, "sub": f.subcategory, "present": f.vis.present, "span": f.span, "text": f.text,
+            "id": f.id, "name": f.name, "void": f.void, "cuts_host": f.cuts_host, "material": f.material, "sub": f.subcategory, "present": f.vis.present, "span": f.span, "text": f.text, "owner": f.owner,
             "tris": f.solid.tris.iter().flat_map(|t| t.iter().flatten().copied()).collect::<Vec<f64>>(),
         })).collect::<Vec<_>>(),
-        "syms": s.syms.iter().map(|y| json!({ "id": y.id, "view": y.view, "points": y.points.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>(), "closed": y.closed, "filled": y.filled, "sub": y.subcategory, "present": y.vis.present })).collect::<Vec<_>>(),
-        "model_lines": s.model_lines.iter().map(|m| json!({ "id": m.id, "name": m.name, "points": m.points, "closed": m.closed, "sub": m.subcategory, "present": m.vis.present })).collect::<Vec<_>>(),
+        "syms": s.syms.iter().map(|y| json!({ "id": y.id, "view": y.view, "points": y.points.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>(), "closed": y.closed, "filled": y.filled, "sub": y.subcategory, "present": y.vis.present, "owner": y.owner })).collect::<Vec<_>>(),
+        "model_lines": s.model_lines.iter().map(|m| json!({ "id": m.id, "name": m.name, "points": m.points, "closed": m.closed, "sub": m.subcategory, "present": m.vis.present, "owner": m.owner })).collect::<Vec<_>>(),
         "controls": s.controls.iter().map(|c| json!({ "id": c.id, "view": c.view, "at": [c.at.x, c.at.y], "kind": c.kind, "present": c.vis.present })).collect::<Vec<_>>(),
         "connectors": s.connectors.iter().map(|c| json!({ "id": c.id, "name": c.name, "kind": c.kind, "origin": c.origin, "direction": c.direction, "numbers": c.numbers })).collect::<Vec<_>>(),
         "views": { "plan": view(Axis::Z), "front": view(Axis::Y), "left": view(Axis::X) },
@@ -3388,6 +3425,23 @@ mod tests {
         n.insert("ironbark_family".into(), marker);
         old["family"]["name"] = json!("Cottage Door 3");
         assert!(s.handle("import_family", &json!({ "file": old })).is_ok());
+    }
+
+    #[test]
+    fn components_on_offer_leave_out_the_family_itself_and_any_that_hold_it() {
+        let mut s = Session::new();
+        let a = call(&mut s, "new_family", json!({ "name": "Alpha", "category": "generic_models", "host": "none" }))["id"].as_u64().unwrap();
+        let b = call(&mut s, "new_family", json!({ "name": "Beta", "category": "generic_models", "host": "none" }))["id"].as_u64().unwrap();
+        let names = |s: &mut Session, id: u64| -> Vec<String> { call(s, "family_components", json!({ "id": id }))["families"].as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap().to_string()).collect() };
+        assert!(names(&mut s, a).contains(&"Beta".to_string()) && !names(&mut s, a).contains(&"Alpha".to_string()));
+        // Beta holds Alpha: Alpha cannot be offered Beta any more
+        let mut body = call(&mut s, "family_def", json!({ "id": b }))["body"].clone();
+        body["nested"] = json!([{ "id": 40, "family": "Alpha", "origin": [{ "off": 0.0 }, { "off": 0.0 }, { "off": 0.0 }] }]);
+        call(&mut s, "set_family_def", json!({ "id": b, "body": body }));
+        assert!(!names(&mut s, a).contains(&"Beta".to_string()));
+        assert!(names(&mut s, b).contains(&"Alpha".to_string()));
+        let one = call(&mut s, "family_components", json!({ "id": b }))["families"].as_array().unwrap().iter().find(|f| f["name"] == "Alpha").unwrap().clone();
+        assert!(one["params"].is_array() && one["types"].is_array());
     }
 
     #[test]
