@@ -121,7 +121,6 @@ async function openTypeProperties(typeId, { onType = null } = {}) {
       const have = new Set(d.siblings.map((x) => x.name));
       const missing = family && family.catalog ? family.catalog.filter((n) => !have.has(n)) : [];
       if (missing.length) extra.push(button("Add from catalogue...", () => catalogPrompt(family, missing, async (newId) => { id = newId; setDirty(true); await load(); })));
-      if (d.kind === "LevelType" && d.head) extra.push(button("Edit Symbol Family...", () => FamEd.open(d.head, async () => { setDirty(true); await load(); })));
       head.append(row("Family:", famSel), row("Type:", typeSel, dup, ren, ...extra));
       const cols = document.createElement("table");
       cols.className = "props tp-cols";

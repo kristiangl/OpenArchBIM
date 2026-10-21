@@ -75,6 +75,8 @@ const ICONS = {
   text: '<path d="M5 19L12 4l7 15M7.6 13.5h8.8"/><path class="a2" d="M4 21.5h16"/>',
   keynote: '<rect x="12" y="3" width="9" height="9"/><path class="a2" d="M12 12L4 20M4 20h3.5M4 20v-3.5"/>',
   symbol: '<circle cx="12" cy="12" r="8"/><path class="af" d="M12 7l4.5 8h-9z"/>',
+  // a label: a parameter's text in a dashed placeholder box
+  label: '<rect x="3" y="6" width="18" height="12" rx="2" stroke-dasharray="3 2"/><path class="a2" d="M8 15l4-7 4 7M9.6 12.5h4.8"/>',
   north: '<path d="M12 3l6 18-6-4-6 4z"/><path class="af" d="M12 3v14l-6 4z"/>',
   scaleBar: '<path d="M3 15h18v4H3z"/><path class="af" d="M3 15h4.5v4H3zM12 15h4.5v4H12z"/><path d="M3 11.5V15M12 11.5V15M21 11.5V15"/>',
 
@@ -246,6 +248,9 @@ const ICON_ALIAS = {
   "f-3d": "view3d", "f-sec": "section", "f-names": "planeNames", "f-dims": "dimLinear", "f-vg": "visibility",
   "f-sharedparams": "shared", "f-styles": "styles", "f-materials": "materials", "f-lookup": "lookup",
   "f-align": "align", "f-mv": "move", "f-cp": "copy", "f-del": "delete",
+  // annotation family editor
+  "a-select": "select", "a-category": "category", "a-types": "familyTypes", "a-line": "detailLine", "a-region": "region", "a-mask": "masking",
+  "a-text": "text", "a-label": "label", "a-symbol": "symbol", "a-refline": "refLine", "a-load": "loadIntoProject", "a-loadclose": "loadAndClose", "a-del": "delete",
   // monograms used by contextual buttons
   Se: "select", Mv: "move", Cp: "copy", Ro: "rotate", Mi: "mirror", Al: "align", Of: "offset", Tc: "trim", Ts: "trimSingle", Sl: "split",
   De: "delete", Dl: "delete", Sa: "slopeArrow", Sd: "spanDir", Ck: "check", Ed: "edit", Vs: "visibility", Wp: "editWp", Pk: "pickNew",

@@ -1041,7 +1041,8 @@ impl Session {
                 v["id"] = json!(id);
                 v["params"] = json!(f.kind.params());
                 v["kind"] = json!(f.kind);
-                v["in_use"] = json!(self.doc.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.doc.elevation_markers().iter().any(|(_, m)| m.family == Some(id)));
+                v["in_use"] = json!(self.doc.annotation_family_in_use(id));
+                v["category"] = json!(f.kind.category());
                 Ok(v)
             }
             "set_annotation_family" => {
@@ -1448,7 +1449,7 @@ impl Session {
             "grid_types": d.grid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "view_types": d.view_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind, "template_for_new": t.template_for_new })).collect::<Vec<_>>(),
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
-            "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind })).collect::<Vec<_>>(),
+            "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind, "category": f.kind.category(), "in_use": d.annotation_family_in_use(*id) })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
             "model_categories": MODEL_CATEGORIES,
             "annotation_categories": ANNOTATION_CATEGORIES,

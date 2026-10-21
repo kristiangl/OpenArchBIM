@@ -30,6 +30,15 @@ impl AnnotationKind {
         }
     }
 
+    /// The family category, as the family editor names it.
+    pub fn category(self) -> &'static str {
+        match self {
+            AnnotationKind::LevelHead => "Level Heads",
+            AnnotationKind::ElevationMarker => "Elevation Marks",
+            AnnotationKind::SectionMarker => "Section Marks",
+        }
+    }
+
     /// The label parameters a family of this kind can show.
     pub fn params(self) -> &'static [&'static str] {
         match self {
@@ -441,14 +450,19 @@ impl Document {
         self.transact("Change marker family", |tx| tx.update(id, Element::ElevationMarker(m)))
     }
 
+    /// Whether a level type, an elevation marker or a section draws with this family.
+    pub fn annotation_family_in_use(&self, id: Id) -> bool {
+        self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| m.family == Some(id)) || self.sections().iter().any(|(_, s)| s.family == Some(id))
+    }
+
     /// Delete a family nothing uses, keeping at least one of each kind.
     pub fn delete_annotation_family(&mut self, id: Id) -> Result<(), String> {
         let Some(f) = self.annotation_family(id) else { return Err("not an annotation family".into()) };
         if self.annotation_families().iter().filter(|(_, g)| g.kind == f.kind).count() < 2 {
             return Err("the project needs at least one family of each kind".into());
         }
-        if self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| m.family == Some(id)) {
-            return Err("that family is in use; choose another for the types or markers that use it first".into());
+        if self.annotation_family_in_use(id) {
+            return Err("that family is in use; choose another for the types, markers or sections that use it first".into());
         }
         self.transact("Delete family", |tx| tx.remove(id))
     }
@@ -524,6 +538,21 @@ mod tests {
         let marker = d.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::ElevationMarker).unwrap().0;
         assert!(d.delete_annotation_family(marker).is_err());
         let copy = d.duplicate_annotation_family(marker, "Marker 2").unwrap();
+        assert!(d.delete_annotation_family(copy).is_ok());
+    }
+
+    #[test]
+    fn a_section_mark_a_section_draws_with_cannot_be_deleted() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let (mark, _) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
+        assert_eq!(d.annotation_family(mark).unwrap().kind.category(), "Section Marks");
+        let copy = d.duplicate_annotation_family(mark, "Section Mark 2").unwrap();
+        let s = d.add_section(lvl, crate::geom::Point::new(0.0, 0.0), crate::geom::Point::new(5000.0, 0.0), false).unwrap();
+        d.patch_section(s, &serde_json::json!({ "family": copy })).unwrap();
+        assert!(d.annotation_family_in_use(copy));
+        assert!(d.delete_annotation_family(copy).unwrap_err().contains("in use"));
+        d.patch_section(s, &serde_json::json!({ "family": mark })).unwrap();
         assert!(d.delete_annotation_family(copy).is_ok());
     }
 }

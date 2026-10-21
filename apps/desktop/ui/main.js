@@ -3,8 +3,8 @@ const $ = (s) => document.querySelector(s);
 const app = {
   info: null,
   tdimMemory: {}, // element id -> the dimension ends the person chose for it (kept while the project is open)
-  doc: "project", // the document showing: "project", or "family" while a family is open in the family editor
-  ribbonTab: { project: "Architecture", family: "Create" },
+  doc: "project", // the document showing: "project", "family" (a model family in the family editor) or "annotation" (an annotation family)
+  ribbonTab: { project: "Architecture", family: "Create", annotation: "Create" },
   view: { kind: "plan", viewId: null }, // plan | 3d | schedule; viewId is a stored view
   wallTypeId: null,
   locationLine: "wall_centreline", // for walls about to be drawn
@@ -72,7 +72,6 @@ const COMMANDS = {
   "v-vg": () => openVG(),
   "m-styles": () => openObjectStyles(),
   "m-snaps": () => openSnaps(),
-  "m-annfam": () => FamEd.list(),
   "m-families": () => FamModel.list(),
   "load-family": () => FamModel.loadFile(),
   "m-tempdim": () => openTempDimSettings(),
@@ -189,9 +188,9 @@ function updateRibbonContext() {
   }
 }
 
-// The ribbon and its commands belong to the document showing: the project's, or the family editor's
-const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : RIBBON);
-const commandFor = (id) => (app.doc === "family" ? FamModel.commands[id] : COMMANDS[id]);
+// The ribbon and its commands belong to the document showing: the project's, the family editor's, or an annotation family's
+const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : app.doc === "annotation" ? ANN_RIBBON : RIBBON);
+const commandFor = (id) => (app.doc === "family" ? FamModel.commands[id] : app.doc === "annotation" ? AnnModel.commands[id] : COMMANDS[id]);
 
 function renderTabs() {
   const tabs = $("#tabs");
@@ -250,16 +249,18 @@ function drawFamContext(c, ctx) {
 function setDoc(kind) {
   if (app.doc === kind) return;
   app.doc = kind;
-  $("#app").classList.toggle("fam", kind === "family");
+  // model and annotation families share the family document shell; an annotation family has a canvas of its own
+  $("#app").classList.toggle("fam", kind !== "project");
+  $("#app").classList.toggle("ann", kind === "annotation");
   renderTabs();
   if (kind === "project") { updateTitle(); setPrompt("Ready."); }
   renderDocTabs();
 }
 function renderDocTabs() {
   const bar = $("#doc-tabs");
-  const fam = FamModel.docInfo();
-  bar.hidden = !fam;
-  if (!fam) { bar.replaceChildren(); return; }
+  const fam = FamModel.docInfo(), ann = AnnModel.docInfo();
+  bar.hidden = !fam && !ann;
+  if (!fam && !ann) { bar.replaceChildren(); return; }
   const name = app.info && app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const mk = (label, active, onclick, onclose) => {
     const t = el("div", { className: "dtab" + (active ? " active" : ""), title: label }, [el("span", { textContent: label })]);
@@ -269,7 +270,8 @@ function renderDocTabs() {
   };
   bar.replaceChildren(
     mk(name, app.doc === "project", () => setDoc("project")),
-    mk(`Family: ${fam.name}${fam.dirty ? " *" : ""}`, app.doc === "family", () => FamModel.activate(), () => FamModel.close()),
+    ...(fam ? [mk(`Family: ${fam.name}${fam.dirty ? " *" : ""}`, app.doc === "family", () => FamModel.activate(), () => FamModel.close())] : []),
+    ...(ann ? [mk(`Family: ${ann.name}${ann.dirty ? " *" : ""}`, app.doc === "annotation", () => AnnModel.activate(), () => AnnModel.close())] : []),
   );
 }
 
@@ -364,7 +366,7 @@ function selectTab(name) {
     grp.append(items, lab);
     ribbon.appendChild(grp);
   }
-  if (app.doc === "family") FamModel.syncRibbon(); else updateRibbonContext();
+  if (app.doc === "family") FamModel.syncRibbon(); else if (app.doc === "annotation") AnnModel.syncRibbon(); else updateRibbonContext();
 }
 
 // ---- project browser -----------------------------------------------------------
@@ -414,8 +416,11 @@ function renderTree() {
       const byCat = new Map();
       for (const f of app.info.families) {
         if (!byCat.has(f.category)) byCat.set(f.category, []);
-        byCat.get(f.category).push({ name: f.name, children: app.info.family_types.filter((t) => t.family_id === f.id).map((t) => leaf(t.name)) });
+        const types = app.info.family_types.filter((t) => t.family_id === f.id).map((t) => ({ ...leaf(t.name, false, () => openTypeProperties(t.id)), menu: [{ label: "Type Properties...", run: () => openTypeProperties(t.id) }] }));
+        byCat.get(f.category).push({ name: f.name, children: types, menu: familyMenu(f) });
       }
+      // level heads, elevation marks and section marks are annotation families: Edit opens them as documents
+      if (app.info.annotation_families.length) byCat.set("Annotation Symbols", app.info.annotation_families.map((f) => ({ name: f.name, title: f.category, onopen: () => AnnModel.open(f.id), menu: annotationMenu(f) })));
       byCat.set("Floors", [{ name: "Floor", children: app.info.floor_types.map((t) => leaf(t.name)) }]);
       byCat.set("Roofs", [{ name: "Basic Roof", children: app.info.roof_types.map((t) => leaf(t.name)) }]);
       byCat.set("Walls", [{ name: "Basic Wall", children: app.info.wall_types.map((t) => leaf(t.name)) }]);
@@ -430,6 +435,8 @@ function renderTree() {
       const li = document.createElement("li");
       const span = document.createElement("span");
       span.textContent = n.name;
+      if (n.title) span.title = n.title;
+      if (n.menu) span.oncontextmenu = (e) => { e.preventDefault(); showMenu(e.clientX, e.clientY, n.menu); };
       li.appendChild(span);
       if (n.children) {
         if (n.children.length) {
@@ -451,6 +458,67 @@ function renderTree() {
     }
   };
   build(nodes, tree);
+}
+
+// Right-click menus of the Project Browser's families
+function familyMenu(f) {
+  return [
+    { label: "Edit", run: () => FamModel.open(f.id), disabled: !f.has_body, title: f.has_body ? "" : "Drawn by code, not editable" },
+    { label: "Duplicate...", run: () => duplicateTypePrompt(f.id, async () => { await refresh(); }, "duplicate_family") },
+    { label: "Save as File...", run: () => FamModel.exportFamily(f.id, f.name) },
+  ];
+}
+function annotationMenu(f) {
+  const open = () => AnnModel.isOpen(f.id) && (setPrompt(`${f.name} is open in the family editor; close it there first.`, true), true);
+  return [
+    { label: "Edit", run: () => AnnModel.open(f.id) },
+    { label: "Duplicate...", run: () => duplicateTypePrompt(f.id, async () => { await refresh(); }, "duplicate_annotation_family") },
+    { label: "Rename...", run: () => { if (!open()) renameAnnotationFamily(f); } },
+    { label: "Delete", disabled: f.in_use, title: f.in_use ? "In use by a level type, an elevation mark or a section" : "", run: async () => {
+      if (open()) return;
+      if (await run("delete_annotation_family", { id: f.id })) { await refresh(); setPrompt(`Deleted ${f.name}.`); }
+    } },
+  ];
+}
+function renameAnnotationFamily(f) {
+  openModal("Rename", (body, foot, close) => {
+    const inp = el("input", { type: "text", value: f.name });
+    inp.style.width = "100%";
+    const msg = el("div", { className: "modal-msg" });
+    body.append(inp, msg);
+    const ok = async () => {
+      try {
+        const fam = await Backend.call("annotation_family", { id: f.id });
+        fam.name = inp.value.trim();
+        await Backend.call("set_annotation_family", { id: f.id, family: fam });
+      } catch (e) { msg.textContent = String(e.message || e); return; }
+      close();
+      await refresh();
+    };
+    inp.onkeydown = (e) => { if (e.key === "Enter") ok(); };
+    foot.append(button("OK", ok, true), button("Cancel", close));
+    inp.focus(); inp.select();
+  });
+}
+
+// A small menu at the cursor; it goes on a choice, a click elsewhere or Escape
+function showMenu(x, y, items) {
+  document.querySelectorAll(".ctx-menu").forEach((m) => m.remove());
+  const menu = el("div", { className: "ctx-menu" });
+  const shut = () => { menu.remove(); document.removeEventListener("mousedown", away, true); document.removeEventListener("keydown", esc, true); };
+  const away = (e) => { if (!menu.contains(e.target)) shut(); };
+  const esc = (e) => { if (e.key === "Escape") { e.stopPropagation(); shut(); } };
+  for (const it of items) {
+    const b = el("button", { textContent: it.label, disabled: !!it.disabled, title: it.title || "" });
+    b.onclick = () => { shut(); it.run(); };
+    menu.append(b);
+  }
+  document.body.append(menu);
+  const r = menu.getBoundingClientRect();
+  menu.style.left = `${Math.min(x, innerWidth - r.width - 4)}px`;
+  menu.style.top = `${Math.min(y, innerHeight - r.height - 4)}px`;
+  document.addEventListener("mousedown", away, true);
+  document.addEventListener("keydown", esc, true);
 }
 
 // ---- views ---------------------------------------------------------------------
@@ -627,7 +695,7 @@ async function renderSchedule() {
 
 // ---- document refresh ---------------------------------------------------------
 function updateTitle() {
-  if (app.doc === "family") return;
+  if (app.doc !== "project") return;
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
   const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : "Schedule: Wall and Floor Quantities";
@@ -1500,19 +1568,21 @@ async function deleteSelection() {
 // Undo steps back through the sketch first. With no sketch steps left it leaves the sketch (nothing to lose) and carries on into the model.
 async function undo() {
   if (app.doc === "family") { await FamModel.undo(); updateUndoButtons(); return; }
+  if (app.doc === "annotation") { AnnModel.undo(); updateUndoButtons(); return; }
   if (Sketch.active) { if (Sketch.undoOrLeave() === "left") setPrompt("Left the sketch. Undo again to undo the last change to the model."); return; }
   if (app.info.undo) { await run("undo", {}); await refresh(); }
   updateUndoButtons();
 }
 async function redo() {
   if (app.doc === "family") { await FamModel.redo(); updateUndoButtons(); return; }
+  if (app.doc === "annotation") { AnnModel.redo(); updateUndoButtons(); return; }
   if (Sketch.active) { Sketch.redo(); return; }
   if (app.info.redo) { await run("redo", {}); await refresh(); }
 }
 function updateUndoButtons() {
   if (!app.info) return;
   const u = $("#qa-undo"), r = $("#qa-redo");
-  const fs = app.doc === "family" && FamModel.undoState();
+  const fs = (app.doc === "family" && FamModel.undoState()) || (app.doc === "annotation" && AnnModel.undoState());
   if (fs) { u.disabled = !fs.undo; r.disabled = !fs.redo; u.title = fs.undo ? "Undo (Ctrl+Z)" : "Nothing to undo"; r.title = fs.redo ? "Redo (Ctrl+Y)" : "Nothing to redo"; return; }
   const sk = Sketch.active;
   u.disabled = !(app.info.undo || (sk && Sketch.canUndo));
@@ -1523,6 +1593,8 @@ function updateUndoButtons() {
 
 async function save(asNew) {
   if (app.doc === "family") { await FamModel.save(!!asNew); return; }
+  // an annotation family lives in the project: saving it loads it into the project
+  if (app.doc === "annotation") { await AnnModel.save(); return; }
   let path = app.info.path;
   if (!path || asNew) path = await Backend.pickSavePath(path);
   if (!path) return;

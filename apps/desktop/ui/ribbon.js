@@ -88,7 +88,7 @@ const RIBBON = {
     { label: "Additional Settings", items: [
       { id: "m-lineweights", label: "Line Weights", big: true }, { id: "m-linepatterns", label: "Line Patterns", big: true },
       { id: "m-fillpatterns", label: "Fill Patterns", big: true }, { id: "m-tempdim", label: "Temporary Dimensions", big: true },
-      { id: "m-annfam", label: "Annotation Families", big: true }, { id: "m-families", label: "Families", big: true } ] },
+      { id: "m-families", label: "Families", big: true } ] },
     { label: "Export", items: [
       { id: "m-sheets", label: "Sheet Exporter", big: true } ] },
   ],
@@ -130,6 +130,32 @@ const PROJECT_TREE = [
 // Ids start with "f-" and are run by FamModel.commands. Buttons without a command show as "not built yet".
 const FAM_EDITOR_GROUP = { label: "Family Editor", items: [
   { id: "f-load", label: "Load into Project", big: true }, { id: "f-loadclose", label: "Load into Project and Close", big: true } ] };
+// The ribbon of an annotation family document (a level head, an elevation mark, a section mark). Ids start with
+// "a-" and are run by AnnModel.commands.
+const ANN_EDITOR_GROUP = { label: "Family Editor", items: [
+  { id: "a-load", label: "Load into Project", big: true }, { id: "a-loadclose", label: "Load into Project and Close", big: true } ] };
+const ANN_RIBBON = {
+  Create: [
+    { label: "Select", items: [{ id: "a-select", label: "Modify", big: true }] },
+    { label: "Properties", items: [
+      { id: "a-category", label: "Family Category and Parameters", big: true }, { id: "a-types", label: "Family Types", big: true } ] },
+    { label: "Detail", items: [
+      { id: "a-line", label: "Line", big: true }, { id: "a-region", label: "Filled Region", big: true }, { id: "a-mask", label: "Masking Region", big: true },
+      { id: "a-symbol", label: "Symbol", big: true } ] },
+    { label: "Text", items: [{ id: "a-label", label: "Label", big: true }, { id: "a-text", label: "Text", big: true }] },
+    { label: "Datum", items: [{ id: "a-refline", label: "Reference Line", big: true }] },
+    ANN_EDITOR_GROUP,
+  ],
+  View: [
+    { label: "Graphics", items: [{ id: "a-flip", label: "Preview Flipped", big: true }, { id: "a-fit", label: "Zoom to Fit", big: true }] },
+    ANN_EDITOR_GROUP,
+  ],
+  Modify: [
+    { label: "Modify", items: [{ id: "a-select", label: "Modify", big: true }, { id: "a-del", label: "Delete", big: true }] },
+    ANN_EDITOR_GROUP,
+  ],
+};
+
 const FAM_RIBBON = {
   Create: [
     { label: "Select", items: [{ id: "f-select", label: "Select", big: true }] },
