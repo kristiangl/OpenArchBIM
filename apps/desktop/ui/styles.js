@@ -40,6 +40,38 @@
 
   const weights = () => Array.from({ length: 16 }, (_, i) => new Option(String(i + 1), String(i + 1)));
 
+  // Changes in the Materials and pattern windows go into the model as they are made, inside an edit session (as in
+  // Type Properties): Apply keeps them as one undo step and carries on, OK keeps them and closes, Cancel or Escape
+  // undoes everything since the last Apply. Opened from another dialog (to pick something), the views are left for
+  // that dialog to redraw.
+  async function editSession(name, redraw) {
+    let mark;
+    try { mark = (await Backend.call("edit_begin", {})).mark; } catch (e) { return null; }
+    return {
+      async apply() { mark = (await Backend.call("edit_commit", { mark, name })).mark; if (redraw) await refresh(); },
+      async cancel() { try { await Backend.call("edit_cancel", { mark }); } catch (e) { /* nothing to undo */ } if (redraw) await refresh(); },
+    };
+  }
+
+  /** A field that shows a value and opens a picker when clicked (a material, a fill pattern). */
+  function pickerField(text, onclick, { swatch } = {}) {
+    const b = h("button", { className: "picker-field", title: "Click to choose" });
+    if (swatch) { const s = h("span", { className: "mat-chip" }); s.style.background = swatch; b.append(s); }
+    b.append(h("span", { textContent: text }), h("span", { className: "picker-dots", textContent: "..." }));
+    b.onclick = onclick;
+    return b;
+  }
+
+  /**
+   * Choose a material in the Materials window (where materials can also be made and edited). Resolves to the
+   * name picked with OK, or null when cancelled. `extras` are choices that are not materials, listed first
+   * (<By Category>, <Air gap>).
+   */
+  const pickMaterial = (current, extras = []) => openMaterials(current, { pick: true, extras });
+
+  /** Choose a fill pattern; resolves to its name, "" for <No pattern>, or null when cancelled. */
+  const pickFillPattern = (current, preferType) => openPatterns("fill", { pick: true, select: current, tab: preferType });
+
   /** Tiny canvas that shows a dash array (paper mm) as a line. */
   function linePreview(dash) {
     const c = h("canvas", { width: 160, height: 14 });
@@ -57,7 +89,6 @@
     if (!std) return;
     const os = clone(std.object_styles);
     const patterns = std.line_patterns.map((p) => p.pattern.name);
-    const materials = std.materials.map((m) => m.material.name);
     const draft = {}; // merge patch of what changed
     const tabs = { model: "Model Objects", annotation: "Annotation Objects", imported: "Imported Objects" };
     let tab = "model";
@@ -107,7 +138,13 @@
         tr.append(h("td", {}, colorInput(st.color, (c) => setField(cat, sub, "color", c))));
         tr.append(h("td", {}, select(patterns, st.pattern, (v) => setField(cat, sub, "pattern", v))));
         if (tab === "model") {
-          tr.append(h("td", {}, select(materials, st.material || "", (v) => setField(cat, sub, "material", v || null), { blank: "" })));
+          // the Materials window picks the material, so a new one can be made on the way
+          tr.append(h("td", {}, pickerField(st.material || "<None>", async () => {
+            const name = await pickMaterial(st.material || "", ["<None>"]);
+            if (name == null) return;
+            setField(cat, sub, "material", name === "<None>" ? null : name);
+            render();
+          })));
         }
         return tr;
       };
@@ -172,13 +209,19 @@
   }
 
   // ------------------------------------------------------------------ Materials
-  async function openMaterials(selectName) {
+  // Opened on its own (Manage > Materials) it edits the project's materials. Opened to pick one (`pick`), OK also
+  // hands back the material selected; `extras` are choices that are not materials, listed first.
+  async function openMaterials(selectName, { pick = false, extras = [] } = {}) {
     let std = await run("standards", {});
-    if (!std) return;
+    if (!std) return null;
+    const ses = await editSession("Materials", !pick);
+    if (!ses) return null;
     let current = selectName || (std.materials[0] && std.materials[0].material.name);
     let tab = "graphics";
+    let done;
+    const result = new Promise((r) => { done = r; });
 
-    openModal("Materials", (body, foot, close) => {
+    openModal(pick ? "Material Browser" : "Materials", (body, foot, close) => {
       const msg = h("div", { className: "modal-msg" });
       const list = h("div", { className: "mat-list" });
       const pane = h("div", { className: "mat-pane" });
@@ -186,7 +229,12 @@
       const left = h("div", { className: "mat-left" }, search, list);
       body.append(h("div", { className: "mat-split" }, left, pane), msg);
       const find = () => std.materials.find((m) => m.material.name === current);
-      const fills = () => std.fill_patterns.map((p) => p.pattern.name);
+      const finish = async (how) => {
+        if (how === "cancel") { await ses.cancel(); close(); done(null); return; }
+        await ses.apply();
+        if (how === "ok") { close(); done(pick ? current : null); }
+      };
+      body.closest(".modal-back").onEscape = () => finish("cancel");
 
       async function patch(patchObj) {
         const m = find();
@@ -194,19 +242,30 @@
         msg.textContent = err || "";
         std = await Backend.call("standards");
         if (!err && patchObj.name) current = patchObj.name;
-        await refresh();
         render();
       }
 
+      // a surface or cut pattern is chosen in the Fill Patterns window, on the tab it belongs to
       const patternRow = (label, key) => {
         const g = find().material.graphics[key];
+        const kind = std.fill_patterns.find((p) => p.pattern.name === g.pattern);
+        const prefer = kind ? kind.pattern.pattern_type : key.startsWith("surface") ? "model" : "drafting";
         return h("tr", {}, h("td", { textContent: label }),
-          h("td", {}, select(fills(), g.pattern || "", (v) => patch({ graphics: { [key]: { pattern: v || null } } }), { blank: "<None>" })),
+          h("td", {}, pickerField(g.pattern || "<None>", async () => {
+            const name = await pickFillPattern(g.pattern || "", prefer);
+            if (name == null) return;
+            std = await Backend.call("standards"); // the pattern may be new
+            patch({ graphics: { [key]: { pattern: name || null } } });
+          })),
           h("td", {}, colorInput(g.color || [0, 0, 0], (c) => patch({ graphics: { [key]: { color: c } } }))));
       };
 
       function renderPane() {
         pane.replaceChildren();
+        if (extras.includes(current)) {
+          pane.append(h("p", { className: "note", textContent: current === "<By Category>" ? "The layer takes the material of its category in Object Styles." : current === "<Air gap>" ? "A cavity: the layer is left empty and carries no material." : "No material." }));
+          return;
+        }
         const m = find();
         if (!m) { pane.append(h("p", { className: "note", textContent: "No material selected." })); return; }
         const mat = m.material;
@@ -253,7 +312,13 @@
 
       function renderList() {
         const q = search.value.toLowerCase();
-        list.replaceChildren(...std.materials
+        const extraItems = extras.filter((x) => x.toLowerCase().includes(q)).map((x) => {
+          const b = h("button", { className: "mat-item mat-extra" + (x === current ? " active" : ""), textContent: x });
+          b.onclick = () => { current = x; render(); };
+          b.ondblclick = () => pick && finish("ok");
+          return b;
+        });
+        list.replaceChildren(...extraItems, ...std.materials
           .filter((m) => m.material.name.toLowerCase().includes(q))
           .sort((a, b) => a.material.name.localeCompare(b.material.name))
           .map((m) => {
@@ -261,20 +326,26 @@
             b.append(h("span", { className: "mat-chip" }), m.material.name);
             b.firstChild.style.background = toHex(m.material.graphics.shading_color);
             b.onclick = () => { current = m.material.name; render(); };
+            b.ondblclick = () => pick && finish("ok");
             return b;
           }));
       }
       search.oninput = renderList;
       function render() { renderList(); renderPane(); }
 
+      const unique = (base) => { let n = base, k = 2; while (std.materials.some((x) => x.material.name === n)) n = `${base} ${k++}`; return n; };
+      const made = async (r, n) => { if (r) { std = await Backend.call("standards"); current = n; msg.textContent = ""; render(); } };
+      const add = h("button", { textContent: "New", title: "Create a new material" });
+      add.onclick = async () => {
+        const n = unique("New Material");
+        made(await Backend.call("add_style_item", { item: { kind: "material", name: n, class: "Generic" } }).then((x) => x, (e) => { msg.textContent = errText(e); return null; }), n);
+      };
       const dup = h("button", { textContent: "Duplicate" });
       dup.onclick = async () => {
         const m = find();
         if (!m) return;
-        let n = `${m.material.name} copy`;
-        while (std.materials.some((x) => x.material.name === n)) n += " 2";
-        const r = await Backend.call("add_style_item", { copy_of: m.id, name: n }).then((x) => x, (e) => { msg.textContent = errText(e); return null; });
-        if (r) { std = await Backend.call("standards"); current = n; msg.textContent = ""; render(); }
+        const n = unique(`${m.material.name} copy`);
+        made(await Backend.call("add_style_item", { copy_of: m.id, name: n }).then((x) => x, (e) => { msg.textContent = errText(e); return null; }), n);
       };
       const del = h("button", { textContent: "Delete" });
       del.onclick = async () => {
@@ -284,10 +355,11 @@
         msg.textContent = err || "";
         if (!err) { std = await Backend.call("standards"); current = std.materials[0] && std.materials[0].material.name; render(); }
       };
-      left.append(h("div", { className: "row" }, dup, del));
-      foot.append(button("Close", close, true));
+      left.append(h("div", { className: "row" }, add, dup, del));
+      foot.append(button("OK", () => finish("ok"), true), button("Cancel", () => finish("cancel")), button("Apply", () => finish("apply")));
       render();
     }, { wide: true });
+    return result;
   }
 
   // ------------------------------------------------------------------ Line Weights
@@ -334,19 +406,37 @@
   }
 
   // ------------------------------------------------------------------ Line and fill patterns
-  async function openPatterns(kind) {
+  // Fill patterns sit on two tabs, Drafting (fixed on paper, for cut patterns) and Model (fixed in the model, as real
+  // bricks or tiles are, for surfaces); Solid fill is on both. A new pattern is of the tab it is made on. Opened to
+  // pick a fill pattern (`pick`), OK hands back the one selected ("" for <No pattern>).
+  const NO_PATTERN = "<No pattern>";
+  async function openPatterns(kind, { pick = false, select: chosen, tab: firstTab } = {}) {
     let std = await run("standards", {});
-    if (!std) return;
+    if (!std) return null;
     const isLine = kind === "line";
     const key = isLine ? "line_patterns" : "fill_patterns";
-    let current = std[key][0] && std[key][0].pattern.name;
+    const ses = await editSession(isLine ? "Line Patterns" : "Fill Patterns", !pick);
+    if (!ses) return null;
+    const known = std[key].find((p) => p.pattern.name === chosen);
+    let tab = isLine ? null : known && !known.pattern.solid ? known.pattern.pattern_type : firstTab || "drafting";
+    const onTab = (p) => isLine || p.pattern.solid || p.pattern.pattern_type === tab;
+    let current = pick && chosen === "" ? NO_PATTERN : known ? chosen : (std[key].find(onTab) || {}).pattern?.name;
+    let done;
+    const result = new Promise((r) => { done = r; });
     openModal(isLine ? "Line Patterns" : "Fill Patterns", (body, foot, close) => {
       const msg = h("div", { className: "modal-msg" });
       const list = h("div", { className: "mat-list" });
       const pane = h("div", { className: "mat-pane" });
-      const left = h("div", { className: "mat-left" }, list);
+      const tabs = h("div", { className: "modal-tabs" });
+      const left = h("div", { className: "mat-left" }, ...(isLine ? [] : [tabs]), list);
       body.append(h("div", { className: "mat-split" }, left, pane), msg);
       const find = () => std[key].find((p) => p.pattern.name === current);
+      const finish = async (how) => {
+        if (how === "cancel") { await ses.cancel(); close(); done(null); return; }
+        await ses.apply();
+        if (how === "ok") { close(); done(pick ? (current === NO_PATTERN ? "" : current) : null); }
+      };
+      body.closest(".modal-back").onEscape = () => finish("cancel");
 
       async function patch(patchObj) {
         const p = find();
@@ -354,12 +444,12 @@
         msg.textContent = err || "";
         std = await Backend.call("standards");
         if (!err && patchObj.name) current = patchObj.name;
-        await refresh();
         render();
       }
 
       function renderPane() {
         pane.replaceChildren();
+        if (current === NO_PATTERN) { pane.append(h("p", { className: "note", textContent: "No pattern: the surface or cut is left unfilled." })); return; }
         const p = find();
         if (!p) return;
         const pat = p.pattern;
@@ -392,11 +482,9 @@
             pane.append(add);
           }
         } else {
-          const typeSel = select([new Option("Drafting (fixed on paper)", "drafting"), new Option("Model (fixed in the model)", "model")], pat.pattern_type, (v) => patch({ pattern_type: v }));
-          typeSel.disabled = ro;
           const solid = h("input", { type: "checkbox", checked: pat.solid, disabled: ro });
           solid.onchange = () => patch({ solid: solid.checked });
-          pane.append(h("label", {}, "Type ", typeSel), h("label", {}, solid, " Solid fill"));
+          pane.append(h("p", { className: "note", textContent: pat.solid ? "Solid fill: used on both tabs." : pat.pattern_type === "model" ? "Model pattern: fixed in the model, as real bricks or tiles are." : "Drafting pattern: fixed on paper, the same at every scale." }), h("label", {}, solid, " Solid fill"));
           const t = h("table", { className: "vg" });
           const head = t.createTHead().insertRow();
           ["Angle", "Origin X", "Origin Y", "Shift", "Spacing", "Dashes"].forEach((c) => head.append(h("th", { textContent: c })));
@@ -426,22 +514,46 @@
       }
 
       function renderList() {
-        list.replaceChildren(...std[key].map((p) => {
-          const b = h("button", { className: "mat-item" + (p.pattern.name === current ? " active" : ""), textContent: p.pattern.name });
-          b.onclick = () => { current = p.pattern.name; render(); };
+        if (!isLine) {
+          tabs.replaceChildren(...[["drafting", "Drafting"], ["model", "Model"]].map(([k, label]) => {
+            const b = h("button", { textContent: label, className: k === tab ? "active" : "" });
+            b.onclick = () => {
+              tab = k;
+              if (current !== NO_PATTERN && !(find() && onTab(find()))) current = (std[key].find(onTab) || {}).pattern?.name;
+              render();
+            };
+            return b;
+          }));
+        }
+        const item = (name, onclick) => {
+          const b = h("button", { className: "mat-item" + (name === current ? " active" : ""), textContent: name });
+          b.onclick = onclick;
+          b.ondblclick = () => pick && finish("ok");
           return b;
-        }));
+        };
+        list.replaceChildren(
+          ...(pick && !isLine ? [item(NO_PATTERN, () => { current = NO_PATTERN; render(); })] : []),
+          ...std[key].filter(onTab).map((p) => item(p.pattern.name, () => { current = p.pattern.name; render(); })),
+        );
       }
       function render() { renderList(); renderPane(); }
 
-      const dup = h("button", { textContent: "New (copy)" });
+      const unique = (base) => { let n = base, k = 2; while (std[key].some((x) => x.pattern.name === n)) n = `${base} ${k++}`; return n; };
+      const made = async (r, n) => { if (r) { std = await Backend.call("standards"); current = n; msg.textContent = ""; render(); } };
+      const add = h("button", { textContent: "New", title: isLine ? "A new line pattern" : "A new pattern on this tab" });
+      add.onclick = async () => {
+        const n = unique(isLine ? "New Line Pattern" : tab === "model" ? "New Model Pattern" : "New Drafting Pattern");
+        const item = isLine
+          ? { kind: "line_pattern", name: n, segments: [{ kind: "dash", length_mm: 3 }, { kind: "space", length_mm: 1.5 }] }
+          : { kind: "fill_pattern", name: n, pattern_type: tab, lines: [{ angle_deg: 45, origin: [0, 0], shift: 0, spacing: tab === "model" ? 100 : 3, dashes: [] }] };
+        made(await Backend.call("add_style_item", { item }).then((x) => x, (e) => { msg.textContent = errText(e); return null; }), n);
+      };
+      const dup = h("button", { textContent: "Duplicate" });
       dup.onclick = async () => {
         const p = find();
         if (!p) return;
-        let n = `${p.pattern.name} copy`;
-        while (std[key].some((x) => x.pattern.name === n)) n += " 2";
-        const r = await Backend.call("add_style_item", { copy_of: p.id, name: n }).then((x) => x, (e) => { msg.textContent = errText(e); return null; });
-        if (r) { std = await Backend.call("standards"); current = n; msg.textContent = ""; render(); }
+        const n = unique(`${p.pattern.name} copy`);
+        made(await Backend.call("add_style_item", { copy_of: p.id, name: n }).then((x) => x, (e) => { msg.textContent = errText(e); return null; }), n);
       };
       const del = h("button", { textContent: "Delete" });
       del.onclick = async () => {
@@ -449,13 +561,14 @@
         if (!p) return;
         const err = await Backend.call("delete_style_item", { id: p.id }).then(() => null, errText);
         msg.textContent = err || "";
-        if (!err) { std = await Backend.call("standards"); current = std[key][0] && std[key][0].pattern.name; render(); }
+        if (!err) { std = await Backend.call("standards"); current = (std[key].find(onTab) || {}).pattern?.name; render(); }
       };
-      left.append(h("div", { className: "row" }, dup, del));
-      foot.append(button("Close", close, true));
+      left.append(h("div", { className: "row" }, add, dup, del));
+      foot.append(button("OK", () => finish("ok"), true), button("Cancel", () => finish("cancel")), button("Apply", () => finish("apply")));
       render();
     }, { wide: true });
+    return result;
   }
 
-  Object.assign(window, { openObjectStyles, openMaterials, openLineWeights, openPatterns });
+  Object.assign(window, { openObjectStyles, openMaterials, openLineWeights, openPatterns, pickMaterial, pickFillPattern, pickerField });
 })();

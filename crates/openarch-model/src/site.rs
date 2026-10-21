@@ -651,6 +651,28 @@ impl Document {
 
     /// Projects saved before the visual style was drawn: elevation and 3D views take Hidden Line (standard linework). Run once,
     /// when a project of an older format opens, so a style chosen afterwards is kept.
+    /// Projects saved before format 3 gave every new plan a pale wash over floors. Where a plan or a template still
+    /// has exactly that override it goes, so floors show their own surface pattern (or none).
+    pub fn clear_old_floor_wash(&mut self) {
+        let wash = View::old_floor_wash();
+        let views: Vec<(Id, View)> = self.views().into_iter().filter(|(_, v)| v.settings.overrides.model.get("Floors") == Some(&wash)).map(|(id, v)| (id, v.clone())).collect();
+        let templates: Vec<(Id, crate::view::ViewTemplate)> = self.view_templates().into_iter().filter(|(_, t)| t.settings.overrides.model.get("Floors") == Some(&wash)).map(|(id, t)| (id, t.clone())).collect();
+        if views.is_empty() && templates.is_empty() {
+            return;
+        }
+        let _ = self.transact("Clear the floor wash in plans", |tx| {
+            for (id, mut v) in views {
+                v.settings.overrides.model.remove("Floors");
+                tx.update(id, Element::View(v))?;
+            }
+            for (id, mut t) in templates {
+                t.settings.overrides.model.remove("Floors");
+                tx.update(id, Element::ViewTemplate(t))?;
+            }
+            Ok(())
+        });
+    }
+
     pub fn use_hidden_line_in_elevations_and_3d(&mut self) {
         let todo: Vec<(Id, View)> = self
             .views()

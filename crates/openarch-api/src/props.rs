@@ -44,6 +44,12 @@ fn select(label: &str, opts: Vec<(String, Value, bool)>) -> Value {
     })
 }
 
+/// A fill pattern, chosen in the Fill Patterns window (opened on the `prefer` tab, drafting or model); the patch
+/// sets `path` to the name, or to null for no pattern.
+fn fill_pattern_row(label: &str, path: &str, current: Option<&str>, prefer: &str) -> Value {
+    json!({ "label": label, "value": current.unwrap_or("<none>"), "raw": current, "kind": "fill_pattern", "path": path, "prefer": prefer })
+}
+
 fn dialog(label: &str, name: &str, button: &str) -> Value {
     json!({ "label": label, "value": button, "kind": "dialog", "dialog": name })
 }
@@ -520,9 +526,6 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         }
         _ => construction.push(ro("Default Thickness", format!("{}", v.thickness_mm))),
     }
-    let patterns: Vec<(String, Value, bool)> = std::iter::once(("<none>".to_string(), json!({ "coarse_fill": { "pattern": null } }), coarse.pattern.is_none()))
-        .chain(d.fill_patterns().iter().map(|(_, p)| (p.name.clone(), json!({ "coarse_fill": { "pattern": p.name } }), coarse.pattern.as_deref() == Some(p.name.as_str()))))
-        .collect();
     let colour = coarse.color.unwrap_or([0, 0, 0]);
     let fmt = |x: Option<f64>, digits: usize, unit: &str| x.map_or(String::new(), |x| format!("{x:.digits$} {unit}"));
     let roughness: Vec<(String, Value, bool)> = [(1, "1 (Very Rough)"), (2, "2 (Rough)"), (3, "3 (Medium Rough)"), (4, "4 (Medium Smooth)"), (5, "5 (Smooth)"), (6, "6 (Very Smooth)")]
@@ -552,7 +555,7 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         "groups": [
             group("Construction", construction),
             group("Graphics", vec![
-                select("Coarse Scale Fill Pattern", patterns),
+                fill_pattern_row("Coarse Scale Fill Pattern", "coarse_fill.pattern", coarse.pattern.as_deref(), "drafting"),
                 json!({ "label": "Coarse Scale Fill Color", "value": format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2]), "raw": colour, "kind": "color", "path": "coarse_fill.color" }),
             ]),
             group("Materials and Finishes", vec![ro("Structural Material", v.structural_material.clone().unwrap_or_else(|| "<By Category>".into()))]),

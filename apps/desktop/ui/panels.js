@@ -49,6 +49,12 @@ function rowCells(r, target) {
       applyPatch(target, patch);
     };
     val.append(dis(cb));
+  } else if (r.kind === "fill_pattern") {
+    // chosen in the Fill Patterns window, where a pattern can be made on the way
+    val.append(dis(pickerField(r.value, async () => {
+      const name = await pickFillPattern(r.raw || "", r.prefer);
+      if (name != null) applyPatch(target, nestPatch(r.path, name || null));
+    })));
   } else if (r.kind === "color") {
     const inp = document.createElement("input");
     inp.type = "color";

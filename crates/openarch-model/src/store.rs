@@ -9,7 +9,8 @@ use crate::doc::Document;
 use crate::element::{Element, Id};
 
 /// 2: elevation and 3D views draw in the Hidden Line style (before this the setting had no effect).
-const FORMAT_VERSION: i64 = 2;
+/// 3: plans no longer put a pale wash over floors.
+const FORMAT_VERSION: i64 = 3;
 
 impl Document {
     /// Write the project. The file is written beside the target and renamed into
@@ -69,6 +70,9 @@ impl Document {
         d.ensure_view_types(); // projects saved before view types
         if v < 2 {
             d.use_hidden_line_in_elevations_and_3d(); // projects saved before the visual style was drawn
+        }
+        if v < 3 {
+            d.clear_old_floor_wash(); // projects saved while new plans washed floors pale blue
         }
         Ok(d)
     }
@@ -134,6 +138,35 @@ mod tests {
         o.save(&path).unwrap();
         let again = Document::open(&path).unwrap();
         assert_eq!(again.view(id).unwrap().settings.visual_style, VisualStyle::Shaded);
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn plans_no_longer_wash_floors_and_older_projects_lose_the_wash_once() {
+        use crate::view::{View, ViewKind};
+        let mut d = Document::new_project();
+        let plans: Vec<Id> = d.views().into_iter().filter(|(_, v)| v.view_kind == ViewKind::FloorPlan).map(|(i, _)| i).collect();
+        assert!(plans.iter().all(|p| !d.view(*p).unwrap().settings.overrides.model.contains_key("Floors")));
+        // an older project: every plan has the wash, except one where the person changed it
+        for (k, id) in plans.iter().enumerate() {
+            let mut v = d.view(*id).unwrap().clone();
+            let mut wash = View::old_floor_wash();
+            if k == 0 {
+                wash.transparency = 40;
+            }
+            v.settings.overrides.model.insert("Floors".into(), wash);
+            d.transact("old", |tx| tx.update(*id, Element::View(v))).unwrap();
+        }
+        let dir = std::env::temp_dir().join(format!("openarch-test-wash-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("old.oab");
+        d.save(&path).unwrap();
+        let old = Connection::open(&path).unwrap();
+        old.execute("UPDATE meta SET value = '2' WHERE key = 'format_version'", []).unwrap();
+        drop(old);
+        let o = Document::open(&path).unwrap();
+        assert_eq!(o.view(plans[0]).unwrap().settings.overrides.model.get("Floors").map(|c| c.transparency), Some(40), "a changed override stays");
+        assert!(plans[1..].iter().all(|p| !o.view(*p).unwrap().settings.overrides.model.contains_key("Floors")));
         std::fs::remove_dir_all(dir).ok();
     }
 

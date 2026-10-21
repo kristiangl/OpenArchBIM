@@ -674,15 +674,15 @@ fn default_column_offset() -> f64 {
 }
 
 impl View {
-    pub fn floor_plan(name: &str, level: Id) -> View {
-        // new plans show floors as a pale translucent wash so slabs read at a
-        // glance; it is an ordinary category override, so it can be cleared
-        let mut settings = ViewSettings::default();
+    /// The pale translucent wash plans gave floors before format 3. Floors now draw from their materials and
+    /// Object Styles like everything else; older projects lose the wash once when it is still exactly this.
+    pub(crate) fn old_floor_wash() -> CategoryOverride {
         let wash = FillOverride { visible: true, color: Some([120, 160, 200]), pattern: Some("Solid fill".into()) };
-        settings.overrides.model.insert(
-            "Floors".into(),
-            CategoryOverride { surface_foreground: wash.clone(), cut_foreground: wash, transparency: 75, ..CategoryOverride::default() },
-        );
+        CategoryOverride { surface_foreground: wash.clone(), cut_foreground: wash, transparency: 75, ..CategoryOverride::default() }
+    }
+
+    pub fn floor_plan(name: &str, level: Id) -> View {
+        let mut settings = ViewSettings::default();
         for cat in SITE_POINT_CATEGORIES {
             settings.overrides.model.insert(cat.into(), CategoryOverride { visible: false, ..CategoryOverride::default() });
         }

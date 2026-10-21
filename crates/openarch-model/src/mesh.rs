@@ -6,7 +6,7 @@ use crate::element::{Floor, Wall};
 use crate::roof::Roof;
 use crate::family::{FamilyCategory, Opening};
 use crate::hosting::InstanceFrame;
-use crate::geom::{signed_area, triangulate, triangulate_region, Point};
+use crate::geom::{signed_area, triangulate_region, Point};
 use crate::layers::WallLayers;
 use crate::view::Color;
 
@@ -30,6 +30,34 @@ fn prism(out: &mut Vec<f32>, poly: &[Point], tris: &[[usize; 3]], z0: f64, z1: f
         tri(out, v(a, z1), v(b, z1), v(c, z1), [0., 0., 1.]);
         tri(out, v(a, z0), v(c, z0), v(b, z0), [0., 0., -1.]);
     }
+    prism_sides(out, poly, z0, z1);
+}
+
+/// A flat face at height `z` over each of `shapes` (an outline and its holes), facing up or down.
+fn cap(out: &mut Vec<f32>, shapes: &[crate::layers::Shape], z: f64, up: bool) {
+    for s in shapes {
+        let Some(outer) = s.first() else { continue };
+        // a sliver left where two bands nearly agree is not a face
+        if signed_area(outer).abs() < 10.0 {
+            continue;
+        }
+        let region = crate::geom::Region { outer: outer.clone(), holes: s[1..].to_vec() };
+        let Some((pts, tris)) = triangulate_region(&region) else { continue };
+        let v = |p: Point| [p.x, p.y, z];
+        for t in tris {
+            let (a, b, c) = (pts[t[0]], pts[t[1]], pts[t[2]]);
+            if up {
+                tri(out, v(a), v(b), v(c), [0., 0., 1.]);
+            } else {
+                tri(out, v(a), v(c), v(b), [0., 0., -1.]);
+            }
+        }
+    }
+}
+
+/// The upright sides of a counter-clockwise polygon extruded between z0 and z1.
+fn prism_sides(out: &mut Vec<f32>, poly: &[Point], z0: f64, z1: f64) {
+    let v = |p: Point, z: f64| [p.x, p.y, z];
     let n = poly.len();
     for i in 0..n {
         let (a, b) = (poly[i], poly[(i + 1) % n]);
@@ -96,7 +124,10 @@ pub struct LayerMesh {
 /// Meshes for a wall built layer by layer. The wall is cut into height bands at
 /// the tops and bottoms of its openings, and each band takes the plan layers
 /// as they are at that height, so openings, jamb wrapping and joins all carry
-/// over from the plan geometry. Void layers are skipped.
+/// over from the plan geometry. Void layers are skipped. A band has a top or
+/// bottom face only where nothing solid sits on it or under it (a sill, a head,
+/// the top and base of the wall), so the bands make one closed surface with no
+/// faces hidden inside the wall.
 pub fn wall_layer_meshes(doc: &Document, id: u64, w: &Wall, wl: &WallLayers) -> Vec<LayerMesh> {
     let (z0, z1) = doc.wall_extent(w);
     if z1 <= z0 || wl.layers.is_empty() {
@@ -121,9 +152,13 @@ pub fn wall_layer_meshes(doc: &Document, id: u64, w: &Wall, wl: &WallLayers) -> 
             verts: vec![],
         })
         .collect();
-    for band in zs.windows(2) {
-        let layers = doc.wall_plan_layers(id, wl, Some((band[0] + band[1]) / 2.0));
-        for (k, l) in layers.iter().enumerate() {
+    let bands: Vec<_> = zs.windows(2).map(|b| doc.wall_plan_layers(id, wl, Some((b[0] + b[1]) / 2.0))).collect();
+    // everything solid in a band, in plan
+    let solid = |bi: usize| -> Vec<crate::layers::Ring> { bands[bi].iter().filter(|l| !l.is_void).flat_map(|l| l.shapes.iter().filter_map(|s| s.first().cloned())).collect() };
+    for (bi, band) in zs.windows(2).enumerate() {
+        let below = if bi > 0 { solid(bi - 1) } else { vec![] };
+        let above = if bi + 1 < bands.len() { solid(bi + 1) } else { vec![] };
+        for (k, l) in bands[bi].iter().enumerate() {
             if l.is_void {
                 continue;
             }
@@ -133,9 +168,12 @@ pub fn wall_layer_meshes(doc: &Document, id: u64, w: &Wall, wl: &WallLayers) -> 
                 if signed_area(&ring) < 0.0 {
                     ring.reverse();
                 }
-                if let Some(tris) = triangulate(&ring) {
-                    prism(&mut out[k].verts, &ring, &tris, band[0], band[1]);
+                if ring.len() < 3 || signed_area(&ring).abs() < 1e-6 {
+                    continue;
                 }
+                prism_sides(&mut out[k].verts, &ring, band[0], band[1]);
+                cap(&mut out[k].verts, &crate::layers::subtract(&ring, &above), band[1], true);
+                cap(&mut out[k].verts, &crate::layers::subtract(&ring, &below), band[0], false);
             }
         }
     }
@@ -411,6 +449,40 @@ mod tests {
         assert_eq!(xs.iter().cloned().fold(f32::MIN, f32::max), 5.0);
         assert_eq!(zs.iter().cloned().fold(f32::MIN, f32::max), 2.7);
         assert_eq!(zs.iter().cloned().fold(f32::MAX, f32::min), 0.0);
+    }
+
+    #[test]
+    fn layered_walls_have_no_faces_inside_them_round_an_opening() {
+        // A window cuts the wall into height bands. Only the sill, the head, the top and the base are flat faces;
+        // a band sitting on another has no face between them, which drew as lines across the wall in 3D.
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let wt = d.wall_types().into_iter().find(|(_, t)| t.name == "Double Brick Cavity").unwrap().0;
+        let id = d.add_wall(wt, lvl, p(0., 0.), p(6000., 0.), 2700.).unwrap();
+        let ty = d.family_types().into_iter().find(|(_, t)| d.family(t.family).is_some_and(|f| f.category == FamilyCategory::Windows)).unwrap().0;
+        let win = d.place_on_wall(ty, id, p(3000., 0.)).unwrap();
+        let f = d.instance_frame(win).unwrap();
+        let Some(Element::Wall(w)) = d.get(id).cloned() else { panic!() };
+        let wl = d.wall_layer_geometry().remove(&id).unwrap();
+        let meshes = wall_layer_meshes(&d, id, &w, &wl);
+        assert!(!meshes.is_empty());
+        let (z_top, half) = (2.7, f.width / 2000.0 + 0.2);
+        for m in &meshes {
+            for t in m.verts.chunks(18) {
+                let (zs, nz) = ([t[2], t[8], t[14]], t[5]);
+                if nz.abs() < 0.5 {
+                    continue; // an upright face
+                }
+                let z = zs[0] as f64;
+                if z.abs() < 1e-4 || (z - z_top).abs() < 1e-4 {
+                    continue; // the base and the top of the wall
+                }
+                // a flat face part way up must be the sill or the head of the window
+                let cx = (t[0] + t[6] + t[12]) as f64 / 3.0;
+                assert!((cx - 3.0).abs() < half, "a face inside the wall at z {z}, x {cx}");
+                assert!((z - f.z0 / 1000.0).abs() < 1e-3 || (z - f.z1 / 1000.0).abs() < 1e-3, "flat face at {z}");
+            }
+        }
     }
 
     #[test]

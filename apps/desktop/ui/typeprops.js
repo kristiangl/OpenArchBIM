@@ -146,7 +146,7 @@ async function openEditAssembly(t, onOk) {
   const wall = kind === "wall";
   let std = null;
   try { std = await Backend.call("standards"); } catch (e) { std = { materials: [] }; }
-  const mats = std.materials.map((m) => m.material);
+  let mats = std.materials.map((m) => m.material);
   const shade = (name) => { const m = mats.find((x) => x.name === name); const c = m && m.graphics && m.graphics.shading_color; return c ? `rgb(${c[0]},${c[1]},${c[2]})` : "#d8d8d8"; };
   // the rows: layers, with the two core boundaries in among them
   const rows = [];
@@ -259,18 +259,18 @@ async function openEditAssembly(t, onOk) {
       s.onchange = () => { const k = Number(s.value); l.priority = k === def ? null : k; update(); };
       return s;
     };
+    // The material is chosen in the Material Browser, where a new one can be made on the way. <By Category> and
+    // <Air gap> (a cavity, which carries no material) head its list.
     const matSelect = (l) => {
-      const s = document.createElement("select");
-      s.add(new Option("<By Category>", "", false, !l.is_void && !l.material));
-      for (const m of mats) s.add(new Option(m.name, m.name, false, !l.is_void && l.material === m.name));
-      // a cavity carries no material
-      s.add(new Option("<Air gap>", "\u0000void", false, !!l.is_void));
-      if (!l.is_void && l.material && !mats.some((m) => m.name === l.material)) s.add(new Option(l.material, l.material, false, true));
-      s.onchange = () => {
-        if (s.value === "\u0000void") { l.is_void = true; l.material = l.material || "Cavity"; l.structural_material = false; } else { l.is_void = false; l.material = s.value; }
+      const shown = l.is_void ? "<Air gap>" : l.material || "<By Category>";
+      return pickerField(shown, async () => {
+        const name = await pickMaterial(shown, ["<By Category>", "<Air gap>"]);
+        if (name == null) return;
+        try { std = await Backend.call("standards"); mats = std.materials.map((m) => m.material); } catch (e) { /* keep the list we have */ }
+        if (name === "<Air gap>") { l.is_void = true; l.material = l.material || "Cavity"; l.structural_material = false; }
+        else { l.is_void = false; l.material = name === "<By Category>" ? "" : name; }
         update();
-      };
-      return s;
+      }, { swatch: l.is_void || !l.material ? null : shade(l.material) });
     };
     const check = (on, enabled, set) => {
       const c = document.createElement("input");

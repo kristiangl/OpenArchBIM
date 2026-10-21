@@ -729,6 +729,14 @@ const FamModel = (() => {
     const wrap = el("span"); wrap.append(i, dl);
     return wrap;
   }
+  // a material is chosen in the Material Browser (where a new one can be made); <By Category> leaves it to the subcategory
+  function matIn(value, onchange) {
+    const shown = value || "<By Category>";
+    return pickerField(shown, async () => {
+      const n = await pickMaterial(shown, ["<By Category>"]);
+      if (n != null) onchange(n === "<By Category>" ? "" : n);
+    });
+  }
   function checkIn(value, onchange) { const i = el("input"); i.type = "checkbox"; i.checked = !!value; i.onchange = () => onchange(i.checked); return i; }
   function selIn(options, value, onchange) {
     const s = el("select");
@@ -924,7 +932,7 @@ const FamModel = (() => {
       r.append(field("Cuts the host", checkIn(f.cuts_host !== false, (v) => change((b) => { formById(f.id).cuts_host = v; }, true))));
     } else {
       const mp = f.material_param && S.params.find((p) => p.name === f.material_param && p.param_kind === "material") ? f.material_param : null;
-      r.append(assocRow("Material", "material", mp, textIn(f.material || "", (v) => change((b) => { formById(f.id).material = v; }, true), { list: (app.info.materials || []).map((m) => m.name || m) }), (name, add) => change((b) => {
+      r.append(assocRow("Material", "material", mp, matIn(f.material || "", (v) => change((b) => { formById(f.id).material = v; }, true)), (name, add) => change((b) => {
         if (add) S.params.push(add);
         formById(f.id).material_param = name;
       })));
@@ -1080,7 +1088,7 @@ const FamModel = (() => {
     coordRow(r, "Horizontal", t.u, (v) => change((b) => { mtextById(t.id).u = v; }), tax[0]);
     coordRow(r, "Vertical", t.v, (v) => change((b) => { mtextById(t.id).v = v; }), tax[1]);
     const mp = t.material_param && S.params.find((p) => p.name === t.material_param && p.param_kind === "material") ? t.material_param : null;
-    r.append(assocRow("Material", "material", mp, textIn(t.material || "", (v) => set((x) => { x.material = v; }), { list: (app.info.materials || []).map((m) => m.name || m) }), (name, add) => change((b) => { if (add) S.params.push(add); mtextById(t.id).material_param = name; })));
+    r.append(assocRow("Material", "material", mp, matIn(t.material || "", (v) => set((x) => { x.material = v; })), (name, add) => change((b) => { if (add) S.params.push(add); mtextById(t.id).material_param = name; })));
     r.append(field("Subcategory", textIn(t.subcategory || "", (v) => set((x) => { x.subcategory = v; }), { list: SUBS })));
     graphicsRows(r, t, (b) => mtextById(t.id));
   }
@@ -1252,7 +1260,8 @@ const FamModel = (() => {
         let inp;
         if (p.param_kind === "yes_no") inp = checkIn(cur0, (v) => setValue(p, v));
         else if (p.choices && p.choices.length) inp = selIn(p.choices.map((x) => [x, x]), cur0, (v) => setValue(p, v));
-        else inp = textIn(showValue(cur0), (v) => setValue(p, ["text", "material"].includes(p.param_kind) ? v : num(v)));
+        else if (p.param_kind === "material") inp = matIn(cur0 || "", (v) => setValue(p, v));
+        else inp = textIn(showValue(cur0), (v) => setValue(p, p.param_kind === "text" ? v : num(v)));
         if (p.locked) inp.disabled = true;
         c.append(inp);
         return c;

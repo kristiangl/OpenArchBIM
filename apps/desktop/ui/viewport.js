@@ -162,30 +162,78 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
 
   // The edges Hidden Line and Wireframe draw: those on one triangle only (the boundary of a surface) and those where
   // two triangles meet at more than 30 degrees. Flat faces and the gentle facets of a curved one draw no line.
-  function featureEdges(v) {
+  // `list` is every mesh as { data, group }; meshes in one group (the layers of joined walls in one material) are
+  // taken together, so where two of them meet flush there is no line. A seam where one triangle edge meets several
+  // along the same line (a T-junction, as where a wall face is cut into bands round an opening) is matched piece by
+  // piece, so only the parts with a surface on one side draw. Returns the edge lines of each mesh.
+  function featureEdges(list) {
     const q = (x) => Math.round(x * 1000);
-    const map = new Map();
-    for (let i = 0; i + 17 < v.length; i += 18) {
-      const P = [[v[i], v[i + 1], v[i + 2]], [v[i + 6], v[i + 7], v[i + 8]], [v[i + 12], v[i + 13], v[i + 14]]];
-      const e1 = [P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]], e2 = [P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]];
-      let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
-      const l = Math.hypot(...n);
-      if (l < 1e-9) continue;
-      n = [n[0] / l, n[1] / l, n[2] / l];
-      for (let k = 0; k < 3; k++) {
-        const a = P[k], b = P[(k + 1) % 3], ka = `${q(a[0])},${q(a[1])},${q(a[2])}`, kb = `${q(b[0])},${q(b[1])},${q(b[2])}`;
-        const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
-        let e = map.get(key);
-        if (!e) { e = { a, b, ns: [] }; map.set(key, e); }
-        e.ns.push(n);
+    const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    const out = list.map(() => []);
+    const groups = new Map();
+    list.forEach((m, mi) => { if (!groups.has(m.group)) groups.set(m.group, []); groups.get(m.group).push(mi); });
+    for (const members of groups.values()) {
+      const map = new Map();
+      for (const mi of members) {
+        const v = list[mi].data;
+        for (let i = 0; i + 17 < v.length; i += 18) {
+          const P = [[v[i], v[i + 1], v[i + 2]], [v[i + 6], v[i + 7], v[i + 8]], [v[i + 12], v[i + 13], v[i + 14]]];
+          const e1 = [P[1][0] - P[0][0], P[1][1] - P[0][1], P[1][2] - P[0][2]], e2 = [P[2][0] - P[0][0], P[2][1] - P[0][1], P[2][2] - P[0][2]];
+          let n = [e1[1] * e2[2] - e1[2] * e2[1], e1[2] * e2[0] - e1[0] * e2[2], e1[0] * e2[1] - e1[1] * e2[0]];
+          const l = Math.hypot(...n);
+          if (l < 1e-9) continue;
+          n = [n[0] / l, n[1] / l, n[2] / l];
+          for (let k = 0; k < 3; k++) {
+            const a = P[k], b = P[(k + 1) % 3], ka = `${q(a[0])},${q(a[1])},${q(a[2])}`, kb = `${q(b[0])},${q(b[1])},${q(b[2])}`;
+            const key = ka < kb ? `${ka}|${kb}` : `${kb}|${ka}`;
+            let e = map.get(key);
+            if (!e) { e = { a, b, ns: [], mesh: mi }; map.set(key, e); }
+            e.ns.push(n);
+          }
+        }
+      }
+      const loose = [];
+      for (const e of map.values()) {
+        if (e.ns.length === 1) { loose.push(e); continue; }
+        if (e.ns.length !== 2 || dot(e.ns[0], e.ns[1]) < 0.866) out[e.mesh].push(...e.a, ...e.b);
+      }
+      // edges on one triangle only, by the line they lie on and the plane of their triangle: split at one another's
+      // ends, a piece with a triangle either side is a seam inside a flat face
+      const lines = new Map();
+      for (const e of loose) {
+        let d = [e.b[0] - e.a[0], e.b[1] - e.a[1], e.b[2] - e.a[2]];
+        const l = Math.hypot(...d);
+        if (l < 1e-9) continue;
+        d = d.map((x) => x / l);
+        const flip = d[0] < -1e-9 || (Math.abs(d[0]) <= 1e-9 && (d[1] < -1e-9 || (Math.abs(d[1]) <= 1e-9 && d[2] < 0)));
+        if (flip) d = d.map((x) => -x);
+        const s = dot(e.a, d), foot = [e.a[0] - d[0] * s, e.a[1] - d[1] * s, e.a[2] - d[2] * s];
+        const key = [...d.map((x) => Math.round(x * 1e4)), ...foot.map((x) => Math.round(x * 10)), ...e.ns[0].map((x) => Math.round(x * 1e3))].join(",");
+        const t0 = dot(e.a, d), t1 = dot(e.b, d);
+        if (!lines.has(key)) lines.set(key, []);
+        lines.get(key).push({ lo: Math.min(t0, t1), hi: Math.max(t0, t1), d, foot, mesh: e.mesh });
+      }
+      for (const segs of lines.values()) {
+        if (segs.length === 1) {
+          const s = segs[0];
+          out[s.mesh].push(...s.foot.map((f, k) => f + s.d[k] * s.lo), ...s.foot.map((f, k) => f + s.d[k] * s.hi));
+          continue;
+        }
+        const ts = segs.flatMap((s) => [s.lo, s.hi]).sort((a, b) => a - b).filter((t, i, a) => i === 0 || t - a[i - 1] > 1e-4);
+        const pieces = new Map(); // index of the piece between ts[i] and ts[i + 1] -> the segments covering it
+        for (const s of segs) {
+          for (let i = 0; i + 1 < ts.length; i++) {
+            if (ts[i] >= s.lo - 1e-4 && ts[i + 1] <= s.hi + 1e-4) { if (!pieces.has(i)) pieces.set(i, []); pieces.get(i).push(s); }
+          }
+        }
+        for (const [i, by] of pieces) {
+          if (by.length !== 1) continue;
+          const s = by[0];
+          out[s.mesh].push(...s.foot.map((f, k) => f + s.d[k] * ts[i]), ...s.foot.map((f, k) => f + s.d[k] * ts[i + 1]));
+        }
       }
     }
-    const out = [];
-    for (const e of map.values()) {
-      const keep = e.ns.length !== 2 || e.ns[0][0] * e.ns[1][0] + e.ns[0][1] * e.ns[1][1] + e.ns[0][2] * e.ns[1][2] < 0.866;
-      if (keep) out.push(...e.a, ...e.b);
-    }
-    return new Float32Array(out);
+    return out.map((a) => new Float32Array(a));
   }
 
   // Copy the lines in `src` (x y z r g b pairs) into `out`, cut to what the camera sees (a little beyond the sides of
@@ -611,11 +659,14 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       setMeshes(list, selected = []) {
         for (const m of meshes) be.free(m.g);
         const sel = new Set(selected);
-        meshes = list.map((m) => {
-          const data = new Float32Array(m.verts);
+        const datas = list.map((m) => new Float32Array(m.verts));
+        // wall layers of one material join up, so a flush joint between them draws no line
+        const edges = featureEdges(list.map((m, i) => ({ data: datas[i], group: m.material ? `material:${m.material}` : `mesh:${i}` })));
+        meshes = list.map((m, i) => {
+          const data = datas[i];
           const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
           for (let i = 0; i < data.length; i += 6) for (let k = 0; k < 3; k++) { bounds[0][k] = Math.min(bounds[0][k], data[i + k]); bounds[1][k] = Math.max(bounds[1][k], data[i + k]); }
-          const out = { g: be.mesh(data, featureEdges(data)), id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null };
+          const out = { g: be.mesh(data, edges[i]), id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null };
           writeTint(out, sel.has(m.id));
           return out;
         });
