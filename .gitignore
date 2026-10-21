@@ -3,3 +3,5 @@ node_modules/
 apps/desktop/src-tauri/gen/
 .DS_Store
 .docstage/
+CLAUDE.local.md
+/private/
