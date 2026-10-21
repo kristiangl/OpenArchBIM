@@ -1052,12 +1052,13 @@ impl Session {
                 v["subcategories"] = json!(self.doc.symbol_subcategories(f.kind));
                 v["fill_patterns"] = graphics::fill_pattern_defs(&self.doc);
                 v["drawing"] = json!(self.doc.symbol_drawing(f, true));
+                v["annotation_widths"] = json!(self.doc.line_weights().map(|(_, w)| w.annotation.clone()).unwrap_or_default());
                 Ok(v)
             }
             // the family editor's drawing of a family it is changing, as paths (hidden lines and regions marked)
             "annotation_paths" => {
                 let mut f: openarch_model::annotation::AnnotationFamily = serde_json::from_value(p.get("family").cloned().ok_or("missing family")?).map_err(|e| format!("bad family: {e}"))?;
-                f.read_old_shapes();
+                f.read_old_drawing();
                 Ok(json!(self.doc.symbol_drawing(&f, true)))
             }
             // a filled or masking region's sketch: its edges grouped into closed loops
@@ -2739,7 +2740,7 @@ mod tests {
         assert_eq!(secs.len(), 1);
         assert_eq!(secs[0]["id"].as_u64(), Some(sec));
         assert!(secs[0]["family"]["pointer"]["fills"].as_array().unwrap().len() >= 1);
-        let labels: Vec<String> = secs[0]["labels"].as_array().unwrap().iter().flat_map(|l| l["lines"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string())).collect();
+        let labels: Vec<String> = secs[0]["labels"].as_array().unwrap().iter().flat_map(|l| l["lines"].as_array().unwrap().iter().flat_map(|x| x.as_array().unwrap().iter().map(|p| p.as_str().unwrap().trim().to_string())).collect::<Vec<_>>()).collect();
         assert!(labels.contains(&"Section 1".to_string()) && labels.contains(&"-".to_string()), "{labels:?}");
         // the view is listed and draws cut walls with the material's cut style
         let info = call(&mut s, "doc_info", json!({}));
@@ -3089,21 +3090,21 @@ mod tests {
         let data = call(&mut s, "elevation", json!({ "view_id": ev }));
         assert_eq!(data["scale"], 100.0);
         let l1 = data["levels"].as_array().unwrap().iter().find(|l| l["name"] == "Level 1").unwrap();
-        assert_eq!(l1["head"]["labels"][0]["lines"][0], "Level 1");
-        assert_eq!(l1["head"]["labels"][1]["lines"][0], "3000 AHD");
+        assert_eq!(l1["head"]["labels"][0]["lines"][0][0], "Level 1");
+        assert_eq!(l1["head"]["labels"][1]["lines"][0][0], "3000 AHD");
         // the level number is a label parameter; the family editor saves the whole family
         let mut f = call(&mut s, "annotation_family", json!({ "id": head }));
         assert!(f["params"].as_array().unwrap().iter().any(|p| p == "Level Number"));
-        f["labels"][0]["lines"] = json!([{ "param": "Level Number", "prefix": "L", "suffix": "", "sample": "1" }, { "param": "Name", "prefix": "", "suffix": "", "sample": "Ground" }]);
+        f["labels"][0]["params"] = json!([{ "param": "Level Number", "prefix": "L", "suffix": "", "sample": "1", "break": true }, { "param": "Name", "prefix": "", "suffix": "", "sample": "Ground" }]);
         call(&mut s, "set_annotation_family", json!({ "id": head, "family": f }));
         let lid = info["levels"].as_array().unwrap().iter().find(|l| l["name"] == "Level 1").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "patch_level", json!({ "id": lid, "patch": { "number": "2" } }));
         let data = call(&mut s, "elevation", json!({ "view_id": ev }));
         let l1 = data["levels"].as_array().unwrap().iter().find(|l| l["name"] == "Level 1").unwrap();
-        assert_eq!(l1["head"]["labels"][0]["lines"], json!(["L2", "Level 1"]));
+        assert_eq!(l1["head"]["labels"][0]["lines"], json!([["L2"], ["Level 1"]]));
         let bad = f.clone();
         let mut bad = bad;
-        bad["labels"][0]["lines"][0]["param"] = json!("Width");
+        bad["labels"][0]["params"][0]["param"] = json!("Width");
         assert!(s.handle("set_annotation_family", &json!({ "id": head, "family": bad })).is_err());
         // the family editor draws a family it is changing, groups a region's sketch into loops, and describes curves
         let paths = call(&mut s, "annotation_paths", json!({ "family": f }));

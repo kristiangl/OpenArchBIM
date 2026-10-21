@@ -179,7 +179,7 @@ pub enum VAlign {
     Bottom,
 }
 
-/// One line of a label: a parameter with the text round it. `sample` is what the family editor shows.
+/// A line of a label as labels were saved before label types: one parameter with the text round it.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct LabelLine {
     pub param: String,
@@ -197,7 +197,114 @@ impl LabelLine {
     }
 }
 
-/// A block of text, one line per label parameter, anchored at (`x`, `y`) on paper.
+/// One parameter of a label, as the Edit Label dialog lists it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LabelParam {
+    pub param: String,
+    /// Spaces between this parameter and the next (none after a break).
+    #[serde(default = "one")]
+    pub spaces: u8,
+    #[serde(default)]
+    pub prefix: String,
+    #[serde(default)]
+    pub suffix: String,
+    /// What the family editor shows in its place (the parameter's name when empty).
+    #[serde(default)]
+    pub sample: String,
+    /// A new line starts after this parameter.
+    #[serde(default, rename = "break")]
+    pub brk: bool,
+}
+
+impl LabelParam {
+    pub fn new(param: &str, prefix: &str, suffix: &str, sample: &str, brk: bool) -> LabelParam {
+        LabelParam { param: param.into(), spaces: 1, prefix: prefix.into(), suffix: suffix.into(), sample: sample.into(), brk }
+    }
+}
+
+/// A text type: how a label or a piece of text of an annotation family is written. Labels and text have types of
+/// their own (`label_types`, `text_types`), with the same settings.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextType {
+    pub name: String,
+    #[serde(default = "arial")]
+    pub font: String,
+    /// Text height on paper, mm.
+    pub size_mm: f64,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub underline: bool,
+    /// Letters stretched (above 1) or narrowed (below 1); the height stays.
+    #[serde(default = "unit")]
+    pub width_factor: f64,
+    #[serde(default)]
+    pub color: Color,
+    /// Line weight (1 to 16) of the border.
+    #[serde(default = "one")]
+    pub line_weight: u8,
+    /// Background: opaque hides what is behind the text, transparent lets it show.
+    #[serde(default)]
+    pub opaque: bool,
+    #[serde(default)]
+    pub show_border: bool,
+    /// Gap between the text and its border, mm.
+    #[serde(default = "border_offset")]
+    pub border_offset_mm: f64,
+    #[serde(default = "tab_size")]
+    pub tab_size_mm: f64,
+}
+
+fn arial() -> String {
+    "Arial".into()
+}
+
+fn unit() -> f64 {
+    1.0
+}
+
+fn border_offset() -> f64 {
+    1.0
+}
+
+fn tab_size() -> f64 {
+    12.7
+}
+
+impl TextType {
+    pub fn new(name: &str, size_mm: f64, bold: bool) -> TextType {
+        TextType {
+            name: name.into(),
+            font: arial(),
+            size_mm,
+            bold,
+            italic: false,
+            underline: false,
+            width_factor: 1.0,
+            color: [0, 0, 0],
+            line_weight: 1,
+            opaque: false,
+            show_border: false,
+            border_offset_mm: border_offset(),
+            tab_size_mm: tab_size(),
+        }
+    }
+
+    /// The name a type of this size and weight gets ("2.5mm", "2mm Bold").
+    pub fn name_for(size_mm: f64, bold: bool) -> String {
+        let size = format!("{}", (size_mm * 100.0).round() / 100.0);
+        format!("{size}mm{}", if bold { " Bold" } else { "" })
+    }
+}
+
+fn text_types() -> Vec<TextType> {
+    vec![TextType::new("2.5mm", 2.5, false)]
+}
+
+/// A label: the values of parameters written in a box on paper, anchored at (`x`, `y`). The anchor is the box's
+/// left edge, middle or right edge (`halign`) and its top, middle or bottom (`valign`); text wraps at the box's width.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AnnLabel {
     pub x: f64,
@@ -206,16 +313,60 @@ pub struct AnnLabel {
     pub halign: HAlign,
     #[serde(default)]
     pub valign: VAlign,
-    /// Text height on paper, mm.
-    #[serde(default = "text_size")]
-    pub size_mm: f64,
+    /// The label type, by name.
     #[serde(default)]
-    pub bold: bool,
-    pub lines: Vec<LabelLine>,
+    pub label_type: String,
+    #[serde(default)]
+    pub width_mm: f64,
+    #[serde(default)]
+    pub params: Vec<LabelParam>,
+    /// Wrap only between parameters, not between words.
+    #[serde(default)]
+    pub wrap_params_only: bool,
+    /// Never upside-down when the label is turned.
+    #[serde(default = "yes")]
+    pub keep_readable: bool,
+    #[serde(default = "yes")]
+    pub visible: bool,
+    /// A label as saved before label types: its text height, weight and lines (read into a type and parameters).
+    #[serde(default, rename = "size_mm", skip_serializing)]
+    pub old_size_mm: Option<f64>,
+    #[serde(default, rename = "bold", skip_serializing)]
+    pub old_bold: Option<bool>,
+    #[serde(default, rename = "lines", skip_serializing)]
+    pub old_lines: Vec<LabelLine>,
 }
 
-fn text_size() -> f64 {
-    2.5
+impl AnnLabel {
+    fn has_old(&self) -> bool {
+        self.old_size_mm.is_some() || !self.old_lines.is_empty()
+    }
+
+    /// A label written with `label_type`, its parameters on lines of their own.
+    pub fn new(x: f64, y: f64, halign: HAlign, valign: VAlign, label_type: &str, width_mm: f64, params: Vec<LabelParam>) -> AnnLabel {
+        AnnLabel { x, y, halign, valign, label_type: label_type.into(), width_mm, params, wrap_params_only: false, keep_readable: true, visible: true, old_size_mm: None, old_bold: None, old_lines: vec![] }
+    }
+}
+
+/// Text written in the family: the same in every project view. `width_mm` 0 is as wide as its longest line.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AnnText {
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub text: String,
+    #[serde(default)]
+    pub text_type: String,
+    #[serde(default)]
+    pub halign: HAlign,
+    #[serde(default)]
+    pub valign: VAlign,
+    #[serde(default)]
+    pub width_mm: f64,
+    #[serde(default = "yes")]
+    pub keep_readable: bool,
+    #[serde(default = "yes")]
+    pub visible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -234,6 +385,12 @@ pub struct AnnotationFamily {
     pub region_types: Vec<RegionType>,
     #[serde(default)]
     pub labels: Vec<AnnLabel>,
+    #[serde(default)]
+    pub texts: Vec<AnnText>,
+    #[serde(default = "text_types")]
+    pub label_types: Vec<TextType>,
+    #[serde(default = "text_types")]
+    pub text_types: Vec<TextType>,
     /// Section markers: how the hidden middle of a broken section line shows (Broken Section Display Style).
     #[serde(default)]
     pub broken_style: BrokenStyle,
@@ -292,12 +449,15 @@ impl AnnotationFamily {
             regions: vec![],
             region_types: region_types(),
             labels,
+            texts: vec![],
+            label_types: text_types(),
+            text_types: text_types(),
             broken_style: BrokenStyle::default(),
             reference_label: reference_label(),
             old_shapes: shapes,
             old_pointer: pointer,
         };
-        f.read_old_shapes();
+        f.read_old_drawing();
         f
     }
 
@@ -309,8 +469,8 @@ impl AnnotationFamily {
             vec![line([0.0, 0.0], [30.0, 0.0]), AnnShape::Polygon { pts: vec![[1.5, 3.0], [4.5, 3.0], [3.0, 0.0]], filled: true }],
             vec![],
             vec![
-                AnnLabel { x: 6.5, y: 0.8, halign: HAlign::Left, valign: VAlign::Bottom, size_mm: 2.5, bold: true, lines: vec![LabelLine::new("Name", "", "", "Level 1")] },
-                AnnLabel { x: 6.5, y: -0.8, halign: HAlign::Left, valign: VAlign::Top, size_mm: 2.5, bold: false, lines: vec![LabelLine::new(elevation_param, "", suffix, "3000")] },
+                old_label(6.5, 0.8, HAlign::Left, VAlign::Bottom, 2.5, true, vec![LabelLine::new("Name", "", "", "Level 1")]),
+                old_label(6.5, -0.8, HAlign::Left, VAlign::Top, 2.5, false, vec![LabelLine::new(elevation_param, "", suffix, "3000")]),
             ],
         )
     }
@@ -335,21 +495,28 @@ impl AnnotationFamily {
             shapes,
             pointer,
             vec![
-                AnnLabel { x: -6.0, y: 0.0, halign: HAlign::Right, valign: VAlign::Middle, size_mm: 2.5, bold: false, lines: vec![LabelLine::new("View Name", "", "", "Section 1")] },
-                AnnLabel { x: 0.0, y: 2.0, halign: HAlign::Center, valign: VAlign::Middle, size_mm: 2.0, bold: true, lines: vec![LabelLine::new("View Number", "", "", "1")] },
-                AnnLabel { x: 0.0, y: -2.0, halign: HAlign::Center, valign: VAlign::Middle, size_mm: 2.0, bold: false, lines: vec![LabelLine::new("Sheet Number", "", "", "A101")] },
+                old_label(-6.0, 0.0, HAlign::Right, VAlign::Middle, 2.5, false, vec![LabelLine::new("View Name", "", "", "Section 1")]),
+                old_label(0.0, 2.0, HAlign::Center, VAlign::Middle, 2.0, true, vec![LabelLine::new("View Number", "", "", "1")]),
+                old_label(0.0, -2.0, HAlign::Center, VAlign::Middle, 2.0, false, vec![LabelLine::new("Sheet Number", "", "", "A101")]),
                 // shows on reference sections only
-                AnnLabel { x: 0.0, y: -5.0, halign: HAlign::Center, valign: VAlign::Top, size_mm: 2.0, bold: false, lines: vec![LabelLine::new("Reference Label", "", "", "SIM")] },
+                old_label(0.0, -5.0, HAlign::Center, VAlign::Top, 2.0, false, vec![LabelLine::new("Reference Label", "", "", "SIM")]),
             ],
         )
     }
 
-    /// Read the shapes of an older project into lines and regions. A filled shape becomes a solid filled region with
-    /// invisible edges; an outline (which used to hide what lay behind it) becomes lines over a masking region.
-    /// Returns whether there was anything to read.
-    pub fn read_old_shapes(&mut self) -> bool {
+    /// Whether the family still has the shapes or labels of an older project.
+    pub fn has_old_drawing(&self) -> bool {
+        !self.old_shapes.is_empty() || !self.old_pointer.is_empty() || self.labels.iter().any(|l| l.has_old())
+    }
+
+    /// Read the drawing of an older project into lines, regions and labels with types. A filled shape becomes a
+    /// solid filled region with invisible edges; an outline (which used to hide what lay behind it) becomes lines over
+    /// a masking region; a label's text height and weight become a label type, its lines parameters with a break
+    /// after each. Returns whether there was anything to read.
+    pub fn read_old_drawing(&mut self) -> bool {
+        let labels = self.read_old_labels();
         if self.old_shapes.is_empty() && self.old_pointer.is_empty() {
-            return false;
+            return labels;
         }
         let solid = self.region_types.first().map_or_else(|| SOLID_FILLED.to_string(), |t| t.name.clone());
         let lists = [(std::mem::take(&mut self.old_shapes), false), (std::mem::take(&mut self.old_pointer), true)];
@@ -390,10 +557,47 @@ impl AnnotationFamily {
         true
     }
 
+    fn read_old_labels(&mut self) -> bool {
+        let mut types: Vec<(String, f64, bool)> = vec![];
+        for lb in self.labels.iter_mut().filter(|l| l.has_old()) {
+            let size = lb.old_size_mm.take().unwrap_or(2.5);
+            let bold = lb.old_bold.take().unwrap_or(false);
+            let lines = std::mem::take(&mut lb.old_lines);
+            let n = lines.len();
+            // labels had no box: names get a wide one, so long names do not wrap; numbers one round their sample
+            let wide = lines.iter().any(|l| l.param == "Name" || l.param == "View Name");
+            let chars = lines.iter().map(|l| (l.prefix.len() + l.sample.len() + l.suffix.len()) as f64).fold(1.0, f64::max);
+            lb.width_mm = if wide { 40.0 } else { (chars * size * 0.7 + size).max(8.0) };
+            lb.label_type = TextType::name_for(size, bold);
+            lb.params = lines.into_iter().enumerate().map(|(k, l)| LabelParam::new(&l.param, &l.prefix, &l.suffix, &l.sample, k + 1 < n)).collect();
+            types.push((lb.label_type.clone(), size, bold));
+        }
+        let read = !types.is_empty();
+        for (name, size, bold) in types {
+            if !self.label_types.iter().any(|t| t.name == name) {
+                self.label_types.push(TextType::new(&name, size, bold));
+            }
+        }
+        read
+    }
+
+    pub fn label_type(&self, name: &str) -> Option<&TextType> {
+        self.label_types.iter().find(|t| t.name == name).or_else(|| self.label_types.first())
+    }
+
+    pub fn text_type(&self, name: &str) -> Option<&TextType> {
+        self.text_types.iter().find(|t| t.name == name).or_else(|| self.text_types.first())
+    }
+
     /// A filled region type by name (the first type when there is none of that name).
     pub fn region_type(&self, name: &str) -> Option<&RegionType> {
         self.region_types.iter().find(|t| t.name == name).or_else(|| self.region_types.first())
     }
+}
+
+/// A label as the shipped families wrote it before label types (read into a type and parameters).
+fn old_label(x: f64, y: f64, halign: HAlign, valign: VAlign, size_mm: f64, bold: bool, lines: Vec<LabelLine>) -> AnnLabel {
+    AnnLabel { old_size_mm: Some(size_mm), old_bold: Some(bold), old_lines: lines, ..AnnLabel::new(x, y, halign, valign, "", 0.0, vec![]) }
 }
 
 /// The section marker's drawing as it was before lines and regions.
@@ -471,23 +675,55 @@ pub struct SymbolDrawing {
     pub pointer: SymbolPaths,
 }
 
-/// A level head with its label text worked out, ready to draw.
+/// A text type worked out for drawing: the border's width comes from its line weight.
 #[derive(Debug, Clone, Serialize)]
-pub struct DrawnLabel {
+pub struct TextStyle {
+    pub font: String,
+    pub size_mm: f64,
+    pub bold: bool,
+    pub italic: bool,
+    pub underline: bool,
+    pub width_factor: f64,
+    pub color: Color,
+    pub opaque: bool,
+    pub show_border: bool,
+    pub border_offset_mm: f64,
+    pub line_mm: f64,
+    pub tab_size_mm: f64,
+}
+
+/// Where text in a box may wrap: between words, or only between a label's parameters.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Wrap {
+    Words,
+    Pieces,
+}
+
+/// A label or a piece of text ready to draw: its lines (a label breaks them where a parameter says), each the pieces
+/// it is made of (a parameter's value with its prefix, suffix and the spaces after it), in a box `width_mm` wide
+/// (0: as wide as the text). The canvas wraps them in the box, since it knows the font.
+#[derive(Debug, Clone, Serialize)]
+pub struct DrawnText {
     pub x: f64,
     pub y: f64,
     pub halign: HAlign,
     pub valign: VAlign,
-    pub size_mm: f64,
-    pub bold: bool,
-    pub lines: Vec<String>,
+    pub width_mm: f64,
+    pub lines: Vec<Vec<String>>,
+    pub wrap: Wrap,
+    pub style: TextStyle,
+    pub label: Option<usize>,
+    pub text: Option<usize>,
+    /// Not shown in a project (not visible); the family editor shows it greyed.
+    pub hidden: bool,
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct DrawnHead {
     pub family: Id,
     pub paths: SymbolPaths,
-    pub labels: Vec<DrawnLabel>,
+    pub labels: Vec<DrawnText>,
 }
 
 impl Document {
@@ -552,20 +788,84 @@ impl Document {
     /// The head a level is drawn with, its labels filled in.
     pub fn drawn_head(&self, l: &Level) -> Option<DrawnHead> {
         let (id, f) = self.level_head_family(l)?;
-        let labels = f
-            .labels
-            .iter()
-            .map(|lb| DrawnLabel {
+        let labels = self.symbol_texts(f, &|p| self.level_param(l, p), false);
+        Some(DrawnHead { family: id, paths: self.symbol_drawing(f, false).body, labels })
+    }
+
+    fn text_style(&self, t: Option<&TextType>) -> TextStyle {
+        let t = t.cloned().unwrap_or_else(|| TextType::new("", 2.5, false));
+        let line_mm = self.line_weights().map_or(0.18, |(_, w)| w.annotation_width(t.line_weight));
+        TextStyle {
+            font: t.font,
+            size_mm: t.size_mm,
+            bold: t.bold,
+            italic: t.italic,
+            underline: t.underline,
+            width_factor: t.width_factor,
+            color: t.color,
+            opaque: t.opaque,
+            show_border: t.show_border,
+            border_offset_mm: t.border_offset_mm,
+            line_mm,
+            tab_size_mm: t.tab_size_mm,
+        }
+    }
+
+    /// A family's labels, with `value` giving what each parameter reads (`None` leaves it and its spaces out, and a
+    /// line left empty goes), then its text. A project leaves out what is not visible; the family editor (`editing`)
+    /// keeps it, marked hidden.
+    pub fn symbol_texts(&self, f: &AnnotationFamily, value: &dyn Fn(&str) -> Option<String>, editing: bool) -> Vec<DrawnText> {
+        let mut out = vec![];
+        for (i, lb) in f.labels.iter().enumerate() {
+            if !lb.visible && !editing {
+                continue;
+            }
+            let mut lines: Vec<Vec<String>> = vec![];
+            let mut line: Vec<String> = vec![];
+            for (k, p) in lb.params.iter().enumerate() {
+                if let Some(v) = value(&p.param) {
+                    let gap = if p.brk || k + 1 == lb.params.len() { 0 } else { p.spaces as usize };
+                    line.push(format!("{}{}{}{}", p.prefix, v, p.suffix, " ".repeat(gap)));
+                }
+                if p.brk {
+                    lines.push(std::mem::take(&mut line));
+                }
+            }
+            lines.push(line);
+            lines.retain(|l| !l.is_empty());
+            out.push(DrawnText {
                 x: lb.x,
                 y: lb.y,
                 halign: lb.halign,
                 valign: lb.valign,
-                size_mm: lb.size_mm,
-                bold: lb.bold,
-                lines: lb.lines.iter().filter_map(|ln| self.level_param(l, &ln.param).map(|v| format!("{}{}{}", ln.prefix, v, ln.suffix))).collect(),
-            })
-            .collect();
-        Some(DrawnHead { family: id, paths: self.symbol_drawing(f, false).body, labels })
+                width_mm: lb.width_mm,
+                lines,
+                wrap: if lb.wrap_params_only { Wrap::Pieces } else { Wrap::Words },
+                style: self.text_style(f.label_type(&lb.label_type)),
+                label: Some(i),
+                text: None,
+                hidden: !lb.visible,
+            });
+        }
+        for (i, t) in f.texts.iter().enumerate() {
+            if !t.visible && !editing {
+                continue;
+            }
+            out.push(DrawnText {
+                x: t.x,
+                y: t.y,
+                halign: t.halign,
+                valign: t.valign,
+                width_mm: t.width_mm,
+                lines: t.text.split('\n').map(|l| vec![l.to_string()]).collect(),
+                wrap: Wrap::Words,
+                style: self.text_style(f.text_type(&t.text_type)),
+                label: None,
+                text: Some(i),
+                hidden: !t.visible,
+            });
+        }
+        out
     }
 
     /// The style a line of a family draws with: its subcategory of the family's category in Object Styles.
@@ -677,7 +977,7 @@ impl Document {
             .map(|(id, f)| {
                 let mut n = f.clone();
                 n.old_pointer = section_marker_shapes().1;
-                if !n.labels.iter().any(|l| l.lines.iter().any(|x| x.param == "View Name")) {
+                if !n.labels.iter().any(|l| l.old_lines.iter().any(|x| x.param == "View Name") || l.params.iter().any(|x| x.param == "View Name")) {
                     n.labels.insert(0, AnnotationFamily::section_marker("").labels.remove(0));
                 }
                 (id, n)
@@ -701,10 +1001,10 @@ impl Document {
         let fixes: Vec<(Id, AnnotationFamily)> = self
             .annotation_families()
             .into_iter()
-            .filter(|(_, f)| !f.old_shapes.is_empty() || !f.old_pointer.is_empty())
+            .filter(|(_, f)| f.has_old_drawing())
             .map(|(id, f)| {
                 let mut n = f.clone();
-                n.read_old_shapes();
+                n.read_old_drawing();
                 (id, n)
             })
             .collect();
@@ -761,6 +1061,54 @@ impl Document {
                 }
             }
         }
+        for (what, types) in [("label", &f.label_types), ("text", &f.text_types)] {
+            if types.is_empty() {
+                return Err(format!("a family needs at least one {what} type"));
+            }
+            for (i, t) in types.iter().enumerate() {
+                if t.name.trim().is_empty() || types[..i].iter().any(|o| o.name == t.name) {
+                    return Err(format!("{what} types need names of their own ('{}')", t.name));
+                }
+                if t.font.trim().is_empty() {
+                    return Err(format!("{}: choose a font", t.name));
+                }
+                if !(t.size_mm.is_finite() && t.size_mm >= 0.2 && t.size_mm <= 20.0) {
+                    return Err(format!("{}: text size must be between 0.2 and 20 mm", t.name));
+                }
+                if !(t.width_factor.is_finite() && (0.1..=10.0).contains(&t.width_factor)) {
+                    return Err(format!("{}: width factor must be between 0.1 and 10", t.name));
+                }
+                if !(1..=crate::styles::MAX_WEIGHT).contains(&t.line_weight) {
+                    return Err(format!("{}: line weight must be 1 to {}", t.name, crate::styles::MAX_WEIGHT));
+                }
+                if !(t.border_offset_mm.is_finite() && (0.0..=20.0).contains(&t.border_offset_mm)) || !(t.tab_size_mm.is_finite() && (0.5..=100.0).contains(&t.tab_size_mm)) {
+                    return Err(format!("{}: the border offset must be 0 to 20 mm and the tab size 0.5 to 100 mm", t.name));
+                }
+            }
+        }
+        let allowed = f.kind.params();
+        let place_ok = |x: f64, y: f64, w: f64| x.is_finite() && y.is_finite() && x.abs() < 1000.0 && y.abs() < 1000.0 && w.is_finite() && (0.0..500.0).contains(&w);
+        for lb in &f.labels {
+            for p in &lb.params {
+                if !allowed.contains(&p.param.as_str()) {
+                    return Err(format!("'{}' is not a label parameter of a {}", p.param, f.kind.label().to_lowercase()));
+                }
+            }
+            if !f.label_types.iter().any(|t| t.name == lb.label_type) {
+                return Err(format!("no label type named '{}'", lb.label_type));
+            }
+            if !place_ok(lb.x, lb.y, lb.width_mm) || lb.width_mm < 0.5 {
+                return Err("a label needs a place within a metre of the reference lines and a width of 0.5 to 500 mm".into());
+            }
+        }
+        for t in &f.texts {
+            if !f.text_types.iter().any(|x| x.name == t.text_type) {
+                return Err(format!("no text type named '{}'", t.text_type));
+            }
+            if !place_ok(t.x, t.y, t.width_mm) {
+                return Err("text needs a place within a metre of the reference lines and a width under 500 mm".into());
+            }
+        }
         for r in &f.regions {
             if r.loops.is_empty() || !r.loops.iter().all(|l| loop_closes(l)) {
                 return Err("a region's boundary must be closed loops".into());
@@ -794,19 +1142,8 @@ impl Document {
         if self.annotation_families().iter().any(|(i, f)| *i != id && f.name == new.name) {
             return Err(format!("a family named '{}' already exists", new.name));
         }
-        let allowed = new.kind.params();
-        for lb in &new.labels {
-            for ln in &lb.lines {
-                if !allowed.contains(&ln.param.as_str()) {
-                    return Err(format!("'{}' is not a label parameter of a {}", ln.param, new.kind.label().to_lowercase()));
-                }
-            }
-            if !(lb.size_mm.is_finite() && lb.size_mm > 0.2 && lb.size_mm < 20.0) {
-                return Err("text height must be between 0.2 and 20 mm".into());
-            }
-        }
         let mut new = new;
-        new.read_old_shapes();
+        new.read_old_drawing();
         self.check_symbol(&new)?;
         if new == *old {
             return Ok(());
@@ -884,8 +1221,8 @@ mod tests {
         assert_eq!(d.annotation_families().iter().filter(|(_, f)| f.kind == AnnotationKind::LevelHead).count(), 2);
         let l = d.levels()[1].1.clone();
         let head = d.drawn_head(&l).unwrap();
-        assert_eq!(head.labels[0].lines, vec!["Level 1".to_string()]);
-        assert_eq!(head.labels[1].lines, vec!["3000".to_string()]);
+        assert_eq!(head.labels[0].lines, vec![vec!["Level 1".to_string()]]);
+        assert_eq!(head.labels[1].lines, vec![vec!["3000".to_string()]]);
         assert!(d.marker_family(None).is_some());
     }
 
@@ -897,7 +1234,7 @@ mod tests {
         d.patch_level_type(t, &serde_json::json!({ "head": ahd })).unwrap();
         let l = d.levels()[1].1.clone();
         let head = d.drawn_head(&l).unwrap();
-        assert_eq!(head.labels[1].lines, vec!["3000 AHD".to_string()]);
+        assert_eq!(head.labels[1].lines, vec![vec!["3000 AHD".to_string()]]);
     }
 
     #[test]
@@ -911,13 +1248,13 @@ mod tests {
     fn families_check_their_labels_and_keep_one_of_each_kind() {
         let mut d = Document::new_project();
         let (id, mut f) = d.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::LevelHead).map(|(i, f)| (i, f.clone())).unwrap();
-        f.labels[0].lines[0].param = "Width".into();
+        f.labels[0].params[0].param = "Width".into();
         assert!(d.set_annotation_family(id, f.clone()).unwrap_err().contains("not a label parameter"));
-        f.labels[0].lines[0].param = "Elevation".into();
-        f.labels[0].lines[0].prefix = "RL ".into();
+        f.labels[0].params[0].param = "Elevation".into();
+        f.labels[0].params[0].prefix = "RL ".into();
         d.set_annotation_family(id, f).unwrap();
         let l = d.levels()[0].1.clone();
-        assert_eq!(d.drawn_head(&l).unwrap().labels[0].lines, vec!["RL 0".to_string()]);
+        assert_eq!(d.drawn_head(&l).unwrap().labels[0].lines, vec![vec!["RL 0".to_string()]]);
         let marker = d.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::ElevationMarker).unwrap().0;
         assert!(d.delete_annotation_family(marker).is_err());
         let copy = d.duplicate_annotation_family(marker, "Marker 2").unwrap();
@@ -1005,5 +1342,69 @@ mod tests {
         let dr = d.symbol_drawing(d.annotation_family(id).unwrap(), false);
         let s = dr.body.strokes.iter().find(|s| s.line == Some(0)).unwrap();
         assert_eq!((s.width_mm, s.color), (0.5, [200, 0, 0]));
+    }
+
+    #[test]
+    fn older_labels_become_label_types_and_parameters() {
+        let d = Document::new_project();
+        let (_, head) = d.annotation_families().into_iter().find(|(_, f)| f.name == "Level Head").unwrap();
+        assert!(head.label_types.iter().any(|t| t.name == "2.5mm") && head.label_types.iter().any(|t| t.name == "2.5mm Bold" && t.bold));
+        assert_eq!(head.labels[0].label_type, "2.5mm Bold");
+        assert_eq!(head.labels[0].width_mm, 40.0, "a name gets a wide box");
+        let (_, mark) = d.section_marker_family(None).unwrap();
+        assert!(mark.label_types.iter().any(|t| t.name == "2mm Bold" && (t.size_mm - 2.0).abs() < 1e-9));
+        assert!(mark.labels.iter().all(|l| !l.has_old() && l.params.len() == 1 && !l.params[0].brk));
+        // a label saved with two lines reads as two parameters with a break between them
+        let old: AnnLabel = serde_json::from_value(serde_json::json!({ "x": 0.0, "y": 0.0, "size_mm": 3.0, "lines": [{ "param": "Name" }, { "param": "Elevation", "suffix": " AHD" }] })).unwrap();
+        let mut f = head.clone();
+        f.labels = vec![old];
+        assert!(f.has_old_drawing() && f.read_old_drawing());
+        assert_eq!(f.labels[0].label_type, "3mm");
+        assert!(f.labels[0].params[0].brk && !f.labels[0].params[1].brk);
+        assert!(f.label_types.iter().any(|t| t.name == "3mm"));
+    }
+
+    #[test]
+    fn labels_join_their_parameters_break_lines_and_leave_out_what_has_no_value() {
+        let mut d = Document::new_project();
+        let (id, mut f) = d.annotation_families().into_iter().find(|(_, f)| f.name == "Level Head").map(|(i, f)| (i, f.clone())).unwrap();
+        let mut name = LabelParam::new("Name", "L-", "", "", false);
+        name.spaces = 2;
+        f.labels[0].params = vec![name, LabelParam::new("Elevation", "", "", "", true), LabelParam::new("Level Number", "No. ", "", "", false)];
+        f.labels[0].wrap_params_only = true;
+        d.set_annotation_family(id, f).unwrap();
+        let t = d.level_types()[0].0;
+        d.patch_level_type(t, &serde_json::json!({ "head": id })).unwrap();
+        let l = d.levels()[1].1.clone();
+        let head = d.drawn_head(&l).unwrap();
+        assert_eq!(head.labels[0].lines, vec![vec!["L-Level 1  ".to_string(), "3000".to_string()]], "no number: its line goes");
+        assert_eq!(head.labels[0].wrap, Wrap::Pieces);
+        assert!(head.labels[0].style.bold && (head.labels[0].style.size_mm - 2.5).abs() < 1e-9);
+    }
+
+    #[test]
+    fn text_draws_as_written_and_types_are_checked() {
+        let mut d = Document::new_project();
+        let (id, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
+        f.texts.push(AnnText { x: 10.0, y: 0.0, text: "SEE\nDETAIL".into(), text_type: "2.5mm".into(), halign: HAlign::Left, valign: VAlign::Middle, width_mm: 0.0, keep_readable: true, visible: true });
+        f.texts.push(AnnText { x: 10.0, y: -5.0, text: "hidden".into(), text_type: "2.5mm".into(), halign: HAlign::Left, valign: VAlign::Middle, width_mm: 0.0, keep_readable: true, visible: false });
+        let mut bad = f.clone();
+        bad.texts[0].text_type = "9mm".into();
+        assert!(d.set_annotation_family(id, bad).unwrap_err().contains("text type"));
+        let mut bad = f.clone();
+        bad.text_types[0].size_mm = 30.0;
+        assert!(d.set_annotation_family(id, bad).unwrap_err().contains("text size"));
+        let mut bad = f.clone();
+        bad.labels[0].label_type = "Huge".into();
+        assert!(d.set_annotation_family(id, bad).unwrap_err().contains("label type"));
+        d.set_annotation_family(id, f).unwrap();
+        let lvl = d.levels()[0].0;
+        let s = d.add_section(lvl, Point::new(0.0, 0.0), Point::new(5000.0, 0.0), false).unwrap();
+        let drawn = d.section_labels(d.section(s).unwrap());
+        let text: Vec<_> = drawn.iter().filter(|t| t.text.is_some()).collect();
+        assert_eq!(text.len(), 1, "text that is not visible stays out of a project");
+        assert_eq!(text[0].lines, vec![vec!["SEE".to_string()], vec!["DETAIL".to_string()]]);
+        let f = d.annotation_family(id).unwrap();
+        assert_eq!(d.symbol_texts(f, &|_| None, true).iter().filter(|t| t.text.is_some()).count(), 2, "the family editor shows it greyed");
     }
 }

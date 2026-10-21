@@ -210,6 +210,23 @@ table.range select, table.range input { width: 100%; padding: 1px 4px; backgroun
 .mat-item.active { background: var(--accent); color: #fff; }
 .mat-chip { width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 2px; flex: none; }
 .mat-item.mat-extra { font-style: italic; }
+/* Edit Label (annotation families): category parameters, add and remove, the label's parameters */
+.el-grid { display: grid; grid-template-columns: 210px auto 1fr; gap: 10px; align-items: start; }
+.el-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.el-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: 3px; max-height: 320px; overflow: auto; }
+.el-list .mat-item.used { color: var(--muted); }
+.el-list .mat-item.used.active { color: #fff; }
+.el-mid { display: flex; flex-direction: column; gap: 6px; padding-top: 60px; }
+.el-table { border-collapse: collapse; width: 100%; font-size: 12px; }
+.el-table th { text-align: left; font-weight: 600; padding: 3px 4px; border-bottom: 1px solid var(--line); }
+.el-table td { padding: 2px 4px; }
+.el-table tr.active td { background: color-mix(in srgb, var(--accent) 18%, transparent); }
+.el-table input[type="text"] { width: 100%; min-width: 60px; }
+.el-table input[type="number"] { width: 48px; }
+.el-row { display: flex; gap: 6px; }
+.el-wrap { display: flex; align-items: center; gap: 4px; }
+/* text typed in place in an annotation family */
+.ann-text-edit { padding: 1px 3px; border: 1.5px solid var(--accent); border-radius: 2px; background: var(--view-bg); color: var(--text); resize: both; line-height: 1.2; }
 .mat-left .modal-tabs { margin: 0; }
 /* a value that opens a picker (Materials, Fill Patterns) when clicked */
 .picker-field { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 120px; padding: 2px 6px; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 2px; cursor: pointer; color: inherit; font: inherit; }

@@ -90,7 +90,7 @@ const Sections = (() => {
     const opt = { pats: H.pats && H.pats() };
     if (o.head) Ann.paths(ctx, fam.body, { x: c.x, y: c.y, k: o.k, rot: 0 }, o.hot, o.bg, opt);
     Ann.paths(ctx, fam.pointer, { x: c.x, y: c.y, k: o.k, rot: lookAngle(look) }, o.hot, o.bg, opt);
-    if (o.head) Ann.labels(ctx, labels, { x: c.x, y: c.y, k: o.k }, o.col);
+    if (o.head) Ann.labels(ctx, labels, { x: c.x, y: c.y, k: o.k }, o.hot, { bg: o.bg });
   }
 
   function strokePath(ctx, pts) {

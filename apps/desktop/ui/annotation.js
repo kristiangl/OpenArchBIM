@@ -78,34 +78,68 @@ const Ann = (() => {
     ctx.restore();
   }
 
-  // labels: each is { x, y, halign, valign, size_mm, bold, lines: [string] } (lines already worked out)
-  function labels(ctx, list, o, color) {
-    ctx.save();
-    ctx.fillStyle = color; ctx.textBaseline = "top";
-    for (const lb of list || []) {
-      const lines = lb.lines || [];
-      if (!lines.length) continue;
-      const px = lb.size_mm * o.k;
-      if (px < 3) continue;
-      const p = mapper({ ...o, rot: 0 })([lb.x, lb.y]);
-      ctx.font = `${lb.bold ? "600 " : ""}${px}px system-ui, sans-serif`;
-      const h = px * 1.2, total = h * lines.length;
-      let ha = lb.halign || "left";
-      if (o.flip) ha = ha === "left" ? "right" : ha === "right" ? "left" : ha;
-      ctx.textAlign = ha;
-      const top = lb.valign === "top" ? p.y : lb.valign === "bottom" ? p.y - total : p.y - total / 2;
-      lines.forEach((t, i) => ctx.fillText(t, p.x, top + i * h + (h - px) / 2));
+  // ---- labels and text (annotation.rs DrawnText): lines of pieces, wrapped in a box with the canvas's fonts
+  const measure = document.createElement("canvas").getContext("2d");
+  const fontOf = (st, px) => `${st.italic ? "italic " : ""}${st.bold ? "600 " : ""}${px}px ${st.font ? `"${st.font}", ` : ""}system-ui, sans-serif`;
+  // Wrap a text's lines at its box width (between words, or only between a label's parameters) and size the box, in
+  // paper mm: { lines, w, h, x0 (the box's left edge), top, lh (line spacing), wid (width of a string) }. The anchor
+  // (x, y) is the box's left edge, middle or right edge and its top, middle or bottom, as the alignment says.
+  function layout(t) {
+    const st = t.style, s = st.size_mm, wf = st.width_factor || 1, f = fontOf(st, s * 10);
+    const wid = (str) => { measure.font = f; return (measure.measureText(str).width / 10) * wf; };
+    const out = [];
+    for (const pieces of t.lines || []) {
+      const atoms = t.wrap === "pieces" ? pieces : pieces.join("").split(/(?<= )/);
+      if (!(t.width_mm > 0)) { out.push(atoms.join("").trimEnd()); continue; }
+      let cur = "";
+      for (const a of atoms) {
+        if (cur && wid((cur + a).trimEnd()) > t.width_mm + 1e-6) { out.push(cur.trimEnd()); cur = a.trimStart(); }
+        else cur += a;
+      }
+      out.push(cur.trimEnd());
     }
-    ctx.restore();
+    const lh = s * 1.2, w = t.width_mm > 0 ? t.width_mm : Math.max(0, ...out.map(wid)), h = Math.max(1, out.length) * lh;
+    const x0 = t.halign === "right" ? t.x - w : t.halign === "center" ? t.x - w / 2 : t.x;
+    const top = t.valign === "top" ? t.y : t.valign === "bottom" ? t.y + h : t.y + h / 2;
+    return { lines: out, w, h, x0, top, lh, wid };
+  }
+
+  // Labels and text, upright whatever the symbol's turn. `color` writes them all in one colour (selected), otherwise
+  // each has its type's. opt: { bg (the view's background, for opaque text), hidden (show what a project leaves out) }.
+  function labels(ctx, list, o, color, opt = {}) {
+    const m = mapper({ ...o, rot: 0 });
+    for (const t of list || []) {
+      if (t.hidden && !opt.hidden) continue;
+      const st = t.style, px = st.size_mm * o.k;
+      if (px < 3) continue;
+      const L = layout(t);
+      // the box on screen; a flip mirrors it about the vertical reference line
+      const left = o.flip ? m([L.x0 + L.w, 0]).x : m([L.x0, 0]).x, top = m([0, L.top]).y, W = L.w * o.k, H = L.h * o.k;
+      const off = (st.border_offset_mm || 0) * o.k, ink = color || rgb(st.color);
+      ctx.save();
+      ctx.globalAlpha = t.hidden ? 0.4 : 1;
+      if (st.opaque && opt.bg) { ctx.fillStyle = opt.bg; ctx.fillRect(left - off, top - off, W + 2 * off, H + 2 * off); }
+      if (st.show_border) { ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, st.line_mm * o.k); ctx.setLineDash([]); ctx.strokeRect(left - off, top - off, W + 2 * off, H + 2 * off); }
+      ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.font = fontOf(st, px); ctx.textBaseline = "top"; ctx.textAlign = "left";
+      let ha = t.halign || "left";
+      if (o.flip) ha = ha === "left" ? "right" : ha === "right" ? "left" : ha;
+      L.lines.forEach((line, i) => {
+        const y = top + (i * L.lh + (L.lh - st.size_mm) / 2) * o.k, lw = L.wid(line) * o.k;
+        const x = ha === "left" ? left : ha === "right" ? left + W - lw : left + (W - lw) / 2;
+        ctx.save(); ctx.translate(x, y); ctx.scale(st.width_factor || 1, 1); ctx.fillText(line, 0, 0); ctx.restore();
+        if (st.underline) { ctx.lineWidth = Math.max(1, px * 0.06); ctx.beginPath(); ctx.moveTo(x, y + px * 1.02); ctx.lineTo(x + lw, y + px * 1.02); ctx.stroke(); }
+      });
+      ctx.restore();
+    }
   }
 
   // a level head: its paths then its labels (in the head's colour, `color` when it is selected)
   function draw(ctx, head, o, color, bg, opt = {}) {
     paths(ctx, head.paths, o, opt.own ? null : color, bg, opt);
-    labels(ctx, head.labels, o, color);
+    labels(ctx, head.labels, o, opt.own ? null : color, { ...opt, bg });
   }
 
-  // paper-mm bounds of a drawing: { paths (or body and pointer), labels }, labels measured roughly (0.6 em a character)
+  // paper-mm bounds of a drawing: { paths (or body and pointer), labels (DrawnText) }
   function extent(fam) {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     const add = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
@@ -114,17 +148,10 @@ const Ann = (() => {
       for (const f of p.fills || []) for (const r of f.rings) for (const q of r) add(...q);
       for (const s of p.strokes || []) for (const q of s.pts) add(...q);
     }
-    for (const lb of fam.labels || []) {
-      const lines = lb.lines || [];
-      const text = lines.map((l) => (typeof l === "string" ? l : `${l.prefix || ""}${l.sample || ""}${l.suffix || ""}`));
-      const w = Math.max(0, ...text.map((t) => t.length)) * lb.size_mm * 0.6, h = Math.max(1, text.length) * lb.size_mm * 1.2;
-      const lx = lb.halign === "right" ? lb.x - w : lb.halign === "center" ? lb.x - w / 2 : lb.x;
-      const ly = lb.valign === "top" ? lb.y - h : lb.valign === "bottom" ? lb.y : lb.y - h / 2;
-      add(lx, ly); add(lx + w, ly + h);
-    }
+    for (const t of fam.labels || []) { const L = layout(t); add(L.x0, L.top - L.h); add(L.x0 + L.w, L.top); }
     if (!Number.isFinite(x0)) return { minX: 0, maxX: 0, minY: 0, maxY: 0 };
     return { minX: x0, maxX: x1, minY: y0, maxY: y1 };
   }
 
-  return { paths, labels, draw, extent, mapper, rgb };
+  return { paths, labels, layout, draw, extent, mapper, rgb };
 })();

@@ -9,6 +9,8 @@
 // - Line works on the lines themselves: every Draw tool places lines straight away, and the Modify tools (trim,
 //   offset, split, move ...) change them, with a subcategory for each line. Esc twice leaves it.
 // - Filled Region and Masking Region sketch closed loops with Finish and Cancel; each edge has its own line style.
+// Labels (parameters chosen in the Edit Label dialog) and text are written with label and text types, in a box whose
+// width they wrap at; the editor lays them out itself (annotation.js Ann.layout), showing the labels' sample values.
 // The session works at 100 units to the paper millimetre (annotation.rs SKETCH_SCALE) so the sketch tolerances,
 // made for model millimetres, suit symbols a few millimetres across. The core draws the result (annotation_paths).
 
@@ -16,7 +18,8 @@ const AnnModel = (() => {
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
   const clone = (o) => JSON.parse(JSON.stringify(o));
-  const snapMM = (v) => Math.round(v * 2) / 2; // half a millimetre, for labels
+  const snapMM = (v) => Math.round(v * 2) / 2; // half a millimetre, for labels and text
+  const FONTS = ["Arial", "Arial Narrow", "Calibri", "Century Gothic", "Consolas", "Courier New", "Georgia", "Segoe UI", "Tahoma", "Times New Roman", "Verdana"];
   const $q = (s) => document.querySelector(s);
   const U = 100; // sketch units to the paper millimetre
   const INVISIBLE = "<Invisible lines>";
@@ -56,9 +59,10 @@ const AnnModel = (() => {
     let raw;
     try { raw = await Backend.call("annotation_family", { id }); } catch (e) { setPrompt(String(e.message || e), true); return; }
     const fam = clone(raw);
-    for (const k of ["id", "params", "kind", "in_use", "category", "subcategories", "fill_patterns", "drawing"]) delete fam[k];
+    for (const k of ["id", "params", "kind", "in_use", "category", "subcategories", "fill_patterns", "drawing", "annotation_widths"]) delete fam[k];
     S = {
       id, fam, params: raw.params, category: raw.category, subs: raw.subcategories || [], pats: raw.fill_patterns || {}, drawing: raw.drawing, tick: 0,
+      widths: raw.annotation_widths || [],
       tool: "select", mode: null, layer: "body", sel: null, drag: null, mouse: null, flipped: false, undo: [], redo: [], dirty: false,
       view: { k: 14, ox: 0, oy: 0 }, msg: "", msgErr: false, sub: "", boundarySub: "", newType: (fam.region_types[0] || {}).name || "", lines: null, region: null,
     };
@@ -228,8 +232,9 @@ const AnnModel = (() => {
     if (!S || app.doc !== "annotation") return;
     if (ASk.active) { setPrompt(S.msg || ASk.promptText(), S.msgErr); S.msg = ""; S.msgErr = false; syncTitle(); return; }
     const tips = {
-      select: "Click a line to work on the lines, a region or a label to select it; drag a region or a label to move it. Double-click a region to edit its boundary.",
-      label: "Click where the label goes. Then choose its parameters in Properties.",
+      select: "Click a line to work on the lines; a region, label or text to select it. Drag to move; drag the ends of a label's box to change its width. Double-click to edit.",
+      label: "Click where the label goes, then choose its parameters in Edit Label.",
+      text: "Click where the text goes and type. Click outside the text or press Esc when it is done.",
     };
     setPrompt((S.msg ? S.msg + "   " : "") + (tips[S.tool] || ""), S.msgErr);
     S.msg = ""; S.msgErr = false;
@@ -249,6 +254,7 @@ const AnnModel = (() => {
     "a-region": () => { if (!busy()) startRegion(false, null); },
     "a-mask": () => { if (!busy()) startRegion(true, null); },
     "a-label": () => { if (busy()) return; if (S.mode === "lines") endLines(); setTool("label"); },
+    "a-text": () => { if (busy()) return; if (S.mode === "lines") endLines(); setTool("text"); },
     "a-del": () => { if (ASk.active) ASk.key({ key: "Delete" }); else removeSel(); },
     "a-load": () => loadIntoProject(false),
     "a-loadclose": () => loadIntoProject(true),
@@ -260,7 +266,7 @@ const AnnModel = (() => {
     },
   };
   for (const k of Object.keys(commands)) { const f = commands[k]; commands[k] = (e) => (S ? f(e) : undefined); }
-  const TOOL_OF = { "a-select": "select", "a-label": "label" };
+  const TOOL_OF = { "a-select": "select", "a-label": "label", "a-text": "text" };
 
   function syncRibbon() {
     document.querySelectorAll("#ribbon button.cmd[data-id^='a-']").forEach((b) => {
@@ -341,7 +347,14 @@ const AnnModel = (() => {
         { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
       ] };
     }
-    if (sel.kind === "label") return { auto, title: "Modify | Label", groups: [{ label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] }] };
+    if (sel.kind === "label") return { auto, title: "Modify | Label", groups: [
+      { label: "Label", items: [{ label: "Edit Label", ico: "Ed", big: true, onclick: () => editLabel(sel.i) }] },
+      { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
+    ] };
+    if (sel.kind === "text") return { auto, title: "Modify | Text", groups: [
+      { label: "Text", items: [{ label: "Edit Text", ico: "Ed", big: true, onclick: () => editText(sel.i) }] },
+      { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
+    ] };
     return null;
   }
 
@@ -412,35 +425,36 @@ const AnnModel = (() => {
       r.append(field("Area (mm²)", roIn(area == null ? "" : (Math.round(area * 100) / 100).toString())));
       r.append(button("Edit Boundary", () => startRegion(it.masking, sel.i)));
     } else {
-      r.append(el("div", "famed-h", "Label"));
-      r.append(field("X (mm)", numIn(it.x, (v) => { it.x = v; })), field("Y (mm)", numIn(it.y, (v) => { it.y = v; })));
-      r.append(field("Text height (mm)", numIn(it.size_mm, (v) => { it.size_mm = v; }, 0.25)));
-      r.append(field("Horizontal", selIn(it.halign, [["left", "Left"], ["center", "Centre"], ["right", "Right"]], (v) => { it.halign = v; })));
-      r.append(field("Vertical", selIn(it.valign, [["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], (v) => { it.valign = v; })));
-      r.append(field("Bold", checkIn(it.bold, (v) => { it.bold = v; })));
-      r.append(el("div", "famed-h", "Label parameters (one per line)"));
-      it.lines.forEach((ln, k) => {
-        const box = el("div", "famed-line");
-        box.append(
-          field("Parameter", selIn(ln.param, S.params.map((p) => [p, p]), (v) => { ln.param = v; })),
-          field("Prefix", textIn(ln.prefix, (v) => { ln.prefix = v; })),
-          field("Suffix", textIn(ln.suffix, (v) => { ln.suffix = v; })),
-          field("Sample", textIn(ln.sample, (v) => { ln.sample = v; })),
-        );
-        if (it.lines.length > 1) box.append(button("Remove line", () => edit(() => { it.lines.splice(k, 1); })));
-        r.append(box);
-      });
-      r.append(button("Add parameter line", () => edit(() => { it.lines.push({ param: S.params[0], prefix: "", suffix: "", sample: "" }); })));
+      const isLabel = sel.kind === "label", key = isLabel ? "label_types" : "text_types", tkey = isLabel ? "label_type" : "text_type";
+      r.append(el("div", "famed-h", isLabel ? "Label" : "Text"));
+      r.append(field("Type", selIn(it[tkey], S.fam[key].map((t) => [t.name, t.name]), (v) => { it[tkey] = v; })));
+      r.append(button("Edit Type...", () => textTypeDialog(key, it[tkey])));
+      if (isLabel) {
+        r.append(field("Label", button("Edit...", () => editLabel(sel.i))));
+        r.append(field("Sample Text", roIn(sampleText(it))));
+        r.append(field("Wrap between parameters only", checkIn(it.wrap_params_only, (v) => { it.wrap_params_only = v; })));
+      } else r.append(field("Text", button("Edit...", () => editText(sel.i))));
+      // a new alignment keeps the box where it is: the anchor moves to the box's other edge or middle
+      const align = (k, v) => {
+        const L = Ann.layout(textOf(sel)), nx = { left: L.x0, center: L.x0 + L.w / 2, right: L.x0 + L.w }, ny = { top: L.top, middle: L.top - L.h / 2, bottom: L.top - L.h };
+        it[k] = v;
+        if (k === "halign") it.x = round6(nx[v]); else it.y = round6(ny[v]);
+      };
+      r.append(field("Vertical Align", selIn(it.valign, [["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], (v) => align("valign", v))));
+      r.append(field("Horizontal Align", selIn(it.halign, [["left", "Left"], ["center", "Center"], ["right", "Right"]], (v) => align("halign", v))));
+      r.append(field("Keep Readable", checkIn(it.keep_readable !== false, (v) => { it.keep_readable = v; })));
+      r.append(field("Visible", checkIn(it.visible !== false, (v) => { it.visible = v; })));
     }
     r.append(button("Delete", removeSel));
   }
 
-  const get = (sel) => (sel.kind === "region" ? S.fam.regions[sel.i] : sel.kind === "label" ? S.fam.labels[sel.i] : null);
+  const LISTS = { region: "regions", label: "labels", text: "texts" };
+  const get = (sel) => (LISTS[sel.kind] ? S.fam[LISTS[sel.kind]][sel.i] : null);
   function removeSel() {
     if (!S.sel) return;
     const it = S.sel;
     S.sel = null;
-    edit((f) => { (it.kind === "region" ? f.regions : f.labels).splice(it.i, 1); });
+    edit((f) => { f[LISTS[it.kind]].splice(it.i, 1); });
     ctxRefresh();
   }
 
@@ -495,6 +509,209 @@ const AnnModel = (() => {
           for (const r of f.regions) if (renamed.has(r.region_type)) r.region_type = renamed.get(r.region_type);
         });
         if (renamed.has(S.newType)) S.newType = renamed.get(S.newType);
+        close();
+      }, true), button("Cancel", close));
+    });
+  }
+
+  // ---------------------------------------------------------------- labels and text
+  const typeIn = (list, name) => list.find((t) => t.name === name) || list[0] || { name: "", size_mm: 2.5, color: [0, 0, 0] };
+  const styleOf = (t) => ({ ...t, line_mm: S.widths[(t.line_weight || 1) - 1] || 0.18 });
+  // a label's lines as the core makes them (annotation.rs symbol_texts), with the sample values in place
+  function labelLines(lb) {
+    const lines = [];
+    let line = [];
+    lb.params.forEach((p, k) => {
+      const gap = p.break || k + 1 === lb.params.length ? 0 : p.spaces ?? 1;
+      line.push(`${p.prefix || ""}${p.sample || p.param}${p.suffix || ""}${" ".repeat(gap)}`);
+      if (p.break) { lines.push(line); line = []; }
+    });
+    lines.push(line);
+    return lines.filter((l) => l.length);
+  }
+  const sampleText = (lb) => labelLines(lb).map((l) => l.join("").trimEnd()).join(" / ");
+  function textOf(sel) {
+    if (sel.kind === "label") {
+      const lb = S.fam.labels[sel.i];
+      return { x: lb.x, y: lb.y, halign: lb.halign, valign: lb.valign, width_mm: lb.width_mm, lines: labelLines(lb), wrap: lb.wrap_params_only ? "pieces" : "words", style: styleOf(typeIn(S.fam.label_types, lb.label_type)), label: sel.i, text: null, hidden: lb.visible === false };
+    }
+    const t = S.fam.texts[sel.i];
+    return { x: t.x, y: t.y, halign: t.halign, valign: t.valign, width_mm: t.width_mm, lines: (t.text || "").split("\n").map((l) => [l]), wrap: "words", style: styleOf(typeIn(S.fam.text_types, t.text_type)), label: null, text: sel.i, hidden: t.visible === false };
+  }
+  const allTexts = () => [...S.fam.labels.map((_, i) => ({ kind: "label", i })), ...S.fam.texts.map((_, i) => ({ kind: "text", i }))];
+  // the box of a label or text on screen (a flip mirrors it), and its edges in the family
+  function boxOf(sel) {
+    const L = Ann.layout(textOf(sel));
+    const a = toScreen(S.flipped ? -(L.x0 + L.w) : L.x0, L.top), b = toScreen(S.flipped ? -L.x0 : L.x0 + L.w, L.top - L.h);
+    return { L, left: Math.min(a.x, b.x), right: Math.max(a.x, b.x), top: a.y, bottom: b.y };
+  }
+  // the width grips of the selected label or text: its box's two ends
+  function widthGrips() {
+    if (!S.sel || !["label", "text"].includes(S.sel.kind) || !get(S.sel)) return [];
+    const B = boxOf(S.sel), y = (B.top + B.bottom) / 2;
+    // which end of the box in the family each grip moves (a flip swaps them on screen)
+    return [{ x: B.left, y, edge: S.flipped ? 1 : 0 }, { x: B.right, y, edge: S.flipped ? 0 : 1 }];
+  }
+  // drag one end of the box: the other end stays, and the anchor keeps to the alignment
+  function setWidth(it, L, edge, px) {
+    const e0 = edge === 0 ? Math.min(px, L.x0 + L.w - 0.5) : L.x0, e1 = edge === 1 ? Math.max(px, L.x0 + 0.5) : L.x0 + L.w;
+    it.width_mm = round6(e1 - e0);
+    it.x = round6(it.halign === "right" ? e1 : it.halign === "center" ? (e0 + e1) / 2 : e0);
+  }
+
+  // Edit Label: the category's parameters on the left, the label's on the right with their spaces, prefix, sample
+  // value, suffix and break; a new label (`at`) is made with OK
+  function editLabel(index, at) {
+    const lb = index != null ? S.fam.labels[index] : null;
+    const rows = lb ? clone(lb.params) : [];
+    let wrapOnly = lb ? !!lb.wrap_params_only : false, cur = rows.length ? 0 : -1, cat = S.params[0];
+    openModal("Edit Label", (body, foot, close) => {
+      const catList = el("div", "el-list"), table = el("table", "el-table"), ok = button("OK", () => {
+        if (!rows.length) return;
+        for (const r of rows) r.spaces = Math.max(0, Math.min(20, parseInt(r.spaces, 10) || 0));
+        close();
+        if (lb) { edit((f) => { f.labels[index].params = rows; f.labels[index].wrap_params_only = wrapOnly; }); return; }
+        const type = (S.fam.label_types[0] || {}).name || "";
+        const fresh = { x: at.x, y: at.y, halign: "left", valign: "middle", label_type: type, width_mm: 1, params: rows, wrap_params_only: wrapOnly, keep_readable: true, visible: true };
+        // the box starts as wide as the sample text, and a little more
+        const L = Ann.layout({ x: 0, y: 0, halign: "left", valign: "middle", width_mm: 0, lines: labelLines(fresh), wrap: "words", style: styleOf(typeIn(S.fam.label_types, type)) });
+        fresh.width_mm = Math.max(3, Math.round((L.w + 1) * 2) / 2);
+        edit((f) => { f.labels.push(fresh); });
+        // the tool stays on for the next label; the new one is selected
+        S.sel = { kind: "label", i: S.fam.labels.length - 1 };
+        props(); status(); ctxRefresh(); render();
+      }, true);
+      const add = () => { if (!cat || rows.some((r) => r.param === cat)) return; rows.push({ param: cat, spaces: 1, prefix: "", suffix: "", sample: cat, break: false }); cur = rows.length - 1; draw(); };
+      const move = (d) => { const j = cur + d; if (cur < 0 || j < 0 || j >= rows.length) return; [rows[cur], rows[j]] = [rows[j], rows[cur]]; cur = j; draw(); };
+      function draw() {
+        catList.replaceChildren(...S.params.map((p) => {
+          const b = el("button", "mat-item" + (p === cat ? " active" : "") + (rows.some((r) => r.param === p) ? " used" : ""), p);
+          b.onclick = () => { cat = p; draw(); };
+          b.ondblclick = () => { cat = p; add(); };
+          return b;
+        }));
+        const head = el("tr");
+        for (const h of ["", "Parameter Name", "Spaces", "Prefix", "Sample Value", "Suffix", "Break"]) head.append(el("th", "", h));
+        table.replaceChildren(head);
+        rows.forEach((r, k) => {
+          const tr = el("tr", k === cur ? "active" : "");
+          tr.onclick = (e) => { if (cur !== k) { cur = k; if (!["INPUT"].includes(e.target.tagName)) draw(); else for (const x of table.querySelectorAll("tr")) x.classList.toggle("active", x === tr); } };
+          const inp = (key, type) => {
+            const i = el("input"); i.type = type || "text";
+            if (type === "checkbox") { i.checked = !!r[key]; i.onchange = () => { r[key] = i.checked; draw(); }; }
+            else { i.value = r[key] ?? ""; i.oninput = () => { r[key] = type === "number" ? i.value : i.value; }; }
+            if (type === "number") { i.min = "0"; i.max = "20"; i.step = "1"; i.disabled = !!r.break; }
+            i.onkeydown = (e) => e.stopPropagation();
+            const td = el("td"); td.append(i); return td;
+          };
+          tr.append(el("td", "", String(k + 1)), el("td", "", r.param), inp("spaces", "number"), inp("prefix"), inp("sample"), inp("suffix"), inp("break", "checkbox"));
+          table.append(tr);
+        });
+        ok.disabled = !rows.length;
+      }
+      const left = el("div", "el-col"), mid = el("div", "el-mid"), right = el("div", "el-col el-wide");
+      left.append(el("div", "famed-h", "Category Parameters"), el("div", "famed-hint", `Select parameters to add to the label. ${S.category}.`), catList);
+      const addB = button("\u2192", add), rem = button("\u2190", () => { if (cur < 0) return; rows.splice(cur, 1); cur = Math.min(cur, rows.length - 1); draw(); });
+      addB.title = "Add parameter(s) to label"; rem.title = "Remove parameter from label";
+      mid.append(addB, rem);
+      const wrap = el("label", "el-wrap"), wc = el("input"); wc.type = "checkbox"; wc.checked = wrapOnly; wc.onchange = () => { wrapOnly = wc.checked; };
+      wrap.append(wc, " Wrap between parameters only");
+      const up = button("Move Up", () => move(-1)), down = button("Move Down", () => move(1));
+      const order = el("div", "el-row");
+      order.append(up, down);
+      right.append(el("div", "famed-h", "Label Parameters"), table, order, wrap);
+      body.append(el("div", "el-grid"));
+      body.lastChild.append(left, mid, right);
+      draw();
+      foot.append(ok, button("Cancel", close));
+    }, { wide: true });
+  }
+
+  // Text in place: a box over the canvas to type in. Click outside it or press Esc to finish; empty text goes.
+  function editText(index, at) {
+    const t = index != null ? S.fam.texts[index] : null;
+    const type = typeIn(S.fam.text_types, t ? t.text_type : (S.fam.text_types[0] || {}).name);
+    const x = t ? t.x : at.x, y = t ? t.y : at.y;
+    const p = toScreen(S.flipped ? -x : x, y), r = S.canvas.getBoundingClientRect(), px = Math.max(10, type.size_mm * S.view.k);
+    const ta = el("textarea", "ann-text-edit");
+    ta.value = t ? t.text : "";
+    ta.style.cssText = `position:fixed;left:${r.left + p.x}px;top:${r.top + p.y - (t && t.valign === "middle" ? px * 0.6 : 0)}px;min-width:120px;min-height:${px * 1.4}px;font:${type.bold ? "600 " : ""}${px}px "${type.font}", system-ui, sans-serif;z-index:60;`;
+    document.body.append(ta);
+    S.textEdit = ta;
+    let done = false;
+    const finish = () => {
+      if (done) return;
+      done = true; S.textEdit = null; ta.remove();
+      const text = ta.value.replace(/\s+$/, "");
+      if (t) {
+        if (!text) { S.sel = { kind: "text", i: index }; removeSel(); }
+        else if (text !== t.text) edit((f) => { f.texts[index].text = text; });
+      } else if (text) {
+        edit((f) => { f.texts.push({ x, y, text, text_type: type.name, halign: "left", valign: "top", width_mm: 0, keep_readable: true, visible: true }); });
+        S.sel = { kind: "text", i: S.fam.texts.length - 1 };
+      }
+      props(); status(); ctxRefresh(); render();
+    };
+    ta.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); finish(); } };
+    ta.onblur = finish;
+    setTimeout(() => ta.focus(), 0);
+  }
+
+  // Type Properties of the label or text types (`key`: "label_types" or "text_types"). Labels or text of a renamed
+  // type follow it.
+  function textTypeDialog(key, name) {
+    const types = clone(S.fam[key]);
+    let cur = types.find((t) => t.name === name) || types[0];
+    openModal("Type Properties", (body, foot, close) => {
+      const rows = el("div", "famed-rows"), msg = el("div", "modal-msg");
+      body.append(rows, msg);
+      const hex = (c) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
+      const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const num = (k, step, min, max) => { const i = el("input"); i.type = "number"; i.step = String(step); i.min = String(min); i.max = String(max); i.value = String(cur[k]); i.onchange = () => { const v = parseFloat(i.value); if (Number.isFinite(v)) cur[k] = v; }; i.onkeydown = (e) => e.stopPropagation(); return i; };
+      const chk = (k) => { const i = el("input"); i.type = "checkbox"; i.checked = !!cur[k]; i.onchange = () => { cur[k] = i.checked; }; return i; };
+      function draw() {
+        rows.replaceChildren();
+        const ts = el("select");
+        for (const t of types) ts.add(new Option(t.name, t.name, false, t === cur));
+        ts.onchange = () => { cur = types.find((t) => t.name === ts.value); draw(); };
+        const dup = button("Duplicate...", () => {
+          let n = `${cur.name} 2`, k = 3;
+          while (types.some((t) => t.name === n)) n = `${cur.name} ${k++}`;
+          const t = { ...clone(cur), name: n };
+          delete t._was;
+          types.push(t); cur = t; draw();
+        });
+        const nm = el("input"); nm.type = "text"; nm.value = cur.name;
+        nm.onkeydown = (e) => e.stopPropagation();
+        nm.onchange = () => { const v = nm.value.trim(); if (!v || types.some((t) => t !== cur && t.name === v)) { msg.textContent = "Each type needs a name of its own."; nm.value = cur.name; return; } msg.textContent = ""; cur._was = cur._was || cur.name; cur.name = v; draw(); };
+        const col = el("input"); col.type = "color"; col.value = hex(cur.color || [0, 0, 0]); col.onchange = () => { cur.color = rgb(col.value); };
+        const lw = el("select");
+        for (let w = 1; w <= 16; w++) lw.add(new Option(String(w), String(w), false, w === cur.line_weight));
+        lw.onchange = () => { cur.line_weight = parseInt(lw.value, 10); };
+        const bg = el("select");
+        for (const [v, l] of [["opaque", "Opaque"], ["transparent", "Transparent"]]) bg.add(new Option(l, v, false, (v === "opaque") === !!cur.opaque));
+        bg.onchange = () => { cur.opaque = bg.value === "opaque"; };
+        const font = el("select");
+        for (const f of FONTS.includes(cur.font) ? FONTS : [cur.font, ...FONTS]) font.add(new Option(f, f, false, f === cur.font));
+        font.onchange = () => { cur.font = font.value; };
+        rows.append(
+          field("Type", ts), field("", dup), field("Name", nm),
+          el("div", "famed-h", "Graphics"),
+          field("Color", col), field("Line Weight", lw), field("Background", bg), field("Show Border", chk("show_border")), field("Leader/Border Offset (mm)", num("border_offset_mm", 0.1, 0, 20)),
+          el("div", "famed-h", "Text"),
+          field("Text Font", font), field("Text Size (mm)", num("size_mm", 0.1, 0.2, 20)), field("Tab Size (mm)", num("tab_size_mm", 0.5, 0.5, 100)),
+          field("Bold", chk("bold")), field("Italic", chk("italic")), field("Underline", chk("underline")), field("Width Factor", num("width_factor", 0.05, 0.1, 10)),
+        );
+      }
+      draw();
+      foot.append(button("OK", () => {
+        const renamed = new Map(types.filter((t) => t._was && t._was !== t.name).map((t) => [t._was, t.name]));
+        for (const t of types) delete t._was;
+        const list = key === "label_types" ? "labels" : "texts", tk = key === "label_types" ? "label_type" : "text_type";
+        edit((f) => {
+          f[key] = types;
+          for (const x of f[list]) if (renamed.has(x[tk])) x[tk] = renamed.get(x[tk]);
+        });
         close();
       }, true), button("Cancel", close));
     });
@@ -676,13 +893,12 @@ const AnnModel = (() => {
   // ---------------------------------------------------------------- drawing
   const toScreen = (x, y) => ({ x: S.view.ox + x * S.view.k, y: S.view.oy - y * S.view.k });
   const toPaper = (sx, sy) => ({ x: (sx - S.view.ox) / S.view.k, y: (S.view.oy - sy) / S.view.k });
-  const sampleLines = (lb) => lb.lines.map((l) => `${l.prefix || ""}${l.sample || ""}${l.suffix || ""}`);
 
   // frame the drawing, with room round it
   function fit() {
     if (!S || !S.canvas) return;
     const W = S.canvas.width || 800, H = S.canvas.height || 600;
-    const e = Ann.extent({ body: S.drawing && S.drawing.body, pointer: hasPointer() && S.drawing ? S.drawing.pointer : null, labels: S.fam.labels });
+    const e = Ann.extent({ body: S.drawing && S.drawing.body, pointer: hasPointer() && S.drawing ? S.drawing.pointer : null, labels: allTexts().map(textOf) });
     const minX = Math.min(e.minX, -8), maxX = Math.max(e.maxX, 8), minY = Math.min(e.minY, -8), maxY = Math.max(e.maxY, 8);
     S.view.k = Math.max(4, Math.min(60, 0.7 * Math.min(W / (maxX - minX), H / (maxY - minY))));
     S.view.ox = W / 2 - ((minX + maxX) / 2) * S.view.k;
@@ -723,15 +939,17 @@ const AnnModel = (() => {
       const r = fam.regions[S.sel.i];
       if (r) Ann.paths(ctx, r.pointer ? d.pointer : d.body, base, accent, null, { pats: S.pats, hidden: true, only: (x) => x.region === S.sel.i });
     }
-    fam.labels.forEach((lb, i) => {
-      const hot = S.sel && S.sel.kind === "label" && S.sel.i === i;
-      Ann.labels(ctx, [{ ...lb, lines: sampleLines(lb) }], base, hot ? accent : text);
-      const e = Ann.extent({ labels: [lb] });
-      const a = toScreen(S.flipped ? -e.maxX : e.minX, e.maxY), b = toScreen(S.flipped ? -e.minX : e.maxX, e.minY);
-      ctx.save(); ctx.strokeStyle = hot ? accent : muted; ctx.lineWidth = hot ? 1.5 : 0.7; ctx.setLineDash([2, 3]); ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.restore();
-      const anchor = toScreen(S.flipped ? -lb.x : lb.x, lb.y);
+    // labels with their sample values and text; a label's box shows dotted, the selected one's with its width grips
+    for (const sel of allTexts()) {
+      const hot = S.sel && S.sel.kind === sel.kind && S.sel.i === sel.i;
+      Ann.labels(ctx, [textOf(sel)], base, hot ? accent : null, { hidden: true, bg });
+      if (sel.kind !== "label" && !hot) continue;
+      const B = boxOf(sel), it = get(sel);
+      ctx.save(); ctx.strokeStyle = hot ? accent : muted; ctx.lineWidth = hot ? 1.5 : 0.7; ctx.setLineDash([2, 3]); ctx.strokeRect(B.left, B.top, B.right - B.left, B.bottom - B.top); ctx.restore();
+      const anchor = toScreen(S.flipped ? -it.x : it.x, it.y);
       ctx.fillStyle = hot ? accent : muted; ctx.fillRect(anchor.x - 2, anchor.y - 2, 4, 4);
-    });
+    }
+    for (const g of widthGrips()) { ctx.fillStyle = "#ffffff"; ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(g.x, g.y, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
     // the session's curves, grips, previews and dimensions, and the snap under the cursor
     if (ASk.active) {
       ASk.draw(ctx);
@@ -755,16 +973,16 @@ const AnnModel = (() => {
     const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0;
     return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
   };
-  // what is under the cursor: { kind: "line" | "region" | "label", i }
+  // what is under the cursor: { kind: "line" | "region" | "label" | "text", i }
   function hit(sx, sy) {
     const P = { x: sx, y: sy };
     const sc = ([x, y]) => toScreen(S.flipped ? -x : x, y);
     let best = null;
     const consider = (it, dd) => { if (dd <= 7 && (!best || dd < best.d)) best = { it, d: dd }; };
-    S.fam.labels.forEach((lb, i) => {
-      const e = Ann.extent({ labels: [lb] }), a = sc([e.minX, e.maxY]), b = sc([e.maxX, e.minY]);
-      if (sx >= Math.min(a.x, b.x) - 3 && sx <= Math.max(a.x, b.x) + 3 && sy >= Math.min(a.y, b.y) - 3 && sy <= Math.max(a.y, b.y) + 3) consider({ kind: "label", i }, 2);
-    });
+    for (const sel of allTexts()) {
+      const B = boxOf(sel);
+      if (sx >= B.left - 3 && sx <= B.right + 3 && sy >= B.top - 3 && sy <= B.bottom + 3) consider(sel, 2);
+    }
     const d = S.drawing || {};
     for (const layer of hasPointer() ? ["body", "pointer"] : ["body"]) {
       const p = d[layer] || {};
@@ -816,13 +1034,14 @@ const AnnModel = (() => {
       return;
     }
     if (e.button !== 0) return;
+    // a click outside text being typed finishes it
+    if (S.textEdit) { S.textEdit.blur(); return; }
     const q = paperAt(S.mouse);
-    if (S.tool === "label") {
-      edit((f) => { f.labels.push({ x: q.x, y: q.y, halign: "left", valign: "middle", size_mm: 2.5, bold: false, lines: [{ param: S.params[0], prefix: "", suffix: "", sample: "Sample" }] }); });
-      S.sel = { kind: "label", i: S.fam.labels.length - 1 };
-      setTool("select"); props();
-      return;
-    }
+    if (S.tool === "label") { editLabel(null, q); return; }
+    if (S.tool === "text") { editText(null, q); return; }
+    // the ends of the selected label's or text's box change its width
+    const g = widthGrips().find((w) => Math.hypot(w.x - S.mouse.x, w.y - S.mouse.y) <= 7);
+    if (g) { S.drag = { width: g.edge, L: boxOf(S.sel).L, started: false }; S.canvas.setPointerCapture(e.pointerId); return; }
     const h = hit(S.mouse.x, S.mouse.y);
     if (h && h.kind === "line") { startLines(h.i, "select"); return; }
     S.sel = h;
@@ -845,13 +1064,20 @@ const AnnModel = (() => {
       ASk.move(S.skHover, m.x, m.y);
       return;
     }
+    if (S.drag && S.sel && S.drag.width !== undefined) {
+      const p = toPaper(m.x, m.y), px = Math.round((S.flipped ? -p.x : p.x) * 10) / 10;
+      if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; }
+      setWidth(get(S.sel), S.drag.L, S.drag.width, px);
+      render();
+      return;
+    }
     if (S.drag && S.sel) {
       const q = paperAt(m), dx = q.x - S.drag.last.x, dy = q.y - S.drag.last.y;
       if (dx || dy) {
         // the whole drag is one undo step
         if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; }
         const it = get(S.sel);
-        if (S.sel.kind === "label") { it.x += dx; it.y += dy; }
+        if (S.sel.kind === "label" || S.sel.kind === "text") { it.x = round6(it.x + dx); it.y = round6(it.y + dy); }
         else for (const l of it.loops) for (const ed of l) ed.curve = moveCurve(ed.curve, dx, dy);
         S.drag.last = q;
         if (S.sel.kind === "region") refreshDrawing();
@@ -894,6 +1120,8 @@ const AnnModel = (() => {
     if (!S) return;
     if (ASk.active) { ASk.dblclick(); return; }
     if (S.sel && S.sel.kind === "region") startRegion(S.fam.regions[S.sel.i].masking, S.sel.i);
+    else if (S.sel && S.sel.kind === "label") editLabel(S.sel.i);
+    else if (S.sel && S.sel.kind === "text") editText(S.sel.i);
   }
 
   function onWheel(e) {

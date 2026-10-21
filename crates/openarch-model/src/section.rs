@@ -473,34 +473,17 @@ impl Document {
 
     /// The labels of a section marker with their text worked out. A view not yet on a sheet reads "-" for its number
     /// and its sheet. A reference section names the view it points at and shows the family's Reference Label.
-    pub fn section_labels(&self, s: &Section) -> Vec<crate::annotation::DrawnLabel> {
+    pub fn section_labels(&self, s: &Section) -> Vec<crate::annotation::DrawnText> {
         let Some((_, f)) = self.section_marker_family(s.family) else { return vec![] };
         let name = s.reference.or(s.view).and_then(|v| self.view(v)).map(|v| v.name.clone()).unwrap_or_default();
         let reference = if s.reference.is_some() { f.reference_label.clone() } else { String::new() };
-        f.labels
-            .iter()
-            .map(|lb| crate::annotation::DrawnLabel {
-                x: lb.x,
-                y: lb.y,
-                halign: lb.halign,
-                valign: lb.valign,
-                size_mm: lb.size_mm,
-                bold: lb.bold,
-                lines: lb
-                    .lines
-                    .iter()
-                    .filter_map(|ln| {
-                        let v = match ln.param.as_str() {
-                            "View Name" => Some(name.clone()),
-                            "View Number" | "Sheet Number" => Some("-".to_string()),
-                            "Reference Label" => (!reference.is_empty()).then(|| reference.clone()),
-                            _ => None,
-                        };
-                        v.map(|v| format!("{}{}{}", ln.prefix, v, ln.suffix))
-                    })
-                    .collect(),
-            })
-            .collect()
+        let value = |param: &str| match param {
+            "View Name" => Some(name.clone()),
+            "View Number" | "Sheet Number" => Some("-".to_string()),
+            "Reference Label" => (!reference.is_empty()).then(|| reference.clone()),
+            _ => None,
+        };
+        self.symbol_texts(f, &value, false)
     }
 
     /// The family a section marker draws with.
@@ -1220,7 +1203,7 @@ mod tests {
         d.ensure_annotation_defaults();
         let n = d.annotation_family(id).unwrap();
         assert_eq!((&n.lines, &n.regions), (&f.lines, &f.regions));
-        assert!(n.labels.iter().any(|l| l.lines.iter().any(|x| x.param == "View Name")));
+        assert!(n.labels.iter().any(|l| l.params.iter().any(|x| x.param == "View Name")));
     }
 
     #[test]
@@ -1375,7 +1358,7 @@ mod tests {
         assert_eq!(d.views().len(), n, "a reference section makes no view");
         let rs = d.section(r).unwrap().clone();
         assert!(rs.view.is_none() && rs.reference == Some(target));
-        let labels: Vec<String> = d.section_labels(&rs).iter().flat_map(|l| l.lines.clone()).collect();
+        let labels: Vec<String> = d.section_labels(&rs).iter().flat_map(|l| l.lines.concat()).collect();
         assert!(labels.contains(&"Section 1".to_string()), "{labels:?}");
         // it cannot point at a plan, cannot stop being a reference, and a section with a view cannot become one
         let plan = d.views().into_iter().find(|(_, v)| v.view_kind == ViewKind::FloorPlan).unwrap().0;
@@ -1399,14 +1382,14 @@ mod tests {
 
     #[test]
     fn the_reference_label_shows_on_reference_sections_only() {
-        use crate::annotation::{AnnLabel, LabelLine};
+        use crate::annotation::{AnnLabel, HAlign, LabelParam, VAlign};
         let (mut d, lvl, s, _) = house_with_stub();
         let (fid, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
-        f.labels.push(AnnLabel { x: 0.0, y: -5.0, halign: Default::default(), valign: Default::default(), size_mm: 2.0, bold: false, lines: vec![LabelLine::new("Reference Label", "", "", "SIM")] });
+        f.labels.push(AnnLabel::new(0.0, -5.0, HAlign::Center, VAlign::Top, "2.5mm", 10.0, vec![LabelParam::new("Reference Label", "", "", "SIM", false)]));
         d.set_annotation_family(fid, f).unwrap();
         let target = d.section(s).unwrap().view.unwrap();
         let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();
-        let text = |id: Id| -> Vec<String> { d.section_labels(d.section(id).unwrap()).iter().flat_map(|l| l.lines.clone()).collect() };
+        let text = |id: Id| -> Vec<String> { d.section_labels(d.section(id).unwrap()).iter().flat_map(|l| l.lines.concat()).collect() };
         assert!(text(r).contains(&"SIM".to_string()));
         assert!(!text(s).contains(&"SIM".to_string()));
     }
