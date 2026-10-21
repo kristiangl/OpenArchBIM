@@ -93,6 +93,8 @@ const ICONS = {
   planView: '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M11 3v8H3M11 15v6"/><path class="a2" d="M11 15h4a4 4 0 0 0-4-4"/>',
   ceilingPlan: '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M9 3v18M15 3v18M3 9h18M3 15h18"/><path class="a2" d="M12 16.5v-9M9.5 10L12 7.5l2.5 2.5"/>',
   view3d: '<path d="M12 3l8 4.5v9L12 21l-8-4.5v-9z"/><path d="M4 7.5l8 4.5 8-4.5M12 12v9"/><path class="af" d="M4 7.5L12 12v9l-8-4.5z"/>',
+  // a section line split into two runs joined by a square jog
+  splitSegment: '<path d="M2 7h9v10h11"/><path class="a2" d="M11 7v10"/><circle class="f" cx="11" cy="7" r="1.5"/><circle class="f" cx="11" cy="17" r="1.5"/>',
   section: '<circle cx="7" cy="7" r="4"/><path class="af" d="M3 7a4 4 0 0 1 8 0z"/><path d="M7 11v10" stroke-dasharray="3 2"/><path class="a2" d="M7 21h6l-2-2"/>',
   elevation: '<circle cx="12" cy="13.5" r="5.5"/><path class="af" d="M12 2.5l5.5 7h-11z"/>',
   drafting: '<rect x="3" y="3" width="18" height="18" rx="1"/><path class="a2" d="M7 17L17 7"/><path d="M7 17h4M17 7v4"/>',
@@ -227,7 +229,7 @@ const ICON_ALIAS = {
   "m-tempdim": "tempDim", "m-annfam": "annFamily", "m-families": "families", "m-sheets": "exportSheets",
   // modify
   mv: "move", cp: "copy", ro: "rotate", mi: "mirror", al: "align", of: "offset", tr: "trim", sp: "split", ar: "array", sc: "scale",
-  del: "delete", me: "measure", "edit-boundary": "editBoundary", wjoin: "wallJoins",
+  del: "delete", me: "measure", "edit-boundary": "editBoundary", wjoin: "wallJoins", "split-segment": "splitSegment",
   // sketch tools
   pick_walls: "pickWalls", pick_lines: "pickLines", pick_faces: "pickFaces", polygon_in: "polygonIn", polygon_out: "polygonOut",
   arc_3pt: "arc3pt", arc_centre: "arcCentre", arc_tangent: "arcTangent", partial_ellipse: "partialEllipse",

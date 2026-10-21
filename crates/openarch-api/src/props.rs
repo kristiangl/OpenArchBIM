@@ -296,6 +296,17 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         locked(boolean("Cast Shadows", "settings.graphic_display.cast_shadows", s.graphic_display.cast_shadows, true), inc(TemplateProp::GraphicDisplay)),
         locked(boolean("Sketchy Lines", "settings.graphic_display.sketchy_lines", s.graphic_display.sketchy_lines, true), inc(TemplateProp::GraphicDisplay)),
     ]);
+    if matches!(v.view_kind, ViewKind::Elevation | ViewKind::Section) {
+        // Depth Cueing (Graphic Display Options): fade from a start to an end along the view depth, down to a limit
+        let g = &s.graphic_display;
+        let cue = |label: &str, key: &str, value: u8| locked(num(label, &format!("settings.graphic_display.{key}"), value as f64, g.depth_cue), inc(TemplateProp::GraphicDisplay));
+        graphics.extend([
+            locked(boolean("Show Depth", "settings.graphic_display.depth_cue", g.depth_cue, true), inc(TemplateProp::GraphicDisplay)),
+            cue("Depth Fade Start (%)", "depth_cue_start", g.depth_cue_start),
+            cue("Depth Fade End (%)", "depth_cue_end", g.depth_cue_end),
+            cue("Depth Fade Limit (%)", "depth_cue_fade", g.depth_cue_fade),
+        ]);
+    }
     let mut groups = vec![group("Graphics", graphics)];
     if plan {
         let level_opts = |current: Option<Id>, path: &str| {
@@ -894,7 +905,8 @@ pub fn level_type_props(d: &Document, id: Id, t: &openarch_model::annotation::Le
     })
 }
 
-/// Properties of a section: its view, the side it looks at, how far, and the far clip.
+/// Properties of a section: its view, the side it looks at, how far, and the far clip. A reference section has no
+/// view of its own, so instead of the extents of one it names the view it points at.
 pub fn section_props(d: &Document, id: Id, s: &openarch_model::section::Section) -> Value {
     use openarch_model::section::FarClip;
     let view = s.view.and_then(|v| d.view(v));
@@ -907,26 +919,39 @@ pub fn section_props(d: &Document, id: Id, s: &openarch_model::section::Section)
         let (a, b) = d.model_z_extent();
         (a - 1500.0, b + 1500.0)
     });
-    json!({
-        "id": id, "kind": "Section", "title": "Section", "type_label": "Section",
-        "target": { "method": "patch_section", "id": id },
-        "groups": [
-            group("Constraints", vec![boolean("Pinned", "pinned", s.pinned, true)]),
-            group("Graphics", vec![
-                select("Symbol", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::SectionMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.section_marker_family(s.family).map(|(i, _)| i))).collect()),
-                boolean("Flipped", "flipped", s.flipped, true),
-            ]),
-            group("Extents", vec![
+    let runs = s.drawn().map_or(1, |dr| dr.runs.len());
+    let mut graphics = vec![
+        select("Symbol", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::SectionMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.section_marker_family(s.family).map(|(i, _)| i))).collect()),
+        boolean("Flipped", "flipped", s.flipped, true),
+    ];
+    let (title, extents, identity) = match s.reference {
+        None => {
+            graphics.push(boolean("Fold Lines", "fold_lines", s.fold_lines, runs > 1));
+            let extents = vec![
                 enum_select("Far Clipping", "far_clip", far, &[("with_line", "Clip with line"), ("without_line", "Clip without line"), ("no_clip", "No clip")]),
                 num("Far Clip Offset", "far_clip_mm", s.far_clip_mm.unwrap_or(0.0), s.far_clip != FarClip::NoClip),
                 ro("Width", format!("{:.0}", s.length())),
+                ro("Segments", runs.to_string()),
                 ro("Bottom", format!("{z0:.0}")),
                 ro("Top", format!("{z1:.0}")),
-            ]),
-            group("Identity Data", vec![
-                ro("View Name", view.map_or(String::new(), |v| v.name.clone())),
-                ro("Level", d.level(s.level).map_or("?".to_string(), |l| l.name.clone())),
-            ]),
+            ];
+            ("Section", extents, vec![ro("View Name", view.map_or(String::new(), |v| v.name.clone()))])
+        }
+        Some(target) => {
+            let opts = d.reference_targets().into_iter().map(|(vid, v)| (v.name.clone(), nest("reference", json!(vid)), vid == target)).collect();
+            ("Reference Section", vec![ro("Width", format!("{:.0}", s.length())), ro("Segments", runs.to_string())], vec![select("Referenced View", opts)])
+        }
+    };
+    let mut identity = identity;
+    identity.push(ro("Level", d.level(s.level).map_or("?".to_string(), |l| l.name.clone())));
+    json!({
+        "id": id, "kind": "Section", "title": title, "type_label": "Section",
+        "target": { "method": "patch_section", "id": id },
+        "groups": [
+            group("Constraints", vec![boolean("Pinned", "pinned", s.pinned, true)]),
+            group("Graphics", graphics),
+            group("Extents", extents),
+            group("Identity Data", identity),
         ],
     })
 }

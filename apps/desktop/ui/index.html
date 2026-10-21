@@ -76,6 +76,10 @@
             <label><input type="checkbox" class="ob-slot" data-slot="3"> D</label>
             <span class="ob-hint">Click to place. Space turns the marker 90 degrees.</span>
           </div>
+          <div id="ob-section" hidden>
+            <label title="Place a section marker that points at an existing view instead of making a new one"><input id="ob-sec-ref" type="checkbox"> Reference Other View</label>
+            <select id="ob-sec-view"></select>
+          </div>
         </div>
         <canvas id="plan"></canvas>
         <canvas id="elev"></canvas>

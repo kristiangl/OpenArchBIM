@@ -102,6 +102,8 @@ const RIBBON = {
       { id: "me", label: "Measure", big: true } ] },
     { label: "Mode", items: [
       { id: "edit-boundary", label: "Edit Boundary", big: true } ] },
+    { label: "Section", items: [
+      { id: "split-segment", label: "Split Segment", big: true } ] },
     { label: "Geometry", items: [
       { id: "wjoin", label: "Wall Joins", big: true }, { id: "join", label: "Join", big: true }, { id: "cut", label: "Cut", big: true } ] },
   ],

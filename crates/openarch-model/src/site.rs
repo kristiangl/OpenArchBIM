@@ -180,12 +180,78 @@ pub struct ElevItem {
     pub material: Option<String>,
     /// Openings in a cut item (doors and windows the plane passes through).
     pub holes: Vec<Vec<[f64; 2]>>,
+    /// How strongly it is drawn: 1 in full, less as depth cueing fades it toward the background.
+    pub fade: f64,
 }
 
 impl Default for ElevItem {
     fn default() -> Self {
-        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![] }
+        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0 }
     }
+}
+
+/// Depth cueing as a view asks for it (Show Depth): where the fade starts and ends, as fractions of the view depth
+/// from the cut plane (or the elevation's own plane), and how faint things get at the end (Fade Limit).
+#[derive(Debug, Clone, Copy)]
+struct Cue {
+    start: f64,
+    end: f64,
+    limit: f64,
+    /// The depth the fractions measure, from the plane the view starts at.
+    depth: f64,
+}
+
+impl Cue {
+    /// How strongly to draw something `z` beyond the front plane, when the view reaches `span` beyond it.
+    fn fade(&self, z: f64, span: f64) -> f64 {
+        let f = if span > 1e-9 { z / span } else { 0.0 };
+        let t = if self.end - self.start > 1e-9 { ((f - self.start) / (self.end - self.start)).clamp(0.0, 1.0) } else if f >= self.start { 1.0 } else { 0.0 };
+        1.0 - t * (1.0 - self.limit)
+    }
+}
+
+/// A jogged section draws each run from its own plane, so an element seen from two runs comes in two pieces that
+/// meet where the line jogs. The same rectangle at the same depth either side of a jog is put back together, so
+/// only the fold line marks the jog.
+fn merge_at_seams(items: Vec<ElevItem>, seams: &[f64]) -> Vec<ElevItem> {
+    if seams.is_empty() {
+        return items;
+    }
+    // [u0, u1, z0, z1] of an item that is one upright rectangle
+    let rect = |it: &ElevItem| -> Option<[f64; 4]> {
+        if it.cut || it.polys.len() != 1 || !it.lines.is_empty() || !it.holes.is_empty() || it.polys[0].len() != 4 {
+            return None;
+        }
+        let p = &it.polys[0];
+        let (u0, u1) = (p.iter().map(|q| q[0]).fold(f64::INFINITY, f64::min), p.iter().map(|q| q[0]).fold(f64::NEG_INFINITY, f64::max));
+        let (z0, z1) = (p.iter().map(|q| q[1]).fold(f64::INFINITY, f64::min), p.iter().map(|q| q[1]).fold(f64::NEG_INFINITY, f64::max));
+        let corner = |q: &[f64; 2]| ((q[0] - u0).abs() < 1e-6 || (q[0] - u1).abs() < 1e-6) && ((q[1] - z0).abs() < 1e-6 || (q[1] - z1).abs() < 1e-6);
+        p.iter().all(corner).then_some([u0, u1, z0, z1])
+    };
+    let mut items = items;
+    let mut keep = vec![true; items.len()];
+    let mut groups: std::collections::BTreeMap<(Id, u64, u64, u64), Vec<(usize, [f64; 4])>> = Default::default();
+    for (k, it) in items.iter().enumerate() {
+        if let Some(r) = rect(it) {
+            groups.entry((it.id, it.depth.to_bits(), r[2].to_bits(), r[3].to_bits())).or_default().push((k, r));
+        }
+    }
+    for mut g in groups.into_values() {
+        g.sort_by(|a, b| a.1[0].total_cmp(&b.1[0]));
+        let (mut cur, mut cr) = g[0];
+        for &(n, nr) in &g[1..] {
+            let (a, b) = (&items[cur], &items[n]);
+            let alike = a.fill == b.fill && a.stroke == b.stroke && a.category == b.category && (a.fade - b.fade).abs() < 1e-6;
+            if alike && (cr[1] - nr[0]).abs() < 1e-6 && seams.iter().any(|s| (s - nr[0]).abs() < 1e-6) {
+                cr[1] = nr[1];
+                items[cur].polys = vec![vec![[cr[0], cr[2]], [cr[1], cr[2]], [cr[1], cr[3]], [cr[0], cr[3]]]];
+                keep[n] = false;
+            } else {
+                (cur, cr) = (n, nr);
+            }
+        }
+    }
+    items.into_iter().zip(keep).filter_map(|(it, k)| k.then_some(it)).collect()
 }
 
 #[allow(dead_code)]
@@ -253,6 +319,8 @@ pub struct ElevationData {
     pub refs: Vec<ElevRef>,
     /// How the view is drawn (from its settings or its template).
     pub visual_style: VisualStyle,
+    /// Where a jogged section's line jogs (across the view, mm): the view draws a fold line there.
+    pub folds: Vec<f64>,
 }
 
 /// A grid seen end on in an elevation: a vertical line with its head at the top.
@@ -975,8 +1043,7 @@ impl Document {
     pub fn elevation_data(&self, view: Id) -> Result<ElevationData, String> {
         let v = self.view(view).ok_or("not a view")?;
         let frame = self.elevation_frame(view).ok_or("not an elevation view")?;
-        // a section view: the same drawing, cut at the plane and limited to the width of the line
-        let sl = self.section_slice(view);
+        let section = self.section_of_view(view).map(|(_, s)| s);
         let o = Point::new(frame.origin[0], frame.origin[1]);
         let (look, right) = (Point::new(frame.look[0], frame.look[1]), Point::new(frame.right[0], frame.right[1]));
         let u_of = |p: Point| (p.x - o.x) * right.x + (p.y - o.y) * right.y;
@@ -990,9 +1057,74 @@ impl Document {
                 LevelLine { id, name: l.name.clone(), z: l.elevation_mm, elev: self.level_display_elevation(l), bubbles: l.bubbles, story: l.building_story, u0, u1, custom_extent: ext.is_some(), end_left: ext.map_or(0, |(a, b)| if a <= b { 0 } else { 1 }), locks: l.end_locks.clone(), head: self.drawn_head(l) }
             })
             .collect();
+        let settings = self.effective_settings_of(v);
+        let gd = &settings.graphic_display;
+        let cue = (gd.depth_cue && matches!(settings.discipline, crate::view::Discipline::Architectural | crate::view::Discipline::Coordination)).then(|| {
+            // a section that does not clip fades over the depth of the model behind it
+            let depth = match section {
+                Some(s) if s.far_clip == crate::section::FarClip::NoClip => self.section_fit_depth(s),
+                _ => frame.depth_mm,
+            };
+            Cue { start: gd.depth_cue_start as f64 / 100.0, end: gd.depth_cue_end as f64 / 100.0, limit: gd.depth_cue_fade as f64 / 100.0, depth }
+        });
+        let hidden = |id: Id| v.hidden_elements.contains(&id);
+        // A section view is drawn run by run: each run of the line cuts at its own plane and shows what lies beyond
+        // it across its own stretch of the view.
+        let (mut items, wall_pieces, host_near, folds) = match self.section_slices(view) {
+            Some(slices) => {
+                let mut all = vec![];
+                for s in &slices {
+                    all.extend(self.elevation_items(v, &frame, Some(s), cue).0);
+                }
+                let seams: Vec<f64> = slices.iter().skip(1).map(|s| s.lo).collect();
+                let folds = if section.is_some_and(|s| s.fold_lines) { seams.clone() } else { vec![] };
+                (merge_at_seams(all, &seams), Default::default(), Default::default(), folds)
+            }
+            None => {
+                let (i, w, h) = self.elevation_items(v, &frame, None, cue);
+                (i, w, h, vec![])
+            }
+        };
+        items.sort_by(|a, b| b.depth.total_cmp(&a.depth));
+        // grids that run away from the viewer show as vertical lines (those across the view are not drawn)
+        let mut grids: Vec<GridLine> = vec![];
+        for (gid, g) in self.grids() {
+            if hidden(gid) {
+                continue;
+            }
+            let Some((a, b)) = g.line() else { continue };
+            let len = a.dist(&b);
+            let across = ((b.x - a.x) * right.x + (b.y - a.y) * right.y).abs() / len.max(1e-9);
+            if across > 0.15 {
+                continue;
+            }
+            let (da, db) = (d_of(a), d_of(b));
+            if da.max(db) <= 0.0 || da.min(db) >= frame.depth_mm {
+                continue;
+            }
+            let u = u_of(Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0));
+            if section.is_some() && (u < 0.0 || u > frame.right_mm) {
+                continue;
+            }
+            grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], pinned: g.pinned });
+        }
+        let refs = if section.is_some() { vec![] } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };
+        Ok(ElevationData { view_id: view, name: v.name.clone(), frame, scale: v.settings.scale as f64, levels, grids, items, refs, visual_style: settings.visual_style, folds })
+    }
+
+    /// The model drawn in an elevation, or in one run of a section (`sl`): walls, openings, families, floors and roofs
+    /// as seen, then for a section what its plane cuts. Also the plan pieces of the walls and how near each wall
+    /// comes, for the reference lines of temporary dimensions.
+    #[allow(clippy::type_complexity)]
+    fn elevation_items(&self, v: &View, frame: &ElevFrame, sl: Option<&crate::section::Slice>, cue: Option<Cue>) -> (Vec<ElevItem>, std::collections::BTreeMap<Id, Vec<Vec<Point>>>, std::collections::BTreeMap<Id, f64>) {
+        let o = Point::new(frame.origin[0], frame.origin[1]);
+        let (look, right) = (Point::new(frame.look[0], frame.look[1]), Point::new(frame.right[0], frame.right[1]));
+        let u_of = |p: Point| (p.x - o.x) * right.x + (p.y - o.y) * right.y;
+        let d_of = |p: Point| (p.x - o.x) * look.x + (p.y - o.y) * look.y;
         let mut items: Vec<ElevItem> = vec![];
         let rect = |u0: f64, u1: f64, z0: f64, z1: f64| vec![[u0, z0], [u1, z0], [u1, z1], [u0, z1]];
-        let visible = |dmin: f64, dmax: f64| dmax > 0.0 && dmin < frame.depth_mm;
+        let (near, far) = sl.map_or((0.0, frame.depth_mm), |s| (s.plane, s.depth));
+        let visible = |dmin: f64, dmax: f64| dmax > near && dmin < far;
         let hidden = |id: Id| v.hidden_elements.contains(&id);
         // walls: one rectangle per footprint piece
         let mut wall_pieces: std::collections::BTreeMap<Id, Vec<Vec<Point>>> = Default::default();
@@ -1372,42 +1504,25 @@ impl Document {
                 }
             }
         }
-        if let Some(s) = &sl {
-            // keep to the width of the line, then add what the plane cuts (nearest, so drawn last)
+        if let Some(s) = sl {
+            // keep to this run's stretch of the view, then add what its plane cuts (nearest, so drawn last)
             for it in items.iter_mut() {
                 it.polys = it.polys.iter().map(|p| s.clip_width(p)).filter(|p| p.len() >= 3).collect();
-                it.lines.retain(|l| l[0][0].max(l[1][0]) > 0.0 && l[0][0].min(l[1][0]) < s.len);
+                it.lines.retain(|l| l[0][0].max(l[1][0]) > s.lo && l[0][0].min(l[1][0]) < s.hi);
             }
             items.retain(|it| !it.polys.is_empty() || !it.lines.is_empty());
             let mut far = vec![];
             items.extend(self.section_cut_items(s, &hidden, &mut far));
             items.extend(far);
         }
-        items.sort_by(|a, b| b.depth.total_cmp(&a.depth));
-        // grids that run away from the viewer show as vertical lines (those across the view are not drawn)
-        let mut grids: Vec<GridLine> = vec![];
-        for (gid, g) in self.grids() {
-            if hidden(gid) {
-                continue;
+        if let Some(c) = cue {
+            // measured from the plane this run cuts at, as depth cueing measures from the front clip plane
+            let plane = sl.map_or(0.0, |s| s.plane);
+            for it in items.iter_mut().filter(|i| !i.cut) {
+                it.fade = c.fade(it.depth - plane, c.depth - plane);
             }
-            let Some((a, b)) = g.line() else { continue };
-            let len = a.dist(&b);
-            let across = ((b.x - a.x) * right.x + (b.y - a.y) * right.y).abs() / len.max(1e-9);
-            if across > 0.15 {
-                continue;
-            }
-            let (da, db) = (d_of(a), d_of(b));
-            if da.max(db) <= 0.0 || da.min(db) >= frame.depth_mm {
-                continue;
-            }
-            let u = u_of(Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0));
-            if sl.as_ref().is_some_and(|s| u < 0.0 || u > s.len) {
-                continue;
-            }
-            grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], pinned: g.pinned });
         }
-        let refs = if sl.is_some() { vec![] } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };
-        Ok(ElevationData { view_id: view, name: v.name.clone(), frame, scale: v.settings.scale as f64, levels, grids, items, refs, visual_style: self.effective_settings(view).map_or(v.settings.visual_style, |s| s.visual_style) })
+        (items, wall_pieces, host_near)
     }
 }
 

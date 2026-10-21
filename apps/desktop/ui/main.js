@@ -17,6 +17,7 @@ const app = {
   cams: {}, // camera of each view, by kind:viewId, kept while it is not showing
   browserSel: null, // a view picked in the Project Browser (its Properties show without opening it)
   wallTop: "auto", // "auto" (the next building storey up), "unconnected", or a level id
+  secRef: { on: false, view: null }, // the Section tool's Reference Other View and the view it points at
   selection: [],
   vp: null, // 3D viewport, once WebGPU is up
   sceneRevision: -1,
@@ -53,6 +54,7 @@ const COMMANDS = {
   grid: () => startGridTool(),
   "v-elev": () => startElevationTool(),
   "v-section": () => startSectionTool(),
+  "split-segment": () => { const s = selectedSection(); if (s) Plan.startSplitSegment(s.id); },
   door: () => startPlacement("door"),
   component: () => startComponentTool(),
   window: () => startPlacement("window"),
@@ -163,18 +165,25 @@ function editBoundaryTarget() {
   }
   return null;
 }
+// the one section selected in a plan, if that is the selection
+const selectedSection = () => (app.view.kind === "plan" && app.selection.length === 1 ? Plan.sections().find((s) => s.id === app.selection[0]) : null);
+
 // Context-aware ribbon buttons: shown only while the selection can use them
 function updateRibbonContext() {
   const b = document.querySelector('#ribbon button[data-id="edit-boundary"]');
   const w = document.querySelector('#ribbon button[data-id="edit-witness"]');
-  if (!b && !w) return;
+  const sp = document.querySelector('#ribbon button[data-id="split-segment"]');
+  if (!b && !w && !sp) return;
   const t = b && editBoundaryTarget();
   if (b) b.hidden = !t;
   if (b && t) { b.lastChild.textContent = t.label; b.title = t.label; }
   // witness lines can be added to and taken from the chain kinds only
   const dimSel = app.view.kind === "plan" && app.selection.length === 1 && Plan.dimensions().some((d) => d.id === app.selection[0] && !d.round);
   if (w) w.hidden = !dimSel;
-  for (const btn of [b, w]) {
+  // Split Segment works on one section that is not pinned
+  const sec = selectedSection();
+  if (sp) sp.hidden = !(sec && !sec.pinned);
+  for (const btn of [b, w, sp]) {
     const group = btn && btn.closest(".group");
     if (group) group.hidden = ![...group.querySelectorAll("button.cmd")].some((x) => !x.hidden);
   }
@@ -990,9 +999,11 @@ function renderOptionsBar() {
   const inPlan = app.view.kind === "plan";
   const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && Plan.isEditTool(), sketchTool = inPlan && Plan.sketching;
   const levelTool = app.view.kind === "elevation" && Elev.tool === "level", elevTool = inPlan && Plan.tool === "elevation", gridTool = inPlan && Plan.tool === "grid";
+  const secTool = inPlan && Plan.tool === "section";
   renderWallRibbon();
   renderComponentRibbon();
-  bar.hidden = !(wallTool || joinTool || editTool || sketchTool || levelTool || elevTool || gridTool);
+  bar.hidden = !(wallTool || joinTool || editTool || sketchTool || levelTool || elevTool || gridTool || secTool);
+  $("#ob-section").hidden = !secTool;
   $("#ob-grid").hidden = !gridTool;
   $("#ob-level").hidden = !levelTool;
   $("#ob-elev").hidden = !elevTool;
@@ -1000,6 +1011,7 @@ function renderOptionsBar() {
   $("#ob-joins").hidden = !joinTool;
   $("#ob-edit").hidden = !editTool;
   $("#ob-sketch").hidden = !sketchTool;
+  if (secTool) { renderSectionBar(); return; }
   if (gridTool) {
     const go = Plan.gridOptions(), sh = $("#ob-grid-shape"), off = $("#ob-grid-offset");
     sh.value = go.shape; off.value = go.offset;
@@ -1319,15 +1331,33 @@ async function startSectionTool() {
   if (!(await ensurePlan("A section"))) return;
   Plan.startSection();
 }
+// The Section tool's options: Reference Other View places a marker that points at an existing section, callout or
+// drafting view instead of making a new view.
+async function renderSectionBar() {
+  const on = $("#ob-sec-ref"), pick = $("#ob-sec-view");
+  const targets = (await run("reference_targets", {})) || [];
+  if (!targets.some((t) => t.id === app.secRef.view)) app.secRef.view = targets.length ? targets[0].id : null;
+  if (!targets.length) app.secRef.on = false;
+  on.checked = app.secRef.on; on.disabled = !targets.length;
+  on.parentElement.title = targets.length ? "Place a section marker that points at an existing view instead of making a new one" : "There is no section, callout or drafting view to point at yet";
+  pick.replaceChildren(...targets.map((t) => { const o = new Option(t.name, String(t.id)); o.selected = t.id === app.secRef.view; return o; }));
+  pick.disabled = !app.secRef.on;
+  on.onchange = () => { app.secRef.on = on.checked; pick.disabled = !on.checked; };
+  pick.onchange = () => { app.secRef.view = Number(pick.value); };
+}
 Plan.callbacks.openView = (viewId) => openView("elevation", viewId);
 Plan.callbacks.addSection = async (start, end) => {
-  const r = await run("add_section", { level_id: curLevelId(), start, end });
+  const ref = app.secRef.on && app.secRef.view != null ? { reference: app.secRef.view } : {};
+  const r = await run("add_section", { level_id: curLevelId(), start, end, ...ref });
   if (!r) return;
   Plan.setTool("select");
   await refresh();
   app.selection = [r.id]; Plan.setSelection([r.id]);
   await renderProperties();
-  setPrompt("Section created. Double-click the head or open it in the Project Browser to see the view. Drag the grips to move the ends, the cut depth or flip the side it looks at.");
+  updateRibbonContext();
+  setPrompt(ref.reference != null
+    ? "Reference section created. It points at an existing view and makes none of its own; double-click the head to open that view."
+    : "Section created. Double-click the head or open it in the Project Browser to see the view. Drag the grips to move the ends, the cut depth or flip the side it looks at. Modify > Split Segment jogs the line; the zigzag control breaks it in this plan.");
 };
 async function startGridTool() {
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }

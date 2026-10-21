@@ -4,8 +4,10 @@
 //! are drawn with the category's cut weight and the material's cut pattern; what lies between the plane
 //! and the far clip is projected the way an elevation shows it (see `Document::elevation_data`).
 //!
-//! A section stores everything the later tools edit (depth cueing, bends, centre break, a
-//! reference to another view) with serde defaults, so project files saved before those tools still open.
+//! A line can be split into parallel runs joined by jogs square to them (Split Segment). Each run cuts at its own
+//! depth and the view unrolls the runs side by side; they share one far clip plane. A reference section makes no
+//! view of its own and points at an existing one. A break hides the middle of the line in one plan view; the cut
+//! is still the whole line. Depth cueing is a setting of the view (Graphic Display Options), not of the section.
 
 use serde::{Deserialize, Serialize};
 
@@ -22,6 +24,18 @@ pub const PLANE_EPS: f64 = 1e-5;
 /// Shortest section line that makes a view (mm).
 pub const MIN_LENGTH_MM: f64 = 100.0;
 
+/// Shortest run of a jogged section line (mm).
+pub const MIN_RUN_MM: f64 = 100.0;
+
+/// Runs closer than this across the line are one run (mm): a run moved onto its neighbour's line merges with it.
+pub const MERGE_MM: f64 = 1.0;
+
+/// The shortest gap a break leaves in the line (mm).
+pub const MIN_GAP_MM: f64 = 10.0;
+
+/// A new break leaves this much of the line at each end, on paper (mm).
+const BREAK_STUB_PAPER_MM: f64 = 12.0;
+
 /// What happens at the far clip distance (Far Clipping).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -35,41 +49,35 @@ pub enum FarClip {
     NoClip,
 }
 
-/// Depth cueing fades what is far from the cut plane (Show Depth). Stored now, drawn in a later step.
+/// A break in the line in one plan view: the line shows `head_mm` from its head and `tail_mm` from its tail,
+/// measured along the line, and nothing between. Only that view's drawing changes; the cut is the whole line.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct DepthCue {
-    pub enabled: bool,
-    /// Where the fade starts and ends, as a percentage of the view depth.
-    pub start_pct: f64,
-    pub end_pct: f64,
-    /// How faint the farthest geometry gets (0 to 1, 1 means no fade).
-    pub min_intensity: f64,
-}
-
-impl Default for DepthCue {
-    fn default() -> Self {
-        DepthCue { enabled: false, start_pct: 20.0, end_pct: 100.0, min_intensity: 0.3 }
-    }
+pub struct SectionBreak {
+    pub view: Id,
+    pub head_mm: f64,
+    pub tail_mm: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
     /// The level whose plan it was drawn in.
     pub level: Id,
+    /// The head of the line.
     pub start: Point,
+    /// The tail of the line.
     pub end: Point,
     /// Looks to the other side of the line.
     #[serde(default)]
     pub flipped: bool,
     #[serde(default)]
     pub far_clip: FarClip,
-    /// How deep the view looks. `None` fits the model.
+    /// How deep the view looks, from the plane of the run at the head. `None` fits the model.
     #[serde(default)]
     pub far_clip_mm: Option<f64>,
     /// Bottom and top of the view (absolute mm). `None` fits the levels and the model.
     #[serde(default)]
     pub z_range: Option<(f64, f64)>,
-    /// The view this section makes.
+    /// The view this section makes. A reference section has none.
     #[serde(default)]
     pub view: Option<Id>,
     /// The annotation family it is drawn with. `None` uses the first section marker family.
@@ -77,17 +85,67 @@ pub struct Section {
     pub family: Option<Id>,
     #[serde(default)]
     pub pinned: bool,
-    /// Extra points of a jogged section, in order along the line (step 2).
+    /// The corners of a jogged line between the start and the end, in order along it: two for each jog (see `drawn`).
     #[serde(default)]
     pub bends: Vec<Point>,
-    /// The middle of the line is hidden in plan; the cut plane stays continuous (step 2).
+    /// Breaks in the line, at most one for each plan view.
     #[serde(default)]
-    pub centre_break: bool,
-    #[serde(default)]
-    pub depth_cue: DepthCue,
-    /// A reference section points at an existing view instead of making its own (step 2).
+    pub breaks: Vec<SectionBreak>,
+    /// Where the line jogs, the view draws a fold line.
+    #[serde(default = "yes")]
+    pub fold_lines: bool,
+    /// A reference section points at this existing view (a section, callout or drafting view) instead of making its own.
     #[serde(default)]
     pub reference: Option<Id>,
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// The line in the axes it was drawn in: `t` along the run at the head, away from the head, and `n` to its left.
+/// Each run is (s0, s1, d): from `s0` to `s1` along `t` and `d` across, all measured from the head.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Drawn {
+    pub start: Point,
+    pub t: Point,
+    pub n: Point,
+    pub runs: Vec<(f64, f64, f64)>,
+}
+
+impl Drawn {
+    pub fn at(&self, s: f64, d: f64) -> Point {
+        Point::new(self.start.x + self.t.x * s + self.n.x * d, self.start.y + self.t.y * s + self.n.y * d)
+    }
+
+    pub fn s(&self, p: Point) -> f64 {
+        (p.x - self.start.x) * self.t.x + (p.y - self.start.y) * self.t.y
+    }
+
+    pub fn d(&self, p: Point) -> f64 {
+        (p.x - self.start.x) * self.n.x + (p.y - self.start.y) * self.n.y
+    }
+
+    /// The corners of these runs from the head to the tail. Neighbouring runs that line up become one.
+    pub fn points(&self, runs: &[(f64, f64, f64)]) -> Vec<Point> {
+        let mut merged: Vec<(f64, f64, f64)> = vec![];
+        for &r in runs {
+            match merged.last_mut() {
+                Some(m) if (m.2 - r.2).abs() < MERGE_MM => m.1 = r.1,
+                _ => merged.push(r),
+            }
+        }
+        merged.iter().flat_map(|&(s0, s1, d)| [self.at(s0, d), self.at(s1, d)]).collect()
+    }
+}
+
+/// A run of the line in the view's axes: across the view from `u0` to `u1`, cutting `d` in front of the plane of
+/// the run at the head.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize)]
+pub struct Run {
+    pub u0: f64,
+    pub u1: f64,
+    pub d: f64,
 }
 
 impl Section {
@@ -104,35 +162,122 @@ impl Section {
             family: None,
             pinned: false,
             bends: vec![],
-            centre_break: false,
-            depth_cue: DepthCue::default(),
+            breaks: vec![],
+            fold_lines: true,
             reference: None,
         }
     }
 
-    pub fn length(&self) -> f64 {
-        self.start.dist(&self.end)
+    /// The head, the bends and the tail.
+    pub fn points(&self) -> Vec<Point> {
+        let mut p = vec![self.start];
+        p.extend(&self.bends);
+        p.push(self.end);
+        p
     }
 
-    /// The ends as the view sees them: `a` at the left of the view, `b` at the right.
-    pub fn view_ends(&self) -> (Point, Point) {
-        if self.flipped {
-            (self.end, self.start)
-        } else {
-            (self.start, self.end)
+    fn with_points(&self, pts: &[Point]) -> Section {
+        let mut s = self.clone();
+        s.start = pts[0];
+        s.end = pts[pts.len() - 1];
+        s.bends = pts[1..pts.len() - 1].to_vec();
+        s
+    }
+
+    /// The runs of the line, or `None` when its corners do not make straight runs joined by square jogs.
+    pub fn drawn(&self) -> Option<Drawn> {
+        let pts = self.points();
+        if pts.len() % 2 != 0 {
+            return None;
         }
-    }
-
-    /// Unit vectors (right on screen, look) of the view, `None` for a line with no length.
-    pub fn axes(&self) -> Option<(Point, Point)> {
-        let (a, b) = self.view_ends();
-        let l = a.dist(&b);
+        let l = pts[0].dist(&pts[1]);
         if l < 1e-6 {
             return None;
         }
-        let t = Point::new((b.x - a.x) / l, (b.y - a.y) / l);
-        Some((t, Point::new(-t.y, t.x)))
+        let t = Point::new((pts[1].x - pts[0].x) / l, (pts[1].y - pts[0].y) / l);
+        let mut dr = Drawn { start: pts[0], t, n: Point::new(-t.y, t.x), runs: vec![] };
+        for k in 0..pts.len() / 2 {
+            let (a, b) = (pts[2 * k], pts[2 * k + 1]);
+            let (s0, s1, d0) = (dr.s(a), dr.s(b), dr.d(a));
+            if s1 - s0 < 1.0 || (dr.d(b) - d0).abs() > 0.01 {
+                return None;
+            }
+            if let Some(&(_, ps1, pd)) = dr.runs.last() {
+                // a jog runs square across the line and goes somewhere
+                if (s0 - ps1).abs() > 0.01 || (d0 - pd).abs() < MERGE_MM {
+                    return None;
+                }
+            }
+            dr.runs.push((s0, s1, d0));
+        }
+        Some(dr)
     }
+
+    /// The width of the view: the runs end to end.
+    pub fn length(&self) -> f64 {
+        self.drawn().map_or_else(|| self.start.dist(&self.end), |d| d.runs.iter().map(|r| r.1 - r.0).sum())
+    }
+
+    /// The length along the line, jogs included: what a break measures.
+    pub fn path_length(&self) -> f64 {
+        self.points().windows(2).map(|w| w[0].dist(&w[1])).sum()
+    }
+
+    /// Unit vectors (right on screen, look) of the view, `None` when the line is not valid.
+    pub fn axes(&self) -> Option<(Point, Point)> {
+        let dr = self.drawn()?;
+        Some(if self.flipped { (Point::new(-dr.t.x, -dr.t.y), Point::new(-dr.n.x, -dr.n.y)) } else { (dr.t, dr.n) })
+    }
+
+    /// Where the view starts (the left end of the view, on the plane of the run at the head) and the runs
+    /// across it, left to right.
+    pub fn view_runs(&self) -> Option<(Point, Vec<Run>)> {
+        let dr = self.drawn()?;
+        let (right, _) = self.axes()?;
+        let left = if self.flipped { dr.runs.last()?.1 } else { dr.runs[0].0 };
+        let o = dr.at(left, 0.0);
+        let u = |p: Point| (p.x - o.x) * right.x + (p.y - o.y) * right.y;
+        let sign = if self.flipped { -1.0 } else { 1.0 };
+        let mut runs: Vec<Run> = dr
+            .runs
+            .iter()
+            .map(|&(s0, s1, d)| {
+                let (a, b) = (u(dr.at(s0, d)), u(dr.at(s1, d)));
+                Run { u0: a.min(b), u1: a.max(b), d: d * sign }
+            })
+            .collect();
+        runs.sort_by(|a, b| a.u0.total_cmp(&b.u0));
+        Some((o, runs))
+    }
+
+    /// The break in this plan view, if the line is broken there.
+    pub fn break_in(&self, view: Id) -> Option<&SectionBreak> {
+        self.breaks.iter().find(|b| b.view == view)
+    }
+
+    /// Breaks that no longer leave a gap in a shorter line give up length at both ends alike.
+    fn fit_breaks(&mut self) {
+        let room = (self.path_length() - MIN_GAP_MM).max(0.0);
+        for b in self.breaks.iter_mut() {
+            let both = b.head_mm + b.tail_mm;
+            if both > room && both > 0.0 {
+                let k = room / both;
+                b.head_mm *= k;
+                b.tail_mm *= k;
+            }
+        }
+    }
+}
+
+/// An edit of the runs and jogs of a section line.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SectionEdit {
+    /// Split the run under `at`; the part on the side of `to` moves across the line to `to` (Split Segment).
+    Split { at: Point, to: Point },
+    /// Move run `index` (counted from the head) across to `to`. On the line of a neighbour it merges with it.
+    MoveRun { index: usize, to: Point },
+    /// Slide jog `index` (counted from the head) along the line to `to`.
+    MoveJog { index: usize, to: Point },
 }
 
 impl View {
@@ -146,14 +291,19 @@ impl View {
     }
 }
 
-/// A cut plane through the model and the box in front of it, in the section's own axes: `u` along
-/// the line, `d` the distance in front of the plane.
+/// One run's cut plane through the model and the box in front of it, in the section's own axes: `u` across the
+/// view, `d` the distance in front of the plane of the run at the head. A straight section is one slice.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Slice {
     pub o: Point,
     pub right: Point,
     pub look: Point,
-    pub len: f64,
+    /// The stretch across the view this run covers.
+    pub lo: f64,
+    pub hi: f64,
+    /// Where this run's cut plane stands.
+    pub plane: f64,
+    /// The far clip plane, shared by every run.
     pub depth: f64,
     pub far: FarClip,
 }
@@ -176,29 +326,32 @@ impl Slice {
         (p.x - self.o.x) * self.look.x + (p.y - self.o.y) * self.look.y
     }
 
-    /// Keep the part of a polygon between the cut plane and the far clip.
+    /// Keep the part of a polygon in plan between the cut plane and the far clip, and across this run.
     pub fn clip_ring(&self, ring: &[Point]) -> Vec<Point> {
-        let r = clip_by(ring, |p| self.d(p), 0.0, true);
-        if self.far == FarClip::NoClip {
-            return r;
+        let mut r = clip_by(ring, |p| self.d(p), self.plane, true);
+        if self.far != FarClip::NoClip {
+            r = clip_by(&r, |p| self.d(p), self.depth, false);
         }
-        clip_by(&r, |p| self.d(p), self.depth, false)
+        let r = clip_by(&r, |p| self.u(p), self.lo, true);
+        clip_by(&r, |p| self.u(p), self.hi, false)
     }
 
     /// The same for a polygon in three dimensions (a roof plane).
     pub fn clip_ring3(&self, poly: &[[f64; 3]]) -> Vec<[f64; 3]> {
         let d = |q: &[f64; 3]| self.d(Point::new(q[0], q[1]));
-        let r = clip3(poly, d, 0.0, true);
-        if self.far == FarClip::NoClip {
-            return r;
+        let u = |q: &[f64; 3]| self.u(Point::new(q[0], q[1]));
+        let mut r = clip3(poly, d, self.plane, true);
+        if self.far != FarClip::NoClip {
+            r = clip3(&r, d, self.depth, false);
         }
-        clip3(&r, d, self.depth, false)
+        let r = clip3(&r, u, self.lo, true);
+        clip3(&r, u, self.hi, false)
     }
 
-    /// Keep the part of a drawing polygon within the width of the section.
+    /// Keep the part of a drawing polygon within this run.
     pub fn clip_width(&self, poly: &[[f64; 2]]) -> Vec<[f64; 2]> {
-        let r = clip2(poly, 0, 0.0, true);
-        clip2(&r, 0, self.len, false)
+        let r = clip2(poly, 0, self.lo, true);
+        clip2(&r, 0, self.hi, false)
     }
 
     /// The stretches of `plane` (a distance in front of the cut plane) that lie inside the rings, by the
@@ -234,14 +387,14 @@ impl Slice {
     }
 
     fn within_width(&self, c: Cut) -> Option<Cut> {
-        if c.u1 <= 0.0 || c.u0 >= self.len {
+        if c.u1 <= self.lo || c.u0 >= self.hi {
             return None;
         }
         let lerp = |u: f64| {
             let t = (u - c.u0) / (c.u1 - c.u0);
             Point::new(c.p0.x + (c.p1.x - c.p0.x) * t, c.p0.y + (c.p1.y - c.p0.y) * t)
         };
-        let (u0, u1) = (c.u0.max(0.0), c.u1.min(self.len));
+        let (u0, u1) = (c.u0.max(self.lo), c.u1.min(self.hi));
         Some(Cut { u0, u1, p0: lerp(u0), p1: lerp(u1) })
     }
 }
@@ -319,10 +472,11 @@ impl Document {
     }
 
     /// The labels of a section marker with their text worked out. A view not yet on a sheet reads "-" for its number
-    /// and its sheet.
+    /// and its sheet. A reference section names the view it points at and shows the family's Reference Label.
     pub fn section_labels(&self, s: &Section) -> Vec<crate::annotation::DrawnLabel> {
         let Some((_, f)) = self.section_marker_family(s.family) else { return vec![] };
-        let name = s.view.and_then(|v| self.view(v)).map(|v| v.name.clone()).unwrap_or_default();
+        let name = s.reference.or(s.view).and_then(|v| self.view(v)).map(|v| v.name.clone()).unwrap_or_default();
+        let reference = if s.reference.is_some() { f.reference_label.clone() } else { String::new() };
         f.labels
             .iter()
             .map(|lb| crate::annotation::DrawnLabel {
@@ -339,6 +493,7 @@ impl Document {
                         let v = match ln.param.as_str() {
                             "View Name" => Some(name.clone()),
                             "View Number" | "Sheet Number" => Some("-".to_string()),
+                            "Reference Label" => (!reference.is_empty()).then(|| reference.clone()),
                             _ => None,
                         };
                         v.map(|v| format!("{}{}{}", ln.prefix, v, ln.suffix))
@@ -386,23 +541,59 @@ impl Document {
         })
     }
 
-    /// Change a section with a JSON patch (ends, flip, far clip, range, family, depth cue, pin). One undo step.
-    pub fn patch_section(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
-        let Some(old) = self.section(id).cloned() else { return Err("not a section".into()) };
-        let mut patch = patch.clone();
-        if let Some(o) = patch.as_object_mut() {
-            o.remove("view");
-            o.remove("level");
+    /// Draw a section line that points at an existing view (Reference Other View). It makes no view of its own.
+    pub fn add_reference_section(&mut self, level: Id, start: Point, end: Point, flipped: bool, target: Id) -> Result<Id, String> {
+        if self.level(level).is_none() {
+            return Err("unknown level".into());
         }
-        let new: Section = apply_patch(&old, &patch)?;
-        if new == old {
-            return Ok(());
-        }
-        if new.start.dist(&new.end) < MIN_LENGTH_MM {
+        if start.dist(&end) < MIN_LENGTH_MM {
             return Err("the section line is too short".into());
+        }
+        self.check_reference_target(target)?;
+        self.transact("Create reference section", |tx| {
+            let mut s = Section::new(level, start, end);
+            s.flipped = flipped;
+            s.reference = Some(target);
+            Ok(tx.add(Element::Section(s)))
+        })
+    }
+
+    /// The views a reference section can point at: section views (of sections that make their own), callouts and
+    /// drafting views.
+    pub fn reference_targets(&self) -> Vec<(Id, &View)> {
+        self.views().into_iter().filter(|(id, _)| self.check_reference_target(*id).is_ok()).collect()
+    }
+
+    fn check_reference_target(&self, target: Id) -> Result<(), String> {
+        let v = self.view(target).ok_or("the referenced view does not exist")?;
+        let ok = match v.view_kind {
+            ViewKind::Section => v.section.is_some(),
+            ViewKind::Callout | ViewKind::Drafting => true,
+            _ => false,
+        };
+        if ok {
+            Ok(())
+        } else {
+            Err("a reference section points at a section, callout or drafting view".into())
+        }
+    }
+
+    /// Everything a changed section must still be: a line of straight runs and square jogs, long enough, with its
+    /// runs in front of the far clip, breaks that leave a gap, and a view it makes or one it points at.
+    fn check_section(&self, old: &Section, new: &Section) -> Result<(), String> {
+        let Some(dr) = new.drawn() else { return Err("a section line is straight runs joined by jogs square to them".into()) };
+        if new.length() < MIN_LENGTH_MM {
+            return Err("the section line is too short".into());
+        }
+        if dr.runs.len() > 1 && dr.runs.iter().any(|r| r.1 - r.0 < MIN_RUN_MM - 1e-6) {
+            return Err(format!("each run of a jogged section is at least {MIN_RUN_MM:.0} mm long"));
         }
         if new.far_clip_mm.is_some_and(|v| !v.is_finite() || v < 100.0) {
             return Err("the far clip distance must be at least 100 mm".into());
+        }
+        let deepest = new.view_runs().map_or(0.0, |(_, r)| r.iter().map(|r| r.d).fold(0.0, f64::max));
+        if new.far_clip != FarClip::NoClip && new.far_clip_mm.is_some_and(|v| v < deepest + 100.0) {
+            return Err("part of the section line is beyond the far clip".into());
         }
         if new.z_range.is_some_and(|(a, b)| !a.is_finite() || !b.is_finite() || b - a < 100.0) {
             return Err("the section must be at least 100 mm tall".into());
@@ -410,25 +601,171 @@ impl Document {
         if new.family.is_some_and(|f| self.annotation_family(f).is_none()) {
             return Err("unknown section marker".into());
         }
-        let d = &new.depth_cue;
-        if !(0.0..=100.0).contains(&d.start_pct) || !(0.0..=100.0).contains(&d.end_pct) || d.start_pct > d.end_pct || !(0.0..=1.0).contains(&d.min_intensity) {
-            return Err("depth cue values are out of range".into());
+        let len = new.path_length();
+        for (k, b) in new.breaks.iter().enumerate() {
+            if !self.view(b.view).is_some_and(|v| v.view_kind.is_plan()) || new.breaks[..k].iter().any(|x| x.view == b.view) {
+                return Err("a section line is broken once in a plan view".into());
+            }
+            if !b.head_mm.is_finite() || !b.tail_mm.is_finite() || b.head_mm < 0.0 || b.tail_mm < 0.0 {
+                return Err("the ends of a broken section line cannot be negative".into());
+            }
+            if b.head_mm + b.tail_mm > len - MIN_GAP_MM + 1e-6 {
+                return Err("the two ends of the broken line would meet; click the break control to join the line".into());
+            }
         }
-        if old.pinned && new.pinned && (new.start != old.start || new.end != old.end || new.flipped != old.flipped) {
+        match (old.reference, new.reference) {
+            (None, Some(_)) => return Err("a section that makes its own view cannot become a reference section".into()),
+            (Some(_), None) => return Err("a reference section points at a view".into()),
+            (_, Some(r)) => self.check_reference_target(r)?,
+            _ => {}
+        }
+        let geometry = |s: &Section| (s.start, s.end, s.bends.clone(), s.flipped);
+        if old.pinned && new.pinned && geometry(old) != geometry(new) {
             return Err("the section is pinned; unpin it first".into());
         }
+        Ok(())
+    }
+
+    /// Change a section with a JSON patch (ends, bends, flip, far clip, range, family, breaks, fold lines, the view
+    /// a reference section points at, pin). Moving an end of a jogged line moves it along its own run. One undo step.
+    pub fn patch_section(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let Some(old) = self.section(id).cloned() else { return Err("not a section".into()) };
+        let mut patch = patch.clone();
+        if let Some(o) = patch.as_object_mut() {
+            o.remove("view");
+            o.remove("level");
+        }
+        let mut new: Section = apply_patch(&old, &patch)?;
+        if new == old {
+            return Ok(());
+        }
+        if !old.bends.is_empty() && new.bends == old.bends && (new.start != old.start || new.end != old.end) {
+            if let Some(dr) = old.drawn() {
+                let (first, last) = (dr.runs[0], dr.runs[dr.runs.len() - 1]);
+                if new.start != old.start {
+                    new.start = dr.at(dr.s(new.start).min(first.1 - MIN_RUN_MM), first.2);
+                }
+                if new.end != old.end {
+                    new.end = dr.at(dr.s(new.end).max(last.0 + MIN_RUN_MM), last.2);
+                }
+            }
+        }
+        new.fit_breaks();
+        self.check_section(&old, &new)?;
         self.transact("Change section", |tx| tx.update(id, Element::Section(new)))
     }
 
-    /// Delete a section with its view.
+    /// Split a run, move a run across or slide a jog along the line. With `preview` nothing changes; either way the
+    /// corners of the line the edit gives come back.
+    pub fn edit_section(&mut self, id: Id, edit: SectionEdit, preview: bool) -> Result<Vec<Point>, String> {
+        let Some(old) = self.section(id).cloned() else { return Err("not a section".into()) };
+        if old.pinned {
+            return Err("the section is pinned; unpin it first".into());
+        }
+        let dr = old.drawn().ok_or("the section line is not valid")?;
+        let mut runs = dr.runs.clone();
+        let name = match edit {
+            SectionEdit::Split { at, to } => {
+                let sa = dr.s(at);
+                let k = runs.iter().position(|r| sa > r.0 && sa < r.1).ok_or("click on the section line where it should split")?;
+                let r = runs[k];
+                if sa - r.0 < MIN_RUN_MM || r.1 - sa < MIN_RUN_MM {
+                    return Err(format!("split at least {MIN_RUN_MM:.0} mm from the ends of a run"));
+                }
+                let off = dr.d(to) - r.2;
+                if off.abs() < MERGE_MM {
+                    return Err("move the cursor across the line to say how far the new run moves".into());
+                }
+                let before = dr.s(to) < sa;
+                let (a, b) = if before { (off, 0.0) } else { (0.0, off) };
+                runs.splice(k..=k, [(r.0, sa, r.2 + a), (sa, r.1, r.2 + b)]);
+                "Split section"
+            }
+            SectionEdit::MoveRun { index, to } => {
+                let r = runs.get_mut(index).ok_or("the section line has no such run")?;
+                r.2 = dr.d(to);
+                "Move section run"
+            }
+            SectionEdit::MoveJog { index, to } => {
+                if index + 1 >= runs.len() {
+                    return Err("the section line has no such jog".into());
+                }
+                let (lo, hi) = (runs[index].0 + MIN_RUN_MM, runs[index + 1].1 - MIN_RUN_MM);
+                if lo > hi {
+                    return Err("the runs either side are too short to move the jog".into());
+                }
+                let s = dr.s(to).clamp(lo, hi);
+                runs[index].1 = s;
+                runs[index + 1].0 = s;
+                "Move section jog"
+            }
+        };
+        let pts = dr.points(&runs);
+        if preview {
+            return Ok(pts);
+        }
+        let mut new = old.with_points(&pts);
+        if new == old {
+            return Ok(pts);
+        }
+        new.fit_breaks();
+        self.check_section(&old, &new)?;
+        self.transact(name, |tx| tx.update(id, Element::Section(new)))?;
+        Ok(pts)
+    }
+
+    /// Break the line in a plan view, or join it again (the break control). A new break leaves a short stretch of
+    /// line at each end.
+    pub fn toggle_section_break(&mut self, id: Id, view: Id) -> Result<bool, String> {
+        let Some(old) = self.section(id).cloned() else { return Err("not a section".into()) };
+        let Some(v) = self.view(view).filter(|v| v.view_kind.is_plan()) else { return Err("a section line is broken in a plan view".into()) };
+        let mut new = old.clone();
+        let broken = match new.breaks.iter().position(|b| b.view == view) {
+            Some(k) => {
+                new.breaks.remove(k);
+                false
+            }
+            None => {
+                let stub = (old.path_length() * 0.25).min(BREAK_STUB_PAPER_MM * v.settings.scale as f64);
+                new.breaks.push(SectionBreak { view, head_mm: stub, tail_mm: stub });
+                true
+            }
+        };
+        self.check_section(&old, &new)?;
+        self.transact(if broken { "Break section line" } else { "Join section line" }, |tx| tx.update(id, Element::Section(new)))?;
+        Ok(broken)
+    }
+
+    /// How much of a broken line shows at its head and at its tail in a plan view.
+    pub fn set_section_break(&mut self, id: Id, view: Id, head_mm: f64, tail_mm: f64) -> Result<(), String> {
+        let Some(old) = self.section(id).cloned() else { return Err("not a section".into()) };
+        let mut new = old.clone();
+        let Some(b) = new.breaks.iter_mut().find(|b| b.view == view) else { return Err("the section line is not broken in this view".into()) };
+        b.head_mm = head_mm;
+        b.tail_mm = tail_mm;
+        if new == old {
+            return Ok(());
+        }
+        self.check_section(&old, &new)?;
+        self.transact("Change section break", |tx| tx.update(id, Element::Section(new)))
+    }
+
+    /// Delete a section with its view, and the reference sections that point at that view.
     pub fn delete_section(&mut self, id: Id) -> Result<(), String> {
         let Some(s) = self.section(id).cloned() else { return Err("not a section".into()) };
         if s.pinned {
             return Err("the section is pinned; unpin it first".into());
         }
+        let refs: Vec<Id> = match s.view {
+            Some(v) => self.sections().iter().filter(|(_, x)| x.reference == Some(v)).map(|(i, _)| *i).collect(),
+            None => vec![],
+        };
         self.transact("Delete section", |tx| {
             if let Some(v) = s.view {
                 tx.remove(v)?;
+            }
+            for r in &refs {
+                tx.remove(*r)?;
             }
             tx.remove(id)
         })
@@ -440,35 +777,45 @@ impl Document {
         self.section(sid).map(|s| (sid, s))
     }
 
-    pub(crate) fn section_slice(&self, view: Id) -> Option<Slice> {
-        let (_, s) = self.section_of_view(view)?;
-        let (a, _) = s.view_ends();
-        let (right, look) = s.axes()?;
-        let depth = match s.far_clip {
-            FarClip::NoClip => 1.0e7,
-            _ => s.far_clip_mm.unwrap_or_else(|| match self.model_bounds() {
-                Some((lo, hi)) => {
-                    let far = [Point::new(lo.x, lo.y), Point::new(hi.x, lo.y), Point::new(hi.x, hi.y), Point::new(lo.x, hi.y)]
-                        .iter()
-                        .map(|p| (p.x - a.x) * look.x + (p.y - a.y) * look.y)
-                        .fold(f64::NEG_INFINITY, f64::max);
-                    (far + 1000.0).max(2000.0)
-                }
-                None => 10000.0,
-            }),
-        };
-        Some(Slice { o: a, right, look, len: s.length(), depth, far: s.far_clip })
+    /// How deep the model reaches beyond a section's head plane: the far clip when none is set, and what depth
+    /// cueing measures against when the view does not clip.
+    pub(crate) fn section_fit_depth(&self, s: &Section) -> f64 {
+        let (Some((_, look)), Some((o, runs))) = (s.axes(), s.view_runs()) else { return 10000.0 };
+        let deepest = runs.iter().map(|r| r.d).fold(0.0, f64::max);
+        match self.model_bounds() {
+            Some((lo, hi)) => {
+                let far = [Point::new(lo.x, lo.y), Point::new(hi.x, lo.y), Point::new(hi.x, hi.y), Point::new(lo.x, hi.y)]
+                    .iter()
+                    .map(|p| (p.x - o.x) * look.x + (p.y - o.y) * look.y)
+                    .fold(f64::NEG_INFINITY, f64::max);
+                (far + 1000.0).max(deepest + 1000.0).max(2000.0)
+            }
+            None => (deepest + 1000.0).max(10000.0),
+        }
     }
 
-    /// Frame of a section view: the line is the width, the levels and model the height.
-    pub fn section_frame(&self, view: Id) -> Option<ElevFrame> {
-        let sl = self.section_slice(view)?;
+    /// The slices of a section view, one for each run of its line, left to right.
+    pub(crate) fn section_slices(&self, view: Id) -> Option<Vec<Slice>> {
         let (_, s) = self.section_of_view(view)?;
+        let (right, look) = s.axes()?;
+        let (o, runs) = s.view_runs()?;
+        let depth = match s.far_clip {
+            FarClip::NoClip => 1.0e7,
+            _ => s.far_clip_mm.unwrap_or_else(|| self.section_fit_depth(s)),
+        };
+        Some(runs.iter().map(|r| Slice { o, right, look, lo: r.u0, hi: r.u1, plane: r.d, depth, far: s.far_clip }).collect())
+    }
+
+    /// Frame of a section view: the runs of the line side by side are the width, the levels and model the height.
+    pub fn section_frame(&self, view: Id) -> Option<ElevFrame> {
+        let slices = self.section_slices(view)?;
+        let (_, s) = self.section_of_view(view)?;
+        let (first, last) = (slices.first()?, slices.last()?);
         let (z0, z1) = s.z_range.unwrap_or_else(|| {
             let (a, b) = self.model_z_extent();
             (a - 1500.0, b + 1500.0)
         });
-        Some(ElevFrame { origin: [sl.o.x, sl.o.y], look: [sl.look.x, sl.look.y], right: [sl.right.x, sl.right.y], left_mm: 0.0, right_mm: sl.len, depth_mm: sl.depth, z_min: z0, z_max: z1 })
+        Some(ElevFrame { origin: [first.o.x, first.o.y], look: [first.look.x, first.look.y], right: [first.right.x, first.right.y], left_mm: 0.0, right_mm: last.hi, depth_mm: first.depth, z_min: z0, z_max: z1 })
     }
 
     /// Whether the section line shows in a plan whose cut plane is at `z`.
@@ -515,12 +862,12 @@ impl Document {
                     Point::new(c.x + f.dir.x * hw + f.left.x * pad, c.y + f.dir.y * hw + f.left.y * pad),
                     Point::new(c.x - f.dir.x * hw + f.left.x * pad, c.y - f.dir.y * hw + f.left.y * pad),
                 ];
-                for cut in sl.cuts(&[&ring], PLANE_EPS) {
+                for cut in sl.cuts(&[&ring], sl.plane + PLANE_EPS) {
                     openings.push((cut.u0, cut.u1, f.z0, f.z1));
                 }
             }
             let push_cuts = |out: &mut Vec<ElevItem>, rings: &[&[Point]], material: Option<&str>, fill: [u8; 3], depth: f64| {
-                for cut in sl.cuts(rings, PLANE_EPS) {
+                for cut in sl.cuts(rings, sl.plane + PLANE_EPS) {
                     let holes: Vec<Vec<[f64; 2]>> = openings
                         .iter()
                         .filter_map(|&(a, b, h0, h1)| {
@@ -562,7 +909,7 @@ impl Document {
                 Some(t) if !t.layers.is_empty() => t.layers.iter().map(|l| (Some(l.material.as_str()), l.thickness_mm, l.is_void)).collect(),
                 _ => vec![(None, 200.0, false)],
             };
-            for cut in sl.cuts(&rings, PLANE_EPS) {
+            for cut in sl.cuts(&rings, sl.plane + PLANE_EPS) {
                 let (t0, t1) = (surface.z(cut.p0), surface.z(cut.p1));
                 let mut off = 0.0;
                 for (mat, th, void) in &bands {
@@ -608,7 +955,7 @@ impl Document {
                 let mut xs: Vec<(f64, f64)> = vec![];
                 for i in 0..n {
                     let (a, b) = (f.poly[i], f.poly[(i + 1) % n]);
-                    let (da, db) = (sl.d(Point::new(a[0], a[1])) - PLANE_EPS, sl.d(Point::new(b[0], b[1])) - PLANE_EPS);
+                    let (da, db) = (sl.d(Point::new(a[0], a[1])) - sl.plane - PLANE_EPS, sl.d(Point::new(b[0], b[1])) - sl.plane - PLANE_EPS);
                     if (da < 0.0) == (db < 0.0) {
                         continue;
                     }
@@ -620,11 +967,11 @@ impl Document {
                 let drop = thick / f.slope_deg.min(80.0).to_radians().cos().max(0.2);
                 for pair in xs.chunks_exact(2) {
                     let ((u0, z0), (u1, z1)) = (pair[0], pair[1]);
-                    if u1 - u0 < 1e-6 || u1 <= 0.0 || u0 >= sl.len {
+                    if u1 - u0 < 1e-6 || u1 <= sl.lo || u0 >= sl.hi {
                         continue;
                     }
                     let lerp = |u: f64| z0 + (z1 - z0) * (u - u0) / (u1 - u0);
-                    let (a, b) = (u0.max(0.0), u1.min(sl.len));
+                    let (a, b) = (u0.max(sl.lo), u1.min(sl.hi));
                     segs.push(Seg { u0: a, z0: lerp(a), u1: b, z1: lerp(b), drop });
                 }
             }
@@ -652,7 +999,7 @@ impl Document {
             // Flat roofs are a slab at the base height.
             let rings: Vec<&[Point]> = g.flat.iter().flat_map(|r| std::iter::once(r.outer.as_slice()).chain(r.holes.iter().map(|h| h.as_slice()))).collect();
             if !rings.is_empty() {
-                for cut in sl.cuts(&rings, PLANE_EPS) {
+                for cut in sl.cuts(&rings, sl.plane + PLANE_EPS) {
                     out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![rect(cut.u0, cut.u1, g.base_z - thick, g.base_z)], fill, cut: true, material: mat.clone(), ..Default::default() });
                 }
             }
@@ -876,6 +1223,220 @@ mod tests {
     fn older_project_files_without_section_data_still_open() {
         let s: Section = serde_json::from_value(serde_json::json!({"level": 1, "start": {"x": 0.0, "y": 0.0}, "end": {"x": 1000.0, "y": 0.0}})).unwrap();
         assert_eq!(s.far_clip, FarClip::WithLine);
-        assert!(!s.depth_cue.enabled && s.bends.is_empty() && s.reference.is_none());
+        assert!(s.bends.is_empty() && s.breaks.is_empty() && s.reference.is_none() && s.fold_lines);
+        // files from step 1 carry a centre break flag and depth cue settings on the section; they still open
+        let old = serde_json::json!({"level": 1, "start": {"x": 0.0, "y": 0.0}, "end": {"x": 1000.0, "y": 0.0}, "centre_break": false,
+            "depth_cue": {"enabled": false, "start_pct": 20.0, "end_pct": 100.0, "min_intensity": 0.3}});
+        let s: Section = serde_json::from_value(old).unwrap();
+        assert_eq!(s.length(), 1000.0);
+    }
+
+    /// The house with an internal wall that stops 1000 mm short of a section through the middle, west to east,
+    /// looking north. The straight section does not see it (it is behind the line).
+    fn house_with_stub() -> (Document, Id, Id, Id) {
+        let (mut d, lvl) = house();
+        let wt = d.wall_types().into_iter().find(|(_, t)| t.name == "Brick Veneer").unwrap().0;
+        let stub = d.add_wall(wt, lvl, Point::new(6000.0, 0.0), Point::new(6000.0, 2000.0), 2700.0).unwrap();
+        let s = d.add_section(lvl, Point::new(-1000.0, 3000.0), Point::new(9000.0, 3000.0), false).unwrap();
+        (d, lvl, s, stub)
+    }
+
+    #[test]
+    fn split_segment_jogs_the_line_and_the_moved_run_cuts_at_its_own_depth() {
+        let (mut d, _, s, stub) = house_with_stub();
+        let v = d.section(s).unwrap().view.unwrap();
+        assert!(!d.elevation_data(v).unwrap().items.iter().any(|i| i.id == stub), "the stub wall is behind the straight line");
+        // split at x = 4000; the cursor goes south of the line on the east side, so the east part moves 2000 south
+        let pts = d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 1000.0) }, true).unwrap();
+        assert_eq!(pts.len(), 4);
+        assert!(d.section(s).unwrap().bends.is_empty(), "a preview changes nothing");
+        d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 1000.0) }, false).unwrap();
+        let sec = d.section(s).unwrap().clone();
+        assert_eq!(sec.bends, vec![Point::new(4000.0, 3000.0), Point::new(4000.0, 1000.0)]);
+        assert_eq!(sec.end, Point::new(9000.0, 1000.0));
+        assert!((sec.length() - 10000.0).abs() < 1e-6, "the width is the runs end to end");
+        let (_, runs) = sec.view_runs().unwrap();
+        assert_eq!(runs.len(), 2);
+        assert!((runs[1].d + 2000.0).abs() < 1e-6 && (runs[1].u0 - 5000.0).abs() < 1e-6);
+        let data = d.elevation_data(v).unwrap();
+        assert_eq!(data.folds, vec![5000.0], "a fold line where the line jogs");
+        // the stub wall (x = 6000, u = 7000) is now cut by the east run
+        let cut: Vec<_> = data.items.iter().filter(|i| i.id == stub && i.cut).collect();
+        assert!(!cut.is_empty(), "the moved run cuts the stub wall");
+        assert!(cut.iter().all(|i| i.polys[0].iter().all(|q| q[0] > 6800.0 && q[0] < 7200.0)));
+        // the north wall lies beyond both runs: its pieces join again across the jog
+        let north = d.iter().find_map(|(id, e)| if let Element::Wall(w) = e { (w.start.y == 6000.0 && w.end.y == 6000.0).then_some(id) } else { None }).unwrap();
+        assert!(data.items.iter().any(|i| i.id == north && !i.cut && i.polys.iter().any(|p| p.iter().any(|q| q[0] < 4000.0) && p.iter().any(|q| q[0] > 6000.0))), "one face across the fold");
+        // without fold lines the view draws none
+        d.patch_section(s, &serde_json::json!({"fold_lines": false})).unwrap();
+        assert!(d.elevation_data(v).unwrap().folds.is_empty());
+        d.undo();
+        d.undo();
+        assert!(d.section(s).unwrap().bends.is_empty(), "the split is one undo step");
+    }
+
+    #[test]
+    fn runs_move_across_and_merge_and_jogs_slide_along() {
+        let (mut d, _, s, _) = house_with_stub();
+        d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 1000.0) }, false).unwrap();
+        // slide the jog east; it stops 100 mm short of the east end
+        d.edit_section(s, SectionEdit::MoveJog { index: 0, to: Point::new(20000.0, 2000.0) }, false).unwrap();
+        assert_eq!(d.section(s).unwrap().bends[0], Point::new(8900.0, 3000.0));
+        // move the east run further south, then back onto the line of the west run: the jog goes
+        d.edit_section(s, SectionEdit::MoveRun { index: 1, to: Point::new(8950.0, 500.0) }, false).unwrap();
+        assert_eq!(d.section(s).unwrap().end, Point::new(9000.0, 500.0));
+        d.edit_section(s, SectionEdit::MoveRun { index: 1, to: Point::new(8950.0, 3000.4) }, false).unwrap();
+        let sec = d.section(s).unwrap();
+        assert!(sec.bends.is_empty() && sec.end == Point::new(9000.0, 3000.0), "{sec:?}");
+        // a split too near the end of a run, or with the cursor on the line, is refused
+        assert!(d.edit_section(s, SectionEdit::Split { at: Point::new(8950.0, 3000.0), to: Point::new(8950.0, 2000.0) }, false).is_err());
+        assert!(d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(5000.0, 3000.0) }, false).is_err());
+    }
+
+    #[test]
+    fn the_ends_of_a_jogged_line_move_along_their_own_runs() {
+        let (mut d, _, s, _) = house_with_stub();
+        d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 1000.0) }, false).unwrap();
+        // dragging the head off its line keeps it on the line of the head run
+        d.patch_section(s, &serde_json::json!({"start": {"x": -2000.0, "y": 3500.0}})).unwrap();
+        assert_eq!(d.section(s).unwrap().start, Point::new(-2000.0, 3000.0));
+        // and the tail stays on the line of its run, at least 100 mm long
+        d.patch_section(s, &serde_json::json!({"end": {"x": 3000.0, "y": 0.0}})).unwrap();
+        assert_eq!(d.section(s).unwrap().end, Point::new(4100.0, 1000.0));
+        // a bend that breaks the square jogs is refused
+        assert!(d.patch_section(s, &serde_json::json!({"bends": [{"x": 4000.0, "y": 3000.0}, {"x": 4500.0, "y": 1000.0}]})).is_err());
+    }
+
+    #[test]
+    fn a_flipped_jogged_section_unrolls_left_to_right_from_the_tail() {
+        let (mut d, _, s, stub) = house_with_stub();
+        // move the east part north instead, then look south
+        d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 5000.0) }, false).unwrap();
+        d.patch_section(s, &serde_json::json!({"flipped": true})).unwrap();
+        let sec = d.section(s).unwrap().clone();
+        let (o, runs) = sec.view_runs().unwrap();
+        assert_eq!(o, Point::new(9000.0, 3000.0), "the view starts at the tail end, on the head run's plane");
+        assert!(runs[0].u0 == 0.0 && (runs[0].d + 2000.0).abs() < 1e-6, "{runs:?}");
+        assert!((runs[1].u0 - 5000.0).abs() < 1e-6 && runs[1].d == 0.0);
+        let v = sec.view.unwrap();
+        let f = d.elevation_frame(v).unwrap();
+        assert!((f.look[1] + 1.0).abs() < 1e-9 && (f.right_mm - 10000.0).abs() < 1e-6);
+        // looking south from y = 5000 on the east run, the stub (y 0 to 2000) is beyond the plane and in projection
+        let data = d.elevation_data(v).unwrap();
+        assert!(data.items.iter().any(|i| i.id == stub && !i.cut));
+    }
+
+    #[test]
+    fn a_run_cannot_go_beyond_the_far_clip() {
+        let (mut d, _, s, _) = house_with_stub();
+        d.patch_section(s, &serde_json::json!({"far_clip_mm": 1500.0})).unwrap();
+        assert!(d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 4500.0) }, false).is_err());
+        assert!(d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 3500.0) }, false).is_ok());
+    }
+
+    #[test]
+    fn a_pinned_section_cannot_be_split() {
+        let (mut d, _, s, _) = house_with_stub();
+        d.patch_section(s, &serde_json::json!({"pinned": true})).unwrap();
+        assert!(d.edit_section(s, SectionEdit::Split { at: Point::new(4000.0, 3000.0), to: Point::new(6500.0, 1000.0) }, false).is_err());
+    }
+
+    #[test]
+    fn a_break_hides_the_middle_of_the_line_in_one_plan_view() {
+        let (mut d, lvl, s, _) = house_with_stub();
+        let plan = d.views().into_iter().find(|(_, v)| v.view_kind == ViewKind::FloorPlan && v.level == Some(lvl)).unwrap().0;
+        assert!(d.toggle_section_break(s, plan).unwrap());
+        let b = d.section(s).unwrap().break_in(plan).unwrap().clone();
+        // 12 mm on paper at 1:100 is 1200 mm, under a quarter of the 10 m line
+        assert!((b.head_mm - 1200.0).abs() < 1e-6 && (b.tail_mm - 1200.0).abs() < 1e-6);
+        d.set_section_break(s, plan, 3000.0, 2000.0).unwrap();
+        assert!(d.set_section_break(s, plan, 6000.0, 4000.0).is_err(), "the ends would meet");
+        // a shorter line keeps a gap: both ends give up length
+        d.patch_section(s, &serde_json::json!({"end": {"x": 3000.0, "y": 3000.0}})).unwrap();
+        let b = d.section(s).unwrap().break_in(plan).unwrap().clone();
+        assert!(b.head_mm + b.tail_mm <= 4000.0 - MIN_GAP_MM + 1e-6 && (b.head_mm / b.tail_mm - 1.5).abs() < 1e-9);
+        // breaks are made in plan views, and the break control joins the line again
+        let v = d.section(s).unwrap().view.unwrap();
+        assert!(d.toggle_section_break(s, v).is_err());
+        assert!(!d.toggle_section_break(s, plan).unwrap());
+        assert!(d.section(s).unwrap().breaks.is_empty());
+    }
+
+    #[test]
+    fn a_reference_section_points_at_an_existing_view_and_goes_with_it() {
+        let (mut d, lvl, s, _) = house_with_stub();
+        let target = d.section(s).unwrap().view.unwrap();
+        let n = d.views().len();
+        let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();
+        assert_eq!(d.views().len(), n, "a reference section makes no view");
+        let rs = d.section(r).unwrap().clone();
+        assert!(rs.view.is_none() && rs.reference == Some(target));
+        let labels: Vec<String> = d.section_labels(&rs).iter().flat_map(|l| l.lines.clone()).collect();
+        assert!(labels.contains(&"Section 1".to_string()), "{labels:?}");
+        // it cannot point at a plan, cannot stop being a reference, and a section with a view cannot become one
+        let plan = d.views().into_iter().find(|(_, v)| v.view_kind == ViewKind::FloorPlan).unwrap().0;
+        assert!(d.add_reference_section(lvl, Point::new(0.0, 0.0), Point::new(1000.0, 0.0), false, plan).is_err());
+        assert!(d.patch_section(r, &serde_json::json!({"reference": null})).is_err());
+        assert!(d.patch_section(s, &serde_json::json!({"reference": target})).is_err());
+        // a second section to point at instead
+        let s2 = d.add_section(lvl, Point::new(0.0, 1000.0), Point::new(8000.0, 1000.0), false).unwrap();
+        let t2 = d.section(s2).unwrap().view.unwrap();
+        d.patch_section(r, &serde_json::json!({"reference": t2})).unwrap();
+        assert!(d.reference_targets().iter().any(|(i, _)| *i == t2));
+        // deleting the section it points at deletes the reference section too, in one undo step
+        d.delete_section(s2).unwrap();
+        assert!(d.section(r).is_none());
+        d.undo();
+        assert!(d.section(r).is_some() && d.section(s2).is_some());
+        // the reference section's own delete leaves the view it points at
+        d.delete_section(r).unwrap();
+        assert!(d.view(t2).is_some());
+    }
+
+    #[test]
+    fn the_reference_label_shows_on_reference_sections_only() {
+        use crate::annotation::{AnnLabel, LabelLine};
+        let (mut d, lvl, s, _) = house_with_stub();
+        let (fid, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
+        f.labels.push(AnnLabel { x: 0.0, y: -5.0, halign: Default::default(), valign: Default::default(), size_mm: 2.0, bold: false, lines: vec![LabelLine::new("Reference Label", "", "", "SIM")] });
+        d.set_annotation_family(fid, f).unwrap();
+        let target = d.section(s).unwrap().view.unwrap();
+        let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();
+        let text = |id: Id| -> Vec<String> { d.section_labels(d.section(id).unwrap()).iter().flat_map(|l| l.lines.clone()).collect() };
+        assert!(text(r).contains(&"SIM".to_string()));
+        assert!(!text(s).contains(&"SIM".to_string()));
+    }
+
+    #[test]
+    fn depth_cueing_fades_what_is_far_from_the_plane() {
+        let (mut d, _, s, _) = house_with_stub();
+        let v = d.section(s).unwrap().view.unwrap();
+        assert!(d.elevation_data(v).unwrap().items.iter().all(|i| i.fade == 1.0), "off by default");
+        let mut view = d.view(v).unwrap().clone();
+        view.settings.graphic_display.depth_cue = true;
+        view.settings.graphic_display.depth_cue_start = 0;
+        view.settings.graphic_display.depth_cue_end = 100;
+        view.settings.graphic_display.depth_cue_fade = 30;
+        view.settings.discipline = crate::view::Discipline::Architectural;
+        d.transact("cue", |tx| tx.update(v, Element::View(view.clone()))).unwrap();
+        let data = d.elevation_data(v).unwrap();
+        assert!(data.items.iter().filter(|i| i.cut).all(|i| i.fade == 1.0), "what the plane cuts is never faded");
+        let seen: Vec<_> = data.items.iter().filter(|i| !i.cut && i.category == "Walls").collect();
+        let (near, far) = seen.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), i| (a.min(i.depth), b.max(i.depth)));
+        let fade_at = |dep: f64| seen.iter().find(|i| i.depth == dep).unwrap().fade;
+        assert!(fade_at(far) < fade_at(near), "the far wall is fainter: {} vs {}", fade_at(far), fade_at(near));
+        assert!(data.items.iter().all(|i| i.fade >= 0.3 - 1e-9), "never below the fade limit");
+        // depth cueing belongs to architectural and coordination views
+        view.settings.discipline = crate::view::Discipline::Structural;
+        d.transact("cue", |tx| tx.update(v, Element::View(view))).unwrap();
+        assert!(d.elevation_data(v).unwrap().items.iter().all(|i| i.fade == 1.0));
+        // elevations fade too
+        let ev = d.views().iter().find(|(_, v)| v.view_kind == ViewKind::Elevation).map(|(i, _)| *i).unwrap();
+        let mut e = d.view(ev).unwrap().clone();
+        e.settings.graphic_display.depth_cue = true;
+        e.settings.graphic_display.depth_cue_fade = 20;
+        e.settings.discipline = crate::view::Discipline::Coordination;
+        d.transact("cue", |tx| tx.update(ev, Element::View(e))).unwrap();
+        assert!(d.elevation_data(ev).unwrap().items.iter().any(|i| i.fade < 1.0));
     }
 }

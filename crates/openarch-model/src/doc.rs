@@ -943,6 +943,7 @@ impl Document {
         if nv.settings.scale == 0 {
             return Err("scale must be positive".into());
         }
+        check_depth_cue(&nv.settings)?;
         if let Some(t) = nv.template {
             match self.view_template(t) {
                 None => return Err("unknown view template".into()),
@@ -978,6 +979,7 @@ impl Document {
         if self.view_templates().iter().any(|(i, o)| *i != id && o.name == nt.name) {
             return Err(format!("a view template named '{}' already exists", nt.name));
         }
+        check_depth_cue(&nt.settings)?;
         self.transact("Change view template", |tx| tx.update(id, Element::ViewTemplate(nt)))
     }
 
@@ -1290,6 +1292,19 @@ impl Document {
     pub fn wall_length_mm(w: &Wall) -> f64 {
         w.length()
     }
+}
+
+/// Depth cueing fades from a start to an end along the view depth (the start no further than the end) down to a
+/// fade limit, all percentages.
+fn check_depth_cue(s: &ViewSettings) -> Result<(), String> {
+    let g = &s.graphic_display;
+    if g.depth_cue_start > 100 || g.depth_cue_end > 100 || g.depth_cue_fade > 100 {
+        return Err("depth cueing values are percentages from 0 to 100".into());
+    }
+    if g.depth_cue_start > g.depth_cue_end {
+        return Err("depth cueing must start no further back than it ends".into());
+    }
+    Ok(())
 }
 
 /// Serialise `value`, merge `patch` into it (RFC 7396), and read it back.

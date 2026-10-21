@@ -82,7 +82,36 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
             patch[key] = json!({ "x": pt.x, "y": pt.y });
         }
     }
+    if let Some(bends) = patch.get("bends").and_then(|v| v.as_array()).cloned() {
+        let pts: Result<Vec<Value>, String> = bends.iter().map(|b| point_of(b).map(|p| json!({ "x": p.x, "y": p.y }))).collect();
+        patch["bends"] = Value::Array(pts?);
+    }
     Ok(())
+}
+
+/// A section as the plan draws it: the corners of its line, its runs and jogs (for their grips, counted from the
+/// head), the view box, the break in this plan if there is one, and its marker.
+fn section_json(d: &Document, id: Id, s: &openarch_model::section::Section, plan: Id) -> Value {
+    let (right, look) = s.axes().unwrap_or((Point::new(1.0, 0.0), Point::new(0.0, 1.0)));
+    let dr = s.drawn();
+    let runs: Vec<Value> = dr.as_ref().map_or(vec![], |dr| dr.runs.iter().map(|&(s0, s1, dd)| { let (a, b) = (dr.at(s0, dd), dr.at(s1, dd)); json!({ "a": [a.x, a.y], "b": [b.x, b.y] }) }).collect());
+    let jogs: Vec<Value> = dr.as_ref().map_or(vec![], |dr| dr.runs.windows(2).map(|w| { let (a, b) = (dr.at(w[0].1, w[0].2), dr.at(w[1].0, w[1].2)); json!({ "a": [a.x, a.y], "b": [b.x, b.y] }) }).collect());
+    // the view box: the left end of the view, across it and how deep (a reference section looks at nothing)
+    let depth = s.view.and_then(|v| d.elevation_frame(v)).map(|f| f.depth_mm).filter(|v| *v < 1.0e6);
+    let frame = s.view_runs().map(|(o, r)| json!({ "o": [o.x, o.y], "right": [right.x, right.y], "look": [look.x, look.y], "width": r.last().map_or(0.0, |r| r.u1), "depth": depth }));
+    let family = d.section_marker_family(s.family);
+    json!({
+        "id": id, "view_id": s.reference.or(s.view), "name": s.reference.or(s.view).and_then(|v| d.view(v)).map(|v| v.name.clone()),
+        "reference": s.reference.is_some(),
+        "start": [s.start.x, s.start.y], "end": [s.end.x, s.end.y], "flipped": s.flipped, "look": [look.x, look.y],
+        "pts": s.points().iter().map(|p| [p.x, p.y]).collect::<Vec<_>>(), "runs": runs, "jogs": jogs, "frame": frame,
+        "path_length": s.path_length(),
+        "gap": s.break_in(plan).map(|b| json!({ "head_mm": b.head_mm, "tail_mm": b.tail_mm })),
+        "broken_style": family.map(|(_, f)| f.broken_style),
+        "pinned": s.pinned, "level_id": s.level, "far_clip": s.far_clip, "depth": depth,
+        "family": family.map(|(fid, f)| json!({ "id": fid, "shapes": f.shapes, "pointer": f.pointer, "pen_mm": f.pen_mm })),
+        "labels": d.section_labels(s),
+    })
 }
 
 fn end_of(p: &Value) -> Result<u8, String> {
@@ -206,18 +235,50 @@ impl Session {
                 Ok(json!({ "id": self.doc.add_elevation_marker(id_of(p, "level_id")?, point_of(p.get("point").ok_or("missing point")?)?, rot, s4)? }))
             }
             "add_section" => {
-                // { level_id, start: [x, y], end: [x, y], flipped }
+                // { level_id, start: [x, y], end: [x, y], flipped, reference: view id (a reference section, no view of its own) }
                 let flipped = p.get("flipped").and_then(|v| v.as_bool()).unwrap_or(false);
-                let id = self.doc.add_section(id_of(p, "level_id")?, point_of(p.get("start").ok_or("missing start")?)?, point_of(p.get("end").ok_or("missing end")?)?, flipped)?;
+                let (level, start, end) = (id_of(p, "level_id")?, point_of(p.get("start").ok_or("missing start")?)?, point_of(p.get("end").ok_or("missing end")?)?);
+                let id = match p.get("reference").and_then(|v| v.as_u64()) {
+                    Some(target) => self.doc.add_reference_section(level, start, end, flipped, target)?,
+                    None => self.doc.add_section(level, start, end, flipped)?,
+                };
                 Ok(json!({ "id": id, "view_id": self.doc.section(id).and_then(|s| s.view) }))
             }
             "patch_section" => {
-                // patch: any of start, end ([x, y]), flipped, far_clip, far_clip_mm, z_range, pinned, family, depth_cue, centre_break
+                // patch: any of start, end ([x, y]), bends ([[x, y], ...]), flipped, far_clip, far_clip_mm, z_range, pinned, family,
+                // fold_lines, reference (the view a reference section points at)
                 let mut patch = p.get("patch").cloned().ok_or("missing patch")?;
                 section_patch_points(&mut patch)?;
                 self.doc.patch_section(id_of(p, "id")?, &patch)?;
                 Ok(json!({}))
             }
+            "section_edit" => {
+                // { id, op: "split" (at, to) | "move_run" (index, to) | "move_jog" (index, to), preview } -> { pts }
+                use openarch_model::section::SectionEdit;
+                let to = point_of(p.get("to").ok_or("missing to")?)?;
+                let index = || p.get("index").and_then(|v| v.as_u64()).map(|v| v as usize).ok_or("missing index");
+                let edit = match p.get("op").and_then(|v| v.as_str()) {
+                    Some("split") => SectionEdit::Split { at: point_of(p.get("at").ok_or("missing at")?)?, to },
+                    Some("move_run") => SectionEdit::MoveRun { index: index()?, to },
+                    Some("move_jog") => SectionEdit::MoveJog { index: index()?, to },
+                    _ => return Err("op must be split, move_run or move_jog".into()),
+                };
+                let preview = p.get("preview").and_then(|v| v.as_bool()).unwrap_or(false);
+                let pts = self.doc.edit_section(id_of(p, "id")?, edit, preview)?;
+                Ok(json!({ "pts": pts.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>() }))
+            }
+            "section_break" => {
+                // { id, view_id } breaks the line in that plan or joins it again; { id, view_id, head_mm, tail_mm } sets the ends
+                let (id, view) = (id_of(p, "id")?, id_of(p, "view_id")?);
+                match (p.get("head_mm").and_then(|v| v.as_f64()), p.get("tail_mm").and_then(|v| v.as_f64())) {
+                    (Some(h), Some(t)) => {
+                        self.doc.set_section_break(id, view, h, t)?;
+                        Ok(json!({ "broken": true }))
+                    }
+                    _ => Ok(json!({ "broken": self.doc.toggle_section_break(id, view)? })),
+                }
+            }
+            "reference_targets" => Ok(json!(self.doc.reference_targets().iter().map(|(id, v)| json!({ "id": id, "name": v.name, "view_kind": v.view_kind })).collect::<Vec<_>>())),
             "patch_marker" => {
                 // { rotation_deg, pinned, point, slot_on: { "0": true } }
                 let id = id_of(p, "id")?;
@@ -944,7 +1005,11 @@ impl Session {
                             n.pinned = false;
                             let mut patch = serde_json::to_value(&n).map_err(|e| e.to_string())?;
                             if copy {
-                                let nid = d.add_section(sec.level, n.start, n.end, n.flipped)?;
+                                // a copy of a reference section points at the same view; any other copy makes its own
+                                let nid = match sec.reference {
+                                    Some(target) => d.add_reference_section(sec.level, n.start, n.end, n.flipped, target)?,
+                                    None => d.add_section(sec.level, n.start, n.end, n.flipped)?,
+                                };
                                 d.patch_section(nid, &patch)?;
                                 made.push(nid);
                             } else {
@@ -1366,7 +1431,7 @@ impl Session {
         v["fill_patterns"] = graphics::fill_pattern_defs(d);
         v["line_patterns"] = graphics::line_pattern_defs(d);
         v["section_id"] = json!(view.section);
-        v["section"] = view.section.and_then(|sid| d.section(sid).map(|s| json!({ "id": sid, "flipped": s.flipped, "pinned": s.pinned, "length": s.length(), "far_clip": s.far_clip }))).unwrap_or(Value::Null);
+        v["section"] = view.section.and_then(|sid| d.section(sid).map(|s| json!({ "id": sid, "flipped": s.flipped, "pinned": s.pinned, "length": s.length(), "far_clip": s.far_clip, "runs": s.view_runs().map(|(_, r)| r) }))).unwrap_or(Value::Null);
         Ok(v)
     }
 
@@ -1757,17 +1822,7 @@ impl Session {
             d.sections()
                 .iter()
                 .filter(|(id, s)| !view.hidden_elements.contains(id) && d.section_shows_at(*id, cut_z) && s.axes().is_some())
-                .map(|(id, s)| {
-                    let (_, look) = s.axes().unwrap();
-                    let depth = s.view.and_then(|v| d.elevation_frame(v)).map(|f| f.depth_mm).filter(|v| *v < 1.0e6);
-                    json!({
-                        "id": id, "view_id": s.view, "name": s.view.and_then(|v| d.view(v)).map(|v| v.name.clone()),
-                        "start": [s.start.x, s.start.y], "end": [s.end.x, s.end.y], "flipped": s.flipped, "look": [look.x, look.y],
-                        "pinned": s.pinned, "level_id": s.level, "far_clip": s.far_clip, "depth": depth, "centre_break": s.centre_break,
-                        "family": d.section_marker_family(s.family).map(|(fid, f)| json!({ "id": fid, "shapes": f.shapes, "pointer": f.pointer, "pen_mm": f.pen_mm })),
-                        "labels": d.section_labels(s),
-                    })
-                })
+                .map(|(id, s)| section_json(d, *id, s, vid))
                 .collect()
         } else {
             vec![]
@@ -2692,6 +2747,64 @@ mod tests {
         assert!(call(&mut s, "plan", json!({"view_id": view}))["sections"].as_array().unwrap().is_empty());
         call(&mut s, "undo", json!({}));
         assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["sections"].as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn sections_jog_break_reference_other_views_and_fade_with_depth() {
+        let (mut s, lvl, wt, view) = setup();
+        for (a, b) in [([0, 0], [8000, 0]), ([8000, 0], [8000, 6000]), ([8000, 6000], [0, 6000]), ([0, 6000], [0, 0])] {
+            call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": a, "end": b, "height": 2700.0}));
+        }
+        let made = call(&mut s, "add_section", json!({"level_id": lvl, "start": [-1000, 3000], "end": [9000, 3000]}));
+        let (sec, sv) = (made["id"].as_u64().unwrap(), made["view_id"].as_u64().unwrap());
+        // Split Segment: a preview first, then the split; the plan shows the runs and the jog
+        let pv = call(&mut s, "section_edit", json!({"id": sec, "op": "split", "at": [4000, 3000], "to": [6500, 1000], "preview": true}));
+        assert_eq!(pv["pts"].as_array().unwrap().len(), 4);
+        assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["sections"][0]["runs"].as_array().unwrap().len(), 1);
+        call(&mut s, "section_edit", json!({"id": sec, "op": "split", "at": [4000, 3000], "to": [6500, 1000]}));
+        let p = &call(&mut s, "plan", json!({"view_id": view}))["sections"][0];
+        assert_eq!(p["runs"].as_array().unwrap().len(), 2);
+        assert_eq!(p["jogs"][0]["a"], json!([4000.0, 3000.0]));
+        assert_eq!(p["pts"].as_array().unwrap().len(), 4);
+        assert!(p["gap"].is_null());
+        let data = call(&mut s, "elevation", json!({"view_id": sv}));
+        assert_eq!(data["folds"], json!([5000.0]));
+        assert_eq!(data["section"]["runs"].as_array().unwrap().len(), 2);
+        assert!(s.handle("section_edit", &json!({"id": sec, "op": "move_jog", "index": 3, "to": [0, 0]})).is_err());
+        call(&mut s, "section_edit", json!({"id": sec, "op": "move_run", "index": 1, "to": [6000, 500]}));
+        assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["sections"][0]["end"], json!([9000.0, 500.0]));
+        // the break control: on, lengths, off
+        assert_eq!(call(&mut s, "section_break", json!({"id": sec, "view_id": view}))["broken"], true);
+        call(&mut s, "section_break", json!({"id": sec, "view_id": view, "head_mm": 2000.0, "tail_mm": 1500.0}));
+        assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["sections"][0]["gap"], json!({"head_mm": 2000.0, "tail_mm": 1500.0}));
+        assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["sections"][0]["broken_style"], "gapped");
+        assert_eq!(call(&mut s, "section_break", json!({"id": sec, "view_id": view}))["broken"], false);
+        // a reference section points at the section view: no view of its own, it opens the one it points at
+        let targets = call(&mut s, "reference_targets", json!({}));
+        assert!(targets.as_array().unwrap().iter().any(|t| t["id"].as_u64() == Some(sv)));
+        let n_views = call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().len();
+        let r = call(&mut s, "add_section", json!({"level_id": lvl, "start": [2000, -1000], "end": [2000, 7000], "reference": sv}));
+        assert!(r["view_id"].is_null());
+        assert_eq!(call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().len(), n_views);
+        let rid = r["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({"view_id": view}));
+        let rp = plan["sections"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(rid)).unwrap();
+        assert!(rp["reference"] == true && rp["view_id"].as_u64() == Some(sv) && rp["depth"].is_null());
+        let props = call(&mut s, "describe", json!({"id": rid}));
+        assert_eq!(props["title"], "Reference Section");
+        // a copy of it is a reference section too
+        let copy = call(&mut s, "transform", json!({"ids": [rid], "kind": "move", "copy": true, "dx": 500.0, "dy": 0.0}));
+        let cid = copy["ids"][0].as_u64().unwrap();
+        assert_eq!(call(&mut s, "describe", json!({"id": cid}))["title"], "Reference Section");
+        assert_eq!(call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().len(), n_views);
+        // depth cueing: rows on the section view, values checked, items fade
+        let vp = call(&mut s, "describe", json!({"id": sv}));
+        assert!(vp.to_string().contains("Show Depth"));
+        assert!(s.handle("patch_view", &json!({"id": sv, "patch": {"settings": {"graphic_display": {"depth_cue_start": 80, "depth_cue_end": 20}}}})).is_err());
+        call(&mut s, "patch_view", json!({"id": sv, "patch": {"settings": {"discipline": "architectural", "graphic_display": {"depth_cue": true, "depth_cue_fade": 40}}}}));
+        let items = call(&mut s, "elevation", json!({"view_id": sv}))["items"].as_array().unwrap().clone();
+        assert!(items.iter().any(|i| i["fade"].as_f64().unwrap() < 1.0));
+        assert!(items.iter().filter(|i| i["cut"] == true).all(|i| i["fade"].as_f64() == Some(1.0)));
     }
 
     #[test]

@@ -36,6 +36,18 @@ const Elev = (() => {
   const isEdit = () => EDIT.includes(tool);
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+  // a colour `f` of the way from the background to `col`: depth cueing fades toward the background
+  const rgbCache = new Map();
+  function rgbOf(col) {
+    if (!rgbCache.has(col)) {
+      const c = document.createElement("canvas").getContext("2d");
+      c.fillStyle = "#000"; c.fillStyle = col;
+      const s = String(c.fillStyle);
+      rgbCache.set(col, s[0] === "#" ? [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16)) : (s.match(/[\d.]+/g) || [0, 0, 0]).slice(0, 3).map(Number));
+    }
+    return rgbCache.get(col);
+  }
+  const mix = (col, bg, f) => { const a = rgbOf(col), b = rgbOf(bg); return `rgb(${a.map((x, i) => Math.round(b[i] + (x - b[i]) * f)).join(",")})`; };
   const size = () => ({ w: canvas.clientWidth, h: canvas.clientHeight });
   const toScreen = (u, z) => { const { w, h } = size(); return { x: (u - cam.u) * cam.s + w / 2, y: h / 2 - (z - cam.z) * cam.s }; };
   const toWorld = (sx, sy) => { const { w, h } = size(); return { u: (sx - w / 2) / cam.s + cam.u, z: (h / 2 - sy) / cam.s + cam.z }; };
@@ -673,15 +685,17 @@ const Elev = (() => {
     for (const it of data.items) {
       const selected = sel.has(it.id), hovered = hoverIds && hoverIds.includes(it.id);
       if (it.cut) continue; // cuts are drawn after everything else, below
+      // depth cueing: the model has worked out how far toward the background this item fades
+      const f = it.fade == null ? 1 : it.fade, ink = f < 1 ? mix(text, viewBg, f) : text, fill = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`;
       for (const poly of it.polys) {
         polyPath(poly);
         if (style === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill(); }
-        else if (style !== "wireframe") { ctx.fillStyle = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`; ctx.fill(); }
-        ctx.strokeStyle = selected ? accent : hovered ? accent : text; ctx.lineWidth = selected ? 2 : 1; if (it.stroke !== false || selected) ctx.stroke();
+        else if (style !== "wireframe") { ctx.fillStyle = f < 1 ? mix(fill, viewBg, f) : fill; ctx.fill(); }
+        ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : 1; if (it.stroke !== false || selected) ctx.stroke();
       }
       for (const [p, q] of it.lines) {
         const a = toScreen(p[0], p[1]), b = toScreen(q[0], q[1]);
-        ctx.strokeStyle = text; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
     }
     // What the plane cuts: every fill first, then every outline, so two elements that overlap (a wall and a slab that
@@ -689,6 +703,12 @@ const Elev = (() => {
     const cuts = data.items.filter((it) => it.cut), cutCol = (it) => (sel.has(it.id) ? accent : hoverIds && hoverIds.includes(it.id) ? accent : text);
     for (const it of [...cuts.filter((i) => i.category !== "Walls"), ...cuts.filter((i) => i.category === "Walls")]) drawCut(it, style, viewBg, cutCol(it), sel.has(it.id), "fill");
     for (const it of cuts) drawCut(it, style, viewBg, cutCol(it), sel.has(it.id), "line");
+    // a jogged section unrolls its runs side by side: a light fold line marks each jog
+    for (const u of data.folds || []) {
+      const a = toScreen(u, data.frame.z_max), b = toScreen(u, data.frame.z_min);
+      ctx.save(); ctx.strokeStyle = mix(text, viewBg, 0.45); ctx.lineWidth = 1; ctx.setLineDash([10, 4, 2, 4]);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
+    }
     drawGrids();
     drawCrop();
     for (const l of data.levels) {

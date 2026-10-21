@@ -34,13 +34,15 @@ impl AnnotationKind {
     pub fn params(self) -> &'static [&'static str] {
         match self {
             AnnotationKind::LevelHead => LEVEL_PARAMS,
-            AnnotationKind::ElevationMarker | AnnotationKind::SectionMarker => VIEW_PARAMS,
+            AnnotationKind::ElevationMarker => VIEW_PARAMS,
+            AnnotationKind::SectionMarker => SECTION_PARAMS,
         }
     }
 }
 
 pub const LEVEL_PARAMS: &[&str] = &["Name", "Elevation", "Survey Elevation", "Project Elevation", "Level Number"];
 pub const VIEW_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number"];
+pub const SECTION_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number", "Reference Label"];
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
@@ -127,10 +129,29 @@ pub struct AnnotationFamily {
     /// Pen width on paper, mm.
     #[serde(default = "pen")]
     pub pen_mm: f64,
+    /// Section markers: how the hidden middle of a broken section line shows (Broken Section Display Style).
+    #[serde(default)]
+    pub broken_style: BrokenStyle,
+    /// Section markers: the text a reference section shows for its Reference Label parameter.
+    #[serde(default = "reference_label")]
+    pub reference_label: String,
 }
 
 fn pen() -> f64 {
     0.25
+}
+
+fn reference_label() -> String {
+    "SIM".into()
+}
+
+/// How a broken section line shows between its ends: not at all (a gap), or as a thin line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BrokenStyle {
+    #[default]
+    Gapped,
+    Continuous,
 }
 
 /// A level type: which head its levels wear, and which ends show it by default.
@@ -168,6 +189,8 @@ impl AnnotationFamily {
                 AnnLabel { x: 6.5, y: -0.8, halign: HAlign::Left, valign: VAlign::Top, size_mm: 2.5, bold: false, lines: vec![LabelLine::new(elevation_param, "", suffix, "3000")] },
             ],
             pen_mm: pen(),
+            broken_style: BrokenStyle::default(),
+            reference_label: reference_label(),
         }
     }
 
@@ -184,6 +207,8 @@ impl AnnotationFamily {
             pointer: vec![AnnShape::Polygon { pts: vec![[6.65, 0.0], [3.5, 2.17], [3.5, -2.17]], filled: true }],
             labels: vec![],
             pen_mm: pen(),
+            broken_style: BrokenStyle::default(),
+            reference_label: reference_label(),
         }
     }
 
@@ -198,8 +223,12 @@ impl AnnotationFamily {
                 AnnLabel { x: -6.0, y: 0.0, halign: HAlign::Right, valign: VAlign::Middle, size_mm: 2.5, bold: false, lines: vec![LabelLine::new("View Name", "", "", "Section 1")] },
                 AnnLabel { x: 0.0, y: 2.0, halign: HAlign::Center, valign: VAlign::Middle, size_mm: 2.0, bold: true, lines: vec![LabelLine::new("View Number", "", "", "1")] },
                 AnnLabel { x: 0.0, y: -2.0, halign: HAlign::Center, valign: VAlign::Middle, size_mm: 2.0, bold: false, lines: vec![LabelLine::new("Sheet Number", "", "", "A101")] },
+                // shows on reference sections only
+                AnnLabel { x: 0.0, y: -5.0, halign: HAlign::Center, valign: VAlign::Top, size_mm: 2.0, bold: false, lines: vec![LabelLine::new("Reference Label", "", "", "SIM")] },
             ],
             pen_mm: pen(),
+            broken_style: BrokenStyle::default(),
+            reference_label: reference_label(),
         }
     }
 }

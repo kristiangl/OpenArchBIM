@@ -283,6 +283,11 @@ const FamEd = (() => {
         right.append(title("Family"));
         right.append(field("Name", textInput(fam.name, (v) => { fam.name = v; })));
         right.append(field("Pen width (mm)", numInput(fam.pen_mm, (v) => { fam.pen_mm = v; }, 0.05)));
+        if (fam.family_kind === "section_marker") {
+          // how the hidden middle of a broken section line shows, and what a reference section's Reference Label reads
+          right.append(field("Broken Section Display Style", selectInput(fam.broken_style || "gapped", [["gapped", "Gapped"], ["continuous", "Continuous"]], (v) => { fam.broken_style = v; })));
+          right.append(field("Reference Label", textInput(fam.reference_label == null ? "SIM" : fam.reference_label, (v) => { fam.reference_label = v; })));
+        }
         const s = sel ? get(sel) : null;
         if (!s) {
           const hint = document.createElement("div");

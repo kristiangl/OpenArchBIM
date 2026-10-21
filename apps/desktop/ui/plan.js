@@ -1404,6 +1404,7 @@ const Plan = (() => {
   function setTool(t) {
     if (t !== "dimension") Dims.stop();
     if (t !== "spot") Spots.stop();
+    if (t !== "secsplit") Sections.stopSplit();
     tool = t;
     draw = null;
     markerRot = null; gridHover = null; ggrip = null;
@@ -1439,6 +1440,7 @@ const Plan = (() => {
       if (GRID_ARC.has(gridShape)) { const ps = SHAPE_CURVE[gridShape].prompts, k = draw ? draw.pts.length : 0; return (ps[Math.min(k, ps.length - 1)] || "") + " Esc cancels."; }
       return draw ? "Click the end of the grid. Type a length and press Enter. Shift keeps to 45 degrees. Esc cancels." : "Click the start of the grid.";
     }
+    if (tool === "secsplit") return Sections.splitPrompt();
     if (tool === "section") return draw ? "Click the end of the section line. Shift keeps to 45 degrees. The view looks to the left of the direction you draw; flip it after. Esc cancels." : "Click the start of the section line.";
     if (tool === "elevation") return "Click to place the elevation marker. Space turns it 90 degrees. Tick the pointers you want views for in the options bar. Esc to stop.";
     if (tool === "wall") return draw ? "Click to place the next wall point. Esc finishes the chain. Hold Shift for 45 degree angles." : "Click to start a wall. Esc or right-click to stop.";
@@ -1866,6 +1868,9 @@ const Plan = (() => {
     } else if (tool === "grid") {
       gridClick(p, sx, sy);
       return;
+    } else if (tool === "secsplit") {
+      Sections.splitClick(sx, sy);
+      return;
     } else if (tool === "section") {
       if (!draw) draw = { pts: [p] };
       else if (dist(draw.pts[0], p) > 100) { const a = draw.pts[0]; draw = null; cb.addSection([Math.round(a.x * 1000) / 1000, Math.round(a.y * 1000) / 1000], [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000]); return; }
@@ -2047,6 +2052,7 @@ const Plan = (() => {
     if (band) { band.x1 = e.offsetX; band.y1 = e.offsetY; render(); return; }
     if (tool === "dimension") Dims.move(e.offsetX, e.offsetY);
     if (tool === "spot") Spots.move(e.offsetX, e.offsetY);
+    if (tool === "secsplit") Sections.splitMove(e.offsetX, e.offsetY);
     if (tool === "joins") { joinHover = endAt(e.offsetX, e.offsetY); canvas.style.cursor = joinHover ? "pointer" : "crosshair"; }
     if (tool === "grid" && gridShape === "pick") { gridHover = gridPickAt(e.offsetX, e.offsetY); canvas.style.cursor = gridHover ? "pointer" : "crosshair"; }
     if (hostedTool(tool)) { placeHover = placementAt(e.offsetX, e.offsetY); canvas.style.cursor = placeHover ? "crosshair" : "not-allowed"; updatePlaceDims(); }
@@ -2190,7 +2196,12 @@ const Plan = (() => {
     selection: () => [...sel],
     snap: (sx, sy) => snap(sx, sy),
     call: (m, p) => cb.dimCall(m, p),
+    // a preview asks the model without reporting errors: a cursor still on the line is not a mistake
+    preview: (m, p) => Backend.call(m, p).catch(() => null),
     refresh: () => cb.dimRefresh(),
+    viewId: () => data.view && data.view.id,
+    prompt: (t) => cb.prompt(t),
+    done: () => setTool("select"),
   });
 
   Spots.attach({
@@ -2259,6 +2270,8 @@ const Plan = (() => {
     startDim(kind) { setTool("dimension"); Dims.start(kind); },
     startWitness(id) { setTool("dimension"); Dims.startWitness(id); },
     startSection() { setTool("section"); cb.prompt(promptText()); render(); },
+    // Split Segment on the selected section: the split point first, then the side that moves and how far
+    startSplitSegment(id) { setTool("secsplit"); Sections.startSplit(id); cb.prompt(promptText()); render(); },
     startSpot(kind) { setTool("spot"); Spots.start(kind); },
     spots: () => data.spots || [],
     sections: () => data.sections || [],
