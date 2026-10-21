@@ -2,7 +2,7 @@
 
 # OpenArch BIM
 
-A free, open-source building information modelling (BIM) application for architects. Windows and Mac. Built in Rust.
+A free, open-source building information modelling (BIM) application for architects. Windows, Mac and Linux. Built in Rust.
 
 **Status: early development. Not ready for real project work.** Project files will change between versions until a stable file format is announced.
 
@@ -28,7 +28,7 @@ Australian standards and metric units come first. Other regions are welcome late
 ## Principles
 
 - **Open source.** Read it, fork it, build on it.
-- **Native.** A Rust core with a WebGPU viewport. No cloud round trips between you and your files.
+- **Native.** A Rust core with a WebGPU viewport (WebGL2 where the webview has no WebGPU, as on Linux). No cloud round trips between you and your files.
 - **Familiar.** Concepts and workflows that working architects already know, so there is little to relearn.
 - **Built for big models.** Linked models and large projects are a design goal, not an afterthought.
 
@@ -45,7 +45,7 @@ OpenArch BIM is written from scratch from published documentation, open standard
 - `crates/openarch-model` - elements, joins, undo and redo, geometry, display meshes, the project file
 - `crates/openarch-api` - JSON command interface used by the UI
 - `crates/openarch-dev` - dev server that runs the UI and the Rust core in a normal browser
-- `apps/desktop` - Tauri shell with a ribbon, Properties palette, Project Browser and WebGPU viewport
+- `apps/desktop` - Tauri shell with a ribbon, Properties palette, Project Browser and the 3D viewport (WebGPU or WebGL2)
 
 ## Build and run
 
@@ -63,7 +63,13 @@ Run the desktop app (needs Rust and your platform's webview libraries):
 
     cd apps/desktop && npm install && npm run dev
 
-Installers for Windows and Mac are built by GitHub Actions for tagged releases. Mac builds are ad-hoc signed but not notarized, so a dmg downloaded in a browser is quarantined and macOS says "damaged". Fix once in Terminal, then open normally:
+On Ubuntu or Debian the webview libraries are:
+
+    sudo apt install libwebkit2gtk-4.1-dev libxdo-dev libssl-dev libayatana-appindicator3-dev librsvg2-dev
+
+Installers for Windows, Mac and Linux are built by GitHub Actions for tagged releases. Linux comes as a .deb (Ubuntu 22.04 and later, Debian 12 and later), an .rpm (Fedora and similar) and an AppImage (most other distributions: make it executable and run it). On Linux the 3D view draws with WebGL2, because the system webview (WebKitGTK) does not offer WebGPU yet. With the NVIDIA proprietary driver the app turns off WebKitGTK's DMA-BUF renderer, which otherwise leaves the window blank.
+
+Mac builds are ad-hoc signed but not notarized, so a dmg downloaded in a browser is quarantined and macOS says "damaged". Fix once in Terminal, then open normally:
 
     xattr -dr com.apple.quarantine ~/Downloads/"OpenArch BIM_"*.dmg      # before opening the dmg
     xattr -cr "/Applications/OpenArch BIM.app"                           # after copying the app out

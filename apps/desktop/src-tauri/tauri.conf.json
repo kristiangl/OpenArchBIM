@@ -17,7 +17,9 @@
         "minHeight": 700
       }
     ],
-    "security": { "csp": null }
+    "security": {
+      "csp": null
+    }
   },
   "bundle": {
     "active": true,
@@ -28,6 +30,20 @@
       "icons/128x128@2x.png",
       "icons/icon.icns",
       "icons/icon.ico"
-    ]
+    ],
+    "category": "GraphicsAndDesign",
+    "shortDescription": "Building information modelling for architects",
+    "longDescription": "OpenArch BIM is an open-source building information modelling (BIM) program for architectural design and documentation.",
+    "linux": {
+      "deb": {
+        "section": "graphics"
+      },
+      "rpm": {
+        "release": "1"
+      },
+      "appimage": {
+        "bundleMediaFramework": false
+      }
+    }
   }
 }

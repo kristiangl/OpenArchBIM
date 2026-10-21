@@ -1817,7 +1817,7 @@ Sketch.callbacks.cancel = () => {
 async function initViewport() {
   const pill = $("#gpu-status"), msg = $("#gpu-msg");
   try {
-    const vp = await Viewport.init($("#viewport"), (fps, ms) => { $("#fps").textContent = `${fps.toFixed(0)} fps, GPU ${ms.toFixed(1)} ms/frame`; });
+    const vp = await Viewport.init($("#viewport"), (fps, ms) => { $("#fps").textContent = app.vp && app.vp.backend === "WebGL2" ? `${fps.toFixed(0)} fps (WebGL2)` : `${fps.toFixed(0)} fps, GPU ${ms.toFixed(1)} ms/frame`; });
     app.vp = window.__vp = vp;
     // clicking in the 3D view selects like the plan does: Shift or Ctrl adds, empty space clears
     vp.onPick((id, additive) => {
@@ -1841,7 +1841,7 @@ async function initViewport() {
     pill.textContent = "GPU: unavailable";
     pill.classList.add("bad");
     msg.hidden = false;
-    msg.textContent = `WebGPU could not start: ${e.message}. The 3D view needs it; the fallback is native wgpu rendering.`;
+    msg.textContent = `The 3D view could not start: ${e.message}. It needs WebGPU or WebGL2 in the webview.`;
     $("#stress").disabled = true;
   }
 }

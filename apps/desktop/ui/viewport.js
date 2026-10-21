@@ -1,6 +1,9 @@
-// WebGPU viewport spike: orbit camera, ground grid, instanced boxes.
-// Z-up world, metres. The stress mode draws 1200 apartment-sized boxes with
-// one instanced draw call to check frame rate on the machine it runs on.
+// The 3D viewport: orbit camera, ground grid, the model's meshes, picking. Z-up world, metres.
+// It draws with WebGPU where the webview has it (Windows, macOS) and with WebGL2 where it does not
+// (Linux, whose webview is WebKitGTK, and older machines). Both backends draw the same thing from the
+// same buffers; everything else here (camera, picking, edges, fitting) is shared.
+// The stress mode draws 1200 apartment-sized boxes with one instanced draw call to check frame rate.
+// Force a backend with localStorage "openarch.renderer" = "webgl2" or "webgpu", or ?renderer=webgl2.
 
 const Viewport = (() => {
   const mat = {
@@ -72,6 +75,49 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
 }
 `;
 
+  // The same shading in GLSL ES 3.00, for WebGL2
+  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge;";
+  const GL_BOX_VS = `#version 300 es
+${GL_UNIFORMS}
+layout(location = 0) in vec3 p; layout(location = 1) in vec3 n;
+layout(location = 2) in vec4 off; layout(location = 3) in vec4 sc; layout(location = 4) in vec4 col;
+out vec3 vn; out float vtint; out vec4 vcol;
+void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); vn = n; vtint = off.w; vcol = col; }`;
+  const GL_BOX_FS = `#version 300 es
+precision highp float;
+${GL_UNIFORMS}
+in vec3 vn; in float vtint; in vec4 vcol; out vec4 o;
+void main() {
+  if (light.w > 0.5) {
+    vec3 c = bg.rgb;
+    if (vtint >= 0.99) c = mix(c, vec3(0.85, 0.62, 0.45), 0.45);
+    if (vtint < 0.0) c = mix(c, vec3(0.55, 0.72, 0.86), 0.25);
+    o = vec4(c, 1.0); return;
+  }
+  float l = max(dot(normalize(vn), normalize(light.xyz)), 0.0);
+  vec3 base = mix(vec3(0.78, 0.80, 0.83), vec3(0.85, 0.62, 0.45), clamp(vtint, 0.0, 1.0));
+  if (vcol.w > 0.5 && vtint < 0.99) base = vcol.rgb;
+  if (vtint < 0.0) base = vec3(0.55, 0.72, 0.86);
+  o = vec4(base * (0.38 + 0.62 * l), 1.0);
+}`;
+  const GL_LINE_VS = `#version 300 es
+${GL_UNIFORMS}
+layout(location = 0) in vec3 p; layout(location = 1) in vec3 c; out vec3 vc;
+void main() { gl_Position = vp * vec4(p, 1.0); vc = c; }`;
+  const GL_LINE_FS = `#version 300 es
+precision highp float;
+in vec3 vc; out vec4 o;
+void main() { o = vec4(vc, 1.0); }`;
+  const GL_EDGE_VS = `#version 300 es
+${GL_UNIFORMS}
+layout(location = 0) in vec3 p; layout(location = 2) in vec4 off; out float vtint;
+void main() { gl_Position = vp * vec4(p, 1.0); vtint = off.w; }`;
+  const GL_EDGE_FS = `#version 300 es
+precision highp float;
+${GL_UNIFORMS}
+in float vtint; out vec4 o;
+void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1.0); }`;
+
   function boxVerts() {
     // unit cube [0,1]^3, 36 vertices of (pos, normal)
     const faces = [
@@ -101,14 +147,14 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
     return new Float32Array(out);
   }
 
-  // instance = offset.xyz + tint, scale.xyz + pad  (8 floats)
+  // the stress boxes: offset.xyz + tint, scale.xyz + pad, colour (12 floats each, colour unused)
   function stressInstances() {
     const I = [];
     for (let t = 0; t < 15; t++) {
       const tx = (t % 5) * 90 - 180, ty = Math.floor(t / 5) * 90 - 90;
       for (let l = 0; l < 10; l++) for (let s = 0; s < 8; s++) {
         const kind = (t + l + s) % 4;
-        I.push(tx + (s % 4) * 11, ty + Math.floor(s / 4) * 9, l * 3.2, kind / 3, 10, 8, 3, 0);
+        I.push(tx + (s % 4) * 11, ty + Math.floor(s / 4) * 9, l * 3.2, kind / 3, 10, 8, 3, 0, 0, 0, 0, 0);
       }
     }
     return new Float32Array(I);
@@ -142,11 +188,49 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
     return new Float32Array(out);
   }
 
-  async function init(canvas, onFrame) {
+  // Copy the lines in `src` (x y z r g b pairs) into `out`, cut to what the camera sees (a little beyond the sides of
+  // the view). Lines that pass behind the camera or reach far off screen are drawn as stray marks, or dropped, by some
+  // drivers (software renderers among them), so the grid goes through this every frame. `m` is the view-projection
+  // matrix; `depth01` is WebGPU's 0..w depth range, otherwise GL's -w..w. Returns the number of vertices written.
+  function clipLines(src, m, out, depth01) {
+    let k = 0;
+    const cl = (i) => {
+      const x = src[i], y = src[i + 1], z = src[i + 2];
+      return [m[0] * x + m[4] * y + m[8] * z + m[12], m[1] * x + m[5] * y + m[9] * z + m[13], m[2] * x + m[6] * y + m[10] * z + m[14], m[3] * x + m[7] * y + m[11] * z + m[15]];
+    };
+    // each boundary as a function of the clip-space point that is >= 0 inside
+    const sides = [(c) => 1.05 * c[3] - c[0], (c) => 1.05 * c[3] + c[0], (c) => 1.05 * c[3] - c[1], (c) => 1.05 * c[3] + c[1], (c) => c[3] - c[2], depth01 ? (c) => c[2] : (c) => c[3] + c[2]];
+    for (let i = 0; i + 11 < src.length; i += 12) {
+      const p = cl(i), q = cl(i + 6);
+      let t0 = 0, t1 = 1, gone = false;
+      for (const f of sides) {
+        const f0 = f(p), f1 = f(q);
+        if (f0 < 0 && f1 < 0) { gone = true; break; }
+        if (f0 < 0) t0 = Math.max(t0, f0 / (f0 - f1));
+        else if (f1 < 0) t1 = Math.min(t1, f0 / (f0 - f1));
+      }
+      if (gone || t0 >= t1) continue;
+      for (const t of [t0, t1]) {
+        for (let c = 0; c < 3; c++) out[k + c] = src[i + c] + (src[i + 6 + c] - src[i + c]) * t;
+        out.set(src.subarray(i + 3, i + 6), k + 3);
+        k += 6;
+      }
+    }
+    return k / 6;
+  }
+
+  // ---------------------------------------------------------------- backends
+  // A backend owns the GPU objects. mesh() uploads a model mesh (pos+normal triangles and its edge lines),
+  // instance() writes the 12 per-mesh values (offset+tint, scale, colour), render() draws a frame, and
+  // read() gives the frame just drawn back as RGBA rows, top row first.
+  const STATIC = () => ({ box: boxVerts(), grid: gridVerts(60, 1, 10), bigGrid: gridVerts(400, 10, 5), stress: stressInstances() });
+
+  async function webgpuBackend(canvas) {
     if (!navigator.gpu) throw new Error("navigator.gpu is not available in this webview");
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("no GPU adapter found");
     const device = await adapter.requestDevice();
+    // only now take the canvas, so a failed WebGPU start leaves it free for WebGL2
     const ctx = canvas.getContext("webgpu");
     const format = navigator.gpu.getPreferredCanvasFormat();
     ctx.configure({ device, format, alphaMode: "opaque", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
@@ -158,24 +242,19 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
     const bind = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: ubuf } }] });
     const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const depthFormat = "depth24plus";
-
+    const boxBuffers = [
+      { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x3" }] },
+      { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }, { shaderLocation: 4, offset: 32, format: "float32x4" }] },
+    ];
     const boxPipe = device.createRenderPipeline({
-      layout,
-      vertex: { module, entryPoint: "vs_box", buffers: [
-        { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x3" }] },
-        { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }, { shaderLocation: 4, offset: 32, format: "float32x4" }] },
-      ] },
+      layout, vertex: { module, entryPoint: "vs_box", buffers: boxBuffers },
       fragment: { module, entryPoint: "fs_box", targets: [{ format }] },
       primitive: { topology: "triangle-list", cullMode: "back" },
       depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: "less" },
     });
     // Hidden Line draws faces a little behind where they are, so the edges over them are not lost to depth fighting
     const boxBiasPipe = device.createRenderPipeline({
-      layout,
-      vertex: { module, entryPoint: "vs_box", buffers: [
-        { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x3" }] },
-        { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }, { shaderLocation: 4, offset: 32, format: "float32x4" }] },
-      ] },
+      layout, vertex: { module, entryPoint: "vs_box", buffers: boxBuffers },
       fragment: { module, entryPoint: "fs_box", targets: [{ format }] },
       primitive: { topology: "triangle-list", cullMode: "back" },
       depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: "less", depthBias: 4, depthBiasSlopeScale: 2 },
@@ -185,15 +264,13 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
       { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }] },
     ];
     const edgePipe = device.createRenderPipeline({
-      layout,
-      vertex: { module, entryPoint: "vs_edge", buffers: edgeBuffers },
+      layout, vertex: { module, entryPoint: "vs_edge", buffers: edgeBuffers },
       fragment: { module, entryPoint: "fs_edge", targets: [{ format }] },
       primitive: { topology: "line-list" },
       depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: "less-equal" },
     });
     const wirePipe = device.createRenderPipeline({
-      layout,
-      vertex: { module, entryPoint: "vs_edge", buffers: edgeBuffers },
+      layout, vertex: { module, entryPoint: "vs_edge", buffers: edgeBuffers },
       fragment: { module, entryPoint: "fs_edge", targets: [{ format }] },
       primitive: { topology: "line-list" },
       depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "always" },
@@ -207,33 +284,209 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
       primitive: { topology: "line-list" },
       depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: "less" },
     });
-
     const mk = (data, usage) => {
-      const b = device.createBuffer({ size: data.byteLength, usage: usage | GPUBufferUsage.COPY_DST });
+      const b = device.createBuffer({ size: Math.max(16, data.byteLength), usage: usage | GPUBufferUsage.COPY_DST });
       device.queue.writeBuffer(b, 0, data);
       return b;
     };
-    const boxBuf = mk(boxVerts(), GPUBufferUsage.VERTEX);
-    const grid = gridVerts(60, 1, 10), bigGrid = gridVerts(400, 10, 5);
-    const gridBuf = mk(grid, GPUBufferUsage.VERTEX), bigGridBuf = mk(bigGrid, GPUBufferUsage.VERTEX);
-    const stressData = stressInstances();
-    // stress instances are 8 floats each; the pipeline reads 12, so pad with an unused colour
-    const stressPadded = new Float32Array((stressData.length / 8) * 12);
-    for (let i = 0; i < stressData.length / 8; i++) stressPadded.set(stressData.subarray(i * 8, i * 8 + 8), i * 12);
-    const stressBuf = mk(stressPadded, GPUBufferUsage.VERTEX);
-    let meshes = []; // { vbuf, ibuf, count, id, kind }
-    let gpuMs = 0;
+    const st = STATIC();
+    const boxBuf = mk(st.box, GPUBufferUsage.VERTEX), stressBuf = mk(st.stress, GPUBufferUsage.VERTEX);
+    const clipped = new Float32Array(Math.max(st.grid.length, st.bigGrid.length));
+    const gridBuf = device.createBuffer({ size: clipped.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    let depth = null;
+    const be = {
+      name: "WebGPU",
+      info: [info.vendor, info.architecture, info.description].filter(Boolean).join(" ") || "adapter ok",
+      gpuMs: 0,
+      resize(w, h) { depth?.destroy(); depth = device.createTexture({ size: [w, h], format: depthFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT }); },
+      mesh(data, edges) {
+        return { vbuf: mk(data, GPUBufferUsage.VERTEX), ebuf: edges.length ? mk(edges, GPUBufferUsage.VERTEX) : null, ibuf: device.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }), count: data.length / 6, ecount: edges.length / 3 };
+      },
+      free(g) { g.vbuf.destroy(); g.ibuf.destroy(); g.ebuf?.destroy(); },
+      instance(g, inst) { device.queue.writeBuffer(g.ibuf, 0, inst); },
+      render(f) {
+        device.queue.writeBuffer(ubuf, 0, f.uniforms);
+        const enc = device.createCommandEncoder();
+        const tex = ctx.getCurrentTexture();
+        const pass = enc.beginRenderPass({
+          colorAttachments: [{ view: tex.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: f.clear[0], g: f.clear[1], b: f.clear[2], a: 1 } }],
+          depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
+        });
+        pass.setBindGroup(0, bind);
+        const n = clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
+        if (n) { device.queue.writeBuffer(gridBuf, 0, clipped, 0, n * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, gridBuf); pass.draw(n); }
+        if (f.stress) {
+          pass.setPipeline(boxPipe);
+          pass.setVertexBuffer(0, boxBuf); pass.setVertexBuffer(1, stressBuf); pass.draw(36, st.stress.length / 12);
+        } else {
+          if (f.lineMode !== 2) {
+            pass.setPipeline(f.lineMode === 1 ? boxBiasPipe : boxPipe);
+            for (const g of f.meshes) { pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+          }
+          if (f.lineMode) {
+            pass.setPipeline(f.lineMode === 2 ? wirePipe : edgePipe);
+            for (const g of f.meshes) { if (!g.ecount) continue; pass.setVertexBuffer(0, g.ebuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.ecount, 1); }
+          }
+        }
+        pass.end();
+        const t0 = performance.now();
+        // the read-back copy (if asked for) goes in the same submission
+        if (be.pending) {
+          const req = be.pending; be.pending = null;
+          const w = canvas.width, h = canvas.height, bpr = Math.ceil((w * 4) / 256) * 256, bgra = format.startsWith("bgra");
+          const buf = device.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
+          enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr }, [w, h]);
+          device.queue.submit([enc.finish()]);
+          buf.mapAsync(GPUMapMode.READ).then(() => {
+            const src = new Uint8Array(buf.getMappedRange()), out = new Uint8ClampedArray(w * h * 4);
+            for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
+              const si = y * bpr + x * 4, di = (y * w + x) * 4;
+              out[di] = src[si + (bgra ? 2 : 0)]; out[di + 1] = src[si + 1]; out[di + 2] = src[si + (bgra ? 0 : 2)]; out[di + 3] = 255;
+            }
+            buf.unmap(); buf.destroy();
+            req({ w, h, data: out });
+          });
+        } else device.queue.submit([enc.finish()]);
+        device.queue.onSubmittedWorkDone().then(() => { be.gpuMs = performance.now() - t0; }, () => {});
+      },
+      pending: null,
+    };
+    return be;
+  }
 
+  function webgl2Backend(canvas) {
+    const gl = canvas.getContext("webgl2", { antialias: true, depth: true, alpha: false, preserveDrawingBuffer: false });
+    if (!gl) throw new Error("neither WebGPU nor WebGL2 is available in this webview");
+    const compile = (type, src) => {
+      const s = gl.createShader(type);
+      gl.shaderSource(s, src); gl.compileShader(s);
+      if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) throw new Error("WebGL2 shader: " + gl.getShaderInfoLog(s));
+      return s;
+    };
+    const program = (vs, fs) => {
+      const p = gl.createProgram();
+      gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
+      gl.linkProgram(p);
+      if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("WebGL2 program: " + gl.getProgramInfoLog(p));
+      return { p, vp: gl.getUniformLocation(p, "vp"), light: gl.getUniformLocation(p, "light"), bg: gl.getUniformLocation(p, "bg"), edge: gl.getUniformLocation(p, "edge") };
+    };
+    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS);
+    const buf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
+    const st = STATIC();
+    // a vertex array per shape of input: positions with normals (or colours), positions only, plus instance data
+    const vao = (vbuf, stride, attrs, ibuf) => {
+      const a = gl.createVertexArray();
+      gl.bindVertexArray(a);
+      gl.bindBuffer(gl.ARRAY_BUFFER, vbuf);
+      for (const [loc, size, off] of attrs) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, size, gl.FLOAT, false, stride, off); gl.vertexAttribDivisor(loc, 0); }
+      if (ibuf) {
+        gl.bindBuffer(gl.ARRAY_BUFFER, ibuf);
+        for (const [loc, off] of [[2, 0], [3, 16], [4, 32]]) { gl.enableVertexAttribArray(loc); gl.vertexAttribPointer(loc, 4, gl.FLOAT, false, 48, off); gl.vertexAttribDivisor(loc, 1); }
+      }
+      gl.bindVertexArray(null);
+      return a;
+    };
+    const gridDyn = buf(new Float32Array(6)), gridDynVao = vao(gridDyn, 24, [[0, 3, 0], [1, 3, 12]]);
+    const clipped = new Float32Array(Math.max(st.grid.length, st.bigGrid.length));
+    const stressVao = vao(buf(st.box), 24, [[0, 3, 0], [1, 3, 12]], buf(st.stress));
+    const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    let lastW = 0, lastH = 0;
+    const be = {
+      name: "WebGL2",
+      // WebKit reports every GPU as "Apple GPU" for privacy, so on Linux that says nothing
+      info: (() => { const r = dbg ? gl.getParameter(dbg.UNMASKED_RENDERER_WEBGL) : gl.getParameter(gl.RENDERER); return /^Apple GPU$/.test(r) && !/Mac/.test(navigator.platform) ? "WebGL2" : `WebGL2 ${r}`; })(),
+      gpuMs: 0,
+      resize(w, h) { lastW = w; lastH = h; },
+      mesh(data, edges) {
+        const vbuf = buf(data), ebuf = edges.length ? buf(edges) : null;
+        // the per-mesh values are one instance, read with a divisor so both shaders see them as in WebGPU
+        const ibuf = buf(new Float32Array(12));
+        return { vbuf, ebuf, ibuf, tri: vao(vbuf, 24, [[0, 3, 0], [1, 3, 12]], ibuf), lines: ebuf ? vao(ebuf, 12, [[0, 3, 0]], ibuf) : null, count: data.length / 6, ecount: edges.length / 3 };
+      },
+      free(g) { gl.deleteBuffer(g.vbuf); gl.deleteBuffer(g.ibuf); if (g.ebuf) gl.deleteBuffer(g.ebuf); gl.deleteVertexArray(g.tri); if (g.lines) gl.deleteVertexArray(g.lines); },
+      instance(g, inst) { gl.bindBuffer(gl.ARRAY_BUFFER, g.ibuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst); },
+      render(f) {
+        const t0 = performance.now();
+        gl.viewport(0, 0, lastW || canvas.width, lastH || canvas.height);
+        gl.clearColor(f.clear[0], f.clear[1], f.clear[2], 1); gl.clearDepth(1);
+        gl.depthMask(true);
+        gl.clear(gl.COLOR_BUFFER_BIT | gl.DEPTH_BUFFER_BIT);
+        // WebGPU keeps depth in 0..1, GL in -1..1: z' = 2z - w
+        const vp = new Float32Array(f.uniforms.subarray(0, 16));
+        for (let c = 0; c < 4; c++) vp[c * 4 + 2] = 2 * vp[c * 4 + 2] - vp[c * 4 + 3];
+        const use = (pr) => {
+          gl.useProgram(pr.p);
+          gl.uniformMatrix4fv(pr.vp, false, vp);
+          if (pr.light) gl.uniform4fv(pr.light, f.uniforms.subarray(16, 20));
+          if (pr.bg) gl.uniform4fv(pr.bg, f.uniforms.subarray(20, 24));
+          if (pr.edge) gl.uniform4fv(pr.edge, f.uniforms.subarray(24, 28));
+        };
+        gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
+        gl.disable(gl.CULL_FACE); gl.disable(gl.POLYGON_OFFSET_FILL);
+        use(lineProg);
+        const n = clipLines(f.stress ? st.bigGrid : st.grid, vp, clipped, false);
+        gl.bindBuffer(gl.ARRAY_BUFFER, gridDyn);
+        gl.bufferData(gl.ARRAY_BUFFER, clipped.subarray(0, n * 6), gl.DYNAMIC_DRAW);
+        gl.bindVertexArray(gridDynVao);
+        gl.drawArrays(gl.LINES, 0, n);
+        gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
+        if (f.stress) {
+          use(boxProg);
+          gl.bindVertexArray(stressVao);
+          gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, st.stress.length / 12);
+        } else {
+          if (f.lineMode !== 2) {
+            use(boxProg);
+            if (f.lineMode === 1) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); }
+            for (const g of f.meshes) { gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            gl.disable(gl.POLYGON_OFFSET_FILL);
+          }
+          if (f.lineMode) {
+            use(edgeProg);
+            if (f.lineMode === 2) { gl.depthMask(false); gl.depthFunc(gl.ALWAYS); } else gl.depthFunc(gl.LEQUAL);
+            for (const g of f.meshes) { if (!g.lines) continue; gl.bindVertexArray(g.lines); gl.drawArraysInstanced(gl.LINES, 0, g.ecount, 1); }
+            gl.depthMask(true); gl.depthFunc(gl.LESS);
+          }
+        }
+        gl.bindVertexArray(null);
+        // the drawing buffer is cleared once the frame is shown, so read it back now
+        if (be.pending) {
+          const req = be.pending; be.pending = null;
+          const w = gl.drawingBufferWidth, h = gl.drawingBufferHeight, src = new Uint8Array(w * h * 4);
+          gl.readPixels(0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, src);
+          const out = new Uint8ClampedArray(w * h * 4);
+          for (let y = 0; y < h; y++) out.set(src.subarray((h - 1 - y) * w * 4, (h - y) * w * 4), y * w * 4);
+          req({ w, h, data: out });
+        }
+        be.gpuMs = performance.now() - t0;
+      },
+      pending: null,
+    };
+    return be;
+  }
+
+  // ---------------------------------------------------------------- the viewport
+  async function init(canvas, onFrame) {
+    let want = null;
+    try { want = new URLSearchParams(location.search).get("renderer") || localStorage.getItem("openarch.renderer"); } catch { /* storage can be unavailable */ }
+    let be = null, why = "";
+    if (want !== "webgl2") {
+      try { be = await webgpuBackend(canvas); } catch (e) { why = String(e.message || e); }
+    }
+    if (!be) be = webgl2Backend(canvas);
+    if (why) console.info(`3D view: WebGPU not used (${why}); drawing with WebGL2.`);
+
+    let meshes = []; // { g (backend handles), id, kind, data, bounds, color }
     const cam = { az: -0.9, el: 0.5, dist: 38, target: [0, 0, 1.5] };
-    let style = "shaded", snapReq = null, stress = false, dirty = true, depth = null, last = performance.now(), frames = 0, acc = 0, fps = 0;
+    let style = "shaded", stress = false, dirty = true, sized = false, last = performance.now(), frames = 0, acc = 0, fps = 0;
 
     function resize() {
       const dpr = window.devicePixelRatio || 1;
       const w = Math.max(1, Math.floor(canvas.clientWidth * dpr)), h = Math.max(1, Math.floor(canvas.clientHeight * dpr));
-      if (canvas.width !== w || canvas.height !== h || !depth) {
+      if (canvas.width !== w || canvas.height !== h || !sized) {
         canvas.width = w; canvas.height = h;
-        depth?.destroy();
-        depth = device.createTexture({ size: [w, h], format: depthFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+        be.resize(w, h);
+        sized = true;
         dirty = true;
       }
     }
@@ -245,13 +498,8 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
       dirty = false;
       resize();
       const dt = now - last; last = now; frames++; acc += dt;
-      if (acc >= 500) { fps = (frames * 1000) / acc; frames = 0; acc = 0; if (stress) onFrame?.(fps, gpuMs); }
-
-      const eye = [
-        cam.target[0] + cam.dist * Math.cos(cam.el) * Math.cos(cam.az),
-        cam.target[1] + cam.dist * Math.cos(cam.el) * Math.sin(cam.az),
-        cam.target[2] + cam.dist * Math.sin(cam.el),
-      ];
+      if (acc >= 500) { fps = (frames * 1000) / acc; frames = 0; acc = 0; if (stress) onFrame?.(fps, be.gpuMs); }
+      const eye = eyePos();
       const aspect = canvas.width / canvas.height;
       const vp = mat.mul(mat.perspective(0.9, aspect, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));
       const dark = matchMedia("(prefers-color-scheme: dark)").matches;
@@ -259,52 +507,7 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
       const lineMode = !stress && style === "hidden_line" ? 1 : !stress && style === "wireframe" ? 2 : 0;
       const u = new Float32Array(28); u.set(vp, 0); u.set([0.4, -0.5, 0.8, lineMode === 1 ? 1 : 0], 16); u.set([...page, 1], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
-      device.queue.writeBuffer(ubuf, 0, u);
-
-      const enc = device.createCommandEncoder();
-      const pass = enc.beginRenderPass({
-        colorAttachments: [{ view: ctx.getCurrentTexture().createView(), loadOp: "clear", storeOp: "store",
-          clearValue: dark ? { r: 0.12, g: 0.14, b: 0.16, a: 1 } : { r: 0.98, g: 0.98, b: 0.99, a: 1 } }],
-        depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
-      });
-      pass.setBindGroup(0, bind);
-      pass.setPipeline(linePipe); pass.setVertexBuffer(0, stress ? bigGridBuf : gridBuf); pass.draw((stress ? bigGrid : grid).length / 6);
-      if (stress) {
-        pass.setPipeline(boxPipe);
-        pass.setVertexBuffer(0, boxBuf); pass.setVertexBuffer(1, stressBuf); pass.draw(36, stressData.length / 8);
-      } else {
-        if (lineMode !== 2) {
-          pass.setPipeline(lineMode === 1 ? boxBiasPipe : boxPipe);
-          for (const m of meshes) { pass.setVertexBuffer(0, m.vbuf); pass.setVertexBuffer(1, m.ibuf); pass.draw(m.count, 1); }
-        }
-        if (lineMode) {
-          pass.setPipeline(lineMode === 2 ? wirePipe : edgePipe);
-          for (const m of meshes) { if (!m.ecount) continue; pass.setVertexBuffer(0, m.ebuf); pass.setVertexBuffer(1, m.ibuf); pass.draw(m.ecount, 1); }
-        }
-      }
-      pass.end();
-      let snapBuf = null, bpr = 0;
-      if (snapReq) {
-        bpr = Math.ceil((canvas.width * 4) / 256) * 256;
-        snapBuf = device.createBuffer({ size: bpr * canvas.height, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
-        enc.copyTextureToBuffer({ texture: ctx.getCurrentTexture() }, { buffer: snapBuf, bytesPerRow: bpr }, [canvas.width, canvas.height]);
-      }
-      const t0 = performance.now();
-      device.queue.submit([enc.finish()]);
-      device.queue.onSubmittedWorkDone().then(() => { gpuMs = performance.now() - t0; }, () => {});
-      if (snapReq) {
-        const req = snapReq, w = canvas.width, h = canvas.height, bgra = format.startsWith("bgra");
-        snapReq = null;
-        snapBuf.mapAsync(GPUMapMode.READ).then(() => {
-          const src = new Uint8Array(snapBuf.getMappedRange()), out = new Uint8ClampedArray(w * h * 4);
-          for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) {
-            const si = y * bpr + x * 4, di = (y * w + x) * 4;
-            out[di] = src[si + (bgra ? 2 : 0)]; out[di + 1] = src[si + 1]; out[di + 2] = src[si + (bgra ? 0 : 2)]; out[di + 3] = 255;
-          }
-          snapBuf.unmap();
-          req({ w, h, data: out });
-        });
-      }
+      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g) });
     }
 
     // ---- picking: cast a ray from the camera through the cursor and take the nearest triangle ----
@@ -393,10 +596,12 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
     requestAnimationFrame(frame);
 
     const TINT = { Wall: 0.0, Floor: 0.3, Roof: 0.15, Door: 0.45, Window: 0.0, Glass: -1.0 };
-    const writeTint = (m, selected) => device.queue.writeBuffer(m.ibuf, 0, new Float32Array([0, 0, 0, selected ? 1.0 : m.color ? 0 : TINT[m.kind] ?? 0, 1, 1, 1, 0, ...(m.color || [0, 0, 0]), m.color ? 1 : 0]));
+    const writeTint = (m, selected) => be.instance(m.g, new Float32Array([0, 0, 0, selected ? 1.0 : m.color ? 0 : TINT[m.kind] ?? 0, 1, 1, 1, 0, ...(m.color || [0, 0, 0]), m.color ? 1 : 0]));
 
     return {
-      info: [info.vendor, info.architecture, info.description].filter(Boolean).join(" ") || "adapter ok",
+      info: be.info,
+      /** "WebGPU" or "WebGL2" */
+      backend: be.name,
       setStress(on) {
         stress = on;
         if (on) { cam.dist = 450; cam.el = 0.5; cam.target = [0, 0, 20]; } else { this.fit(); }
@@ -404,17 +609,13 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
       },
       /** Replace the displayed model meshes: [{ id, kind, verts: [x y z nx ny nz ...] }]. */
       setMeshes(list, selected = []) {
-        for (const m of meshes) { m.vbuf.destroy(); m.ibuf.destroy(); m.ebuf?.destroy(); }
+        for (const m of meshes) be.free(m.g);
         const sel = new Set(selected);
         meshes = list.map((m) => {
           const data = new Float32Array(m.verts);
-          const vbuf = mk(data, GPUBufferUsage.VERTEX);
-          const ibuf = device.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
           const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
           for (let i = 0; i < data.length; i += 6) for (let k = 0; k < 3; k++) { bounds[0][k] = Math.min(bounds[0][k], data[i + k]); bounds[1][k] = Math.max(bounds[1][k], data[i + k]); }
-          const edges = featureEdges(data);
-          const ebuf = edges.length ? mk(edges, GPUBufferUsage.VERTEX) : null;
-          const out = { vbuf, ibuf, ebuf, ecount: edges.length / 3, count: data.length / 6, id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null };
+          const out = { g: be.mesh(data, featureEdges(data)), id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null };
           writeTint(out, sel.has(m.id));
           return out;
         });
@@ -447,9 +648,9 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
         const x = vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12], y = vp[1] * p[0] + vp[5] * p[1] + vp[9] * p[2] + vp[13], w = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15];
         return { x: (x / w * 0.5 + 0.5) * canvas.clientWidth, y: (0.5 - y / w * 0.5) * canvas.clientHeight };
       },
-      // Debug/test helper: read the next frame back as RGBA pixels.
-      snapshot() { return new Promise((res) => { snapReq = res; dirty = true; }); },
-      instances: () => (stress ? stressData.length / 8 : meshes.length),
+      // Debug/test helper: read the next frame back as RGBA pixels, top row first.
+      snapshot() { return new Promise((res) => { be.pending = res; dirty = true; }); },
+      instances: () => (stress ? 1200 : meshes.length),
     };
   }
 
