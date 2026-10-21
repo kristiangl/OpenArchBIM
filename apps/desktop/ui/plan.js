@@ -844,15 +844,15 @@ const Plan = (() => {
     const dir = (m, k) => { const l = m.slots[k].look; return { x: l[0], y: -l[1] }; };
     const drawOne = (m, selected, hovered, ghost) => {
       const c = ghost ? toScreen(ghost) : toScreen({ x: m.x, y: m.y });
-      const col = selected || hovered || ghost ? accent : text;
+      const hot = selected || hovered || ghost ? accent : null;
       ctx.save();
-      const fam = m.family, denom = (data.view && data.view.scale) || 100, kk = denom * cam.s;
+      const fam = m.family, denom = (data.view && data.view.scale) || 100, kk = denom * cam.s, pats = data.fill_patterns;
       // the body and a pointer for each view come from the marker's annotation family, at paper size
-      if (fam) Ann.shapes(ctx, fam.shapes, { x: c.x, y: c.y, k: kk, rot: m.rotation_deg }, col, bg, selected ? Math.max(2, Ann.penPx(fam, { k: kk }) * 1.6) : Ann.penPx(fam, { k: kk }));
+      if (fam) Ann.paths(ctx, fam.body, { x: c.x, y: c.y, k: kk, rot: m.rotation_deg }, hot, bg, { pats, widen: selected ? 1.6 : 1 });
       for (let k = 0; k < 4; k++) {
         const d = dir(m, k), n = { x: -d.y, y: d.x };
         if (m.slots[k].view_id !== null && m.slots[k].view_id !== undefined && fam) {
-          Ann.shapes(ctx, fam.pointer, { x: c.x, y: c.y, k: kk, rot: (Math.atan2(-d.y, d.x) * 180) / Math.PI }, col, bg, Ann.penPx(fam, { k: kk }));
+          Ann.paths(ctx, fam.pointer, { x: c.x, y: c.y, k: kk, rot: (Math.atan2(-d.y, d.x) * 180) / Math.PI }, hot, bg, { pats });
         }
         if (selected && !ghost) {
           // check boxes to make or drop the view of each pointer
@@ -2193,6 +2193,7 @@ const Plan = (() => {
     paperPx: () => ((data.view && data.view.scale) || 100) * cam.s,
     sections: () => data.sections || [],
     family: () => data.section_family,
+    pats: () => data.fill_patterns,
     selection: () => [...sel],
     snap: (sx, sy) => snap(sx, sy),
     call: (m, p) => cb.dimCall(m, p),

@@ -70,7 +70,8 @@
   const pickMaterial = (current, extras = []) => openMaterials(current, { pick: true, extras });
 
   /** Choose a fill pattern; resolves to its name, "" for <No pattern>, or null when cancelled. */
-  const pickFillPattern = (current, preferType) => openPatterns("fill", { pick: true, select: current, tab: preferType });
+  // `only` keeps the choice to one tab ("drafting" for the regions of an annotation family)
+  const pickFillPattern = (current, preferType, only) => openPatterns("fill", { pick: true, select: current, tab: only || preferType, only });
 
   /** Tiny canvas that shows a dash array (paper mm) as a line. */
   function linePreview(dash) {
@@ -410,7 +411,7 @@
   // bricks or tiles are, for surfaces); Solid fill is on both. A new pattern is of the tab it is made on. Opened to
   // pick a fill pattern (`pick`), OK hands back the one selected ("" for <No pattern>).
   const NO_PATTERN = "<No pattern>";
-  async function openPatterns(kind, { pick = false, select: chosen, tab: firstTab } = {}) {
+  async function openPatterns(kind, { pick = false, select: chosen, tab: firstTab, only } = {}) {
     let std = await run("standards", {});
     if (!std) return null;
     const isLine = kind === "line";
@@ -418,7 +419,7 @@
     const ses = await editSession(isLine ? "Line Patterns" : "Fill Patterns", !pick);
     if (!ses) return null;
     const known = std[key].find((p) => p.pattern.name === chosen);
-    let tab = isLine ? null : known && !known.pattern.solid ? known.pattern.pattern_type : firstTab || "drafting";
+    let tab = isLine ? null : only || (known && !known.pattern.solid ? known.pattern.pattern_type : firstTab || "drafting");
     const onTab = (p) => isLine || p.pattern.solid || p.pattern.pattern_type === tab;
     let current = pick && chosen === "" ? NO_PATTERN : known ? chosen : (std[key].find(onTab) || {}).pattern?.name;
     let done;
@@ -516,7 +517,7 @@
       function renderList() {
         if (!isLine) {
           tabs.replaceChildren(...[["drafting", "Drafting"], ["model", "Model"]].map(([k, label]) => {
-            const b = h("button", { textContent: label, className: k === tab ? "active" : "" });
+            const b = h("button", { textContent: label, className: k === tab ? "active" : "", disabled: !!only && k !== only, title: only && k !== only ? `Only ${only} patterns can be used here` : "" });
             b.onclick = () => {
               tab = k;
               if (current !== NO_PATTERN && !(find() && onTab(find()))) current = (std[key].find(onTab) || {}).pattern?.name;

@@ -89,6 +89,12 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// An annotation family as a view draws it: its body and pointer as paths in paper mm.
+fn symbol_json(d: &Document, id: Id, f: &openarch_model::annotation::AnnotationFamily) -> Value {
+    let dr = d.symbol_drawing(f, false);
+    json!({ "id": id, "body": dr.body, "pointer": dr.pointer })
+}
+
 /// A section as the plan draws it: the corners of its line, its runs and jogs (for their grips, counted from the
 /// head), the view box, the break in this plan if there is one, and its marker.
 fn section_json(d: &Document, id: Id, s: &openarch_model::section::Section, plan: Id) -> Value {
@@ -109,7 +115,7 @@ fn section_json(d: &Document, id: Id, s: &openarch_model::section::Section, plan
         "gap": s.break_in(plan).map(|b| json!({ "head_mm": b.head_mm, "tail_mm": b.tail_mm })),
         "broken_style": family.map(|(_, f)| f.broken_style),
         "pinned": s.pinned, "level_id": s.level, "far_clip": s.far_clip, "depth": depth,
-        "family": family.map(|(fid, f)| json!({ "id": fid, "shapes": f.shapes, "pointer": f.pointer, "pen_mm": f.pen_mm })),
+        "family": family.map(|(fid, f)| symbol_json(d, fid, f)),
         "labels": d.section_labels(s),
     })
 }
@@ -1043,7 +1049,24 @@ impl Session {
                 v["kind"] = json!(f.kind);
                 v["in_use"] = json!(self.doc.annotation_family_in_use(id));
                 v["category"] = json!(f.kind.category());
+                v["subcategories"] = json!(self.doc.symbol_subcategories(f.kind));
+                v["fill_patterns"] = graphics::fill_pattern_defs(&self.doc);
+                v["drawing"] = json!(self.doc.symbol_drawing(f, true));
                 Ok(v)
+            }
+            // the family editor's drawing of a family it is changing, as paths (hidden lines and regions marked)
+            "annotation_paths" => {
+                let mut f: openarch_model::annotation::AnnotationFamily = serde_json::from_value(p.get("family").cloned().ok_or("missing family")?).map_err(|e| format!("bad family: {e}"))?;
+                f.read_old_shapes();
+                Ok(json!(self.doc.symbol_drawing(&f, true)))
+            }
+            // a filled or masking region's sketch: its edges grouped into closed loops
+            "annotation_region_loops" => {
+                let edges: Vec<openarch_model::annotation::RegionEdge> = serde_json::from_value(p.get("edges").cloned().ok_or("missing edges")?).map_err(|e| format!("bad edges: {e}"))?;
+                match openarch_model::annotation::region_loops(&edges) {
+                    Ok(loops) => Ok(json!({ "ok": true, "loops": loops })),
+                    Err(e) => Ok(json!({ "ok": false, "error": { "message": e.message, "at": e.at } })),
+                }
             }
             "set_annotation_family" => {
                 let f: openarch_model::annotation::AnnotationFamily = serde_json::from_value(p.get("family").cloned().ok_or("missing family")?).map_err(|e| format!("bad family: {e}"))?;
@@ -1227,6 +1250,8 @@ impl Session {
             }
             // ---- sketch mode (floors now; roofs, ceilings and openings reuse these) ----
             "sketch_make" => sketch_make(p),
+            // curves as a sketch session holds them (shape, flattened points, snap points)
+            "sketch_describe" => Ok(json!({ "curves": curves_of(p, "curves")?.iter().map(describe_curve).collect::<Vec<_>>() })),
             "sketch_edit" => sketch_edit(p),
             "sketch_check" => {
                 let curves = curves_of(p, "curves")?;
@@ -1808,7 +1833,7 @@ impl Session {
                 .filter(|(id, _)| !view.hidden_elements.contains(id))
                 .map(|(id, m)| json!({
                     "id": id, "x": m.position.x, "y": m.position.y, "rotation_deg": m.rotation_deg, "pinned": m.pinned, "level_id": m.level,
-                    "family": d.marker_family(m.family).map(|(fid, f)| json!({ "id": fid, "shapes": f.shapes, "pointer": f.pointer, "pen_mm": f.pen_mm })),
+                    "family": d.marker_family(m.family).map(|(fid, f)| symbol_json(d, fid, f)),
                     "slots": (0..4).map(|k| json!({
                         "slot": k, "view_id": m.slots[k], "name": m.slots[k].and_then(|v| d.view(v)).map(|v| v.name.clone()),
                         "look": [m.look(k).x, m.look(k).y],
@@ -1914,7 +1939,7 @@ impl Session {
                 "region": view.crop.region.map(|(a, b)| json!([pt(&a), pt(&b)])),
             },
             "walls": walls, "floors": floors, "roofs": roofs, "inserts": inserts,
-            "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| json!({ "id": fid, "shapes": f.shapes, "pointer": f.pointer, "pen_mm": f.pen_mm })), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| json!({ "id": fid, "shapes": f.shapes, "pointer": f.pointer, "pen_mm": f.pen_mm })), "grids": grids, "dimensions": dimensions, "spots": spots,
+            "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
         }))
@@ -2713,7 +2738,7 @@ mod tests {
         let secs = plan["sections"].as_array().unwrap();
         assert_eq!(secs.len(), 1);
         assert_eq!(secs[0]["id"].as_u64(), Some(sec));
-        assert!(secs[0]["family"]["pointer"].as_array().unwrap().len() >= 1);
+        assert!(secs[0]["family"]["pointer"]["fills"].as_array().unwrap().len() >= 1);
         let labels: Vec<String> = secs[0]["labels"].as_array().unwrap().iter().flat_map(|l| l["lines"].as_array().unwrap().iter().map(|x| x.as_str().unwrap().to_string())).collect();
         assert!(labels.contains(&"Section 1".to_string()) && labels.contains(&"-".to_string()), "{labels:?}");
         // the view is listed and draws cut walls with the material's cut style
@@ -3080,9 +3105,20 @@ mod tests {
         let mut bad = bad;
         bad["labels"][0]["lines"][0]["param"] = json!("Width");
         assert!(s.handle("set_annotation_family", &json!({ "id": head, "family": bad })).is_err());
+        // the family editor draws a family it is changing, groups a region's sketch into loops, and describes curves
+        let paths = call(&mut s, "annotation_paths", json!({ "family": f }));
+        assert!(!paths["body"]["strokes"].as_array().unwrap().is_empty());
+        let edge = |a: [f64; 2], b: [f64; 2]| json!({ "curve": { "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } }, "subcategory": "" });
+        let loops = call(&mut s, "annotation_region_loops", json!({ "edges": [edge([0.0, 0.0], [4.0, 0.0]), edge([4.0, 3.0], [4.0, 0.0]), edge([4.0, 3.0], [0.0, 0.0])] }));
+        assert_eq!(loops["ok"], true);
+        assert_eq!(loops["loops"][0].as_array().unwrap().len(), 3);
+        let open = call(&mut s, "annotation_region_loops", json!({ "edges": [edge([0.0, 0.0], [4.0, 0.0]), edge([4.0, 0.0], [4.0, 3.0])] }));
+        assert_eq!(open["ok"], false);
+        let described = call(&mut s, "sketch_describe", json!({ "curves": [{ "type": "circle", "centre": { "x": 0.0, "y": 0.0 }, "radius": 400.0 }] }));
+        assert!(described["curves"][0]["closed"] == true && described["curves"][0]["poly"].as_array().unwrap().len() > 8);
         // plan markers carry the family they are drawn with
         let plan = call(&mut s, "plan", json!({ "view_id": info["views"][0]["id"] }));
-        assert!(plan["markers"][0]["family"]["pointer"].as_array().unwrap().len() >= 1);
+        assert!(plan["markers"][0]["family"]["pointer"]["fills"].as_array().unwrap().len() >= 1);
         // a level type is chosen in Properties
         let d = call(&mut s, "describe", json!({ "id": lid }));
         assert_eq!(d["type_id"], ty);

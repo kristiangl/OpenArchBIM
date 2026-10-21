@@ -4,22 +4,50 @@
 // paper millimetres: the horizontal one is what the symbol sits on (the level line for a head), the vertical one is
 // where a head flips for the left hand end of a line. Changes stay in the document until Load into Project
 // (crates/openarch-model/src/annotation.rs checks them there).
+//
+// The drawing is lines and regions, made with the project's sketch tools (sketch.js, a session of its own here):
+// - Line works on the lines themselves: every Draw tool places lines straight away, and the Modify tools (trim,
+//   offset, split, move ...) change them, with a subcategory for each line. Esc twice leaves it.
+// - Filled Region and Masking Region sketch closed loops with Finish and Cancel; each edge has its own line style.
+// The session works at 100 units to the paper millimetre (annotation.rs SKETCH_SCALE) so the sketch tolerances,
+// made for model millimetres, suit symbols a few millimetres across. The core draws the result (annotation_paths).
 
 const AnnModel = (() => {
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
   const clone = (o) => JSON.parse(JSON.stringify(o));
-  const snapMM = (v) => Math.round(v * 2) / 2; // half a millimetre
+  const snapMM = (v) => Math.round(v * 2) / 2; // half a millimetre, for labels
   const $q = (s) => document.querySelector(s);
+  const U = 100; // sketch units to the paper millimetre
+  const INVISIBLE = "<Invisible lines>";
+  const POINTER_INK = "#a0522d";
+  // the sketch tools' distances in paper mm, and the snap increments (10, 5, 1, 0.5 and 0.1 mm)
+  const PAPER_OPTS = { cornerRadius: 0, radius: 5, filletRadius: 1, offsetDist: 1, wallOffset: 0 };
+  const LENGTHS = [1000, 500, 100, 50, 10];
   const NOTE = {
     level_head: "Level head: the level line arrives from the left and ends at the vertical reference line.",
     elevation_marker: "Elevation mark: the body is drawn once. The pointer is drawn for each view, turned to point along +x here.",
     section_marker: "Section mark: the body is drawn at the head of the line. The pointer is drawn at each end for the view direction, along +x here.",
   };
-  const DRAW = [["line", "Line"], ["arc", "Center-ends Arc"], ["circle", "Circle"], ["polygon", "Polygon"]];
 
   let S = null; // the open document
   let wired = false;
+
+  // ---------------------------------------------------------------- curves between paper mm and sketch units
+  function mapCurve(c, f, k) {
+    switch (c.type) {
+      case "line": return { ...c, a: f(c.a), b: f(c.b) };
+      case "arc": return { ...c, start: f(c.start), end: f(c.end), centre: f(c.centre) };
+      case "circle": return { ...c, centre: f(c.centre), radius: c.radius * k };
+      case "ellipse": return { ...c, centre: f(c.centre), rx: c.rx * k, ry: c.ry * k };
+      case "spline": return { ...c, points: c.points.map(f) };
+      default: return c;
+    }
+  }
+  const round6 = (v) => Math.round(v * 1e6) / 1e6;
+  const toSketch = (c) => mapCurve(c, (p) => ({ x: p.x * U, y: p.y * U }), U);
+  const toPaperCurve = (c) => mapCurve(c, (p) => ({ x: round6(p.x / U), y: round6(p.y / U) }), 1 / U);
+  const moveCurve = (c, dx, dy) => mapCurve(c, (p) => ({ x: round6(p.x + dx), y: round6(p.y + dy) }), 1);
 
   // ---------------------------------------------------------------- open, close, load
   async function open(id) {
@@ -28,10 +56,11 @@ const AnnModel = (() => {
     let raw;
     try { raw = await Backend.call("annotation_family", { id }); } catch (e) { setPrompt(String(e.message || e), true); return; }
     const fam = clone(raw);
-    for (const k of ["id", "params", "kind", "in_use", "category"]) delete fam[k];
+    for (const k of ["id", "params", "kind", "in_use", "category", "subcategories", "fill_patterns", "drawing"]) delete fam[k];
     S = {
-      id, fam, params: raw.params, category: raw.category, tool: "select", shape: "line", layer: "shapes", sel: null, draft: null, drag: null,
-      mouse: null, flipped: false, undo: [], redo: [], dirty: false, view: { k: 14, ox: 0, oy: 0 }, msg: "",
+      id, fam, params: raw.params, category: raw.category, subs: raw.subcategories || [], pats: raw.fill_patterns || {}, drawing: raw.drawing, tick: 0,
+      tool: "select", mode: null, layer: "body", sel: null, drag: null, mouse: null, flipped: false, undo: [], redo: [], dirty: false,
+      view: { k: 14, ox: 0, oy: 0 }, msg: "", msgErr: false, sub: "", boundarySub: "", newType: (fam.region_types[0] || {}).name || "", lines: null, region: null,
     };
     mount();
     activate();
@@ -40,18 +69,20 @@ const AnnModel = (() => {
 
   const hasPointer = () => S.fam.family_kind !== "level_head";
   const docInfo = () => (S ? { name: S.fam.name, dirty: S.dirty, id: S.id } : null);
+  const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
 
   // Bring the document to the front (after opening it, or switching back to it)
   function activate() {
     if (!S) return;
     setDoc("annotation");
     resize();
-    tabsUI(); toolbar(); props(); status();
+    tabsUI(); toolbar(); props(); status(); ctxRefresh();
   }
 
   function close(force) {
     if (!S) return;
     if (!force && S.dirty) { askLoad(); return; }
+    if (ASk.active) ASk.end();
     S = null;
     setDoc("project");
     refresh(true);
@@ -72,9 +103,11 @@ const AnnModel = (() => {
 
   async function loadIntoProject(andClose) {
     if (!S) return;
+    if (S.mode === "region") { say("Finish or cancel the region's sketch first.", true); return; }
+    if (S.mode === "lines") endLines();
     const name = S.fam.name;
     try { await Backend.call("set_annotation_family", { id: S.id, family: S.fam }); }
-    catch (e) { S.msg = String(e.message || e); status(true); return; }
+    catch (e) { say(String(e.message || e), true); return; }
     S.dirty = false;
     await refresh();
     if (andClose) { close(true); setPrompt(`Loaded ${name} into the project.`); return; }
@@ -82,8 +115,19 @@ const AnnModel = (() => {
     activate();
   }
 
-  // ---------------------------------------------------------------- undo
+  // ---------------------------------------------------------------- undo, and the drawing the core makes
   const snapshot = () => JSON.stringify(S.fam);
+  let drawSeq = 0;
+  async function refreshDrawing() {
+    if (!S) return;
+    const my = ++drawSeq;
+    let d;
+    try { d = await Backend.call("annotation_paths", { family: S.fam }); } catch { return; }
+    if (!S || my !== drawSeq) return;
+    S.drawing = d; S.tick++;
+    if (S.sel && S.sel.kind === "region") props();
+    render();
+  }
   // every change goes through here: one undo step, then redraw
   function edit(fn, keepProps) {
     S.undo.push(snapshot());
@@ -92,11 +136,30 @@ const AnnModel = (() => {
     fn(S.fam);
     S.dirty = true;
     if (!keepProps) props();
-    status(); render();
+    status(); render(); refreshDrawing();
   }
-  function undo() { if (!S || !S.undo.length) return; S.redo.push(snapshot()); S.fam = JSON.parse(S.undo.pop()); S.sel = null; S.dirty = true; props(); status(); render(); }
-  function redo() { if (!S || !S.redo.length) return; S.undo.push(snapshot()); S.fam = JSON.parse(S.redo.pop()); S.sel = null; S.dirty = true; props(); status(); render(); }
-  const undoState = () => (S ? { undo: S.undo.length, redo: S.redo.length } : null);
+  function restore(json) { S.fam = JSON.parse(json); S.sel = null; S.dirty = true; props(); status(); ctxRefresh(); refreshDrawing(); }
+  // Line steps back through its own changes, then the document's; a region's sketch keeps to its own
+  function undo() {
+    if (!S) return;
+    if (S.mode === "region") { ASk.undo(); return; }
+    if (S.mode === "lines") { if (ASk.canUndo) { ASk.undo(); return; } endLines(); }
+    if (!S.undo.length) return;
+    S.redo.push(snapshot()); restore(S.undo.pop());
+  }
+  function redo() {
+    if (!S) return;
+    if (S.mode === "region") { ASk.redo(); return; }
+    if (S.mode === "lines") { if (ASk.canRedo) { ASk.redo(); return; } endLines(); }
+    if (!S.redo.length) return;
+    S.undo.push(snapshot()); restore(S.redo.pop());
+  }
+  function undoState() {
+    if (!S) return null;
+    if (S.mode === "region") return { undo: ASk.canUndo ? 1 : 0, redo: ASk.canRedo ? 1 : 0 };
+    if (S.mode === "lines") return { undo: ASk.canUndo || S.undo.length ? 1 : 0, redo: ASk.canRedo || S.redo.length ? 1 : 0 };
+    return { undo: S.undo.length, redo: S.redo.length };
+  }
 
   // ---------------------------------------------------------------- the shell
   function mount() {
@@ -137,7 +200,7 @@ const AnnModel = (() => {
     if (S.fam.family_kind === "level_head") {
       const b = el("button", S.flipped ? "on" : "", "Preview Flipped");
       b.title = "Show the head as it draws at the left hand end of a level line";
-      b.onclick = () => { S.flipped = !S.flipped; tabsUI(); syncRibbon(); render(); };
+      b.onclick = () => commands["a-flip"]();
       vb.append(b);
     }
     const f = el("button", "", "Zoom to Fit");
@@ -160,40 +223,51 @@ const AnnModel = (() => {
     updateUndoButtons();
   }
 
-  function status(isError) {
+  function say(text, isError) { if (!S) return; S.msg = text; S.msgErr = !!isError; status(); }
+  function status() {
     if (!S || app.doc !== "annotation") return;
+    if (ASk.active) { setPrompt(S.msg || ASk.promptText(), S.msgErr); S.msg = ""; S.msgErr = false; syncTitle(); return; }
     const tips = {
-      select: "Click to select a line, shape or label; drag to move it. Delete removes it. Scroll to zoom.",
-      line: { line: "Click the start of the line, then its end.", arc: "Click the centre of the arc, then its start, then its end (anticlockwise).", circle: "Click the centre, then a point on the circle.", polygon: "Click the corners. Click the first corner again, double-click or press Enter to close it." }[S.shape],
-      region: "Click the corners of the filled region. Click the first corner again, double-click or press Enter to close it.",
+      select: "Click a line to work on the lines, a region or a label to select it; drag a region or a label to move it. Double-click a region to edit its boundary.",
       label: "Click where the label goes. Then choose its parameters in Properties.",
     };
-    setPrompt((S.msg ? S.msg + "   " : "") + (tips[S.tool] || ""), !!isError);
-    S.msg = "";
+    setPrompt((S.msg ? S.msg + "   " : "") + (tips[S.tool] || ""), S.msgErr);
+    S.msg = ""; S.msgErr = false;
     syncTitle();
   }
 
   // ---------------------------------------------------------------- ribbon commands and the options bar
-  const TOOL_OF = { "a-select": "select", "a-line": "line", "a-region": "region", "a-label": "label" };
   function setTool(t) {
-    S.tool = t; S.draft = null;
+    S.tool = t;
     S.canvas.style.cursor = t === "select" ? "default" : "crosshair";
-    toolbar(); status(); render();
+    toolbar(); status(); render(); ctxRefresh();
   }
+  const busy = () => { if (S.mode === "region") { say("Finish or cancel the region's sketch first.", true); return true; } return false; };
   const commands = {
-    "a-del": () => removeSel(),
+    "a-select": () => { if (S.mode === "region") { ASk.setTool("select"); return; } if (S.mode === "lines") endLines(); setTool("select"); },
+    "a-line": () => { if (busy()) return; if (S.mode === "lines") ASk.setTool("line"); else startLines(null, "line"); },
+    "a-region": () => { if (!busy()) startRegion(false, null); },
+    "a-mask": () => { if (!busy()) startRegion(true, null); },
+    "a-label": () => { if (busy()) return; if (S.mode === "lines") endLines(); setTool("label"); },
+    "a-del": () => { if (ASk.active) ASk.key({ key: "Delete" }); else removeSel(); },
     "a-load": () => loadIntoProject(false),
     "a-loadclose": () => loadIntoProject(true),
     "a-fit": () => fit(),
-    "a-flip": () => { if (S.fam.family_kind !== "level_head") { S.msg = "Only a level head flips."; status(true); return; } S.flipped = !S.flipped; tabsUI(); render(); },
+    "a-flip": () => {
+      if (S.fam.family_kind !== "level_head") { say("Only a level head flips.", true); return; }
+      if (ASk.active) { say("Leave the lines or the sketch before previewing the head flipped.", true); return; }
+      S.flipped = !S.flipped; tabsUI(); render();
+    },
   };
-  for (const [id, t] of Object.entries(TOOL_OF)) commands[id] = () => setTool(t);
   for (const k of Object.keys(commands)) { const f = commands[k]; commands[k] = (e) => (S ? f(e) : undefined); }
+  const TOOL_OF = { "a-select": "select", "a-label": "label" };
 
   function syncRibbon() {
     document.querySelectorAll("#ribbon button.cmd[data-id^='a-']").forEach((b) => {
       const id = b.dataset.id;
-      b.classList.toggle("on", !!S && (TOOL_OF[id] ? TOOL_OF[id] === S.tool : id === "a-flip" ? S.flipped : false));
+      const on = !!S && (id === "a-line" ? S.mode === "lines" : id === "a-region" ? S.mode === "region" && !S.region.masking : id === "a-mask" ? S.mode === "region" && S.region.masking
+        : id === "a-flip" ? S.flipped : TOOL_OF[id] ? !S.mode && TOOL_OF[id] === S.tool : false);
+      b.classList.toggle("on", on);
     });
   }
 
@@ -201,15 +275,74 @@ const AnnModel = (() => {
     syncRibbon();
     const bar = $q("#fam-options");
     bar.replaceChildren();
-    const sel = (label, options, value, onchange) => {
-      const s = el("select");
-      for (const [v, t] of options) s.add(new Option(t, v, false, v === value));
-      s.onchange = () => onchange(s.value);
-      bar.append(el("span", "fe-opt", label), s);
-    };
-    if (S.tool === "line") sel("Draw", DRAW, S.shape, (v) => { S.shape = v; S.draft = null; status(); render(); });
-    if ((S.tool === "line" || S.tool === "region") && hasPointer()) sel("Draw on", [["shapes", "Body"], ["pointer", "Pointer"]], S.layer, (v) => { S.layer = v; });
+    if (S.mode === "lines" || (S.mode === "region" && S.region.index == null)) {
+      if (hasPointer()) {
+        const s = el("select");
+        for (const [v, t] of [["body", "Body"], ["pointer", "Pointer"]]) s.add(new Option(t, v, false, v === (S.mode === "lines" ? S.layer : S.region.pointer ? "pointer" : "body")));
+        s.onchange = () => {
+          if (S.mode === "lines") { S.layer = s.value; const tool = ASk.tool; endLines(); startLines(null, tool); }
+          else S.region.pointer = s.value === "pointer";
+        };
+        s.title = "Draw on the mark's body, or on the pointer drawn for each view";
+        bar.append(el("span", "fe-opt", "Draw on"), s);
+      }
+      bar.append(...sketchBarKids(ASk));
+    } else if (S.mode === "region") bar.append(...sketchBarKids(ASk));
     bar.hidden = !bar.children.length;
+  }
+
+  // the line styles a line or an edge can take: the category itself, its subcategories, and invisible lines
+  function styleSelect(value, onchange) {
+    const s = el("select");
+    s.add(new Option(S.category, "", false, value === ""));
+    for (const n of S.subs) s.add(new Option(n, n, false, value === n));
+    s.add(new Option(INVISIBLE, INVISIBLE, false, value === INVISIBLE));
+    if (value === null) { s.add(new Option("<varies>", "*", false, true)); }
+    s.onchange = () => { if (s.value !== "*") onchange(s.value); };
+    s.onkeydown = (e) => e.stopPropagation();
+    return s;
+  }
+
+  // What the ribbon shows for the selection or the session: null for none. main.js draws it as a "Modify | ..." tab.
+  function context() {
+    if (!S || app.doc !== "annotation") return null;
+    const c = contextBase();
+    if (c) c.key = ASk.active ? `${S.mode}:${ASk.tool}` : S.sel ? `${S.sel.kind}:${S.sel.i}` : "";
+    return c;
+  }
+  function contextBase() {
+    const t = ASk.tool;
+    const modify = { label: "Modify", items: ASk.MODIFY.map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
+    const draw = { label: "Draw", items: ASk.DRAW.filter((x) => x.id !== "pick_walls").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
+    if (S.mode === "lines") {
+      const a = ASk.selectedAttr();
+      const node = styleSelect(a ? a.sub : S.sub, (v) => { S.sub = v; if (ASk.selectedAttr()) ASk.patchSelected({ sub: v }); ctxRefresh(); });
+      node.title = "The subcategory of new lines, and of the selected lines";
+      const placing = ASk.DRAW.some((x) => x.id === t);
+      return { auto: true, title: placing ? "Modify | Place Lines" : "Modify | Lines", groups: [modify, draw, { label: "Subcategory", items: [{ node }] }] };
+    }
+    if (S.mode === "region") {
+      const a = ASk.selectedAttr();
+      const node = styleSelect(a ? a.sub : S.boundarySub, (v) => { S.boundarySub = v; if (ASk.selectedAttr()) ASk.patchSelected({ sub: v }); ctxRefresh(); });
+      node.title = "The line style of new boundary lines, and of the selected ones";
+      return { auto: true, title: `Modify | ${ASk.title}`, groups: [
+        { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => ASk.finish() }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => ASk.cancel() }] },
+        modify, draw, { label: "Line Style", items: [{ node }] },
+      ] };
+    }
+    const sel = S.sel;
+    if (!sel) return null;
+    const auto = S.tool === "select";
+    if (sel.kind === "region") {
+      const r = S.fam.regions[sel.i];
+      if (!r) return null;
+      return { auto, title: r.masking ? "Modify | Masking Region" : "Modify | Filled Region", groups: [
+        { label: "Mode", items: [{ label: "Edit Boundary", ico: "Ed", big: true, onclick: () => startRegion(r.masking, sel.i) }] },
+        { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
+      ] };
+    }
+    if (sel.kind === "label") return { auto, title: "Modify | Label", groups: [{ label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] }] };
+    return null;
   }
 
   // ---------------------------------------------------------------- properties
@@ -222,39 +355,71 @@ const AnnModel = (() => {
   const textIn = (value, onChange) => { const i = el("input"); i.type = "text"; i.value = value ?? ""; i.onchange = () => edit(() => onChange(i.value)); return i; };
   const selIn = (value, opts, onChange) => { const s = el("select"); for (const [v, l] of opts) s.add(new Option(l, v, false, v === value)); s.onchange = () => edit(() => onChange(s.value), true); return s; };
   const checkIn = (value, onChange) => { const i = el("input"); i.type = "checkbox"; i.checked = !!value; i.onchange = () => edit(() => onChange(i.checked), true); return i; };
-  const items = () => [
-    ...S.fam.shapes.map((s, i) => ({ layer: "shapes", i })),
-    ...(hasPointer() ? S.fam.pointer.map((s, i) => ({ layer: "pointer", i })) : []),
-    ...S.fam.labels.map((s, i) => ({ layer: "labels", i })),
-  ];
-  const get = (it) => (it ? S.fam[it.layer][it.i] : null);
-  const NAMES = { line: "Line", arc: "Arc", circle: "Circle", polygon: "Filled Region" };
+  const roIn = (text) => el("span", "fe-ro", text);
+  const typeOptions = () => S.fam.region_types.map((t) => [t.name, t.name]);
+  const areaOf = (i) => {
+    for (const p of [S.drawing && S.drawing.body, S.drawing && S.drawing.pointer]) for (const f of (p && p.fills) || []) if (f.region === i) return f.area_mm2;
+    return null;
+  };
 
   function props() {
     const r = $q("#fam-prop-body");
     r.replaceChildren();
-    const s = S.sel ? get(S.sel) : null;
-    if (!s) {
+    if (S.mode === "lines") {
+      const a = ASk.selectedAttr();
+      r.append(el("div", "famed-h", a ? `Lines (${a.count} selected)` : "Lines"));
+      if (a) {
+        const v = el("input"); v.type = "checkbox"; v.checked = a.visible !== false; v.indeterminate = a.visible === null;
+        v.onchange = () => ASk.patchSelected({ visible: v.checked });
+        r.append(field("Visible", v));
+      }
+      r.append(el("div", "famed-hint", "Draw lines with the Draw tools on the ribbon; the Modify tools trim, offset, split and move them. Select lines to change their subcategory on the ribbon. Esc twice leaves Line."));
+      return;
+    }
+    if (S.mode === "region") {
+      const R = S.region;
+      r.append(el("div", "famed-h", R.masking ? "Masking Region" : "Filled Region"));
+      if (!R.masking) {
+        const s = el("select");
+        for (const [v, l] of typeOptions()) s.add(new Option(l, v, false, v === (R.index != null ? S.fam.regions[R.index].region_type : S.newType)));
+        s.onchange = () => { if (R.index != null) edit((f) => { f.regions[R.index].region_type = s.value; }, true); else S.newType = s.value; };
+        r.append(field("Type", s));
+      }
+      r.append(el("div", "famed-hint", `${ASk.title}: draw closed loops (a loop inside another is a hole), then Finish Edit Mode. Each line has its own line style: choose it on the ribbon.`));
+      return;
+    }
+    const sel = S.sel;
+    const it = sel ? get(sel) : null;
+    if (!it) {
       r.append(el("div", "famed-h", "Family"));
       r.append(field("Name", textIn(S.fam.name, (v) => { S.fam.name = v.trim() || S.fam.name; })));
-      r.append(field("Category", el("span", "fe-ro", S.category)));
-      r.append(field("Pen width (mm)", numIn(S.fam.pen_mm, (v) => { S.fam.pen_mm = v; }, 0.05)));
+      r.append(field("Category", roIn(S.category)));
       if (S.fam.family_kind === "section_marker") {
         r.append(field("Broken Section Display Style", selIn(S.fam.broken_style || "gapped", [["gapped", "Gapped"], ["continuous", "Continuous"]], (v) => { S.fam.broken_style = v; })));
         r.append(field("Reference Label", textIn(S.fam.reference_label == null ? "SIM" : S.fam.reference_label, (v) => { S.fam.reference_label = v; })));
       }
-      r.append(el("div", "famed-hint", NOTE[S.fam.family_kind]));
+      r.append(el("div", "famed-hint", `${NOTE[S.fam.family_kind]} Line weights, colours and patterns come from ${S.category} in Object Styles.`));
       return;
     }
-    if (S.sel.layer === "labels") {
+    if (sel.kind === "region") {
+      r.append(el("div", "famed-h", `${it.masking ? "Masking Region" : "Filled Region"}${it.pointer ? " (pointer)" : ""}`));
+      if (!it.masking) {
+        r.append(field("Type", selIn(it.region_type, typeOptions(), (v) => { it.region_type = v; })));
+        r.append(button("Edit Type...", () => typeDialog(it.region_type)));
+      }
+      r.append(field("Visible", checkIn(it.visible !== false, (v) => { it.visible = v; })));
+      const area = areaOf(sel.i);
+      r.append(field("Area (mm²)", roIn(area == null ? "" : (Math.round(area * 100) / 100).toString())));
+      r.append(button("Edit Boundary", () => startRegion(it.masking, sel.i)));
+    } else {
       r.append(el("div", "famed-h", "Label"));
-      r.append(field("X (mm)", numIn(s.x, (v) => { s.x = v; })), field("Y (mm)", numIn(s.y, (v) => { s.y = v; })));
-      r.append(field("Text height (mm)", numIn(s.size_mm, (v) => { s.size_mm = v; }, 0.25)));
-      r.append(field("Horizontal", selIn(s.halign, [["left", "Left"], ["center", "Centre"], ["right", "Right"]], (v) => { s.halign = v; })));
-      r.append(field("Vertical", selIn(s.valign, [["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], (v) => { s.valign = v; })));
-      r.append(field("Bold", checkIn(s.bold, (v) => { s.bold = v; })));
+      r.append(field("X (mm)", numIn(it.x, (v) => { it.x = v; })), field("Y (mm)", numIn(it.y, (v) => { it.y = v; })));
+      r.append(field("Text height (mm)", numIn(it.size_mm, (v) => { it.size_mm = v; }, 0.25)));
+      r.append(field("Horizontal", selIn(it.halign, [["left", "Left"], ["center", "Centre"], ["right", "Right"]], (v) => { it.halign = v; })));
+      r.append(field("Vertical", selIn(it.valign, [["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]], (v) => { it.valign = v; })));
+      r.append(field("Bold", checkIn(it.bold, (v) => { it.bold = v; })));
       r.append(el("div", "famed-h", "Label parameters (one per line)"));
-      s.lines.forEach((ln, k) => {
+      it.lines.forEach((ln, k) => {
         const box = el("div", "famed-line");
         box.append(
           field("Parameter", selIn(ln.param, S.params.map((p) => [p, p]), (v) => { ln.param = v; })),
@@ -262,35 +427,250 @@ const AnnModel = (() => {
           field("Suffix", textIn(ln.suffix, (v) => { ln.suffix = v; })),
           field("Sample", textIn(ln.sample, (v) => { ln.sample = v; })),
         );
-        if (s.lines.length > 1) box.append(button("Remove line", () => edit(() => { s.lines.splice(k, 1); })));
+        if (it.lines.length > 1) box.append(button("Remove line", () => edit(() => { it.lines.splice(k, 1); })));
         r.append(box);
       });
-      r.append(button("Add parameter line", () => edit(() => { s.lines.push({ param: S.params[0], prefix: "", suffix: "", sample: "" }); })));
-    } else {
-      r.append(el("div", "famed-h", `${s.type === "polygon" && !s.filled ? "Polygon" : NAMES[s.type]}${S.sel.layer === "pointer" ? " (pointer)" : ""}`));
-      if (s.type === "line") {
-        r.append(field("X1", numIn(s.a[0], (v) => { s.a[0] = v; })), field("Y1", numIn(s.a[1], (v) => { s.a[1] = v; })), field("X2", numIn(s.b[0], (v) => { s.b[0] = v; })), field("Y2", numIn(s.b[1], (v) => { s.b[1] = v; })));
-      } else if (s.type === "circle" || s.type === "arc") {
-        r.append(field("Centre X", numIn(s.c[0], (v) => { s.c[0] = v; })), field("Centre Y", numIn(s.c[1], (v) => { s.c[1] = v; })), field("Radius", numIn(s.r, (v) => { s.r = Math.max(0.1, v); })));
-        if (s.type === "circle") r.append(field("Filled", checkIn(s.filled, (v) => { s.filled = v; })));
-        else r.append(field("Start (deg)", numIn(s.start_deg, (v) => { s.start_deg = v; }, 5)), field("End (deg)", numIn(s.end_deg, (v) => { s.end_deg = v; }, 5)));
-      } else if (s.type === "polygon") {
-        r.append(field("Filled", checkIn(s.filled, (v) => { s.filled = v; })));
-        s.pts.forEach((p, k) => {
-          const d = el("span", "famed-pt");
-          d.append(numIn(p[0], (v) => { p[0] = v; }), numIn(p[1], (v) => { p[1] = v; }));
-          r.append(field(`Point ${k + 1}`, d));
-        });
-      }
+      r.append(button("Add parameter line", () => edit(() => { it.lines.push({ param: S.params[0], prefix: "", suffix: "", sample: "" }); })));
     }
     r.append(button("Delete", removeSel));
   }
 
+  const get = (sel) => (sel.kind === "region" ? S.fam.regions[sel.i] : sel.kind === "label" ? S.fam.labels[sel.i] : null);
   function removeSel() {
     if (!S.sel) return;
     const it = S.sel;
     S.sel = null;
-    edit((f) => { f[it.layer].splice(it.i, 1); });
+    edit((f) => { (it.kind === "region" ? f.regions : f.labels).splice(it.i, 1); });
+    ctxRefresh();
+  }
+
+  // Type Properties of the filled region types: the patterns (drafting patterns, from the Fill Patterns window),
+  // their colours, the pattern line weight and masking. Duplicate makes a new type; the name can be changed here.
+  function typeDialog(name) {
+    const types = clone(S.fam.region_types);
+    let cur = types.find((t) => t.name === name) || types[0];
+    openModal("Type Properties", (body, foot, close) => {
+      const rows = el("div", "famed-rows"), msg = el("div", "modal-msg");
+      body.append(rows, msg);
+      const hex = (c) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
+      const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+      const colour = (key) => { const i = el("input"); i.type = "color"; i.value = hex(cur[key]); i.onchange = () => { cur[key] = rgb(i.value); }; return i; };
+      const patternBtn = (key) => pickerField(cur[key] || "<none>", async () => {
+        const v = await pickFillPattern(cur[key] || "", "drafting", "drafting");
+        if (v === null) return;
+        cur[key] = v || null; draw();
+      });
+      function draw() {
+        rows.replaceChildren();
+        const ts = el("select");
+        for (const t of types) ts.add(new Option(t.name, t.name, false, t === cur));
+        ts.onchange = () => { cur = types.find((t) => t.name === ts.value); draw(); };
+        const dup = button("Duplicate...", () => {
+          let n = `${cur.name} 2`, k = 3;
+          while (types.some((t) => t.name === n)) n = `${cur.name} ${k++}`;
+          const t = { ...clone(cur), name: n };
+          types.push(t); cur = t; draw();
+        });
+        const nm = el("input"); nm.type = "text"; nm.value = cur.name;
+        nm.onchange = () => { const v = nm.value.trim(); if (!v || types.some((t) => t !== cur && t.name === v)) { msg.textContent = "Each type needs a name of its own."; nm.value = cur.name; return; } msg.textContent = ""; cur._was = cur._was || cur.name; cur.name = v; draw(); };
+        const lw = el("select");
+        for (let w = 1; w <= 16; w++) lw.add(new Option(String(w), String(w), false, w === cur.line_weight));
+        lw.onchange = () => { cur.line_weight = parseInt(lw.value, 10); };
+        const mk = el("input"); mk.type = "checkbox"; mk.checked = cur.masking !== false; mk.onchange = () => { cur.masking = mk.checked; };
+        rows.append(
+          field("Type", ts), field("", dup), field("Name", nm),
+          el("div", "famed-h", "Graphics"),
+          field("Foreground Fill Pattern", patternBtn("foreground")), field("Foreground Pattern Color", colour("foreground_color")),
+          field("Background Fill Pattern", patternBtn("background")), field("Background Pattern Color", colour("background_color")),
+          field("Line Weight", lw), field("Masking", mk),
+        );
+      }
+      draw();
+      foot.append(button("OK", () => {
+        // regions of a renamed type follow it
+        const renamed = new Map(types.filter((t) => t._was && t._was !== t.name).map((t) => [t._was, t.name]));
+        for (const t of types) delete t._was;
+        edit((f) => {
+          f.region_types = types;
+          for (const r of f.regions) if (renamed.has(r.region_type)) r.region_type = renamed.get(r.region_type);
+        });
+        if (renamed.has(S.newType)) S.newType = renamed.get(S.newType);
+        close();
+      }, true), button("Cancel", close));
+    });
+  }
+
+  // ---------------------------------------------------------------- the sketch session: Line, Filled and Masking Region
+  const ASk = makeSketch();
+  // the curves of the drawing the session is not holding, as segments in sketch units (for snaps, Pick Lines, Align)
+  function inSession(layer, x) {
+    if (S.mode === "lines") return x.line != null && layer === S.layer;
+    if (S.mode === "region") return S.region.index != null && x.region === S.region.index && layer === (S.region.pointer ? "pointer" : "body");
+    return false;
+  }
+  function otherStrokes() {
+    const out = [];
+    for (const layer of ["body", "pointer"]) for (const s of ((S.drawing && S.drawing[layer]) || {}).strokes || []) if (!inSession(layer, s)) out.push(s);
+    return out;
+  }
+  const REF = 1000 * U;
+  function skEdges(sx, sy) {
+    const out = [], tol = 8;
+    const near = (a, b) => {
+      const A = toScreen(a[0], a[1]), B = toScreen(b[0], b[1]), l2 = (B.x - A.x) ** 2 + (B.y - A.y) ** 2 || 1;
+      const t = Math.max(0, Math.min(1, ((sx - A.x) * (B.x - A.x) + (sy - A.y) * (B.y - A.y)) / l2));
+      return Math.hypot(A.x + t * (B.x - A.x) - sx, A.y + t * (B.y - A.y) - sy) <= tol;
+    };
+    for (const s of otherStrokes()) {
+      const n = s.pts.length;
+      for (let i = 0; i + 1 < n + (s.closed ? 1 : 0); i++) {
+        const a = s.pts[i], b = s.pts[(i + 1) % n];
+        if (near(a, b)) out.push({ a: { x: a[0] * U, y: a[1] * U }, b: { x: b[0] * U, y: b[1] * U } });
+      }
+    }
+    // the reference lines
+    if (near([-1000, 0], [1000, 0])) out.push({ a: { x: -REF, y: 0 }, b: { x: REF, y: 0 } });
+    if (near([0, -1000], [0, 1000])) out.push({ a: { x: 0, y: -REF }, b: { x: 0, y: REF } });
+    return out;
+  }
+  // the snap index: the reference lines (in pieces, so every part of them is in reach; no ends or middles of their
+  // own) and the rest of the drawing
+  function skSnapIndex() {
+    const key = `${S.tick}|${S.mode}|${S.layer}|${S.region && S.region.index}`;
+    if (Snap.owner === "annotation" && S.snapKey === key) return;
+    const segs = [], pts = [];
+    for (let v = -REF; v < REF; v += 2000) { segs.push([v, 0, v + 2000, 0, 2]); segs.push([0, v, 0, v + 2000, 2]); }
+    for (const s of otherStrokes()) {
+      const q = s.pts.map(([x, y]) => [x * U, y * U]), straight = q.length === 2 && !s.closed;
+      for (let i = 0; i + 1 < q.length; i++) segs.push(straight ? [...q[i], ...q[i + 1]] : [...q[i], ...q[i + 1], 2]);
+      if (!straight && !s.closed) pts.push({ x: q[0][0], y: q[0][1], kind: "endpoint" }, { x: q[q.length - 1][0], y: q[q.length - 1][1], kind: "endpoint" });
+    }
+    Snap.build(segs, "annotation");
+    S.snapPts = pts; S.snapKey = key;
+  }
+  function skSnap(sx, sy) {
+    skSnapIndex();
+    const w = toPaper(sx, sy);
+    return Snap.resolve({ x: w.x * U, y: w.y * U }, { zoom: S.view.k / U, last: ASk.last(), extra: ASk.segs(), points: [...ASk.points(), ...(S.snapPts || [])], cycle: S.snapCycle || 0, shift: !!S.shift, gridStep: 0, lengths: LENGTHS });
+  }
+  ASk.attach({
+    get ctx() { return S && S.ctx; },
+    get canvas() { return S && S.canvas; },
+    unit: U,
+    size: () => ({ w: S.canvas.width, h: S.canvas.height }),
+    toScreen: (p) => toScreen(p.x / U, p.y / U),
+    toWorld: (sx, sy) => { const q = toPaper(sx, sy); return { x: q.x * U, y: q.y * U }; },
+    label: (text, at, color) => {
+      const ctx = S.ctx;
+      ctx.font = "11px system-ui, sans-serif";
+      const m = ctx.measureText(text);
+      ctx.fillStyle = css("--panel"); ctx.fillRect(at.x - m.width / 2 - 3, at.y - 8, m.width + 6, 16);
+      ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, at.x, at.y);
+    },
+    css, render: () => render(),
+    scale: () => S.view.k / U,
+    wallAt: () => null, wallById: () => null, wallChain: (id) => [id],
+    edgeAt: (sx, sy) => skEdges(sx, sy)[0] || null,
+    edgesNear: (sx, sy) => skEdges(sx, sy),
+    cycleSnap: (d) => { S.snapCycle = (S.snapCycle || 0) + d; if (S.mouse) { S.skHover = skSnap(S.mouse.x, S.mouse.y); ASk.move(S.skHover, S.mouse.x, S.mouse.y); } render(); },
+  });
+  ASk.callbacks.prompt = (t, err) => say(t, err);
+  ASk.callbacks.change = () => {
+    if (!S) return;
+    if (S.mode === "lines") writeLines();
+    toolbar(); props(); status(); ctxRefresh(); render();
+  };
+  ASk.callbacks.finish = (out) => finishRegion(out);
+  ASk.callbacks.cancel = () => { endSession(); say("Sketch cancelled."); };
+  ASk.callbacks.slope = () => {};
+
+  // ---- Line: the session holds the lines of one layer (the body, or a mark's pointer) and every change goes
+  // straight into the family; the document's undo takes the whole visit back in one step
+  async function startLines(index, tool) {
+    if (!S) return;
+    if (S.mode === "region") return;
+    S.sel = null; S.flipped = false;
+    if (index != null) S.layer = S.fam.lines[index].pointer ? "pointer" : "body";
+    const ptr = S.layer === "pointer";
+    const mine = S.fam.lines.map((l, i) => ({ l, i })).filter((x) => !!x.l.pointer === ptr);
+    let r;
+    try { r = await Backend.call("sketch_describe", { curves: mine.map((x) => toSketch(x.l.curve)) }); } catch (e) { say(String(e.message || e), true); return; }
+    S.mode = "lines";
+    S.lines = { before: snapshot(), pushed: false, last: null, starting: true };
+    ASk.begin({
+      kind: "annotation", title: "Lines", tool: tool || "select", fade: false, opts: PAPER_OPTS,
+      ink: (c) => (c.attr && (c.attr.sub === INVISIBLE || c.attr.visible === false) ? "#9aa0a8" : ptr ? POINTER_INK : css("--text")),
+      curves: r.curves.map((d, k) => ({ ...d, attr: { sub: mine[k].l.subcategory || "", visible: mine[k].l.visible !== false } })),
+      attr: (extra) => ({ sub: S.sub, visible: true, ...(extra || {}) }),
+    });
+    const st = ASk.state();
+    if (index != null) { const k = mine.findIndex((x) => x.i === index); if (k >= 0) st.sel = new Set([st.curves[k].uid]); }
+    S.lines.last = JSON.stringify(sessionLines());
+    S.lines.starting = false;
+    S.canvas.style.cursor = "crosshair";
+    tabsUI(); toolbar(); props(); status(); ctxRefresh(); render();
+  }
+  const sessionLines = () => ASk.state().curves.map((c) => ({ curve: toPaperCurve(c.curve), subcategory: c.attr.sub || "", visible: c.attr.visible !== false, pointer: S.layer === "pointer" }));
+  function writeLines() {
+    const L = S.lines;
+    if (!L || L.starting) return;
+    const mine = sessionLines(), json = JSON.stringify(mine);
+    if (json === L.last) return; // a change of tool or selection
+    L.last = json;
+    if (!L.pushed) { S.undo.push(L.before); S.redo = []; L.pushed = true; }
+    const ptr = S.layer === "pointer";
+    S.fam.lines = [...S.fam.lines.filter((l) => !!l.pointer !== ptr), ...mine];
+    S.dirty = true;
+    refreshDrawing();
+  }
+  function endLines() { if (S && S.mode === "lines") endSession(); }
+
+  // ---- Filled Region and Masking Region: a sketch with Finish and Cancel, new or the boundary of region `index`
+  async function startRegion(masking, index) {
+    if (!S || S.mode === "region") return;
+    if (S.mode === "lines") endLines();
+    const r = index != null ? S.fam.regions[index] : null;
+    let curves = [];
+    if (r) {
+      const edges = r.loops.flat();
+      try { curves = (await Backend.call("sketch_describe", { curves: edges.map((e) => toSketch(e.curve)) })).curves.map((d, k) => ({ ...d, attr: { sub: edges[k].subcategory || "" } })); }
+      catch (e) { say(String(e.message || e), true); return; }
+    }
+    S.sel = null; S.flipped = false;
+    S.mode = "region";
+    S.region = { index, masking, pointer: r ? !!r.pointer : S.layer === "pointer" };
+    // a masking region's edges start invisible, so it hides what is behind it without an outline
+    S.boundarySub = masking ? INVISIBLE : "";
+    const noun = masking ? "Masking Region" : "Filled Region";
+    ASk.begin({ kind: "annotation", title: r ? `Edit ${noun} Boundary` : `Create ${noun} Boundary`, tool: r ? "select" : "line", opts: PAPER_OPTS, curves, attr: (extra) => ({ sub: S.boundarySub, ...(extra || {}) }) });
+    S.canvas.style.cursor = "crosshair";
+    tabsUI(); toolbar(); props(); status(); ctxRefresh(); render();
+  }
+  async function finishRegion(out) {
+    const R = S && S.region;
+    if (!R) return false;
+    const edges = (out.edges || []).map((e) => ({ curve: toPaperCurve(e.curve), subcategory: e.sub || "" }));
+    let r;
+    try { r = await Backend.call("annotation_region_loops", { edges }); } catch (e) { say(String(e.message || e), true); return false; }
+    if (!r.ok) { say(r.error.message, true); return false; }
+    let i = R.index;
+    endSession();
+    edit((f) => {
+      if (i != null) f.regions[i].loops = r.loops;
+      else { f.regions.push({ loops: r.loops, masking: R.masking, region_type: R.masking ? "" : S.newType || (f.region_types[0] || {}).name, visible: true, pointer: R.pointer }); i = f.regions.length - 1; }
+    });
+    S.sel = { kind: "region", i };
+    say(`${R.masking ? "Masking" : "Filled"} region ${R.index != null ? "changed" : "made"}.`);
+    props(); ctxRefresh(); render();
+    return true;
+  }
+
+  function endSession() {
+    if (ASk.active) ASk.end();
+    if (!S) return;
+    S.mode = null; S.lines = null; S.region = null; S.skHover = null; S.drag = null;
+    S.tool = "select"; S.canvas.style.cursor = "default";
+    toolbar(); props(); status(); ctxRefresh(); render(); updateUndoButtons();
   }
 
   // ---------------------------------------------------------------- drawing
@@ -302,7 +682,7 @@ const AnnModel = (() => {
   function fit() {
     if (!S || !S.canvas) return;
     const W = S.canvas.width || 800, H = S.canvas.height || 600;
-    const e = Ann.extent({ shapes: [...S.fam.shapes, ...(hasPointer() ? S.fam.pointer : [])], labels: S.fam.labels });
+    const e = Ann.extent({ body: S.drawing && S.drawing.body, pointer: hasPointer() && S.drawing ? S.drawing.pointer : null, labels: S.fam.labels });
     const minX = Math.min(e.minX, -8), maxX = Math.max(e.maxX, 8), minY = Math.min(e.minY, -8), maxY = Math.max(e.maxY, 8);
     S.view.k = Math.max(4, Math.min(60, 0.7 * Math.min(W / (maxX - minX), H / (maxY - minY))));
     S.view.ox = W / 2 - ((minX + maxX) / 2) * S.view.k;
@@ -334,12 +714,17 @@ const AnnModel = (() => {
       ctx.save(); ctx.strokeStyle = muted; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(0, o.y); ctx.lineTo(o.x, o.y); ctx.stroke(); ctx.restore();
     }
     const base = { x: o.x, y: o.y, k: S.view.k, ...(S.flipped ? { flip: true } : {}) };
-    const pen = Math.max(1, (fam.pen_mm || 0.25) * S.view.k);
-    const on = (layer, i) => S.sel && S.sel.layer === layer && S.sel.i === i;
-    fam.shapes.forEach((s, i) => Ann.shapes(ctx, [s], base, on("shapes", i) ? accent : text, bg, pen));
-    if (hasPointer()) fam.pointer.forEach((s, i) => Ann.shapes(ctx, [s], base, on("pointer", i) ? accent : "#a0522d", bg, pen));
+    // the drawing: what a project shows, and greyed what it leaves out; what the session holds it draws itself
+    const d = S.drawing || {};
+    const opt = (layer) => ({ pats: S.pats, hidden: true, only: (x) => !inSession(layer, x) });
+    Ann.paths(ctx, d.body, base, null, bg, opt("body"));
+    if (hasPointer()) Ann.paths(ctx, d.pointer, base, POINTER_INK, bg, opt("pointer"));
+    if (S.sel && S.sel.kind === "region") {
+      const r = fam.regions[S.sel.i];
+      if (r) Ann.paths(ctx, r.pointer ? d.pointer : d.body, base, accent, null, { pats: S.pats, hidden: true, only: (x) => x.region === S.sel.i });
+    }
     fam.labels.forEach((lb, i) => {
-      const hot = on("labels", i);
+      const hot = S.sel && S.sel.kind === "label" && S.sel.i === i;
       Ann.labels(ctx, [{ ...lb, lines: sampleLines(lb) }], base, hot ? accent : text);
       const e = Ann.extent({ labels: [lb] });
       const a = toScreen(S.flipped ? -e.maxX : e.minX, e.maxY), b = toScreen(S.flipped ? -e.minX : e.maxX, e.minY);
@@ -347,47 +732,21 @@ const AnnModel = (() => {
       const anchor = toScreen(S.flipped ? -lb.x : lb.x, lb.y);
       ctx.fillStyle = hot ? accent : muted; ctx.fillRect(anchor.x - 2, anchor.y - 2, 4, 4);
     });
-    // the shape being drawn
-    if (S.draft && S.mouse) {
-      const p = toPaper(S.mouse.x, S.mouse.y), q = { x: snapMM(S.flipped ? -p.x : p.x), y: snapMM(p.y) };
-      const prev = draftShape(q);
-      if (prev) Ann.shapes(ctx, [prev], base, accent, null, pen);
+    // the session's curves, grips, previews and dimensions, and the snap under the cursor
+    if (ASk.active) {
+      ASk.draw(ctx);
+      const h = S.skHover;
+      if (h && ASk.wantsSnap() && !["free", "length"].includes(h.kind)) {
+        const p = toScreen(h.x / U, h.y / U);
+        Snap.glyph(ctx, h.kind, p.x, p.y);
+        if (h.label) { ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = "#d4572f"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(h.label, p.x + 10, p.y + 8); }
+      }
+      if (S.drag && S.drag.band && S.drag.cur) {
+        const d0 = S.drag, x0 = Math.min(d0.x, d0.cur.x), y0 = Math.min(d0.y, d0.cur.y);
+        ctx.save(); ctx.strokeStyle = accent; ctx.setLineDash(d0.cur.x >= d0.x ? [] : [5, 4]); ctx.lineWidth = 1;
+        ctx.strokeRect(x0, y0, Math.abs(d0.cur.x - d0.x), Math.abs(d0.cur.y - d0.y)); ctx.restore();
+      }
     }
-    if (S.sel && S.sel.layer !== "labels") {
-      const sh = get(S.sel);
-      if (sh) for (const [x, y] of handles(sh)) { const s = toScreen(S.flipped ? -x : x, y); ctx.fillStyle = accent; ctx.fillRect(s.x - 3, s.y - 3, 6, 6); }
-    }
-  }
-  const handles = (sh) => (sh.type === "line" ? [sh.a, sh.b] : sh.type === "polygon" ? sh.pts : [sh.c]);
-
-  // ---------------------------------------------------------------- drawing tools
-  // the Line tool draws with the shape chosen in the options bar; Filled Region is a closed, filled polygon
-  const shapeOf = () => (S.tool === "region" ? "polygon" : S.shape);
-  function draftShape(q, closing) {
-    const d = S.draft;
-    if (!d) return null;
-    if (d.shape === "line") return { type: "line", a: d.pts[0], b: [q.x, q.y] };
-    if (d.shape === "circle") return { type: "circle", c: d.pts[0], r: Math.max(0.1, Math.hypot(q.x - d.pts[0][0], q.y - d.pts[0][1])), filled: false };
-    if (d.shape === "polygon") return d.pts.length ? { type: "polygon", pts: closing ? d.pts : [...d.pts, [q.x, q.y]], filled: S.tool === "region" } : null;
-    if (d.shape === "arc") {
-      const c = d.pts[0];
-      if (d.pts.length === 1) return { type: "line", a: c, b: [q.x, q.y] };
-      const r = Math.hypot(d.pts[1][0] - c[0], d.pts[1][1] - c[1]);
-      const a0 = (Math.atan2(d.pts[1][1] - c[1], d.pts[1][0] - c[0]) * 180) / Math.PI;
-      let a1 = (Math.atan2(q.y - c[1], q.x - c[0]) * 180) / Math.PI;
-      while (a1 <= a0) a1 += 360;
-      return { type: "arc", c, r, start_deg: a0, end_deg: a1 };
-    }
-    return null;
-  }
-  function finishDraft(q, closing) {
-    const sh = draftShape(q, closing);
-    S.draft = null;
-    if (!sh || (sh.type === "polygon" && sh.pts.length < 3)) { render(); return; }
-    const target = S.layer === "pointer" && hasPointer() ? "pointer" : "shapes";
-    edit((f) => { f[target].push(sh); });
-    S.sel = { layer: target, i: S.fam[target].length - 1 };
-    props(); render();
   }
 
   // ---------------------------------------------------------------- hit testing and the mouse
@@ -396,36 +755,49 @@ const AnnModel = (() => {
     const t = l2 ? Math.max(0, Math.min(1, ((p.x - a.x) * dx + (p.y - a.y) * dy) / l2)) : 0;
     return Math.hypot(p.x - (a.x + dx * t), p.y - (a.y + dy * t));
   };
+  // what is under the cursor: { kind: "line" | "region" | "label", i }
   function hit(sx, sy) {
-    const P = { x: sx, y: sy }, k = S.view.k;
-    const sc = (x, y) => toScreen(S.flipped ? -x : x, y);
+    const P = { x: sx, y: sy };
+    const sc = ([x, y]) => toScreen(S.flipped ? -x : x, y);
     let best = null;
-    const consider = (it, d) => { if (d <= 7 && (!best || d < best.d)) best = { it, d }; };
-    for (const it of items()) {
-      const s = get(it);
-      if (it.layer === "labels") {
-        const e = Ann.extent({ labels: [s] }), a = sc(e.minX, e.maxY), b = sc(e.maxX, e.minY);
-        if (sx >= Math.min(a.x, b.x) - 3 && sx <= Math.max(a.x, b.x) + 3 && sy >= Math.min(a.y, b.y) - 3 && sy <= Math.max(a.y, b.y) + 3) consider(it, 2);
-      } else if (s.type === "line") consider(it, distSeg(P, sc(...s.a), sc(...s.b)));
-      else if (s.type === "circle") { const c = sc(...s.c), r = Math.hypot(sx - c.x, sy - c.y); consider(it, s.filled && r < s.r * k ? 1 : Math.abs(r - s.r * k)); }
-      else if (s.type === "arc") { const c = sc(...s.c); consider(it, Math.abs(Math.hypot(sx - c.x, sy - c.y) - s.r * k)); }
-      else if (s.type === "polygon") {
-        const pts = s.pts.map((p) => sc(...p));
-        let d = Infinity, inside = false;
-        for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
-          d = Math.min(d, distSeg(P, pts[j], pts[i]));
-          if ((pts[i].y > sy) !== (pts[j].y > sy) && sx < ((pts[j].x - pts[i].x) * (sy - pts[i].y)) / (pts[j].y - pts[i].y) + pts[i].x) inside = !inside;
+    const consider = (it, dd) => { if (dd <= 7 && (!best || dd < best.d)) best = { it, d: dd }; };
+    S.fam.labels.forEach((lb, i) => {
+      const e = Ann.extent({ labels: [lb] }), a = sc([e.minX, e.maxY]), b = sc([e.maxX, e.minY]);
+      if (sx >= Math.min(a.x, b.x) - 3 && sx <= Math.max(a.x, b.x) + 3 && sy >= Math.min(a.y, b.y) - 3 && sy <= Math.max(a.y, b.y) + 3) consider({ kind: "label", i }, 2);
+    });
+    const d = S.drawing || {};
+    for (const layer of hasPointer() ? ["body", "pointer"] : ["body"]) {
+      const p = d[layer] || {};
+      for (const s of p.strokes || []) {
+        const q = s.pts.map(sc);
+        let dd = Infinity;
+        for (let i = 0; i + 1 < q.length; i++) dd = Math.min(dd, distSeg(P, q[i], q[i + 1]));
+        if (s.closed && q.length > 2) dd = Math.min(dd, distSeg(P, q[q.length - 1], q[0]));
+        consider(s.line != null ? { kind: "line", i: s.line } : { kind: "region", i: s.region }, dd);
+      }
+      for (const f of p.fills || []) {
+        let inside = false;
+        for (const ring of f.rings) {
+          const q = ring.map(sc);
+          for (let i = 0, j = q.length - 1; i < q.length; j = i++) {
+            if ((q[i].y > sy) !== (q[j].y > sy) && sx < ((q[j].x - q[i].x) * (sy - q[i].y)) / (q[j].y - q[i].y) + q[i].x) inside = !inside;
+          }
         }
-        consider(it, s.filled && inside ? 1 : d);
+        if (inside) consider({ kind: "region", i: f.region }, 4);
       }
     }
     return best ? best.it : null;
   }
-  function translate(sh, dx, dy) {
-    if (sh.type === "line") { sh.a = [sh.a[0] + dx, sh.a[1] + dy]; sh.b = [sh.b[0] + dx, sh.b[1] + dy]; }
-    else if (sh.type === "circle" || sh.type === "arc") sh.c = [sh.c[0] + dx, sh.c[1] + dy];
-    else if (sh.type === "polygon") sh.pts = sh.pts.map((p) => [p[0] + dx, p[1] + dy]);
-    else { sh.x += dx; sh.y += dy; }
+  // whether a click lands on a curve the session holds
+  function sessionCurveAt(sx, sy) {
+    const st = ASk.state();
+    if (!st) return false;
+    const P = { x: sx, y: sy };
+    return st.curves.some((c) => {
+      const q = c.poly.map(([x, y]) => toScreen(x / U, y / U));
+      for (let i = 0; i + 1 < q.length; i++) if (distSeg(P, q[i], q[i + 1]) <= 8) return true;
+      return false;
+    });
   }
 
   const mouseAt = (e) => { const r = S.canvas.getBoundingClientRect(); return { x: ((e.clientX - r.left) * S.canvas.width) / r.width, y: ((e.clientY - r.top) * S.canvas.height) / r.height }; };
@@ -433,65 +805,102 @@ const AnnModel = (() => {
 
   function onDown(e) {
     if (!S) return;
-    S.mouse = mouseAt(e);
-    if (e.button === 1) { S.pan = { x: S.mouse.x, y: S.mouse.y, ox: S.view.ox, oy: S.view.oy }; S.canvas.setPointerCapture(e.pointerId); return; }
-    if (e.button !== 0) return;
-    const q = paperAt(S.mouse);
-    if (S.tool === "select") {
-      const h = hit(S.mouse.x, S.mouse.y);
-      S.sel = h;
-      if (h) { S.drag = { last: q, started: false }; S.canvas.setPointerCapture(e.pointerId); }
-      props(); render();
+    S.mouse = mouseAt(e); S.shift = e.shiftKey;
+    if (e.button === 1 || (e.button === 2 && !ASk.active)) { S.pan = { x: S.mouse.x, y: S.mouse.y, ox: S.view.ox, oy: S.view.oy, button: e.button }; S.canvas.setPointerCapture(e.pointerId); return; }
+    if (ASk.active) {
+      if (e.button === 2) { ASk.rightClick(); render(); return; }
+      if (e.button !== 0) return;
+      S.canvas.setPointerCapture(e.pointerId);
+      if (ASk.gripDown(S.mouse.x, S.mouse.y)) { S.drag = { skGrip: true }; return; }
+      S.drag = { sk: true, x: S.mouse.x, y: S.mouse.y };
       return;
     }
+    if (e.button !== 0) return;
+    const q = paperAt(S.mouse);
     if (S.tool === "label") {
       edit((f) => { f.labels.push({ x: q.x, y: q.y, halign: "left", valign: "middle", size_mm: 2.5, bold: false, lines: [{ param: S.params[0], prefix: "", suffix: "", sample: "Sample" }] }); });
-      S.sel = { layer: "labels", i: S.fam.labels.length - 1 };
+      S.sel = { kind: "label", i: S.fam.labels.length - 1 };
       setTool("select"); props();
       return;
     }
-    const shape = shapeOf();
-    if (!S.draft) { S.draft = { shape, pts: [[q.x, q.y]] }; render(); return; }
-    if (S.draft.shape === "polygon") {
-      const first = S.draft.pts[0];
-      if (S.draft.pts.length >= 3 && Math.hypot(q.x - first[0], q.y - first[1]) < 0.6) { finishDraft({ x: first[0], y: first[1] }, true); return; }
-      S.draft.pts.push([q.x, q.y]); render(); return;
-    }
-    if (S.draft.shape === "arc" && S.draft.pts.length === 1) { S.draft.pts.push([q.x, q.y]); render(); return; }
-    finishDraft(q);
+    const h = hit(S.mouse.x, S.mouse.y);
+    if (h && h.kind === "line") { startLines(h.i, "select"); return; }
+    S.sel = h;
+    if (h) { S.drag = { last: q, started: false }; S.canvas.setPointerCapture(e.pointerId); }
+    props(); render(); ctxRefresh();
   }
 
   function onMove(e) {
     if (!S) return;
-    S.mouse = mouseAt(e);
-    if (S.pan) { S.view.ox = S.pan.ox + S.mouse.x - S.pan.x; S.view.oy = S.pan.oy + S.mouse.y - S.pan.y; render(); return; }
+    S.mouse = mouseAt(e); S.shift = e.shiftKey;
+    const m = S.mouse;
+    if (S.pan) { S.view.ox = S.pan.ox + m.x - S.pan.x; S.view.oy = S.pan.oy + m.y - S.pan.y; render(); return; }
+    if (ASk.active) {
+      const d = S.drag;
+      if (d && d.skGrip) { S.skHover = skSnap(m.x, m.y); ASk.gripMove(m.x, m.y, S.skHover); return; }
+      if (d && d.sk && (d.band || (Math.hypot(m.x - d.x, m.y - d.y) > 5 && ASk.canBand()))) { d.band = true; d.cur = m; render(); return; }
+      if (!S.lastSkMouse || Math.hypot(m.x - S.lastSkMouse.x, m.y - S.lastSkMouse.y) > 3) S.snapCycle = 0;
+      S.lastSkMouse = m;
+      S.skHover = skSnap(m.x, m.y);
+      ASk.move(S.skHover, m.x, m.y);
+      return;
+    }
     if (S.drag && S.sel) {
-      const q = paperAt(S.mouse), dx = q.x - S.drag.last.x, dy = q.y - S.drag.last.y;
+      const q = paperAt(m), dx = q.x - S.drag.last.x, dy = q.y - S.drag.last.y;
       if (dx || dy) {
         // the whole drag is one undo step
         if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; }
-        translate(get(S.sel), dx, dy);
+        const it = get(S.sel);
+        if (S.sel.kind === "label") { it.x += dx; it.y += dy; }
+        else for (const l of it.loops) for (const ed of l) ed.curve = moveCurve(ed.curve, dx, dy);
         S.drag.last = q;
+        if (S.sel.kind === "region") refreshDrawing();
       }
     }
     render();
   }
 
-  function onUp() {
+  async function onUp(e) {
     if (!S) return;
-    if (S.pan) { S.pan = null; return; }
-    if (S.drag) { const moved = S.drag.started; S.drag = null; if (moved) { props(); status(); } }
+    const m = mouseAt(e);
+    if (S.pan) {
+      const p = S.pan; S.pan = null;
+      if (p.button === 2 && Math.hypot(m.x - p.x, m.y - p.y) < 4 && !ASk.active && S.tool !== "select") setTool("select");
+      return;
+    }
+    const d = S.drag;
+    if (ASk.active) {
+      S.drag = null;
+      if (!d) return;
+      if (d.skGrip) { await ASk.gripUp(); return; }
+      if (d.band) { const a = toPaper(d.x, d.y), b = toPaper(m.x, m.y); ASk.bandSelect({ x0: Math.min(a.x, b.x) * U, y0: Math.min(a.y, b.y) * U, x1: Math.max(a.x, b.x) * U, y1: Math.max(a.y, b.y) * U }, m.x >= d.x, e); render(); return; }
+      if (Math.hypot(m.x - d.x, m.y - d.y) < 5) {
+        // in Line's select tool a click off the lines picks a region or a label instead, leaving Line
+        if (S.mode === "lines" && ASk.tool === "select" && !sessionCurveAt(m.x, m.y)) {
+          const h = hit(m.x, m.y);
+          if (h && h.kind !== "line") { endLines(); S.sel = h; props(); render(); ctxRefresh(); return; }
+          if (h && h.kind === "line" && S.fam.lines[h.i] && (S.fam.lines[h.i].pointer ? "pointer" : "body") !== S.layer) { endLines(); startLines(h.i, "select"); return; }
+        }
+        const p = skSnap(m.x, m.y);
+        Snap.clearOverride(); S.snapCycle = 0;
+        await ASk.click(p, m.x, m.y, e);
+      }
+      return;
+    }
+    if (d) { const moved = d.started; S.drag = null; if (moved) { props(); status(); refreshDrawing(); } }
   }
 
   function onDbl() {
-    if (S && S.draft && S.draft.shape === "polygon" && S.draft.pts.length >= 3) { S.draft.pts.pop(); finishDraft({ x: 0, y: 0 }, true); }
+    if (!S) return;
+    if (ASk.active) { ASk.dblclick(); return; }
+    if (S.sel && S.sel.kind === "region") startRegion(S.fam.regions[S.sel.i].masking, S.sel.i);
   }
 
   function onWheel(e) {
     if (!S) return;
     e.preventDefault();
     const m = mouseAt(e), before = toPaper(m.x, m.y);
-    S.view.k = Math.min(80, Math.max(2, S.view.k * Math.exp(-e.deltaY * 0.0012)));
+    S.view.k = Math.min(200, Math.max(2, S.view.k * Math.exp(-e.deltaY * 0.0012)));
     S.view.ox = m.x - before.x * S.view.k; S.view.oy = m.y + before.y * S.view.k;
     render();
   }
@@ -501,14 +910,27 @@ const AnnModel = (() => {
     if (!S || app.doc !== "annotation" || document.querySelector(".modal-back")) return;
     if (e.target && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName)) return;
     const mod = e.ctrlKey || e.metaKey, k = e.key.toLowerCase();
-    if (mod && k === "z") { e.preventDefault(); undo(); }
-    else if (mod && k === "y") { e.preventDefault(); redo(); }
-    else if (mod && k === "s") { e.preventDefault(); loadIntoProject(false); }
-    else if (e.key === "Escape") { if (S.draft) { S.draft = null; render(); } else if (S.tool !== "select") setTool("select"); else if (S.sel) { S.sel = null; props(); render(); } e.preventDefault(); }
-    else if (e.key === "Enter" && S.draft && S.draft.shape === "polygon" && S.draft.pts.length >= 3) { finishDraft({ x: 0, y: 0 }, true); e.preventDefault(); }
-    else if (e.key === "Delete" || e.key === "Backspace") { removeSel(); e.preventDefault(); }
+    let used = true;
+    if (mod && k === "z") { undo(); updateUndoButtons(); }
+    else if (mod && k === "y") { redo(); updateUndoButtons(); }
+    else if (mod && k === "s") loadIntoProject(false);
+    else if (ASk.active) {
+      const st = ASk.state();
+      // Esc in Line's select tool with nothing selected leaves Line
+      if (e.key === "Escape" && S.mode === "lines" && ASk.tool === "select" && !st.sel.size && !st.pts.length && !ASk.gripDragging && !st.typed) endLines();
+      else used = ASk.key(e);
+    }
+    else if (e.key === "Escape") { if (S.tool !== "select") setTool("select"); else if (S.sel) { S.sel = null; props(); render(); ctxRefresh(); } }
+    else if (e.key === "Delete" || e.key === "Backspace") removeSel();
+    else used = false;
+    if (used) e.preventDefault();
     e.stopPropagation();
   }
 
-  return { open, close: () => close(false), activate, docInfo, commands, syncRibbon, undo, redo, undoState, save: () => loadIntoProject(false), isOpen: (id) => !!S && S.id === id };
+  return {
+    open, close: () => close(false), activate, docInfo, commands, syncRibbon, context, undo, redo, undoState, save: () => loadIntoProject(false),
+    isOpen: (id) => !!S && S.id === id,
+    // test hooks
+    _state: () => S, _sketch: ASk,
+  };
 })();

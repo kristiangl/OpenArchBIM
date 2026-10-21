@@ -176,6 +176,8 @@ const Snap = (() => {
    */
   function resolve(w, o) {
     const { zoom, last, extra, points, cycle = 0, shift, gridStep } = o;
+    // `lengths` replaces the dimension snap increments (an annotation family works in paper millimetres)
+    const lengths = o.lengths || s.lengths;
     const tol = 12 / zoom;
     let cands = candidates(w, tol, last, extra, points);
     // favour horizontal and vertical: within hvDeg of 0, 90, 180 or 270 the point is held on that axis.
@@ -184,7 +186,7 @@ const Snap = (() => {
     if (hv && !(cands.length && RANK[cands[0].kind] < RANK.nearest)) cands = [];
     if (hv && !cands.length) {
       let len = Math.abs(hv.horizontal ? w.x - last.x : w.y - last.y);
-      if (s.lengthOn) { const inc = increment(s.lengths, zoom); len = Math.max(inc, Math.round(len / inc) * inc); }
+      if (s.lengthOn) { const inc = increment(lengths, zoom); len = Math.max(inc, Math.round(len / inc) * inc); }
       const sign = hv.horizontal ? Math.sign(w.x - last.x) || 1 : Math.sign(w.y - last.y) || 1;
       const p = hv.horizontal ? { x: last.x + sign * len, y: last.y } : { x: last.x, y: last.y + sign * len };
       return { ...p, kind: "hv", label: hv.horizontal ? "Horizontal" : "Vertical", cands: [], index: 0, horizontal: hv.horizontal };
@@ -207,11 +209,11 @@ const Snap = (() => {
         const r = (inc * Math.PI) / 180;
         ang = Math.round(ang / r) * r;
       }
-      if (s.lengthOn) { const inc = increment(s.lengths, zoom); len = Math.max(inc, Math.round(len / inc) * inc); }
+      if (s.lengthOn) { const inc = increment(lengths, zoom); len = Math.max(inc, Math.round(len / inc) * inc); }
       p = { x: last.x + Math.cos(ang) * len, y: last.y + Math.sin(ang) * len };
       return { ...p, kind: "length", label: null, cands: [], index: 0 };
     }
-    const inc = s.lengthOn ? increment(s.lengths, zoom) : 1;
+    const inc = s.lengthOn ? increment(lengths, zoom) : 1;
     return { x: Math.round(p.x / inc) * inc, y: Math.round(p.y / inc) * inc, kind: "free", label: null, cands: [], index: 0 };
   }
 

@@ -1,6 +1,7 @@
-// Annotation families on a canvas: the shapes and labels of a level head or a marker, drawn at paper size.
+// Annotation families on a canvas: the lines, regions and labels of a level head or a mark, drawn at paper size.
 // A family is drawn in paper millimetres round the crossing of its reference lines (x to the right, y up),
 // `k` is the number of pixels in a paper millimetre (view scale times zoom), so a symbol keeps its printed size.
+// The core sends the drawing as paths (annotation.rs SymbolPaths): fills, then strokes over them.
 const Ann = (() => {
   // paper -> pixels. o: { x, y, k, flip, rot }  (flip mirrors about the vertical reference line; rot turns ccw, degrees)
   function mapper(o) {
@@ -10,34 +11,69 @@ const Ann = (() => {
       return { x: o.x + (X * c - py * s) * o.k, y: o.y - (X * s + py * c) * o.k };
     };
   }
-  const penPx = (fam, o) => Math.max(1, (fam.pen_mm || 0.25) * o.k);
+  const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
 
-  function shapes(ctx, list, o, color, bg, pen) {
-    const m = mapper(o);
+  // A fill pattern over a region: solid, or its pattern lines (paper mm, anchored to the family's origin and turned
+  // with it) clipped to the region.
+  function pattern(ctx, f, name, colour, trace, m, o, pats) {
+    const def = (pats || {})[name];
+    if (!def || def.solid) { trace(); ctx.fillStyle = colour; ctx.fill("evenodd"); return; }
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const r of f.rings) for (const [x, y] of r) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+    const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
     ctx.save();
-    ctx.strokeStyle = color; ctx.fillStyle = color; ctx.lineWidth = pen; ctx.lineJoin = "round"; ctx.lineCap = "round"; ctx.setLineDash([]);
-    for (const sh of list || []) {
-      ctx.beginPath();
-      if (sh.type === "line") {
-        const a = m(sh.a), b = m(sh.b);
-        ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
-      } else if (sh.type === "circle") {
-        const c = m(sh.c);
-        ctx.arc(c.x, c.y, sh.r * o.k, 0, Math.PI * 2);
-        if (sh.filled) ctx.fill(); else { if (bg) { ctx.save(); ctx.fillStyle = bg; ctx.fill(); ctx.restore(); } ctx.stroke(); }
-      } else if (sh.type === "arc") {
-        const n = Math.max(8, Math.ceil(Math.abs(sh.end_deg - sh.start_deg) / 6));
-        for (let i = 0; i <= n; i++) {
-          const t = ((sh.start_deg + ((sh.end_deg - sh.start_deg) * i) / n) * Math.PI) / 180;
-          const p = m([sh.c[0] + sh.r * Math.cos(t), sh.c[1] + sh.r * Math.sin(t)]);
-          i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y);
-        }
-        ctx.stroke();
-      } else if (sh.type === "polygon") {
-        sh.pts.forEach((p, i) => { const q = m(p); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
-        ctx.closePath();
-        if (sh.filled) ctx.fill(); else { if (bg) { ctx.save(); ctx.fillStyle = bg; ctx.fill(); ctx.restore(); } ctx.stroke(); }
+    trace(); ctx.clip("evenodd");
+    ctx.strokeStyle = colour; ctx.fillStyle = colour; ctx.lineWidth = Math.max(0.6, f.pen_mm * o.k); ctx.lineCap = "butt";
+    let budget = 2000;
+    for (const L of def.lines) {
+      const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, sp = L.spacing;
+      if (sp * o.k < 2) { ctx.globalAlpha *= 0.35; trace(); ctx.fill("evenodd"); break; } // too dense to resolve
+      const v0 = L.origin[0] * nx + L.origin[1] * ny, u0 = L.origin[0] * dx + L.origin[1] * dy;
+      const vs = corners.map(([x, y]) => x * nx + y * ny), us = corners.map(([x, y]) => x * dx + y * dy);
+      const k0 = Math.ceil((Math.min(...vs) - v0) / sp), k1 = Math.floor((Math.max(...vs) - v0) / sp), umin = Math.min(...us), umax = Math.max(...us);
+      budget -= k1 - k0 + 1;
+      if (budget < 0) break;
+      const dash = (L.dashes || []).map((d) => Math.max(d * o.k, 0.6)), period = dash.reduce((t, d) => t + d, 0);
+      ctx.setLineDash(dash);
+      for (let n = k0; n <= k1; n++) {
+        const v = v0 + n * sp, p0 = m([umin * dx + v * nx, umin * dy + v * ny]), p1 = m([umax * dx + v * nx, umax * dy + v * ny]);
+        if (period) ctx.lineDashOffset = ((((umin - (u0 + n * (L.shift || 0))) * o.k) % period) + period) % period;
+        ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
       }
+    }
+    ctx.restore();
+  }
+
+  // A symbol's paths. `col` draws everything in one colour (a selected or highlighted symbol), otherwise each path
+  // keeps its own. `bg` is the view's background, which masking paints. opt: { pats (fill pattern definitions),
+  // widen (line width factor), hidden (show what a project leaves out, greyed), only (a test on each path) }.
+  function paths(ctx, p, o, col, bg, opt = {}) {
+    if (!p) return;
+    const m = mapper(o), widen = opt.widen || 1, grey = "#9aa0a8";
+    const keep = (x) => (!x.hidden || opt.hidden) && (!opt.only || opt.only(x));
+    ctx.save();
+    ctx.lineJoin = "round"; ctx.lineCap = "round";
+    for (const f of p.fills || []) {
+      if (!keep(f)) continue;
+      const trace = () => {
+        ctx.beginPath();
+        for (const r of f.rings) { r.forEach((q, i) => { const s = m(q); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
+      };
+      ctx.globalAlpha = f.hidden ? 0.35 : 1;
+      if (f.masking && bg) { trace(); ctx.fillStyle = bg; ctx.fill("evenodd"); }
+      if (f.background) pattern(ctx, f, f.background, col || rgb(f.background_color), trace, m, o, opt.pats);
+      if (f.foreground) pattern(ctx, f, f.foreground, col || rgb(f.foreground_color), trace, m, o, opt.pats);
+    }
+    ctx.globalAlpha = 1;
+    for (const s of p.strokes || []) {
+      if (!keep(s) || s.pts.length < 2) continue;
+      ctx.beginPath();
+      s.pts.forEach((q, i) => { const a = m(q); i ? ctx.lineTo(a.x, a.y) : ctx.moveTo(a.x, a.y); });
+      if (s.closed) ctx.closePath();
+      ctx.strokeStyle = col || (s.hidden ? grey : rgb(s.color));
+      ctx.lineWidth = Math.max(1, s.width_mm * o.k) * widen;
+      ctx.setLineDash(s.hidden ? [4, 3] : (s.dash || []).map((d) => Math.max(d * o.k, 0.8)));
+      ctx.stroke();
     }
     ctx.restore();
   }
@@ -63,20 +99,20 @@ const Ann = (() => {
     ctx.restore();
   }
 
-  // a head or marker: shapes then labels
-  function draw(ctx, fam, o, color, bg) {
-    shapes(ctx, fam.shapes, o, color, bg, penPx(fam, o));
-    labels(ctx, fam.labels, o, color);
+  // a level head: its paths then its labels (in the head's colour, `color` when it is selected)
+  function draw(ctx, head, o, color, bg, opt = {}) {
+    paths(ctx, head.paths, o, opt.own ? null : color, bg, opt);
+    labels(ctx, head.labels, o, color);
   }
 
-  // paper-mm bounds of a family's drawing, labels measured roughly (0.6 em a character)
+  // paper-mm bounds of a drawing: { paths (or body and pointer), labels }, labels measured roughly (0.6 em a character)
   function extent(fam) {
     let x0 = Infinity, x1 = -Infinity, y0 = Infinity, y1 = -Infinity;
     const add = (x, y) => { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); };
-    for (const sh of fam.shapes || []) {
-      if (sh.type === "line") { add(...sh.a); add(...sh.b); }
-      else if (sh.type === "circle" || sh.type === "arc") { add(sh.c[0] - sh.r, sh.c[1] - sh.r); add(sh.c[0] + sh.r, sh.c[1] + sh.r); }
-      else if (sh.type === "polygon") sh.pts.forEach((p) => add(...p));
+    for (const p of [fam.paths, fam.body, fam.pointer]) {
+      if (!p) continue;
+      for (const f of p.fills || []) for (const r of f.rings) for (const q of r) add(...q);
+      for (const s of p.strokes || []) for (const q of s.pts) add(...q);
     }
     for (const lb of fam.labels || []) {
       const lines = lb.lines || [];
@@ -90,5 +126,5 @@ const Ann = (() => {
     return { minX: x0, maxX: x1, minY: y0, maxY: y1 };
   }
 
-  return { shapes, labels, draw, extent, mapper, penPx };
+  return { paths, labels, draw, extent, mapper, rgb };
 })();

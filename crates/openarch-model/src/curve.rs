@@ -280,6 +280,18 @@ impl Curve {
         }
     }
 
+    /// The curve made `k` times larger about the origin.
+    pub fn scaled(&self, k: f64) -> Curve {
+        let m = |p: &Point| Point::new(p.x * k, p.y * k);
+        match self {
+            Curve::Line { a, b } => Curve::Line { a: m(a), b: m(b) },
+            Curve::Arc { start, end, centre, ccw } => Curve::Arc { start: m(start), end: m(end), centre: m(centre), ccw: *ccw },
+            Curve::Circle { centre, radius } => Curve::Circle { centre: m(centre), radius: radius * k },
+            Curve::Ellipse { centre, rx, ry, rotation_deg, t0_deg, t1_deg, ccw } => Curve::Ellipse { centre: m(centre), rx: rx * k, ry: ry * k, rotation_deg: *rotation_deg, t0_deg: *t0_deg, t1_deg: *t1_deg, ccw: *ccw },
+            Curve::Spline { points, closed } => Curve::Spline { points: points.iter().map(m).collect(), closed: *closed },
+        }
+    }
+
     pub fn transform(&self, x: Xform) -> Curve {
         let mirror = matches!(x, Xform::Mirror { .. });
         let axis = if let Xform::Mirror { ax, ay, bx, by } = x { (by - ay).atan2(bx - ax).to_degrees() } else { 0.0 };
@@ -327,6 +339,11 @@ fn near(a: Point, b: Point) -> bool {
 /// Group loose curves into closed loops, each ordered head to tail. Checks that nothing is
 /// left open, that no more than two curves meet at a point, and that no lines cross or overlap.
 pub fn sketch_loops(curves: &[Curve]) -> Result<Vec<Vec<Curve>>, SketchError> {
+    Ok(sketch_loop_order(curves)?.iter().map(|l| l.iter().map(|&(i, rev)| if rev { curves[i].reversed() } else { curves[i].clone() }).collect()).collect())
+}
+
+/// As `sketch_loops`, giving each loop as the index of each curve in `curves` and whether it runs reversed.
+pub fn sketch_loop_order(curves: &[Curve]) -> Result<Vec<Vec<(usize, bool)>>, SketchError> {
     if curves.is_empty() {
         return Err(SketchError::new("the sketch is empty: draw a closed boundary", None));
     }
@@ -336,21 +353,20 @@ pub fn sketch_loops(curves: &[Curve]) -> Result<Vec<Vec<Curve>>, SketchError> {
         }
     }
     let mut used = vec![false; curves.len()];
-    let mut loops: Vec<Vec<Curve>> = vec![];
+    let mut order: Vec<Vec<(usize, bool)>> = vec![];
     for i in 0..curves.len() {
         if used[i] {
             continue;
         }
+        used[i] = true;
         if curves[i].is_closed() {
-            used[i] = true;
-            loops.push(vec![curves[i].clone()]);
+            order.push(vec![(i, false)]);
             continue;
         }
-        used[i] = true;
-        let mut chain = vec![curves[i].clone()];
+        let mut chain = vec![(i, false)];
         let origin = curves[i].start();
+        let mut tip = curves[i].end();
         loop {
-            let tip = chain.last().unwrap().end();
             if chain.len() > 1 && near(tip, origin) {
                 break;
             }
@@ -368,7 +384,7 @@ pub fn sketch_loops(curves: &[Curve]) -> Result<Vec<Vec<Curve>>, SketchError> {
                 })
                 .collect();
             // a point where three or more lines meet cannot be part of one loop
-            let at_tip = curves.iter().enumerate().filter(|(_, c)| !c.is_closed() && (near(c.start(), tip) || near(c.end(), tip))).count();
+            let at_tip = curves.iter().filter(|c| !c.is_closed() && (near(c.start(), tip) || near(c.end(), tip))).count();
             if at_tip > 2 {
                 return Err(SketchError::new("more than two lines meet at one point", Some(tip)));
             }
@@ -376,12 +392,14 @@ pub fn sketch_loops(curves: &[Curve]) -> Result<Vec<Vec<Curve>>, SketchError> {
                 return Err(SketchError::new("the lines do not form a closed loop: there is a gap or a loose end", Some(tip)));
             };
             used[j] = true;
-            chain.push(if rev { curves[j].reversed() } else { curves[j].clone() });
+            chain.push((j, rev));
+            tip = if rev { curves[j].start() } else { curves[j].end() };
         }
-        loops.push(chain);
+        order.push(chain);
     }
+    let loops: Vec<Vec<Curve>> = order.iter().map(|l| l.iter().map(|&(i, rev)| if rev { curves[i].reversed() } else { curves[i].clone() }).collect()).collect();
     check_no_crossings(&loops)?;
-    Ok(loops)
+    Ok(order)
 }
 
 /// The polygon a loop outlines (counter-clockwise or clockwise as drawn).

@@ -1210,12 +1210,16 @@ mod tests {
         let mut d = Document::new_project();
         let (id, f) = d.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::SectionMarker).map(|(i, f)| (i, f.clone())).unwrap();
         let mut old = f.clone();
-        old.pointer = vec![AnnShape::Polygon { pts: vec![[4.0, 0.0], [7.0, 2.0], [7.0, -2.0]], filled: true }];
+        // as saved then: shapes rather than lines and regions
+        old.lines.clear();
+        old.regions.clear();
+        old.old_shapes = vec![AnnShape::Circle { c: [0.0, 0.0], r: 4.0, filled: false }, AnnShape::Line { a: [-4.0, 0.0], b: [4.0, 0.0] }];
+        old.old_pointer = vec![AnnShape::Polygon { pts: vec![[4.0, 0.0], [7.0, 2.0], [7.0, -2.0]], filled: true }];
         old.labels.remove(0);
         d.transact("old", |tx| tx.update(id, Element::AnnotationFamily(old))).unwrap();
         d.ensure_annotation_defaults();
         let n = d.annotation_family(id).unwrap();
-        assert_eq!(n.pointer, f.pointer);
+        assert_eq!((&n.lines, &n.regions), (&f.lines, &f.regions));
         assert!(n.labels.iter().any(|l| l.lines.iter().any(|x| x.param == "View Name")));
     }
 

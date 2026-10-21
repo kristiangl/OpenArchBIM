@@ -324,7 +324,7 @@ const Elev = (() => {
     for (const end of [0, 1]) {
       if (!l.bubbles[end]) continue;
       const p = end === 0 ? a : b;
-      if (l.head) Ann.draw(ctx, l.head, { x: p.x, y: p.y, k: k(), flip: end === 0 }, col, css("--view-bg"));
+      if (l.head) Ann.draw(ctx, l.head, { x: p.x, y: p.y, k: k(), flip: end === 0 }, col, css("--view-bg"), { own: !mode, pats: data.fill_patterns });
     }
     // the name beside the line when no head carries it
     if (!l.bubbles[0] && !l.bubbles[1]) label(l.name, a.x + 6, a.y - 9, col);

@@ -762,6 +762,10 @@ pub const ANNOTATION_CATEGORIES: &[&str] = &[
     "Reference Planes", "Revision Clouds", "Detail Items", "Generic Annotations", "Keynote Tags", "Door Tags", "Window Tags", "Wall Tags",
 ];
 
+/// The categories of annotation families (level heads, elevation and section marks): Object Styles rows whose
+/// subcategories are the line styles those families draw with.
+pub const SYMBOL_CATEGORIES: &[&str] = &["Level Heads", "Elevation Marks", "Section Marks"];
+
 #[cfg(test)]
 mod tests {
     use super::*;

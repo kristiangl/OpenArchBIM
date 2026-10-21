@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 use crate::doc::{apply_patch, Document, Tx};
 use crate::element::*;
 use crate::family::{ParamKind, ParamValue};
-use crate::view::{Color, ANNOTATION_CATEGORIES, MODEL_CATEGORIES};
+use crate::view::{Color, ANNOTATION_CATEGORIES, MODEL_CATEGORIES, SYMBOL_CATEGORIES};
 
 pub const SOLID: &str = "Solid";
 pub const SOLID_FILL: &str = "Solid fill";
@@ -426,7 +426,7 @@ impl ObjectStyles {
             g.material = Some("Glass".into());
         }
         let mut annotation = BTreeMap::new();
-        for &name in ANNOTATION_CATEGORIES {
+        for &name in ANNOTATION_CATEGORIES.iter().chain(SYMBOL_CATEGORIES) {
             annotation.insert(name.to_string(), ObjectStyle::new(1, None));
         }
         // line styles: the Lines category and its styles

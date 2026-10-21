@@ -87,9 +87,9 @@ const Sections = (() => {
   function mark(ctx, fam, labels, at, outward, look, o) {
     // the head (circle, divider line, labels) stays upright; the arrow turns with the side the section looks at
     const c = { x: at.x + outward.x * HEAD_MM * o.k, y: at.y + outward.y * HEAD_MM * o.k };
-    const pen = Ann.penPx(fam, { k: o.k });
-    if (o.head) Ann.shapes(ctx, fam.shapes, { x: c.x, y: c.y, k: o.k, rot: 0 }, o.col, o.bg, pen);
-    Ann.shapes(ctx, fam.pointer, { x: c.x, y: c.y, k: o.k, rot: lookAngle(look) }, o.col, o.bg, pen);
+    const opt = { pats: H.pats && H.pats() };
+    if (o.head) Ann.paths(ctx, fam.body, { x: c.x, y: c.y, k: o.k, rot: 0 }, o.hot, o.bg, opt);
+    Ann.paths(ctx, fam.pointer, { x: c.x, y: c.y, k: o.k, rot: lookAngle(look) }, o.hot, o.bg, opt);
     if (o.head) Ann.labels(ctx, labels, { x: c.x, y: c.y, k: o.k }, o.col);
   }
 
@@ -121,7 +121,7 @@ const Sections = (() => {
     }
     const n = S.length;
     if (s.family) {
-      const o = { k, col, bg }, out0 = unit(S[1], S[0]), out1 = unit(S[n - 2], S[n - 1]);
+      const o = { k, col, hot: selected || hovered ? accent : null, bg }, out0 = unit(S[1], S[0]), out1 = unit(S[n - 2], S[n - 1]);
       mark(ctx, s.family, s.labels, S[0], out0, s.look, { ...o, head: true });
       mark(ctx, s.family, [], S[n - 1], out1, s.look, { ...o, head: false });
     }
@@ -220,7 +220,7 @@ const Sections = (() => {
     ctx.setLineDash([]);
     if (l > 8 && H.family()) {
       const wl = Math.hypot(b.x - a.x, b.y - a.y), look = [-(b.y - a.y) / wl, (b.x - a.x) / wl], u = unit(A, B);
-      const o = { k: H.paperPx(), col: accent, bg };
+      const o = { k: H.paperPx(), col: accent, hot: accent, bg };
       mark(ctx, H.family(), [], A, { x: -u.x, y: -u.y }, look, { ...o, head: true });
       mark(ctx, H.family(), [], B, u, look, { ...o, head: false });
     }

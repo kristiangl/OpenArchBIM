@@ -9,7 +9,11 @@
 // `curve` is the stored shape (type line | arc | circle | ellipse | spline).
 
 // makeSketch() gives an independent sketch session with its own host: the project's plan uses
-// `Sketch`, the family editor makes its own for sketches of forms.
+// `Sketch`, the family editor makes its own for sketches of forms, an annotation family one for its lines and regions.
+// A host can work in units other than millimetres: `host.unit` sketch units make one unit shown and typed (an
+// annotation family sketches at 100 units to the paper millimetre, so the core's tolerances suit it).
+// Curves can carry attributes (`attr`): a roof edge's slope, an annotation line's style. begin({ attr }) gives
+// the attributes of a new curve.
 function makeSketch() {
   const cb = { finish: async () => false, cancel() {}, change() {}, prompt() {}, slope() {} };
   let host = null;
@@ -21,6 +25,10 @@ function makeSketch() {
   const P = (p) => [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000];
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
   const near1 = (a, b) => dist(a, b) < 1;
+  // sketch units per unit shown; lengths show in whole millimetres, or to 0.01 of a paper millimetre
+  const U = () => (host && host.unit) || 1;
+  const fmt = (v) => (U() === 1 ? String(Math.round(v)) : String(Math.round((v / U()) * 100) / 100));
+  const typedLen = () => parseFloat(S.typed) * U();
 
   // ---- tool tables ---------------------------------------------------------------
   // n: picks a drawing tool needs (0 = open ended). core: the sketch_make tool name.
@@ -72,14 +80,17 @@ function makeSketch() {
   // ---- session ---------------------------------------------------------------------
   // roof edges carry what the roof does along them; a new edge starts with the options bar settings
   const isRoof = () => !!S && S.kind === "roof";
-  const newAttr = (extra) => ({ defines_slope: !!S.opts.definesSlope, slope_deg: S.opts.slopeDeg, overhang_mm: 0, ...(extra || {}) });
-  const wrap = (d, extra) => ({ uid: ++uidSeq, ...d, ...(S && S.kind === "roof" ? { attr: d.attr ? { ...d.attr } : newAttr(extra) } : {}) });
+  const roofAttr = (extra) => ({ defines_slope: !!S.opts.definesSlope, slope_deg: S.opts.slopeDeg, overhang_mm: 0, ...(extra || {}) });
+  const wrap = (d, extra) => ({ uid: ++uidSeq, ...d, ...(S && S.attrFn ? { attr: d.attr ? { ...d.attr } : S.attrFn(extra) } : {}) });
   function begin(o) {
     S = {
       kind: o.kind || "floor", id: o.id ?? null, levelId: o.levelId, typeId: o.typeId, title: o.title || "Create Floor Boundary",
       curves: [], slope: o.slope || null, span: o.span || null,
       hist: [], redo: [], tool: "select", pts: [], preview: [], sel: new Set(), mod: {}, typed: "", err: null, hover: null,
       hoverCurve: null, chainWalls: false, wallIds: null, cancelArmed: false, opts: { ...OPTS, ...(o.opts || {}) },
+      attrFn: o.attr || (o.kind === "roof" ? roofAttr : null),
+      // fade: the rest of the view fades while sketching; ink: the colour of the curves (or a function of the curve)
+      fade: o.fade !== false, ink: o.ink || MAGENTA,
     };
     S.curves = (o.curves || []).map((d) => wrap(d));
     setTool(o.tool || "line");
@@ -126,7 +137,7 @@ function makeSketch() {
       for (const r of removed) { const dd = polyDist({ x: q[0], y: q[1] }, r.poly); if (dd < bd) { bd = dd; best = r; } }
       return best && best.attr;
     };
-    const fresh = descs.map((d) => wrap({ ...d, ...(isRoof() && nearestAttr(d) ? { attr: nearestAttr(d) } : {}) }));
+    const fresh = descs.map((d) => wrap({ ...d, ...(S.attrFn && nearestAttr(d) ? { attr: nearestAttr(d) } : {}) }));
     S.curves.push(...fresh);
     S.sel = new Set([...S.sel].filter((u) => !gone.has(u)));
     cb.change();
@@ -256,7 +267,7 @@ function makeSketch() {
     if (withHover && S.hover) {
       let h = { x: S.hover.x, y: S.hover.y };
       // a typed length or radius sets the distance of the second pick along the cursor direction
-      const typed = parseFloat(S.typed);
+      const typed = typedLen();
       if (t.n === 2 && pts.length === 1 && !isNaN(typed) && typed > 0) h = alongTo(pts[0], h, typed);
       pts.push(h);
     }
@@ -270,7 +281,7 @@ function makeSketch() {
   }
   function makeOptions() {
     const o = S.opts;
-    return { radius: S.tool === "arc_3pt" ? o.radius : o.cornerRadius, sides: o.sides, ccw: o.ccw, closed: false };
+    return { radius: (S.tool === "arc_3pt" ? o.radius : o.cornerRadius) * U(), sides: o.sides, ccw: o.ccw, closed: false };
   }
   function coreTool() {
     if (S.tool === "arc_3pt" && S.opts.radiusOn) return "arc_ser";
@@ -295,7 +306,7 @@ function makeSketch() {
         if (w) {
           const ids = S.chainWalls ? host.wallChain(w.id) : [w.id];
           S.wallIds = ids;
-          const r = await call("pick_walls", { ids, pick: P(S.cursor || S.hover), offset: S.opts.wallOffset, to_core: S.opts.toCore, face: S.opts.wallFace });
+          const r = await call("pick_walls", { ids, pick: P(S.cursor || S.hover), offset: S.opts.wallOffset * U(), to_core: S.opts.toCore, face: S.opts.wallFace });
           curves = r.curves;
         } else S.wallIds = null;
       } else if (S.tool === "offset" && S.hoverCurve) {
@@ -312,7 +323,7 @@ function makeSketch() {
     if (my === seq) { S.preview = curves; host.render(); }
   }
   function moveDelta() {
-    const typed = parseFloat(S.typed);
+    const typed = typedLen();
     let v = { x: S.hover.x - S.mod.a.x, y: S.hover.y - S.mod.a.y };
     if (!isNaN(typed)) { const l = Math.hypot(v.x, v.y); v = l > 1e-9 ? { x: (v.x / l) * typed, y: (v.y / l) * typed } : { x: typed, y: 0 }; }
     return v;
@@ -355,7 +366,7 @@ function makeSketch() {
 
   async function offsetCurves(entry, towards) {
     if (!entry) return [];
-    const dist0 = S.opts.offsetDist;
+    const dist0 = S.opts.offsetDist * U();
     if (!(dist0 > 0)) return [];
     const chain = S.opts.offsetChain ? chainOf(entry) : null;
     if (chain && chain.length > 1) {
@@ -690,7 +701,7 @@ function makeSketch() {
         ctx.fillStyle = "#ffffff"; ctx.fillRect(ax - aw / 2, ay - 8, aw, 16);
         ctx.fillStyle = TD_BLUE; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(at, ax, ay + 0.5);
       }
-      const text = d.text || `${d.prefix || ""}${Math.round(d.value)}`;
+      const text = d.text || `${d.prefix || ""}${fmt(d.value)}`;
       const tw = ctx.measureText(text).width + 12, cx = (A2.x + B2.x) / 2, cy = (A2.y + B2.y) / 2;
       ctx.fillStyle = "#ffffff"; ctx.strokeStyle = TD_BLUE;
       ctx.fillRect(cx - tw / 2, cy - 9, tw, 18); ctx.strokeRect(cx - tw / 2 + 0.5, cy - 8.5, tw, 18);
@@ -712,7 +723,7 @@ function makeSketch() {
     const inp = document.createElement("input");
     const r = cv.getBoundingClientRect();
     inp.type = "text"; inp.id = "sk-tdim-input"; inp.setAttribute("aria-label", "Dimension value");
-    inp.value = String(Math.round(box.d.value));
+    inp.value = fmt(box.d.value);
     inp.style.cssText = `position:fixed;left:${r.left + box.x - 38}px;top:${r.top + box.y - 12}px;width:76px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid ${TD_BLUE};border-radius:3px;background:#fff;color:#111;`;
     document.body.appendChild(inp);
     tdInput = inp;
@@ -721,9 +732,9 @@ function makeSketch() {
       e.stopPropagation();
       if (e.key === "Escape") { closeTdInput(); host.render(); }
       if (e.key === "Enter") {
-        const v = parseLengthMM(inp.value);
+        const v = U() === 1 ? parseLengthMM(inp.value) : parseFloat(inp.value) * U();
         closeTdInput();
-        if (!(v > 0)) { cb.prompt("Type a length, such as 2400 or 2.4m.", true); host.render(); return; }
+        if (!(v > 0)) { cb.prompt(U() === 1 ? "Type a length, such as 2400 or 2.4m." : "Type a length in millimetres, such as 2.5.", true); host.render(); return; }
         applyTdEdit(d, v);
       }
     };
@@ -752,7 +763,7 @@ function makeSketch() {
         const made = await rebuildLines(map);
         snapshot();
         S.curves = S.curves.map((x) => (made.has(x.uid) ? { ...made.get(x.uid), uid: x.uid, attr: x.attr } : x));
-        cb.change(); cb.prompt(`Length set to ${Math.round(v * 10) / 10}.`);
+        cb.change(); cb.prompt(`Length set to ${fmt(v)}.`);
       } else if (d.edit === "offset") {
         const delta = v - d.value;
         if (Math.abs(delta) < 1e-6) return;
@@ -859,7 +870,7 @@ function makeSketch() {
     // a typed length replaces the distance of the second pick
     let use = S.pts.slice();
     const t = TOOLS[S.tool];
-    const typed = parseFloat(S.typed);
+    const typed = typedLen();
     if (t.n === 2 && !isNaN(typed) && typed > 0 && S.hover) use[1] = alongTo(use[0], use[1], typed);
     if (S.tool === "arc_tangent") {
       const dir = tangentFrom(use[0]);
@@ -993,7 +1004,7 @@ function makeSketch() {
           if (!c) return need();
           if (st === "a") { S.mod.first = { c, pick: p }; S.mod.stage = "b"; break; }
           if (c.uid === S.mod.first.c.uid) { cb.prompt("Pick a different line.", true); return; }
-          const r = await call("sketch_edit", { op: "fillet", a: S.mod.first.c.curve, b: c.curve, pick_a: P(S.mod.first.pick), pick_b: P(p), radius: S.opts.filletRadius });
+          const r = await call("sketch_edit", { op: "fillet", a: S.mod.first.c.curve, b: c.curve, pick_a: P(S.mod.first.pick), pick_b: P(p), radius: S.opts.filletRadius * U() });
           swap([S.mod.first.c.uid, c.uid], r.curves);
           S.mod = { stage: "a" };
           break;
@@ -1158,7 +1169,7 @@ function makeSketch() {
     const r = await check();
     if (!r || !r.ok) return false;
     const out = { kind: S.kind, id: S.id, levelId: S.levelId, typeId: S.typeId, curves: S.curves.map((c) => c.curve), slope: S.slope, span: S.span };
-    if (isRoof()) out.edges = S.curves.map((c) => ({ curve: c.curve, ...c.attr }));
+    if (S.attrFn) out.edges = S.curves.map((c) => ({ curve: c.curve, ...c.attr }));
     return cb.finish(out);
   }
   function cancel() {
@@ -1168,18 +1179,20 @@ function makeSketch() {
     return true;
   }
 
-  // Roof edges: change Defines Slope and the slope of the selected edges, one undo step
+  // Attributes of the selected curves (a roof edge's Defines Slope and slope, an annotation line's style): change them
+  // in one undo step, or read them (a value the selected curves do not share reads null)
   function patchSelected(patch) {
-    if (!isRoof() || !S.sel.size) return;
+    if (!S || !S.attrFn || !S.sel.size) return;
     snapshot();
     S.curves = S.curves.map((c) => (S.sel.has(c.uid) ? { ...c, attr: { ...c.attr, ...patch } } : c));
     cb.change(); host.render();
   }
   function selectedAttr() {
-    if (!isRoof() || !S.sel.size) return null;
+    if (!S || !S.attrFn || !S.sel.size) return null;
     const list = S.curves.filter((c) => S.sel.has(c.uid)).map((c) => c.attr);
-    const same = (k) => list.every((a) => a[k] === list[0][k]);
-    return { defines_slope: same("defines_slope") ? list[0].defines_slope : null, slope_deg: same("slope_deg") ? list[0].slope_deg : null, count: list.length };
+    const out = { count: list.length };
+    for (const k of Object.keys(list[0])) out[k] = list.every((a) => a[k] === list[0][k]) ? list[0][k] : null;
+    return out;
   }
 
   function setSlope(spec) { if (!S || !S.slope) return; snapshot(); S.slope = { ...S.slope, spec }; cb.change(); host.render(); }
@@ -1236,9 +1249,11 @@ function makeSketch() {
     const accent = host.css("--accent");
     const { w, h } = host.size();
     // the rest of the model fades while sketching
-    ctx.save();
-    ctx.globalAlpha = 0.55; ctx.fillStyle = host.css("--view-bg"); ctx.fillRect(0, 0, w, h);
-    ctx.restore();
+    if (S.fade) {
+      ctx.save();
+      ctx.globalAlpha = 0.55; ctx.fillStyle = host.css("--view-bg"); ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+    }
     ctx.save();
     ctx.lineJoin = "round"; ctx.lineCap = "round";
     // a roof edge that does not define a slope is a gable end: drawn dashed, without a slope symbol
@@ -1249,7 +1264,8 @@ function makeSketch() {
     })();
     for (const c of S.curves) {
       const sel = S.sel.has(c.uid), hot = S.hoverCurve === c.uid || (S.hoverChain && S.hoverChain.has(c.uid)) || (S.alignHover && S.alignHover.uid === c.uid);
-      ctx.strokeStyle = sel ? accent : hot ? ORANGE : MAGENTA;
+      const ink = typeof S.ink === "function" ? S.ink(c) : S.ink;
+      ctx.strokeStyle = sel ? accent : hot ? ORANGE : ink;
       ctx.lineWidth = sel ? 3.5 : hot ? 3 : 2;
       const gable = isRoof() && c.attr && !c.attr.defines_slope;
       if (gable) ctx.setLineDash([8, 5]);
@@ -1257,7 +1273,7 @@ function makeSketch() {
       if (gable) ctx.setLineDash([]);
       if (isRoof() && c.attr && c.attr.defines_slope) slopeSymbol(ctx, c, centre, sel ? accent : MAGENTA);
       if (!c.closed) {
-        ctx.fillStyle = sel ? accent : MAGENTA;
+        ctx.fillStyle = sel ? accent : ink;
         for (const q of [c.poly[0], c.poly[c.poly.length - 1]]) { const s = host.toScreen({ x: q[0], y: q[1] }); ctx.fillRect(s.x - 2.5, s.y - 2.5, 5, 5); }
       }
     }
@@ -1274,7 +1290,7 @@ function makeSketch() {
       }
       if (S.grip && S.grip.moved && S.grip.g.members.length === 1) {
         const m = S.grip.g.members[0], c = byUid(m.uid);
-        if (c) { const o = m.end === "a" ? c.curve.b : c.curve.a, cur = S.grip.cur; host.label(`${Math.round(dist(o, cur))}`, host.toScreen({ x: (o.x + cur.x) / 2, y: (o.y + cur.y) / 2 }), accent); }
+        if (c) { const o = m.end === "a" ? c.curve.b : c.curve.a, cur = S.grip.cur; host.label(fmt(dist(o, cur)), host.toScreen({ x: (o.x + cur.x) / 2, y: (o.y + cur.y) / 2 }), accent); }
       }
     }
     // pick previews
@@ -1310,7 +1326,7 @@ function makeSketch() {
         stroke(ctx, [[from.x, from.y], [S.hover.x, S.hover.y]], false);
         ctx.setLineDash([]);
         if (S.tool === "rotate") host.label(`${rotateAngle().toFixed(1)}°`, host.toScreen(S.hover), accent);
-        if (S.tool === "move" || S.tool === "copy") { const d = moveDelta(); host.label(`${Math.round(Math.hypot(d.x, d.y))}`, host.toScreen(S.hover), accent); }
+        if (S.tool === "move" || S.tool === "copy") { const d = moveDelta(); host.label(fmt(Math.hypot(d.x, d.y)), host.toScreen(S.hover), accent); }
       }
     }
     // slope arrow and span direction

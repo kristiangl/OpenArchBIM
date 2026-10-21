@@ -202,18 +202,20 @@ function renderTabs() {
     tabs.appendChild(b);
   });
   selectTab(app.ribbonTab[app.doc]);
-  if (app.doc === "family") renderFamContext();
+  if (app.doc !== "project") renderFamContext();
 }
 
-// The family editor's contextual tab ("Modify | Extrusion" and so on): FamModel.context() says what the selection offers.
-// It appears while something is selected, comes to the front when the person selects it, and goes when they let go.
+// A family document's contextual tab ("Modify | Extrusion", "Modify | Place Lines" and so on): the model or annotation
+// family's context() says what the selection or the sketch offers. It appears while something is selected, comes to
+// the front when the person selects it, and goes when they let go.
 function renderFamContext(activate) {
-  if (app.doc !== "family") return;
+  const M = app.doc === "family" ? FamModel : app.doc === "annotation" ? AnnModel : null;
+  if (!M) return;
   const tabs = $("#tabs");
   let ctx = tabs.querySelector("button.contextual.fam");
-  const c = FamModel.context();
+  const c = M.context();
   if (!c) {
-    if (ctx) { const was = ctx.classList.contains("active"); ctx.remove(); if (was || app.famCtxOn) selectTab(app.ribbonTab.family); app.famCtxOn = false; }
+    if (ctx) { const was = ctx.classList.contains("active"); ctx.remove(); if (was || app.famCtxOn) selectTab(app.ribbonTab[app.doc]); app.famCtxOn = false; }
     return;
   }
   const fresh = !ctx;
