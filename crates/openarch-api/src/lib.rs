@@ -89,6 +89,25 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
     Ok(())
 }
 
+/// What a 2D view shows of its detail lines, regions and text notes (paper mm, round the view's origin), with the
+/// lists the tools need. Plans, elevations and sections all send it.
+fn detail_json(d: &Document, vid: Id, settings: &openarch_model::view::ViewSettings) -> serde_json::Map<String, Value> {
+    let ann_shown = |cat: &str| settings.overrides.annotation.get(cat).is_none_or(|o| o.visible);
+    let scale = settings.scale as f64;
+    let v = json!({
+        "detail": d.detail_paths(vid, scale, ann_shown("Lines"), ann_shown("Detail Items")),
+        "detail_lines": d.detail_lines(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+        "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, scale) } else { vec![] },
+        "regions": d.detail_regions(vid).iter().map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
+        "line_styles": d.line_styles(),
+        "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name })).collect::<Vec<_>>(),
+    });
+    match v {
+        Value::Object(o) => o,
+        _ => serde_json::Map::new(),
+    }
+}
+
 /// An annotation family as a view draws it: its body and pointer as paths in paper mm.
 fn symbol_json(d: &Document, id: Id, f: &openarch_model::annotation::AnnotationFamily) -> Value {
     let dr = d.symbol_drawing(f, false);
@@ -167,6 +186,16 @@ impl Session {
             "doc_info" => Ok(self.doc_info()),
             "standards" => graphics::standards(&self.doc),
             "patch_object_styles" => graphics::patch_object_styles(&mut self.doc, p),
+            // the Line Styles window (Manage > Additional Settings): how much each style is used, renaming and deleting
+            "line_style_usage" => Ok(json!(self.doc.line_style_usage())),
+            "rename_line_style" => {
+                self.doc.rename_line_style(p.get("from").and_then(|v| v.as_str()).ok_or("missing from")?, p.get("to").and_then(|v| v.as_str()).ok_or("missing to")?)?;
+                Ok(json!({}))
+            }
+            "delete_line_style" => {
+                self.doc.delete_line_style(p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?, p.get("replace_with").and_then(|v| v.as_str()).ok_or("missing replace_with")?)?;
+                Ok(json!({}))
+            }
             "patch_line_weights" => graphics::patch_line_weights(&mut self.doc, p),
             "add_style_item" => graphics::add_style_item(&mut self.doc, p),
             "patch_style_item" => graphics::patch_style_item(&mut self.doc, p),
@@ -1491,8 +1520,12 @@ impl Session {
         let d = &self.doc;
         let data = d.elevation_data(vid)?;
         let mut v = serde_json::to_value(&data).map_err(|e| e.to_string())?;
-        let Some(view) = d.view(vid).filter(|x| x.section.is_some()) else { return Ok(v) };
         let settings = d.effective_settings(vid).ok_or("not a view")?;
+        // detail lines, regions and text notes drawn in the view, in its own frame (along the view, and height)
+        if let Some(o) = v.as_object_mut() {
+            o.extend(detail_json(d, vid, &settings));
+        }
+        let Some(view) = d.view(vid).filter(|x| x.section.is_some()) else { return Ok(v) };
         let mut items: Vec<Value> = vec![];
         for (it, mut j) in data.items.iter().zip(v["items"].as_array().cloned().unwrap_or_default()) {
             if it.cut {
@@ -1526,7 +1559,7 @@ impl Session {
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
             "line_styles": d.line_styles(),
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
-            "text_note_types": d.text_note_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
+            "text_note_types": d.text_note_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "style": d.text_style(Some(t)) })).collect::<Vec<_>>(),
             "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind, "category": f.kind.category(), "in_use": d.annotation_family_in_use(*id) })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
             "model_categories": MODEL_CATEGORIES,
@@ -1980,7 +2013,7 @@ impl Session {
             }),
             _ => Value::Null,
         };
-        Ok(json!({
+        let mut out = json!({
             "view": {
                 "id": vid, "name": view.name, "level_id": view.level, "scale": settings.scale,
                 "detail_level": settings.detail_level, "wall_join_display": settings.wall_join_display,
@@ -1995,13 +2028,11 @@ impl Session {
             "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
-            "detail": d.detail_paths(vid, settings.scale as f64, ann_shown("Lines"), ann_shown("Detail Items")),
-            "detail_lines": d.detail_lines(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
-            "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, settings.scale as f64) } else { vec![] },
-            "regions": d.detail_regions(vid).iter().map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
-            "line_styles": d.line_styles(),
-            "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name })).collect::<Vec<_>>(),
-        }))
+        });
+        if let Some(o) = out.as_object_mut() {
+            o.extend(detail_json(d, vid, &settings));
+        }
+        Ok(out)
     }
 
     /// Display meshes for the 3D view (metres). A view id applies that view's
@@ -3184,6 +3215,37 @@ mod tests {
         call(&mut s, "delete", json!({ "ids": [id, rid, nid] }));
         let plan = call(&mut s, "plan", json!({ "view_id": view }));
         assert!(plan["detail"]["strokes"].as_array().unwrap().is_empty() && plan["detail"]["fills"].as_array().unwrap().is_empty() && plan["text_notes"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn elevations_hold_detail_items_and_line_styles_are_renamed_and_deleted_through_the_api() {
+        let (mut s, _lvl, _wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let ev = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "elevation").unwrap()["id"].as_u64().unwrap();
+        // text note types carry their style, so a note can be laid out before it is made
+        assert!(info["text_note_types"][0]["style"]["size_mm"].as_f64().unwrap() > 0.0);
+        let line = json!({ "type": "line", "a": { "x": -1000.0, "y": 500.0 }, "b": { "x": 1000.0, "y": 500.0 } });
+        let id = call(&mut s, "set_detail_lines", json!({ "view_id": ev, "lines": [{ "curve": line, "style": "Thin Lines" }] }))["ids"][0].as_u64().unwrap();
+        let tt = info["text_note_types"][0]["id"].as_u64().unwrap();
+        call(&mut s, "add_text_note", json!({ "note": { "view": ev, "at": { "x": 0.0, "y": 2000.0 }, "text": "FLASHING", "text_type": tt } }));
+        let e = call(&mut s, "elevation", json!({ "view_id": ev }));
+        assert_eq!(e["detail_lines"][0]["id"], id);
+        assert_eq!(e["detail"]["strokes"][0]["pts"][0], json!([-10.0, 5.0]), "the view's own frame, paper mm at 1:100");
+        assert_eq!(e["text_notes"][0]["text"]["lines"][0][0], "FLASHING");
+        assert!(e["line_styles"].as_array().unwrap().iter().any(|x| x == "Thin Lines"));
+        // a 3D view takes none
+        let three = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+        assert!(s.handle("set_detail_lines", &json!({ "view_id": three, "lines": [] })).is_err());
+        // Line Styles: a new style, used, renamed, then deleted with its lines moved to another
+        call(&mut s, "patch_object_styles", json!({ "patch": { "annotation": { "Lines": { "subcategories": { "Setout": { "projection_weight": 1, "cut_weight": null, "color": [255, 0, 0], "pattern": "Solid", "material": null, "subcategories": {}, "built_in": false } } } } } }));
+        call(&mut s, "patch_detail_line", json!({ "id": id, "patch": { "style": "Setout" } }));
+        assert_eq!(call(&mut s, "line_style_usage", json!({}))["Setout"], 1);
+        call(&mut s, "rename_line_style", json!({ "from": "Setout", "to": "Set Out" }));
+        assert_eq!(call(&mut s, "elevation", json!({ "view_id": ev }))["detail_lines"][0]["style"], "Set Out");
+        assert!(s.handle("rename_line_style", &json!({ "from": "Thin Lines", "to": "Fine" })).is_err());
+        call(&mut s, "delete_line_style", json!({ "name": "Set Out", "replace_with": "Wide Lines" }));
+        assert_eq!(call(&mut s, "elevation", json!({ "view_id": ev }))["detail_lines"][0]["style"], "Wide Lines");
+        assert!(!call(&mut s, "doc_info", json!({}))["line_styles"].as_array().unwrap().iter().any(|x| x == "Set Out"));
     }
 
     #[test]

@@ -58,9 +58,6 @@ const Plan = (() => {
   let gridHover = null; // the wall or grid the Pick Lines option would use: { id, kind }
   const GRID_ARC = new Set(["arc_3pt", "arc_centre"]);
   let mgrips = []; // screen boxes of the pointer check boxes of the selected elevation marker
-  // text notes: the Text tool's picks (the leader's end and elbow, then the text), its leader option, the note whose
-  // text is being typed (not drawn meanwhile), the note a leader is being added to, and a grip being dragged
-  let notePts = [], noteLeader = "none", editingNote = null, leaderFor = null, noteDrag = null, noteGripsUI = [];
   let markerRot = null; // rotation of the marker about to be placed; null turns it to face the model
   let wallSeq = 0;
   // the curves the picks so far make, asked of the model (it draws previews and commits with the same call)
@@ -170,13 +167,24 @@ const Plan = (() => {
     draw.pts.forEach((q, i) => { out.push([q.x, q.y, q.x, q.y]); if (i) out.push([draw.pts[i - 1].x, draw.pts[i - 1].y, q.x, q.y]); });
     return out;
   }
-  function snap(sx, sy) {
+  // the points extension snaps line up with: the sketch's, the walls or grid being drawn, a grip where it started
+  function trackPts() {
+    if (Sketch.active) return Sketch.trackPoints();
+    const out = [];
+    if (draw) out.push(...draw.pts);
+    if (wgrip && wgrip.start) out.push(wgrip.start);
+    if (ggrip && ggrip.g.path) out.push(...ggrip.g.path.map(([x, y]) => ({ x, y })));
+    if (dragging) out.push(dragging.p0);
+    return out;
+  }
+  function snap(sx, sy, o) {
     // the family editor borrows the snap index while it sketches; take it back
-    if (Snap.owner !== "plan") Snap.build(Snap.fromPlan(data));
+    if (Snap.owner !== "plan") Snap.build(Snap.fromPlan(data, heldBySketch));
     const w = toWorld(sx, sy);
+    if (o) return Snap.resolve(w, { zoom: cam.s, last: o.last || null, extra: [], cycle: snapCycle, shift, gridStep: gridStep(), hvDeg: o.hvDeg, track: o.track });
     const last = draw && draw.pts.length ? draw.pts[draw.pts.length - 1] : null;
-    if (Sketch.active) return Snap.resolve(w, { zoom: cam.s, last: Sketch.last(), extra: Sketch.segs(), points: Sketch.points(), cycle: snapCycle, shift, gridStep: gridStep() });
-    return Snap.resolve(w, { zoom: cam.s, last, extra: sketchSegs(), cycle: snapCycle, shift, gridStep: gridStep() });
+    if (Sketch.active) return Snap.resolve(w, { zoom: cam.s, last: Sketch.last(), extra: Sketch.segs(), points: Sketch.points(), cycle: snapCycle, shift, gridStep: gridStep(), track: trackPts() });
+    return Snap.resolve(w, { zoom: cam.s, last, extra: sketchSegs(), cycle: snapCycle, shift, gridStep: gridStep(), track: trackPts() });
   }
 
   // ---- hit testing ----------------------------------------------------------
@@ -238,23 +246,8 @@ const Plan = (() => {
     for (const d of data.dimensions || []) { const h = Dims.hitRings(d); out.push({ id: d.id, kind: "dimension", ring: h.ring, rings: h.rings, pinned: d.pinned, category: "Dimensions", display: "normal" }); }
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
-    // detail lines (a band either side, as grids) and regions; what a sketch holds is picked there instead
-    const det = data.detail, ds = (data.view && data.view.scale) || 100, mm = (r) => r.map(([x, y]) => [x * ds, y * ds]);
-    if (det) {
-      const pinned = new Map([...(data.detail_lines || []), ...(data.regions || [])].map((x) => [x.id, x.pinned]));
-      const lt = 4 / cam.s;
-      for (const s of det.strokes) if (s.line != null && !heldBySketch(s)) out.push({ id: s.line, kind: "detail", ring: bandRing(mm(s.pts), lt, lt), pinned: pinned.get(s.line), category: "Lines", display: "normal" });
-      for (const f of det.fills) if (!heldBySketch(f)) { const rings = f.rings.map(mm); out.push({ id: f.region, kind: "region", ring: rings[0], rings, pinned: pinned.get(f.region), category: "Detail Items", display: "normal" }); }
-      // a region whose every edge is invisible is still picked by its outline
-    }
-    // text notes: the box and a band along each leader
-    for (const n of data.text_notes || []) {
-      if (n.id === editingNote) continue;
-      const L = Ann.layout(n.text), lt = 4 / cam.s;
-      const box = mm([[L.x0, L.top], [L.x0 + L.w, L.top], [L.x0 + L.w, L.top - L.h], [L.x0, L.top - L.h]]);
-      const rings = [box, ...n.leaders.map((l) => bandRing(mm([leaderStart(n, L, l.side), ...(l.elbow ? [l.elbow] : []), l.end]), lt, lt))];
-      out.push({ id: n.id, kind: "note", ring: box, rings, pinned: n.pinned, category: "Text Notes", display: "normal" });
-    }
+    // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
+    out.push(...Det.elements());
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -267,108 +260,6 @@ const Plan = (() => {
     if (!Sketch.active) return false;
     if (Sketch.kind === "detail") return x.line != null;
     return Sketch.kind === "region" && Sketch.editingId != null && x.region === Sketch.editingId;
-  }
-  // detail lines and regions are paper sized (line widths, patterns, dashes): the core sends them in paper mm, drawn
-  // round the model origin at the view's scale
-  function drawDetails(accent) {
-    const det = data.detail;
-    if (!det || (!det.strokes.length && !det.fills.length)) return;
-    const ds = (data.view && data.view.scale) || 100, o = toScreen({ x: 0, y: 0 }), base = { x: o.x, y: o.y, k: ds * cam.s };
-    const opt = { pats: data.fill_patterns, modelScale: ds, thin, only: (x) => !heldBySketch(x) };
-    Ann.paths(ctx, det, base, null, css("--view-bg"), opt);
-    // selected regions show as floors do; selected and hovered lines in the accent or the hover colour
-    const hov = new Set(tool === "select" && selHover ? selHover : []);
-    for (const f of det.fills) {
-      if (!sel.has(f.region) || heldBySketch(f)) continue;
-      ctx.beginPath();
-      for (const r of f.rings) { r.forEach(([x, y], i) => { const s = toScreen({ x: x * ds, y: y * ds }); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
-      ctx.fillStyle = "rgba(46,111,158,0.30)"; ctx.fill("evenodd"); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.stroke();
-    }
-    Ann.paths(ctx, { strokes: det.strokes }, base, accent, null, { thin, widen: 1.6, only: (x) => !heldBySketch(x) && x.line != null && sel.has(x.line) });
-    if (hov.size) Ann.paths(ctx, { strokes: det.strokes }, base, "#d4572f", null, { thin, widen: 1.6, only: (x) => !heldBySketch(x) && ((x.line != null && hov.has(x.line) && !sel.has(x.line)) || (x.region != null && hov.has(x.region) && !sel.has(x.region))) });
-  }
-  // ---- text notes: text in a box at paper size (annotation.js lays it out), leaders from its sides with arrowheads
-  const noteBase = () => { const ds = (data.view && data.view.scale) || 100, o = toScreen({ x: 0, y: 0 }); return { x: o.x, y: o.y, k: ds * cam.s, ds }; };
-  // where a leader leaves the box (paper mm): on the side the leader is on, at the height that side's attachment says,
-  // the type's leader offset off the box
-  function leaderStart(n, L, side) {
-    const off = n.text.style.border_offset_mm || 0, att = side === "left" ? n.left_attach : n.right_attach;
-    const y = att === "top" ? L.top - L.lh / 2 : att === "bottom" ? L.top - L.h + L.lh / 2 : L.top - L.h / 2;
-    return [side === "left" ? L.x0 - off : L.x0 + L.w + off, y];
-  }
-  function drawTextNotes(accent) {
-    const notes = data.text_notes || [];
-    noteGripsUI = [];
-    if (!notes.length) return;
-    const base = noteBase(), bg = css("--view-bg"), m = Ann.mapper(base), hov = new Set(tool === "select" && selHover ? selHover : []);
-    for (const n0 of notes) {
-      if (n0.id === editingNote) continue;
-      const n = noteDrag && noteDrag.id === n0.id ? noteDrag.n : n0;
-      const col = sel.has(n.id) || (leaderFor && leaderFor.id === n.id) ? accent : hov.has(n.id) ? "#d4572f" : null;
-      Ann.labels(ctx, [n.text], base, col, { bg });
-      const L = Ann.layout(n.text);
-      ctx.save();
-      ctx.strokeStyle = ctx.fillStyle = col || Ann.rgb(n.text.style.color);
-      ctx.lineWidth = thin ? 1 : Math.max(1, n.text.style.line_mm * base.k);
-      for (const l of n.leaders) {
-        const a = m(leaderStart(n, L, l.side)), e = m(l.end), b = l.elbow ? m(l.elbow) : null, from = b || a;
-        ctx.beginPath(); ctx.moveTo(a.x, a.y); if (b) ctx.lineTo(b.x, b.y); ctx.lineTo(e.x, e.y); ctx.stroke();
-        // a filled arrowhead, 30 degrees across, 2.5 mm on paper
-        const ang = Math.atan2(e.y - from.y, e.x - from.x), len = Math.max(6, 2.5 * base.k);
-        ctx.beginPath(); ctx.moveTo(e.x, e.y);
-        ctx.lineTo(e.x - len * Math.cos(ang - 0.26), e.y - len * Math.sin(ang - 0.26));
-        ctx.lineTo(e.x - len * Math.cos(ang + 0.26), e.y - len * Math.sin(ang + 0.26));
-        ctx.closePath(); ctx.fill();
-      }
-      if (sel.has(n.id) && tool === "select" && sel.size === 1) {
-        // the box, the grips at its ends (its width) and at each leader's end and elbow
-        const a = m([L.x0, L.top]), b = m([L.x0 + L.w, L.top - L.h]);
-        ctx.setLineDash([3, 3]); ctx.lineWidth = 1; ctx.strokeStyle = accent; ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.setLineDash([]);
-        const grip = (x, y, g) => { ctx.fillStyle = "#ffffff"; ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(x, y, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); noteGripsUI.push({ x, y, id: n.id, ...g }); };
-        grip(a.x, (a.y + b.y) / 2, { kind: "width", edge: 0 }); grip(b.x, (a.y + b.y) / 2, { kind: "width", edge: 1 });
-        n.leaders.forEach((l, i) => { const e = m(l.end); grip(e.x, e.y, { kind: "end", i }); if (l.elbow) { const q = m(l.elbow); grip(q.x, q.y, { kind: "elbow", i }); } });
-      }
-      ctx.restore();
-    }
-  }
-  // the Text tool's leader picked so far, to the cursor
-  function drawNotePreview(accent) {
-    if (tool !== "text" || !notePts.length || !hover) return;
-    ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.setLineDash([5, 4]);
-    ctx.beginPath();
-    [...notePts, hover].forEach((q, i) => { const s = toScreen(q); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
-    ctx.stroke(); ctx.restore();
-  }
-  // dragging a text note's grip: the box's end (the other end stays) or a leader's end or elbow
-  function noteDown(sx, sy) {
-    const g = noteGripsUI.find((q) => Math.hypot(q.x - sx, q.y - sy) <= 7);
-    if (!g) return false;
-    const n = (data.text_notes || []).find((x) => x.id === g.id);
-    if (!n) return false;
-    noteDrag = { id: n.id, g, n: JSON.parse(JSON.stringify(n)), L: Ann.layout(n.text), moved: false };
-    return true;
-  }
-  function noteMove(sx, sy) {
-    const d = noteDrag, ds = (data.view && data.view.scale) || 100;
-    const p = d.g.kind === "width" ? toWorld(sx, sy) : snap(sx, sy), px = p.x / ds, py = p.y / ds;
-    d.moved = true;
-    if (d.g.kind === "width") {
-      const L = d.L, t = d.n.text;
-      const e0 = d.g.edge === 0 ? Math.min(px, L.x0 + L.w - 2) : L.x0, e1 = d.g.edge === 1 ? Math.max(px, L.x0 + 2) : L.x0 + L.w;
-      t.width_mm = Math.round((e1 - e0) * 10) / 10;
-      t.x = t.halign === "right" ? e1 : t.halign === "center" ? (e0 + e1) / 2 : e0;
-    } else d.n.leaders[d.g.i][d.g.kind] = [px, py];
-    render();
-  }
-  function noteUp() {
-    const d = noteDrag, ds = (data.view && data.view.scale) || 100;
-    noteDrag = null;
-    if (!d || !d.moved) { render(); return; }
-    const pt = (q) => ({ x: Math.round(q[0] * ds * 1000) / 1000, y: Math.round(q[1] * ds * 1000) / 1000 });
-    const patch = d.g.kind === "width"
-      ? { width_mm: d.n.text.width_mm, at: pt([d.n.text.x, d.n.text.y]) }
-      : { leaders: d.n.leaders.map((l) => ({ side: l.side, end: pt(l.end), elbow: l.elbow ? pt(l.elbow) : null, arc: l.arc })) };
-    cb.patchNote(d.id, patch);
   }
   // radius of the marker and point symbols in pixels: 3.5 mm on paper at the view scale, so they keep their printed size against the model
   function symR() { const denom = (data.view && data.view.scale) || 100; return Math.max(2, 3.5 * denom * cam.s); }
@@ -1362,9 +1253,10 @@ const Plan = (() => {
       ctx.lineWidth = 1.5;
       for (const [a, b] of rf.ridges) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
     }
-    drawDetails(accent);
-    drawTextNotes(accent);
-    drawNotePreview(accent);
+    const hov = new Set(tool === "select" && selHover ? selHover : []);
+    Det.drawItems(sel, hov, accent);
+    Det.drawNotes(sel, hov, accent, tool === "select");
+    if (tool === "text") Det.preview(hover);
     ctx.restore();
     drawGrids();
     drawMarkers();
@@ -1517,6 +1409,7 @@ const Plan = (() => {
     if (hover && snapGlyphWanted()) {
       const s = toScreen(hover);
       if (hover.label) {
+        Snap.drawGuides(ctx, hover, toScreen);
         Snap.glyph(ctx, hover.kind, s.x, s.y);
         ctx.font = "11px system-ui, sans-serif";
         const text = hover.cands && hover.cands.length > 1 ? `${hover.label} (Tab for more)` : hover.label;
@@ -1536,8 +1429,8 @@ const Plan = (() => {
     if (t !== "dimension") Dims.stop();
     if (t !== "spot") Spots.stop();
     if (t !== "secsplit") Sections.stopSplit();
-    if (t !== "text") notePts = [];
-    if (t !== "noteleader") leaderFor = null;
+    if (t !== "text") Det.clearPicks();
+    if (t !== "noteleader") Det.stopLeader();
     tool = t;
     draw = null;
     markerRot = null; gridHover = null; ggrip = null;
@@ -1558,11 +1451,7 @@ const Plan = (() => {
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
     if (tool === "spot") return Spots.prompt();
-    if (tool === "text") {
-      const steps = { none: ["Click where the text goes, then type."], one: ["Click where the leader points.", "Click where the text goes, then type."], two: ["Click where the leader points.", "Click the leader's elbow.", "Click where the text goes, then type."] }[noteLeader];
-      return `${steps[Math.min(notePts.length, steps.length - 1)]} Esc leaves the tool.`;
-    }
-    if (tool === "noteleader") return "Click where each new leader points. Esc finishes.";
+    if (tool === "text" || tool === "noteleader") return Det.promptText(tool);
     if (tool === "wall" && SHAPE_TWO_CLICK.has(wallShape)) {
       const what = { rectangle: "rectangle", polygon_in: "inscribed polygon", polygon_out: "circumscribed polygon" }[wallShape];
       if (!draw) return `Click the ${wallShape === "rectangle" ? "first corner" : "centre"} of the ${what}.`;
@@ -1629,6 +1518,8 @@ const Plan = (() => {
 
   // The snap glyph shows only for tools that place a point; picking a line, wall or element needs none
   function snapGlyphWanted() {
+    // a dragged grip or element snaps, whatever the tool
+    if ((wgrip && wgrip.moved) || (ggrip && ggrip.moved) || dragging || Det.dragging) return true;
     if (tool === "sketch") return Sketch.wantsSnap();
     if (tool === "dimension" || tool === "spot") return false;
     if (["select", "door", "window", "hosted", "joins", "elevation"].includes(tool)) return false;
@@ -1977,11 +1868,9 @@ const Plan = (() => {
     if (tool === "dimension") { Dims.click(sx, sy, ev); cb.prompt(promptText()); return; }
     if (tool === "spot") { Spots.click(sx, sy, ev); cb.prompt(promptText()); return; }
     if (tool === "text" || tool === "noteleader") {
-      const p = snap(sx, sy);
+      const p = Det.toolSnap(sx, sy);
       Snap.clearOverride(); snapCycle = 0;
-      if (tool === "noteleader") { if (leaderFor) cb.addLeader(leaderFor.id, leaderFor.side, { x: p.x, y: p.y }); return; }
-      notePts.push({ x: p.x, y: p.y });
-      if (notePts.length >= { none: 1, one: 2, two: 3 }[noteLeader]) { const pts = notePts; notePts = []; cb.placeNote(pts); }
+      if (tool === "noteleader") Det.leaderClick(p); else Det.toolClick(p);
       cb.prompt(promptText()); render();
       return;
     }
@@ -2053,7 +1942,7 @@ const Plan = (() => {
     down = { x: e.offsetX, y: e.offsetY };
     if (tool === "select" && e.button === 0 && Dims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Spots.down(e.offsetX, e.offsetY)) { down = null; return; }
-    if (tool === "select" && e.button === 0 && noteDown(e.offsetX, e.offsetY)) { down = null; return; }
+    if (tool === "select" && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Sections.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0) {
@@ -2181,7 +2070,7 @@ const Plan = (() => {
     }
     if (Dims.dragging) { Dims.dragMove(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { Spots.dragMove(e.offsetX, e.offsetY); return; }
-    if (noteDrag) { noteMove(e.offsetX, e.offsetY); return; }
+    if (Det.dragging) { Det.gripMove(e.offsetX, e.offsetY); return; }
     if (Sections.dragging) { Sections.dragMove(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging) { lastMouse = { x: e.offsetX, y: e.offsetY }; hover = snap(e.offsetX, e.offsetY); cb.cursor(hover); Sketch.gripMove(e.offsetX, e.offsetY, hover); return; }
     const moved = down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) > 5;
@@ -2209,7 +2098,7 @@ const Plan = (() => {
     editMove(e.offsetX, e.offsetY);
     if (tool === "select") { const c = candidates(e.offsetX, e.offsetY); selHover = c.length ? c[tabIdx % c.length] : null; }
     lastMouse = { x: e.offsetX, y: e.offsetY };
-    hover = tool === "grid" ? gridSnap(e.offsetX, e.offsetY) : snap(e.offsetX, e.offsetY);
+    hover = tool === "grid" ? gridSnap(e.offsetX, e.offsetY) : tool === "text" || tool === "noteleader" ? Det.toolSnap(e.offsetX, e.offsetY) : snap(e.offsetX, e.offsetY);
     cb.cursor(hover);
     if (Sketch.active) Sketch.move(hover, e.offsetX, e.offsetY);
     if (tool === "wall" && draw && SHAPE_CURVE[wallShape]) refreshWallShape();
@@ -2219,7 +2108,7 @@ const Plan = (() => {
   canvas.addEventListener("pointerup", (e) => {
     if (Dims.dragging) { down = null; Dims.up(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { down = null; Spots.up(e.offsetX, e.offsetY); return; }
-    if (noteDrag) { down = null; noteUp(); return; }
+    if (Det.dragging) { down = null; Det.gripUp(); return; }
     if (Sections.dragging) { down = null; Sections.up(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging) { down = null; Sketch.gripUp(); return; }
     if (tdimOpen) { const t = tdimOpen; tdimOpen = null; openTdimInput(t); return; }
@@ -2373,7 +2262,19 @@ const Plan = (() => {
     setTool: (t) => setTool(t),
   });
 
-  Sketch.attach({
+  const Det = makeDetails({
+    ctx: () => ctx, toScreen, toWorld, css, render: () => render(),
+    zoom: () => cam.s,
+    scale: () => (data.view && data.view.scale) || 100,
+    data: () => data,
+    thin: () => thin,
+    held: (x) => heldBySketch(x),
+    snap: (sx, sy, o) => snap(sx, sy, o),
+    options: () => DetailCallbacks.options(),
+    cb: DetailCallbacks,
+  });
+
+  const planHost = {
     get ctx() { return ctx; },
     get canvas() { return canvas; },
     size, toScreen, toWorld, label, css, render: () => render(),
@@ -2389,7 +2290,8 @@ const Plan = (() => {
       return out;
     },
     cycleSnap: (d) => { snapCycle += d; if (lastMouse) { hover = snap(lastMouse.x, lastMouse.y); Sketch.move(hover, lastMouse.x, lastMouse.y); } render(); },
-  });
+  };
+  Sketch.attach(planHost);
 
   return {
     callbacks: cb,
@@ -2400,8 +2302,9 @@ const Plan = (() => {
     startSketch(o) {
       setTool("select");
       tool = "sketch";
-      if (o.id) Snap.build(Snap.fromPlan({ ...data, floors: data.floors.filter((f) => f.id !== o.id), roofs: (data.roofs || []).filter((r) => r.id !== o.id) }));
+      if (o.id) Snap.build(Snap.fromPlan({ ...data, floors: data.floors.filter((f) => f.id !== o.id), roofs: (data.roofs || []).filter((r) => r.id !== o.id) }, heldBySketch));
       sel = new Set();
+      Sketch.attach(planHost);
       Sketch.begin(o);
       canvas.style.cursor = "crosshair";
       cb.tool("sketch");
@@ -2409,13 +2312,13 @@ const Plan = (() => {
     },
     endSketch() {
       Sketch.end();
-      Snap.build(Snap.fromPlan(data));
+      Snap.build(Snap.fromPlan(data, heldBySketch));
       setTool("select");
     },
     setData(d) {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
-      Snap.build(Snap.fromPlan(data));
+      Snap.build(Snap.fromPlan(data, heldBySketch));
       const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : [])].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setSelection(ids) { sel = new Set(ids); render(); },
     gridOptions: () => ({ shape: gridShape, offset: gridOffset }),
@@ -2434,10 +2337,11 @@ const Plan = (() => {
     textNotes: () => data.text_notes || [],
     paperPx: () => ((data.view && data.view.scale) || 100) * cam.s,
     viewScale: () => (data.view && data.view.scale) || 100,
-    noteOptions: () => ({ leader: noteLeader }),
-    setNoteOptions(o) { if (o.leader) { noteLeader = o.leader; notePts = []; } cb.prompt(promptText()); render(); },
-    setEditingNote(id) { editingNote = id; render(); },
-    startNoteLeader(id, side) { setTool("noteleader"); leaderFor = { id, side }; sel = new Set([id]); cb.prompt(promptText()); render(); },
+    // the Text tool's options changed (main.js keeps them): its picks start again
+    noteOptionsChanged() { Det.clearPicks(); cb.prompt(promptText()); render(); },
+    setEditingNote(id) { Det.setEditing(id); },
+    startNoteLeader(id, side, arc) { setTool("noteleader"); Det.startLeader(id, side, arc); sel = new Set([id]); cb.prompt(promptText()); render(); },
+    canvasRect: () => canvas.getBoundingClientRect(),
     viewId: () => data.view && data.view.id,
     dimensions: () => data.dimensions || [],
     tempGrips2: () => tdimUI.filter((u) => u.type === "promote").map((u) => ({ x: u.x, y: u.y, key: u.dim.key })),
@@ -2486,7 +2390,7 @@ const Plan = (() => {
       // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
-      if (tool === "text" && e.key === "Escape" && notePts.length) { notePts = []; cb.prompt(promptText()); render(); return true; }
+      if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }
       if (tool === "select" && sel.size && !wgrip && !dragging && !down && !e.ctrlKey && !e.metaKey && !e.altKey && ARROWS[e.key]) {
         // arrow keys nudge the selection: one press moves about 8 screen pixels, rounded down to a plain step; Shift moves ten times as far
         const [ax, ay] = ARROWS[e.key], raw = 8 / cam.s, step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].filter((v) => v <= raw).pop() || 1, d = e.shiftKey ? step * 10 : step;
@@ -2566,8 +2470,9 @@ const Plan = (() => {
       cam = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, s: Math.min(size().w / ((x1 - x0) * 1.3 + 2000), size().h / ((y1 - y0) * 1.3 + 2000)) };
       render();
     },
-    // test hook: where a model point appears on screen (relative to the canvas)
+    // test hooks: where a model point appears on screen (relative to the canvas), and the snap under the cursor
     screenOf(x, y) { return toScreen({ x, y }); },
+    hoverSnap: () => hover,
     setCamera(x, y, s2) { cam = { x, y, s: s2 }; render(); },
     getCamera() { return { ...cam }; },
   };

@@ -45,9 +45,11 @@ const COMMANDS = {
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
   "det-line": () => startDetailLines(null, "line"),
-  text: async () => { if (!(await ensurePlan("Text"))) return; app.textAlign ||= "left"; Plan.setTool("text"); renderOptionsBar(); renderProperties(); },
-  "text-lead-l": () => { const n = selectedNote(); if (n) Plan.startNoteLeader(n.id, "left"); },
-  "text-lead-r": () => { const n = selectedNote(); if (n) Plan.startNoteLeader(n.id, "right"); },
+  text: async () => { if (!(await ensureDetailView("Text"))) return; noteView().setTool("text"); renderOptionsBar(); renderProperties(); updateRibbonContext(); },
+  "text-lead-l": () => addNoteLeader("left", false),
+  "text-lead-r": () => addNoteLeader("right", false),
+  "text-arc-l": () => addNoteLeader("left", true),
+  "text-arc-r": () => addNoteLeader("right", true),
   "text-lead-rm": async () => {
     const n = selectedNote();
     if (!n || !n.leaders.length) { setPrompt("The text note has no leader to remove.", true); return; }
@@ -97,6 +99,7 @@ const COMMANDS = {
   "dim-slope": () => startSpotTool("slope"),
   "edit-witness": () => { const id = app.selection.length === 1 && app.selection[0]; if (id && Plan.dimensions().some((d) => d.id === id)) Plan.startWitness(id); },
   "m-materials": () => openMaterials(),
+  "m-linestyles": () => openLineStyles(),
   "m-lineweights": () => openLineWeights(),
   "m-linepatterns": () => openPatterns("line"),
   "m-fillpatterns": () => openPatterns("fill"),
@@ -169,15 +172,23 @@ const BOUNDARY_EDITORS = {
   "Detail Items": { label: "Edit Boundary", run: (id) => startRegionSketch(null, id) },
 };
 function editBoundaryTarget() {
-  if (app.selection.length !== 1 || app.view.kind !== "plan") return null;
+  if (app.selection.length !== 1) return null;
+  if (app.view.kind === "elevation") {
+    const id = app.selection[0];
+    return Elev.regions().some((r) => r.id === id) ? { label: "Edit Boundary", run: () => startRegionSketch(null, id) } : null;
+  }
+  if (app.view.kind !== "plan") return null;
   const info = Plan.selectionInfo();
   for (const [cat, ed] of Object.entries(BOUNDARY_EDITORS)) {
     if (info[cat] && info[cat].length === 1) { const id = info[cat][0]; return { label: ed.label, run: () => ed.run(id) }; }
   }
   return null;
 }
-// the one text note selected in a plan, if that is the selection
-const selectedNote = () => (app.view.kind === "plan" && app.selection.length === 1 ? Plan.textNotes().find((n) => n.id === app.selection[0]) : null);
+// the view text notes are placed and picked in: a plan, or an elevation or section
+const noteView = () => (app.view.kind === "elevation" ? Elev : app.view.kind === "plan" ? Plan : null);
+// the text notes selected in the view's Select tool, and the one when it is the whole selection
+const selectedNotes = () => { const V = noteView(); return V && V.tool === "select" ? V.textNotes().filter((n) => app.selection.includes(n.id)) : []; };
+const selectedNote = () => { const s = selectedNotes(); return s.length === 1 && app.selection.length === 1 ? s[0] : null; };
 // the one section selected in a plan, if that is the selection
 const selectedSection = () => (app.view.kind === "plan" && app.selection.length === 1 ? Plan.sections().find((s) => s.id === app.selection[0]) : null);
 
@@ -186,9 +197,8 @@ function updateRibbonContext() {
   const b = document.querySelector('#ribbon button[data-id="edit-boundary"]');
   const w = document.querySelector('#ribbon button[data-id="edit-witness"]');
   const sp = document.querySelector('#ribbon button[data-id="split-segment"]');
-  // the leader buttons work on one selected text note
-  const notes = ["text-lead-l", "text-lead-r", "text-lead-rm"].map((id) => document.querySelector(`#ribbon button[data-id="${id}"]`)).filter(Boolean);
-  for (const nb of notes) nb.hidden = !selectedNote();
+  // Modify | Place Text and Modify | Text Notes come and go with the Text tool and the selection
+  renderFamContext();
   if (!b && !w && !sp) return;
   const t = b && editBoundaryTarget();
   if (b) b.hidden = !t;
@@ -219,20 +229,20 @@ function renderTabs() {
     tabs.appendChild(b);
   });
   selectTab(app.ribbonTab[app.doc]);
-  if (app.doc !== "project") renderFamContext();
+  renderFamContext();
 }
 
 // A family document's contextual tab ("Modify | Extrusion", "Modify | Place Lines" and so on): the model or annotation
 // family's context() says what the selection or the sketch offers. It appears while something is selected, comes to
 // the front when the person selects it, and goes when they let go.
 function renderFamContext(activate) {
-  const M = app.doc === "family" ? FamModel : app.doc === "annotation" ? AnnModel : null;
-  if (!M) return;
+  const M = app.doc === "family" ? FamModel : app.doc === "annotation" ? AnnModel : { context: textContext };
   const tabs = $("#tabs");
   let ctx = tabs.querySelector("button.contextual.fam");
   const c = M.context();
   if (!c) {
-    if (ctx) { const was = ctx.classList.contains("active"); ctx.remove(); if (was || app.famCtxOn) selectTab(app.ribbonTab[app.doc]); app.famCtxOn = false; }
+    // back to the tab the person was on, unless another contextual tab (a sketch, Place Wall) has taken over
+    if (ctx) { const was = ctx.classList.contains("active"); ctx.remove(); if ((was || app.famCtxOn) && !tabs.querySelector("button.contextual:not(.fam).active")) selectTab(app.ribbonTab[app.doc]); app.famCtxOn = false; }
     return;
   }
   const fresh = !ctx;
@@ -254,9 +264,10 @@ function drawFamContext(c, ctx) {
     let stack = null;
     for (const it of g.items) {
       if (it.node) { stack = null; items.append(it.node); continue; }
-      const node = sketchButton(it, !it.big, it.onclick, it.on);
+      // `brk` starts a new column of small buttons; `iconOnly` shows the icon with the name as its tooltip
+      const node = sketchButton(it, !it.big, it.onclick, it.on, it.iconOnly ? "icon-only" : "");
       if (it.big) { stack = null; items.append(node); continue; }
-      if (!stack || stack.children.length >= 3) { stack = el("div", { className: "stack" }); items.append(stack); }
+      if (!stack || stack.children.length >= 3 || it.brk) { stack = el("div", { className: "stack" }); items.append(stack); }
       stack.append(node);
     }
     grp.append(items, el("div", { className: "label", textContent: g.label }));
@@ -552,6 +563,8 @@ function currentLevel() {
 }
 
 async function openView(kind, viewId) {
+  // Detail Line has no Finish: its lines are in the model already, so another view just leaves it
+  if (Sketch.active && Sketch.kind === "detail") await leaveDetailLines();
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
   // only re-frame the camera when the view actually changes
   const firstOf = (k) => (app.info.views.find((x) => x.view_kind === k) || {}).id;
@@ -1090,23 +1103,12 @@ Plan.callbacks.placeInstance = async (wallId, point) => {
 function renderOptionsBar() {
   const bar = $("#optionsbar");
   const inPlan = app.view.kind === "plan";
-  const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && Plan.isEditTool(), sketchTool = inPlan && Plan.sketching;
+  const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && Plan.isEditTool(), sketchTool = Sketch.active;
   const levelTool = app.view.kind === "elevation" && Elev.tool === "level", elevTool = inPlan && Plan.tool === "elevation", gridTool = inPlan && Plan.tool === "grid";
   const secTool = inPlan && Plan.tool === "section";
-  const textTool = inPlan && Plan.tool === "text";
-  $("#ob-text").hidden = !textTool;
-  if (textTool) {
-    // the Text tool's leader and alignment (the Leader and Paragraph panels)
-    const o = Plan.noteOptions();
-    const lead = el("select", {}, [["none", "No Leader"], ["one", "One Segment"], ["two", "Two Segments"]].map(([v, l]) => new Option(l, v, false, v === o.leader)));
-    lead.onchange = () => Plan.setNoteOptions({ leader: lead.value });
-    const al = el("select", {}, [["left", "Align Left"], ["center", "Align Center"], ["right", "Align Right"]].map(([v, l]) => new Option(l, v, false, v === (app.textAlign || "left"))));
-    al.onchange = () => { app.textAlign = al.value; };
-    $("#ob-text").replaceChildren(el("label", {}, ["Leader ", lead]), el("label", {}, [" ", al]));
-  }
   renderWallRibbon();
   renderComponentRibbon();
-  bar.hidden = !(wallTool || joinTool || editTool || sketchTool || levelTool || elevTool || gridTool || secTool || textTool);
+  bar.hidden = !(wallTool || joinTool || editTool || sketchTool || levelTool || elevTool || gridTool || secTool);
   $("#ob-section").hidden = !secTool;
   $("#ob-grid").hidden = !gridTool;
   $("#ob-level").hidden = !levelTool;
@@ -1116,7 +1118,6 @@ function renderOptionsBar() {
   $("#ob-edit").hidden = !editTool;
   $("#ob-sketch").hidden = !sketchTool;
   if (secTool) { renderSectionBar(); return; }
-  if (textTool) return;
   if (gridTool) {
     const go = Plan.gridOptions(), sh = $("#ob-grid-shape"), off = $("#ob-grid-offset");
     sh.value = go.shape; off.value = go.offset;
@@ -1172,7 +1173,7 @@ const WALL_SHAPES = ["line", "rectangle", "polygon_in", "polygon_out", "circle",
 let wallReturnTab = "Architecture";
 function renderWallRibbon() {
   const tabs = $("#tabs");
-  let ctx = tabs.querySelector("button.contextual");
+  let ctx = tabs.querySelector("button.contextual:not(.fam)");
   const on = app.view.kind === "plan" && Plan.tool === "wall";
   if (!on) {
     if (ctx && ctx.dataset.kind === "wall") { ctx.remove(); selectTab(wallReturnTab); }
@@ -1211,7 +1212,7 @@ function renderWallRibbon() {
 let compReturnTab = "Architecture";
 function renderComponentRibbon() {
   const tabs = $("#tabs");
-  let ctx = tabs.querySelector("button.contextual");
+  let ctx = tabs.querySelector("button.contextual:not(.fam)");
   const on = app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted");
   if (!on) {
     if (ctx && ctx.dataset.kind === "component") { ctx.remove(); selectTab(compReturnTab); }
@@ -1512,14 +1513,23 @@ Elev.callbacks.addGrid = async (u) => {
   await Plan.callbacks.addGrid([{ type: "line", a, b }]);
 };
 // Move, Copy and Align in an elevation: sideways along the view's right axis and up or down
+// (detail lines, regions and text notes belong to the view and move in its own frame, across and up)
 Elev.callbacks.moveBy = async (ids, du, dz, copy) => {
-  const f = Elev.data.frame;
-  const r = await run("move_vertical", { ids, dz, dx: f.right[0] * du, dy: f.right[1] * du, copy: !!copy });
+  const f = Elev.data.frame, d = Elev.data;
+  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id));
+  const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i));
+  let out = [];
+  if (model.length) { const r = await run("move_vertical", { ids: model, dz, dx: f.right[0] * du, dy: f.right[1] * du, copy: !!copy }); if (r) out.push(...r.ids); }
+  if (det.length) { const r = await run("transform", { kind: "move", ids: det, dx: du, dy: dz, copy: !!copy, disjoin: false }); if (r) out.push(...r.ids); }
   await refresh();
-  if (!r) return;
-  if (copy || ids.length === 1) { app.selection = r.ids; Elev.setSelection(r.ids); app.vp?.setSelection(r.ids); }
+  if (!out.length) return;
+  if (copy || ids.length === 1 || !model.length) { app.selection = out; Elev.setSelection(out); app.vp?.setSelection(out); }
   renderProperties();
 };
+Elev.callbacks.leaveDetail = () => leaveDetailLines();
+Elev.callbacks.editDetail = (id) => startDetailLines(id, "select");
+Elev.callbacks.editRegion = (id) => startRegionSketch(null, id);
+Elev.callbacks.editNote = (id) => DetailCallbacks.editNote(id);
 Elev.callbacks.tempSettings = () => tdimSettings();
 Elev.callbacks.tool = (t) => { clearSelectionForTool(t); renderOptionsBar(); renderProperties(); };
 Elev.callbacks.prompt = (t) => setPrompt(t);
@@ -1729,7 +1739,7 @@ document.addEventListener("keydown", (e) => {
     keyBuf = (keyBuf + e.key.toUpperCase()).slice(-2);
     clearTimeout(keyTimer);
     keyTimer = setTimeout(() => (keyBuf = ""), 900);
-    const map = Plan.sketching ? {} : { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin" };
+    const map = Sketch.active ? {} : { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin" };
     if (map[keyBuf] && COMMANDS[map[keyBuf]]) { COMMANDS[map[keyBuf]](); keyBuf = ""; }
     else if (app.view.kind === "plan" && Snap.isOverride(keyBuf) && (["wall", "sketch"].includes(Plan.tool) || Plan.isEditTool())) {
       Snap.setOverride(keyBuf);
@@ -1791,7 +1801,7 @@ function sketchButton(item, small, onclick, on, extra = "") {
 function renderSketchRibbon() {
   const tabs = $("#tabs");
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.remove("active"));
-  let ctx = tabs.querySelector("button.contextual");
+  let ctx = tabs.querySelector("button.contextual:not(.fam)");
   if (!ctx) { ctx = document.createElement("button"); ctx.className = "contextual"; ctx.onclick = () => renderSketchRibbon(); tabs.append(ctx); }
   ctx.textContent = `Modify | ${Sketch.title}`;
   ctx.classList.add("active");
@@ -1885,7 +1895,7 @@ function sketchBarKids(sk) {
 function renderSketchUI() {
   if (!Sketch.active) return;
   // keep the person on whichever tab they chose; the contextual tab stays one click away
-  const ctx = $("#tabs button.contextual");
+  const ctx = $("#tabs button.contextual:not(.fam)");
   if (!ctx || ctx.classList.contains("active")) renderSketchRibbon();
   renderSketchBar();
   renderSketchToolbar();
@@ -1909,7 +1919,7 @@ function renderSketchToolbar() {
 }
 
 function endSketchUI() {
-  const ctx = $("#tabs button.contextual");
+  const ctx = $("#tabs button.contextual:not(.fam)");
   if (ctx) ctx.remove();
   renderSketchToolbar();
   updateUndoButtons();
@@ -1946,6 +1956,8 @@ function openSlopeDialog() {
   });
 }
 
+// the view hosting the sketch: an elevation or section while one is open and sketching, else the plan
+const sketchView = () => (Elev.sketching ? Elev : Plan);
 Sketch.callbacks.change = () => { if (Sketch.kind === "detail") syncDetailLines(); renderSketchUI(); };
 Sketch.callbacks.prompt = (t, isError) => setPrompt(t, !!isError);
 Sketch.callbacks.slope = () => openSlopeDialog();
@@ -1968,13 +1980,14 @@ Sketch.callbacks.finish = async (o) => {
   return true;
 };
 Sketch.callbacks.cancel = () => {
-  Plan.endSketch();
+  sketchView().endSketch();
   endSketchUI();
   renderProperties();
   setPrompt("Sketch cancelled.");
 };
 
 // ---- Detail Line and the regions (private notes: annotate-tools.md) ----------------------------------
+// They are drawn in the view that is open: a plan, an elevation or a section. The view hosts the sketch while it lasts.
 // Detail Line works on the view's detail lines themselves: the sketch session holds them all, every Draw tool places
 // lines and the Modify tools change them, and each change goes into the model at once (one undo step). It has no
 // Finish: Esc in its select tool, or another command, leaves it. Filled Region and Masking Region sketch closed loops
@@ -1988,16 +2001,16 @@ async function startDetailLines(selectId, tool) {
     setPrompt("Finish or cancel the sketch first.", true);
     return;
   }
-  if (!(await ensurePlan("A detail line"))) return;
+  if (!(await ensureDetailView("A detail line"))) return;
   app.lineStyle ||= "Thin Lines";
   sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Annotate";
-  app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+  app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]);
   beginDetailSession(selectId, tool || "line");
   setPrompt(Sketch.promptText());
 }
 function beginDetailSession(selectId, tool) {
-  const lines = Plan.detailLines();
-  Plan.startSketch({
+  const V = noteView(), lines = V.detailLines();
+  V.startSketch({
     kind: "detail", title: "Detail Lines", tool, fade: false, ink: getComputedStyle(document.documentElement).getPropertyValue("--text").trim(),
     curves: lines.map((l) => ({ ...l.entry, attr: { id: l.id, style: l.style } })),
     attr: (extra) => ({ style: app.lineStyle, ...(extra || {}) }),
@@ -2019,7 +2032,7 @@ function syncDetailLines() {
     if (!Sketch.active || Sketch.kind !== "detail") return;
     const entries = Sketch.state().curves.slice(), payload = detailPayload(entries), key = JSON.stringify(payload);
     if (key === detailKey) return;
-    const r = await run("set_detail_lines", { view_id: Plan.viewId(), lines: payload });
+    const r = await run("set_detail_lines", { view_id: sketchView().viewId(), lines: payload });
     if (!r) { detailKey = key; return; } // run() put the reason in the status bar
     entries.forEach((c, i) => { if (r.ids[i] != null) c.attr.id = r.ids[i]; });
     if (Sketch.active) detailKey = JSON.stringify(detailPayload(Sketch.state().curves));
@@ -2030,7 +2043,7 @@ function syncDetailLines() {
 async function leaveDetailLines() {
   if (!Sketch.active || Sketch.kind !== "detail") return;
   await syncDetailLines();
-  Plan.endSketch();
+  sketchView().endSketch();
   endSketchUI();
   await refresh();
   renderProperties();
@@ -2042,7 +2055,7 @@ async function startRegionSketch(masking, editId) {
     if (Sketch.kind === "detail") await leaveDetailLines();
     else { setPrompt("Finish or cancel the sketch first.", true); return; }
   }
-  if (!(await ensurePlan(masking ? "A masking region" : "A region"))) return;
+  if (!(await ensureDetailView(masking ? "A masking region" : "A region"))) return;
   sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Annotate";
   let curves = [];
   if (editId) {
@@ -2056,9 +2069,9 @@ async function startRegionSketch(masking, editId) {
   // a masking region's edges start invisible, so it hides what is behind it without an outline
   app.edgeStyle = masking ? "<Invisible lines>" : app.lineStyle;
   if (app.regionTypeId == null || !(app.info.filled_region_types || []).some((t) => t.id === app.regionTypeId)) app.regionTypeId = ((app.info.filled_region_types || [])[0] || {}).id;
-  app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+  app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]);
   const noun = masking ? "Masking Region" : "Filled Region";
-  Plan.startSketch({ kind: "region", id: editId || null, title: editId ? "Edit Boundary" : `Create ${noun} Boundary`, curves, tool: editId ? "select" : "line", attr: (extra) => ({ style: app.edgeStyle, ...(extra || {}) }) });
+  noteView().startSketch({ kind: "region", id: editId || null, title: editId ? "Edit Boundary" : `Create ${noun} Boundary`, curves, tool: editId ? "select" : "line", attr: (extra) => ({ style: app.edgeStyle, ...(extra || {}) }) });
   renderSketchUI();
   renderProperties();
 }
@@ -2066,33 +2079,46 @@ async function finishRegion(o) {
   const edges = (o.edges || []).map((e) => ({ curve: e.curve, subcategory: e.style || app.edgeStyle }));
   const r = o.id
     ? await run("set_detail_region_edges", { id: o.id, edges })
-    : await run("add_detail_region", { view_id: Plan.viewId(), edges, type_id: app.regionMasking ? null : app.regionTypeId });
+    : await run("add_detail_region", { view_id: sketchView().viewId(), edges, type_id: app.regionMasking ? null : app.regionTypeId });
   if (!r) return false;
   const id = o.id || r.id;
-  Plan.endSketch();
+  const V = sketchView();
+  V.endSketch();
   endSketchUI();
   await refresh();
-  app.selection = [id]; Plan.setSelection([id]); app.vp?.setSelection([id]);
+  app.selection = [id]; V.setSelection([id]); app.vp?.setSelection([id]);
   renderProperties();
   setPrompt(o.id ? "Boundary updated." : app.regionMasking ? "Masking region created." : "Filled region created.");
   return true;
 }
 Plan.callbacks.leaveDetail = () => leaveDetailLines();
 
-// ---- Text notes: placed with the Text tool (no leader, or one or two segments), typed in place, edited by a
-// double-click; leaders added and removed from the Annotate tab while a note is selected
+// ---- Text notes (details.js draws and picks them) -------------------------------------------------------------------
+// Placed with the Text tool in a plan, elevation or section: no leader, one or two segments, or curved. With a leader
+// the last click is where it meets the text, and the note goes where its attachment point lands there. Typed in place,
+// edited by a double-click. Modify | Place Text sets the leader, its attachments and the alignment of the next notes;
+// Modify | Text Notes changes the selected ones, and adds and removes leaders.
+app.noteOpts = { leader: "none", left_attach: "top", right_attach: "bottom", halign: "left", valign: "top" };
+DetailCallbacks.options = () => app.noteOpts;
 const notePt = (q) => ({ x: Math.round(q.x * 1000) / 1000, y: Math.round(q.y * 1000) / 1000 });
+// a view that can hold text notes and detail items: the current one when it is a plan, elevation or section
+async function ensureDetailView(what) {
+  if (app.view.kind === "plan" || app.view.kind === "elevation") return true;
+  return ensurePlan(what);
+}
 async function patchNoteLeaders(n, leaders) {
-  const ds = Plan.viewScale();
+  const ds = noteView().viewScale();
   const pt = (q) => ({ x: q[0] * ds, y: q[1] * ds });
   await run("patch_text_note", { id: n.id, patch: { leaders: leaders.map((l) => ({ side: l.side, end: l.end.x !== undefined ? l.end : pt(l.end), elbow: l.elbow ? (l.elbow.x !== undefined ? l.elbow : pt(l.elbow)) : null, arc: !!l.arc })) } });
   await refresh();
 }
-// a box over the plan to type the text in: click outside it or press Esc to finish; Ctrl+Enter too
-function noteEditor(at, sizeMm, value, onDone) {
-  const c = $("#plan").getBoundingClientRect(), s = Plan.screenOf(at.x, at.y), px = Math.max(10, sizeMm * Plan.paperPx());
+// A box over the view to type the text in: click outside it or press Esc to finish; Ctrl+Enter too. With a leader on the
+// right the text goes to the left of the click.
+function noteEditor(at, sizeMm, value, onDone, o = {}) {
+  const V = noteView(), c = V.canvasRect(), s = V.screenOf(at.x, at.y), px = Math.max(10, sizeMm * V.paperPx());
+  const x = c.left + s.x, y = c.top + s.y - (o.lead ? px * 0.7 : 0);
   const ta = el("textarea", { className: "ann-text-edit", value: value || "" });
-  ta.style.cssText = `position:fixed;left:${c.left + s.x}px;top:${c.top + s.y}px;min-width:140px;min-height:${px * 1.4}px;font:${px}px Arial, system-ui, sans-serif;z-index:60;`;
+  ta.style.cssText = `position:fixed;${o.right ? `right:${window.innerWidth - x}px` : `left:${x}px`};top:${y}px;min-width:140px;min-height:${px * 1.4}px;font:${px}px Arial, system-ui, sans-serif;z-index:60;`;
   document.body.append(ta);
   let done = false;
   const finish = () => { if (done) return; done = true; const v = ta.value.replace(/\s+$/, ""); ta.remove(); onDone(v); };
@@ -2100,38 +2126,115 @@ function noteEditor(at, sizeMm, value, onDone) {
   ta.onblur = finish;
   setTimeout(() => ta.focus(), 0);
 }
-const noteTypeSize = (id) => { const t = (app.info.text_note_types || []).find((x) => x.id === id); const m = t && /([\d.]+)mm/.exec(t.name); return m ? parseFloat(m[1]) : 2.5; };
-Plan.callbacks.placeNote = (pts) => {
+const noteType = () => {
   const types = app.info.text_note_types || [];
   if (app.textTypeId == null || !types.some((t) => t.id === app.textTypeId)) app.textTypeId = (types[0] || {}).id;
-  const at = notePt(pts[pts.length - 1]);
-  const leaders = pts.length > 1 ? [{ side: pts[0].x <= at.x ? "left" : "right", end: notePt(pts[0]), elbow: pts.length === 3 ? notePt(pts[1]) : null, arc: false }] : [];
-  noteEditor(at, noteTypeSize(app.textTypeId), "", async (text) => {
-    if (!text && !leaders.length) return;
-    const r = await run("add_text_note", { note: { view: Plan.viewId(), at, text, text_type: app.textTypeId, halign: app.textAlign || "left", valign: "top", width_mm: 0, leaders } });
-    await refresh();
-    if (r) { app.selection = [r.id]; Plan.setSelection([r.id]); renderProperties(); }
-  });
+  return types.find((t) => t.id === app.textTypeId);
 };
-Plan.callbacks.editNote = (id) => {
-  const n = Plan.textNotes().find((x) => x.id === id);
+DetailCallbacks.placeNote = (pts, o) => {
+  const V = noteView();
+  if (!V) return;
+  const type = noteType(), at = notePt(pts[pts.length - 1]), lead = pts.length > 1;
+  const side = lead && pts[0].x > at.x ? "right" : "left";
+  const leaders = lead ? [{ side, end: notePt(pts[0]), elbow: pts.length === 3 ? notePt(pts[1]) : null, arc: o.leader === "arc" }] : [];
+  noteEditor(at, type && type.style ? type.style.size_mm : 2.5, "", async (text) => {
+    if (!text && !leaders.length) return;
+    const note = { view: V.viewId(), at, text, text_type: app.textTypeId, halign: o.halign, valign: o.valign, width_mm: 0, leaders, left_attach: o.left_attach, right_attach: o.right_attach };
+    if (lead && type && type.style) {
+      // lay the text out as the view will, then move it so the leader's attachment point is the click
+      const ds = V.viewScale(), t = { x: 0, y: 0, halign: o.halign, valign: o.valign, width_mm: 0, lines: text.split("\n").map((l) => [l]), wrap: "words", style: type.style };
+      const s0 = NoteGeom.leaderStart({ text: t, left_attach: o.left_attach, right_attach: o.right_attach }, Ann.layout(t), side);
+      note.at = notePt({ x: at.x - s0[0] * ds, y: at.y - s0[1] * ds });
+    }
+    const r = await run("add_text_note", { note });
+    await refresh();
+    if (r) { app.selection = [r.id]; V.setSelection([r.id]); renderProperties(); updateRibbonContext(); }
+  }, { right: side === "right" && lead, lead });
+};
+DetailCallbacks.editNote = (id) => {
+  const V = noteView(), n = V && V.textNotes().find((x) => x.id === id);
   if (!n) return;
-  const ds = Plan.viewScale();
-  const L = Ann.layout(n.text);
-  Plan.setEditingNote(id);
+  const ds = V.viewScale(), L = Ann.layout(n.text);
+  V.setEditingNote(id);
   noteEditor({ x: L.x0 * ds, y: L.top * ds }, n.text.style.size_mm, n.text.lines.map((l) => l.join("")).join("\n"), async (text) => {
-    Plan.setEditingNote(null);
-    if (!text && !n.leaders.length) { await run("delete", { ids: [id] }); app.selection = []; Plan.setSelection([]); }
+    V.setEditingNote(null);
+    if (!text && !n.leaders.length) { await run("delete", { ids: [id] }); app.selection = []; V.setSelection([]); }
     else await run("patch_text_note", { id, patch: { text } });
     await refresh();
   });
 };
-Plan.callbacks.patchNote = async (id, patch) => { await run("patch_text_note", { id, patch }); await refresh(); };
-Plan.callbacks.addLeader = async (id, side, p) => {
-  const n = Plan.textNotes().find((x) => x.id === id);
+DetailCallbacks.patchNote = async (id, patch) => { await run("patch_text_note", { id, patch }); await refresh(); };
+DetailCallbacks.addLeader = async (id, side, p, arc) => {
+  const n = noteView().textNotes().find((x) => x.id === id);
   if (!n) return;
-  await patchNoteLeaders(n, [...n.leaders, { side, end: notePt(p), elbow: null, arc: false }]);
+  await patchNoteLeaders(n, [...n.leaders, { side, end: notePt(p), elbow: null, arc: !!arc }]);
 };
+Plan.callbacks.editNote = (id) => DetailCallbacks.editNote(id);
+// Add Left or Right Leader (straight or arc) on the one selected note: click where each new leader points, Esc ends
+function addNoteLeader(side, arc) {
+  const n = selectedNote();
+  if (!n) { setPrompt("Select one text note to add a leader to.", true); return; }
+  noteView().startNoteLeader(n.id, side, arc);
+  updateRibbonContext();
+}
+// Change the selected notes. A new alignment keeps each box where it is: the point the note hangs from moves to the
+// box's side, middle or other side, and its top, middle or bottom.
+async function patchNotes(list, patch) {
+  const V = noteView(), ds = V.viewScale();
+  for (const n of list) {
+    const p = { ...patch };
+    if (patch.halign || patch.valign) {
+      const L = Ann.layout(n.text), ha = patch.halign || n.text.halign, va = patch.valign || n.text.valign;
+      const x = ha === "right" ? L.x0 + L.w : ha === "center" ? L.x0 + L.w / 2 : L.x0, y = va === "top" ? L.top : va === "bottom" ? L.top - L.h : L.top - L.h / 2;
+      p.at = notePt({ x: x * ds, y: y * ds });
+    }
+    await run("patch_text_note", { id: n.id, patch: p });
+  }
+  await refresh();
+  renderProperties();
+  updateRibbonContext();
+}
+// Modify | Place Text while the Text tool is on (its options for the next notes), Modify | Text Notes while text notes
+// are selected (for them, with Add and Remove Leader)
+const NOTE_LEADERS = [["none", "No Leader", "leaderNone"], ["one", "One Segment", "leaderOne"], ["two", "Two Segments", "leaderTwo"], ["arc", "Curved", "leaderArc"]];
+const NOTE_ATTACH = [["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]];
+function textContext() {
+  const V = noteView();
+  if (!V || Sketch.active) return null;
+  const placing = V.tool === "text" || V.tool === "noteleader", sel = placing ? [] : selectedNotes();
+  if (!placing && !sel.length) return null;
+  const o = app.noteOpts, f = sel[0];
+  // what the buttons show: the Text tool's options, or the first selected note's
+  const cur = placing ? o : { left_attach: f.left_attach, right_attach: f.right_attach, halign: f.text.halign, valign: f.text.valign };
+  const set = (k, v) => {
+    if (placing) { app.noteOpts = { ...app.noteOpts, [k]: v }; V.noteOptionsChanged(); renderFamContext(true); return; }
+    patchNotes(sel, { [k]: v });
+  };
+  const attach = [];
+  for (const [side, key] of [["L", "left_attach"], ["R", "right_attach"]]) {
+    for (const [v, label] of NOTE_ATTACH) attach.push({ label: `${side === "L" ? "Leader Left" : "Leader Right"} ${label}`, icon: `attach${side}${label[0]}`, on: cur[key] === v, onclick: () => set(key, v), iconOnly: true, brk: v === "top" });
+  }
+  const align = [
+    ...[["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]].map(([v, l]) => ({ label: `Align ${l}`, icon: `align${l}`, on: cur.valign === v, onclick: () => set("valign", v), iconOnly: true, brk: v === "top" })),
+    ...[["left", "Left"], ["center", "Center"], ["right", "Right"]].map(([v, l]) => ({ label: `Align ${l}`, icon: `align${l}`, on: cur.halign === v, onclick: () => set("halign", v), iconOnly: true, brk: v === "left" })),
+  ];
+  const modify = { label: "Select", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => { V.setTool("select"); updateRibbonContext(); } }] };
+  if (placing) {
+    // the leader kinds two by two, as the Leader panel has them
+    const leaders = NOTE_LEADERS.map(([v, label, icon], i) => ({ label, icon, on: o.leader === v, onclick: () => set("leader", v), iconOnly: true, brk: i % 2 === 0 }));
+    return { auto: true, key: `place:${JSON.stringify(o)}`, title: "Modify | Place Text", groups: [modify, { label: "Leader", items: [...leaders, ...attach] }, { label: "Paragraph", items: align }] };
+  }
+  const one = sel.length === 1 && app.selection.length === 1;
+  // straight leaders over arc leaders, left and right, then Remove Last Leader
+  const adds = one ? [
+    { label: "Add Left Side Straight Leader", icon: "leaderAddL", onclick: () => addNoteLeader("left", false), brk: true },
+    { label: "Add Left Side Arc Leader", icon: "leaderAddArcL", onclick: () => addNoteLeader("left", true) },
+    { label: "Add Right Side Straight Leader", icon: "leaderAddR", onclick: () => addNoteLeader("right", false), brk: true },
+    { label: "Add Right Side Arc Leader", icon: "leaderAddArcR", onclick: () => addNoteLeader("right", true) },
+    { label: "Remove Last Leader", icon: "leaderRemove", onclick: () => runCommand("text-lead-rm"), brk: true },
+  ].map((x) => ({ ...x, iconOnly: true })) : [];
+  return { auto: true, key: `notes:${sel.map((n) => n.id).join(",")}:${JSON.stringify(cur)}`, title: "Modify | Text Notes", groups: [{ label: "Leader", items: [...adds, ...attach] }, { label: "Paragraph", items: align }] };
+}
 Plan.callbacks.editDetail = (id) => startDetailLines(id, "select");
 Plan.callbacks.editRegion = (id) => startRegionSketch(null, id);
 

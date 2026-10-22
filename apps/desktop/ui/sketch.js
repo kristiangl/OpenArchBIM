@@ -226,8 +226,29 @@ function makeSketch() {
   function segs() {
     if (!S) return [];
     const out = [], held = gripHeld();
-    for (const c of S.curves) { if (held.has(c.uid)) continue; for (let i = 0; i + 1 < c.poly.length; i++) out.push([c.poly[i][0], c.poly[i][1], c.poly[i + 1][0], c.poly[i + 1][1], 2]); }
+    // a straight line is marked 5 (it has extensions); a curve's pieces 2 (they do not). Their ends come with points().
+    for (const c of S.curves) { if (held.has(c.uid)) continue; const f = isLine(c) ? 5 : 2; for (let i = 0; i + 1 < c.poly.length; i++) out.push([c.poly[i][0], c.poly[i][1], c.poly[i + 1][0], c.poly[i + 1][1], f]); }
     for (let i = 0; i + 1 < S.pts.length; i++) out.push([S.pts[i].x, S.pts[i].y, S.pts[i + 1].x, S.pts[i + 1].y]);
+    return out;
+  }
+  // The points extension snaps line up with horizontally and vertically: the ends of the sketch's lines and curves
+  // (for a line whose end is being dragged, its other end), the grip being dragged where it started, the picks so far.
+  function trackPoints() {
+    if (!S) return [];
+    const out = [], held = gripHeld();
+    for (const c of S.curves) {
+      const n = c.poly.length;
+      if (!n) continue;
+      if (held.has(c.uid)) {
+        const m = S.grip.g.members.find((q) => q.uid === c.uid), o = m && (m.end === "a" ? c.curve.b : c.curve.a);
+        if (o) out.push({ x: o.x, y: o.y });
+        continue;
+      }
+      out.push({ x: c.poly[0][0], y: c.poly[0][1] });
+      if (!c.closed) out.push({ x: c.poly[n - 1][0], y: c.poly[n - 1][1] });
+    }
+    if (S.grip && S.grip.moved) out.push({ x: S.grip.g.x, y: S.grip.g.y });
+    for (const q of S.pts) out.push({ x: q.x, y: q.y });
     return out;
   }
   function points() {
@@ -1109,6 +1130,7 @@ function makeSketch() {
   // Which tools use the snap glyph: the ones that place a point. Picking a line or a wall does not.
   function wantsSnap() {
     if (!S) return false;
+    if (S.grip && S.grip.moved) return true; // a dragged end snaps whatever the tool
     const t = S.tool;
     if (["pick_walls", "pick_lines", "fillet", "select", "delete", "offset", "trim_corner", "trim_single", "split", "align"].includes(t)) return false;
     if (NEEDS_SELECTION.has(t) && S.mod.stage === "pick") return false;
@@ -1269,19 +1291,21 @@ function makeSketch() {
       ctx.lineWidth = sel ? 3.5 : hot ? 3 : 2;
       const gable = isRoof() && c.attr && !c.attr.defines_slope;
       if (gable) ctx.setLineDash([8, 5]);
-      stroke(ctx, gripPoly(c) || c.poly, c.closed);
+      const poly = gripPoly(c) || c.poly;
+      stroke(ctx, poly, c.closed);
       if (gable) ctx.setLineDash([]);
       if (isRoof() && c.attr && c.attr.defines_slope) slopeSymbol(ctx, c, centre, sel ? accent : MAGENTA);
       if (!c.closed) {
         ctx.fillStyle = sel ? accent : ink;
-        for (const q of [c.poly[0], c.poly[c.poly.length - 1]]) { const s = host.toScreen({ x: q[0], y: q[1] }); ctx.fillRect(s.x - 2.5, s.y - 2.5, 5, 5); }
+        for (const q of [poly[0], poly[poly.length - 1]]) { const s = host.toScreen({ x: q[0], y: q[1] }); ctx.fillRect(s.x - 2.5, s.y - 2.5, 5, 5); }
       }
     }
     // end grips of the selected lines
     S.gripBoxes = [];
     if (S.tool === "select" && S.sel.size) {
       for (const g of gripGroups()) {
-        const at = S.grip && S.grip.moved && S.grip.g === g ? S.grip.cur : g;
+        // the groups are worked out afresh each time: the one being dragged is the one where the drag started
+        const at = S.grip && S.grip.moved && dist(S.grip.g, g) < 0.5 ? S.grip.cur : g;
         const sp = host.toScreen(at), shared = g.members.length > 1;
         ctx.setLineDash([]); ctx.lineWidth = 2; ctx.strokeStyle = accent; ctx.fillStyle = "#ffffff";
         ctx.beginPath(); ctx.arc(sp.x, sp.y, shared ? 7 : 5.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
@@ -1360,7 +1384,7 @@ function makeSketch() {
     DRAW, MODIFY, ANNOTATE, TOOLS,
     begin, end, setTool, setOpts, finish, cancel, check, undo, redo, key, click, move, dblclick, rightClick, draw,
     setSlope, removeSlope, removeSpan, patchSelected, selectedAttr,
-    gripDown, gripMove, gripUp, nudge,
+    gripDown, gripMove, gripUp, nudge, trackPoints,
     get gripDragging() { return !!(S && S.grip); },
     // the select tool with nothing selected or in progress: Esc there leaves a session that has no Finish
     get idle() { return !!S && S.tool === "select" && !S.sel.size && !S.pts.length && !S.grip && !S.typed; },

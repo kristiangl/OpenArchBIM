@@ -6,6 +6,7 @@
 //! are paper sizes.
 
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 
 use crate::annotation::{edge_loops, DrawnText, HAlign, PathFill, PathStroke, RegionEdge, RegionType, SymbolPaths, TextType, VAlign, Wrap, INVISIBLE_LINES};
 use crate::curve::{self, Curve};
@@ -179,6 +180,89 @@ impl Document {
         self.object_styles().and_then(|(_, s)| s.annotation.get(LINES)).map(|c| c.subcategories.keys().cloned().collect()).unwrap_or_default()
     }
 
+    /// How many detail lines and region edges are drawn with each line style.
+    pub fn line_style_usage(&self) -> BTreeMap<String, usize> {
+        let mut out = BTreeMap::new();
+        for (_, e) in self.iter() {
+            match e {
+                Element::DetailLine(l) => *out.entry(l.style.clone()).or_insert(0) += 1,
+                Element::DetailRegion(r) => {
+                    for ed in r.loops.iter().flatten() {
+                        *out.entry(ed.subcategory.clone()).or_insert(0) += 1;
+                    }
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    /// Rename a line style (a subcategory of Lines in Object Styles); the detail lines and region edges drawn with it
+    /// keep it. One undo step. Built-in styles keep their names.
+    pub fn rename_line_style(&mut self, old: &str, new: &str) -> Result<(), String> {
+        let new = new.trim();
+        let (osid, mut os) = self.object_styles().map(|(i, s)| (i, s.clone())).ok_or("the project has no object styles")?;
+        let lines = os.annotation.get_mut(LINES).ok_or("the project has no Lines category")?;
+        let st = lines.subcategories.get(old).cloned().ok_or_else(|| format!("there is no line style named '{old}'"))?;
+        if st.built_in {
+            return Err(format!("'{old}' is built in and keeps its name"));
+        }
+        if new.is_empty() {
+            return Err("a line style needs a name".into());
+        }
+        if new == old {
+            return Ok(());
+        }
+        if lines.subcategories.contains_key(new) || new == INVISIBLE_LINES {
+            return Err(format!("a line style named '{new}' already exists"));
+        }
+        lines.subcategories.remove(old);
+        lines.subcategories.insert(new.to_string(), st);
+        self.restyle_lines(osid, os, old, new, "Rename line style")
+    }
+
+    /// Delete a line style; the detail lines and region edges drawn with it take `replacement`. One undo step.
+    pub fn delete_line_style(&mut self, name: &str, replacement: &str) -> Result<(), String> {
+        let (osid, mut os) = self.object_styles().map(|(i, s)| (i, s.clone())).ok_or("the project has no object styles")?;
+        let lines = os.annotation.get_mut(LINES).ok_or("the project has no Lines category")?;
+        let st = lines.subcategories.get(name).ok_or_else(|| format!("there is no line style named '{name}'"))?;
+        if st.built_in {
+            return Err(format!("'{name}' is built in and cannot be deleted"));
+        }
+        if replacement == name || !lines.subcategories.contains_key(replacement) {
+            return Err(format!("'{replacement}' is not another line style"));
+        }
+        lines.subcategories.remove(name);
+        self.restyle_lines(osid, os, name, replacement, "Delete line style")
+    }
+
+    // the new Object Styles, and every detail line and region edge drawn with `from` now drawn with `to`, in one step
+    fn restyle_lines(&mut self, osid: Id, os: crate::styles::ObjectStyles, from: &str, to: &str, what: &str) -> Result<(), String> {
+        let mut changed: Vec<(Id, Element)> = vec![];
+        for (id, e) in self.iter() {
+            match e {
+                Element::DetailLine(l) if l.style == from => changed.push((id, Element::DetailLine(DetailLine { style: to.into(), ..l.clone() }))),
+                Element::DetailRegion(r) if r.loops.iter().flatten().any(|ed| ed.subcategory == from) => {
+                    let mut r = r.clone();
+                    for ed in r.loops.iter_mut().flatten() {
+                        if ed.subcategory == from {
+                            ed.subcategory = to.into();
+                        }
+                    }
+                    changed.push((id, Element::DetailRegion(r)));
+                }
+                _ => {}
+            }
+        }
+        self.transact(what, |tx| {
+            tx.update(osid, Element::ObjectStyles(os))?;
+            for (id, e) in changed {
+                tx.update(id, e)?;
+            }
+            Ok(())
+        })
+    }
+
     /// The filled region types and text note types a project starts with (and an older project gets).
     pub fn ensure_detail_defaults(&mut self) {
         let regions = self.filled_region_types().is_empty();
@@ -316,8 +400,8 @@ impl Document {
 
     fn check_detail_view(&self, view: Id) -> Result<(), String> {
         match self.view(view) {
-            Some(v) if v.view_kind.is_plan() => Ok(()),
-            Some(_) => Err("detail lines and regions can only be drawn in plan views for now".into()),
+            Some(v) if v.view_kind != crate::view::ViewKind::ThreeD => Ok(()),
+            Some(_) => Err("detail lines, regions and text notes are drawn in 2D views, not 3D views".into()),
             None => Err("no such view".into()),
         }
     }
@@ -575,13 +659,39 @@ mod tests {
         d.undo().unwrap();
         assert_eq!(d.detail_lines(v).len(), 2, "one undo step takes the change back");
         assert!(d.set_detail_lines(v, vec![line(None, p(0.0, 0.0), p(10.0, 0.0), "No Such Style")]).unwrap_err().contains("line style"));
-        let elev = d.views().into_iter().find(|(_, v)| !v.view_kind.is_plan()).unwrap().0;
-        assert!(d.set_detail_lines(elev, vec![]).is_err());
+        // elevations and sections take detail lines too (in the view's own frame); 3D views do not
+        let elev = d.views().into_iter().find(|(_, v)| v.view_kind == crate::view::ViewKind::Elevation).unwrap().0;
+        let ide = d.set_detail_lines(elev, vec![line(None, p(0.0, 0.0), p(1000.0, 500.0), "Thin Lines")]).unwrap();
+        assert_eq!(d.detail_lines(elev).len(), 1);
+        assert_eq!(d.detail_paths(elev, 50.0, true, true).strokes[0].pts[1], [20.0, 10.0]);
+        d.delete(&ide).unwrap();
+        let three = d.views().into_iter().find(|(_, v)| v.view_kind == crate::view::ViewKind::ThreeD).unwrap().0;
+        assert!(d.set_detail_lines(three, vec![]).is_err());
         // nothing changed: no undo step
         let rev = d.revision();
         let same: Vec<DetailLineEdit> = d.detail_lines(v).iter().map(|(i, l)| line(Some(*i), l.curve.start(), l.curve.end(), &l.style)).collect();
         d.set_detail_lines(v, same).unwrap();
         assert_eq!(d.revision(), rev);
+    }
+
+    #[test]
+    fn line_styles_rename_and_delete_with_the_lines_drawn_in_them() {
+        let mut d = Document::new_project();
+        let v = plan(&d);
+        d.patch_object_styles(&serde_json::json!({ "annotation": { "Lines": { "subcategories": { "Hatch": { "projection_weight": 2, "cut_weight": null, "color": [0, 0, 255], "pattern": "Solid", "material": null, "subcategories": {}, "built_in": false } } } } })).unwrap();
+        let ids = d.set_detail_lines(v, vec![DetailLineEdit { id: None, curve: Curve::line(p(0.0, 0.0), p(1000.0, 0.0)), style: "Hatch".into() }]).unwrap();
+        assert_eq!(d.line_style_usage()["Hatch"], 1);
+        assert!(d.rename_line_style("Thin Lines", "Fine").is_err(), "built-in styles keep their names");
+        assert!(d.rename_line_style("Hatch", "Medium Lines").is_err(), "names are unique");
+        d.rename_line_style("Hatch", "Hatching").unwrap();
+        assert_eq!(d.detail_lines(v)[0].1.style, "Hatching");
+        assert!(d.line_styles().contains(&"Hatching".to_string()) && !d.line_styles().contains(&"Hatch".to_string()));
+        d.delete_line_style("Hatching", "Wide Lines").unwrap();
+        assert_eq!(d.detail_lines(v)[0].1.style, "Wide Lines");
+        assert!(d.delete_line_style("Thin Lines", "Wide Lines").is_err());
+        d.undo().unwrap();
+        assert_eq!(d.detail_lines(v)[0].1.style, "Hatching", "one undo step brings the style and its lines back");
+        let _ = ids;
     }
 
     #[test]

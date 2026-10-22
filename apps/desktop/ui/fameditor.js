@@ -3144,7 +3144,8 @@ const FamModel = (() => {
       if (at === undefined) continue;
       segs.push(p.axis === V.h ? [at, -R, at, R, 2] : [-R, at, R, at, 2]);
     }
-    for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) for (const r of pc.rings) for (let i = 0; i < r.length; i++) { const a = r[i], b = r[(i + 1) % r.length]; segs.push([a[0], a[1], b[0], b[1]]); }
+    // the forms' edges are faces: they have extensions
+    for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) for (const r of pc.rings) for (let i = 0; i < r.length; i++) { const a = r[i], b = r[(i + 1) % r.length]; segs.push([a[0], a[1], b[0], b[1], 3]); }
     for (const y of S.pv.syms || []) if (y.view === S.view) for (let i = 0; i + 1 < y.points.length; i++) segs.push([...y.points[i], ...y.points[i + 1]]);
     Snap.build(segs, "family");
     S.snapKey = key;
@@ -3152,7 +3153,7 @@ const FamModel = (() => {
   function skSnap(sx, sy) {
     skSnapIndex();
     const w = s2w(sx, sy);
-    return Snap.resolve({ x: w.u, y: w.v }, { zoom: cam().k, last: FSk.last(), extra: FSk.segs(), points: FSk.points(), cycle: S.snapCycle || 0, shift: !!S.shift, gridStep: 0 });
+    return Snap.resolve({ x: w.u, y: w.v }, { zoom: cam().k, last: FSk.last(), extra: FSk.segs(), points: FSk.points(), track: FSk.trackPoints(), cycle: S.snapCycle || 0, shift: !!S.shift, gridStep: 0 });
   }
   FSk.attach({
     get ctx() { return S && S.ctx; },
@@ -3347,6 +3348,7 @@ const FamModel = (() => {
     const h = S.skHover;
     if (h && FSk.wantsSnap() && !["free", "length"].includes(h.kind)) {
       const p = w2s(h.x, h.y);
+      Snap.drawGuides(ctx, h, (q) => w2s(q.x, q.y));
       Snap.glyph(ctx, h.kind, p.x, p.y);
       if (h.label) { ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = "#d4572f"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(h.label, p.x + 10, p.y + 8); }
     }

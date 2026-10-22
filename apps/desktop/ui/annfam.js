@@ -759,7 +759,7 @@ const AnnModel = (() => {
     for (let v = -REF; v < REF; v += 2000) { segs.push([v, 0, v + 2000, 0, 2]); segs.push([0, v, 0, v + 2000, 2]); }
     for (const s of otherStrokes()) {
       const q = s.pts.map(([x, y]) => [x * U, y * U]), straight = q.length === 2 && !s.closed;
-      for (let i = 0; i + 1 < q.length; i++) segs.push(straight ? [...q[i], ...q[i + 1]] : [...q[i], ...q[i + 1], 2]);
+      for (let i = 0; i + 1 < q.length; i++) segs.push(straight ? [...q[i], ...q[i + 1], 4] : [...q[i], ...q[i + 1], 2]);
       if (!straight && !s.closed) pts.push({ x: q[0][0], y: q[0][1], kind: "endpoint" }, { x: q[q.length - 1][0], y: q[q.length - 1][1], kind: "endpoint" });
     }
     Snap.build(segs, "annotation");
@@ -768,7 +768,7 @@ const AnnModel = (() => {
   function skSnap(sx, sy) {
     skSnapIndex();
     const w = toPaper(sx, sy);
-    return Snap.resolve({ x: w.x * U, y: w.y * U }, { zoom: S.view.k / U, last: ASk.last(), extra: ASk.segs(), points: [...ASk.points(), ...(S.snapPts || [])], cycle: S.snapCycle || 0, shift: !!S.shift, gridStep: 0, lengths: LENGTHS });
+    return Snap.resolve({ x: w.x * U, y: w.y * U }, { zoom: S.view.k / U, last: ASk.last(), extra: ASk.segs(), points: [...ASk.points(), ...(S.snapPts || [])], track: ASk.trackPoints(), cycle: S.snapCycle || 0, shift: !!S.shift, gridStep: 0, lengths: LENGTHS });
   }
   ASk.attach({
     get ctx() { return S && S.ctx; },
@@ -956,6 +956,7 @@ const AnnModel = (() => {
       const h = S.skHover;
       if (h && ASk.wantsSnap() && !["free", "length"].includes(h.kind)) {
         const p = toScreen(h.x / U, h.y / U);
+        Snap.drawGuides(ctx, h, (q) => toScreen(q.x / U, q.y / U));
         Snap.glyph(ctx, h.kind, p.x, p.y);
         if (h.label) { ctx.font = "11px system-ui, sans-serif"; ctx.fillStyle = "#d4572f"; ctx.textAlign = "left"; ctx.textBaseline = "top"; ctx.fillText(h.label, p.x + 10, p.y + 8); }
       }

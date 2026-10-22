@@ -74,6 +74,33 @@ const ICONS = {
   revCloud: '<path class="a2" d="M7 18.5a3 3 0 0 1-1-5.8 3 3 0 0 1 4-3.7 3.5 3.5 0 0 1 6.5 0 3 3 0 0 1 3.5 4 3 3 0 0 1-1.5 5.5z"/>',
   text: '<path d="M5 19L12 4l7 15M7.6 13.5h8.8"/><path class="a2" d="M4 21.5h16"/>',
   keynote: '<rect x="12" y="3" width="9" height="9"/><path class="a2" d="M12 12L4 20M4 20h3.5M4 20v-3.5"/>',
+  // line styles: lines of different weights and patterns, one in the accent
+  lineStyles: '<path d="M3 5h18"/><path class="a2" d="M3 10.5h18"/><path d="M3 15.5h18" stroke-dasharray="3 2"/><path d="M3 20h18" stroke-width="2.6"/>',
+  // text note leaders: none, one segment, two segments, curved; the arrowhead filled in the accent
+  leaderNone: '<path d="M6 19l6-14 6 14M8.4 14h7.2"/>',
+  leaderOne: '<path d="M12 17l4-10 4 10M13.4 13.5h5.2"/><path class="a2" d="M10.5 10L4.3 18.6"/><path class="ff" d="M3 20.4l2.7-2 -1.6-1.2z"/>',
+  leaderTwo: '<path d="M12 17l4-10 4 10M13.4 13.5h5.2"/><path class="a2" d="M11 10H7.4l-3.3 8.3"/><path class="ff" d="M3 20.4l2.1-2.6-1.8-.7z"/>',
+  leaderArc: '<path d="M12 17l4-10 4 10M13.4 13.5h5.2"/><path class="a2" d="M11 10c-4.5 0-6.8 3-7.3 7.4"/><path class="ff" d="M3.6 20.5l1.2-3.1H2.5z"/>',
+  // where a leader meets the text: the left or right side, at its top, middle or bottom
+  attachLT: '<path d="M10 6h11M10 12h11M10 18h8"/><path class="a2" d="M3 6h4.5"/><circle class="ff" cx="8" cy="6" r="1.6"/>',
+  attachLM: '<path d="M10 6h11M10 12h11M10 18h8"/><path class="a2" d="M3 12h4.5"/><circle class="ff" cx="8" cy="12" r="1.6"/>',
+  attachLB: '<path d="M10 6h11M10 12h11M10 18h8"/><path class="a2" d="M3 18h4.5"/><circle class="ff" cx="8" cy="18" r="1.6"/>',
+  attachRT: '<path d="M3 6h11M3 12h11M6 18h8"/><path class="a2" d="M16.5 6H21"/><circle class="ff" cx="16" cy="6" r="1.6"/>',
+  attachRM: '<path d="M3 6h11M3 12h11M6 18h8"/><path class="a2" d="M16.5 12H21"/><circle class="ff" cx="16" cy="12" r="1.6"/>',
+  attachRB: '<path d="M3 6h11M3 12h11M6 18h8"/><path class="a2" d="M16.5 18H21"/><circle class="ff" cx="16" cy="18" r="1.6"/>',
+  // paragraph alignment: across (left, centre, right) and up and down (top, middle, bottom)
+  alignLeft: '<path d="M4 6h16M4 14h16"/><path class="a2" d="M4 10h10M4 18h10"/>',
+  alignCenter: '<path d="M4 6h16M4 14h16"/><path class="a2" d="M7 10h10M7 18h10"/>',
+  alignRight: '<path d="M4 6h16M4 14h16"/><path class="a2" d="M10 10h10M10 18h10"/>',
+  alignTop: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="2 2"/><path class="a2" d="M7 7.5h10M7 11h10"/>',
+  alignMiddle: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="2 2"/><path class="a2" d="M7 10.25h10M7 13.75h10"/>',
+  alignBottom: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="2 2"/><path class="a2" d="M7 13h10M7 16.5h10"/>',
+  // adding a leader to the selected note on its left or right side, straight or an arc; taking the last one off
+  leaderAddL: '<path d="M12 17l4-10 4 10M13.4 13.5h5.2"/><path class="a2" d="M10.5 10L4.3 18.6"/><path class="ff" d="M3 20.4l2.7-2 -1.6-1.2z"/><path class="a" d="M5 2.5v6M2 5.5h6"/>',
+  leaderAddR: '<path d="M4 17l4-10 4 10M5.4 13.5h5.2"/><path class="a2" d="M13.5 10l6.2 8.6"/><path class="ff" d="M21 20.4l-2.7-2 1.6-1.2z"/><path class="a" d="M19 2.5v6M16 5.5h6"/>',
+  leaderAddArcL: '<path d="M12 17l4-10 4 10M13.4 13.5h5.2"/><path class="a2" d="M11 10c-4.5 0-6.8 3-7.3 7.4"/><path class="ff" d="M3.6 20.5l1.2-3.1H2.5z"/><path class="a" d="M5 2.5v6M2 5.5h6"/>',
+  leaderAddArcR: '<path d="M4 17l4-10 4 10M5.4 13.5h5.2"/><path class="a2" d="M13 10c4.5 0 6.8 3 7.3 7.4"/><path class="ff" d="M20.4 20.5l-1.2-3.1h2.3z"/><path class="a" d="M19 2.5v6M16 5.5h6"/>',
+  leaderRemove: '<path d="M12 17l4-10 4 10M13.4 13.5h5.2"/><path class="a2" d="M10.5 10L4.3 18.6"/><path class="ff" d="M3 20.4l2.7-2 -1.6-1.2z"/><path class="a" d="M2 5.5h6"/>',
   symbol: '<circle cx="12" cy="12" r="8"/><path class="af" d="M12 7l4.5 8h-9z"/>',
   // a label: a parameter's text in a dashed placeholder box
   label: '<rect x="3" y="6" width="18" height="12" rx="2" stroke-dasharray="3 2"/><path class="a2" d="M8 15l4-7 4 7M9.6 12.5h4.8"/>',
@@ -227,7 +254,7 @@ const ICON_ALIAS = {
   "v-filters": "filters", "v-template": "template",
   // manage
   "m-materials": "materials", "m-units": "units", "m-params": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases",
-  "m-revisions": "revisions", "m-snaps": "snaps", "m-lineweights": "lineWeights", "m-linepatterns": "linePatterns", "m-fillpatterns": "fillPatterns",
+  "m-revisions": "revisions", "m-snaps": "snaps", "m-linestyles": "lineStyles", "m-lineweights": "lineWeights", "m-linepatterns": "linePatterns", "m-fillpatterns": "fillPatterns",
   "m-tempdim": "tempDim", "m-annfam": "annFamily", "m-families": "families", "m-sheets": "exportSheets",
   // modify
   mv: "move", cp: "copy", ro: "rotate", mi: "mirror", al: "align", of: "offset", tr: "trim", sp: "split", ar: "array", sc: "scale",

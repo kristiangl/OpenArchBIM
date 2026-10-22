@@ -209,6 +209,134 @@
     }, { wide: true });
   }
 
+  // ------------------------------------------------------------------ Line Styles
+  // Manage > Additional Settings > Line Styles: the Lines category of Object Styles and its subcategories, the line
+  // styles that detail lines and region edges are drawn with. Changes go into the model as they are made, inside an
+  // edit session: OK and Apply keep them as one undo step, Cancel undoes them. New adds a style; Delete and Rename
+  // work on the ticked rows (Rename on one). Built-in styles cannot be deleted or renamed; the lines drawn with a
+  // deleted style take another one.
+  async function openLineStyles() {
+    let std = await run("standards", {});
+    if (!std) return;
+    const ses = await editSession("Line Styles", true);
+    if (!ses) return;
+    let usage = await Backend.call("line_style_usage").catch(() => ({}));
+    const patterns = std.line_patterns.map((p) => p.pattern.name);
+    const ticked = new Set();
+    let search = "", expanded = true;
+    openModal("Line Styles", (body, foot, close) => {
+      const searchIn = h("input", { className: "ls-search", value: "" });
+      const host = h("div", { className: "vg-host ls-host" }), msg = h("div", { className: "modal-msg" });
+      const lines = () => std.object_styles.annotation.Lines || { subcategories: {} };
+      const reload = async () => { std = await Backend.call("standards"); usage = await Backend.call("line_style_usage").catch(() => ({})); render(); };
+      const patch = async (p) => {
+        const err = await Backend.call("patch_object_styles", { patch: { annotation: { Lines: p } } }).then(() => null, errText);
+        msg.textContent = err || "";
+        await reload();
+      };
+      const call = async (m, p) => { const err = await Backend.call(m, p).then(() => null, errText); msg.textContent = err || ""; await reload(); return !err; };
+      const finish = async (how) => {
+        if (how === "cancel") { await ses.cancel(); close(); return; }
+        await ses.apply();
+        if (how === "ok") close();
+      };
+      body.closest(".modal-back").onEscape = () => finish("cancel");
+      searchIn.oninput = () => { search = searchIn.value.trim().toLowerCase(); render(); };
+
+      const row = (name, st, sub) => {
+        const tr = h("tr", { className: sub && ticked.has(name) ? "on" : "" });
+        const first = h("td");
+        if (sub) {
+          first.style.paddingLeft = "24px";
+          const tick = h("input", { type: "checkbox", checked: ticked.has(name), title: "Tick to delete or rename" });
+          tick.onchange = () => { if (tick.checked) ticked.add(name); else ticked.delete(name); render(); };
+          first.append(h("label", {}, tick, name));
+        } else {
+          const t = h("button", { className: "twisty", textContent: expanded ? "▾" : "▸" });
+          t.onclick = () => { expanded = !expanded; render(); };
+          first.append(t, " ", name);
+        }
+        const set = (field, v) => patch(sub ? { subcategories: { [name]: { [field]: v } } } : { [field]: v });
+        tr.append(first);
+        tr.append(h("td", {}, select(weights(), String(st.projection_weight), (v) => set("projection_weight", Number(v)))));
+        tr.append(h("td", {}, colorInput(st.color, (c) => set("color", c))));
+        tr.append(h("td", {}, select(patterns, st.pattern, (v) => set("pattern", v))));
+        return tr;
+      };
+      function render() {
+        const L = lines();
+        for (const n of [...ticked]) if (!L.subcategories[n]) ticked.delete(n);
+        const table = h("table", { className: "vg" });
+        const head = table.createTHead();
+        const h1 = head.insertRow(), h2 = head.insertRow();
+        h1.append(h("th", { textContent: "Category", rowSpan: 2 }), h("th", { textContent: "Line Weight" }), h("th", { textContent: "Line Color", rowSpan: 2 }), h("th", { textContent: "Line Pattern", rowSpan: 2 }));
+        h2.append(h("th", { textContent: "Projection" }));
+        const tb = table.createTBody();
+        tb.append(row("Lines", L, false));
+        if (expanded) {
+          for (const [n, st] of Object.entries(L.subcategories)) {
+            if (search && !n.toLowerCase().includes(search)) continue;
+            tb.append(row(n, st, true));
+          }
+        }
+        host.replaceChildren(table);
+        del.disabled = !ticked.size || [...ticked].some((n) => L.subcategories[n].built_in);
+        ren.disabled = ticked.size !== 1 || L.subcategories[[...ticked][0]].built_in;
+      }
+      // a small dialog over this one: its fields, and OK runs `ok` (which says whether it worked)
+      const ask = (title, fields, ok) => openModal(title, (b2, f2, close2) => {
+        b2.append(...fields.map(([label, ctl]) => h("div", { className: "new-row" }, h("span", { textContent: label }), ctl)));
+        f2.append(button("Cancel", close2), button("OK", async () => { if (await ok()) close2(); }, true));
+        setTimeout(() => { const i = b2.querySelector("input"); if (i) { i.focus(); i.select(); } }, 0);
+      });
+      const others = (except) => Object.keys(lines().subcategories).filter((n) => !except.includes(n));
+      const fallback = (except) => (others(except).includes("Thin Lines") ? "Thin Lines" : others(except)[0]);
+      const add = h("button", { textContent: "New" }), del = h("button", { textContent: "Delete" }), ren = h("button", { textContent: "Rename" });
+      add.onclick = () => {
+        const name = h("input", { value: "New line style" });
+        ask("New Subcategory", [["Name", name], ["Subcategory of", h("span", { textContent: "Lines" })]], async () => {
+          const n = name.value.trim();
+          if (!n) { msg.textContent = "A line style needs a name."; return false; }
+          if (lines().subcategories[n] || n === "<Invisible lines>") { msg.textContent = `A line style named '${n}' already exists.`; return false; }
+          await patch({ subcategories: { [n]: { projection_weight: 1, cut_weight: null, color: [0, 0, 0], pattern: "Solid", material: null, subcategories: {}, built_in: false } } });
+          return true;
+        });
+      };
+      del.onclick = async () => {
+        const names = [...ticked], used = names.filter((n) => usage[n]);
+        const go = async (to) => { for (const n of names) if (!(await call("delete_line_style", { name: n, replace_with: to }))) return false; ticked.clear(); render(); return true; };
+        if (!used.length) { await go(fallback(names)); return; }
+        // lines are drawn with them: they take the style picked here
+        const to = select(others(names), fallback(names), () => {});
+        const count = used.reduce((t, n) => t + usage[n], 0);
+        ask("Delete Line Style", [[`${count} line${count === 1 ? "" : "s"} drawn with ${used.map((n) => `'${n}'`).join(", ")} will use`, to]], () => go(to.value));
+      };
+      ren.onclick = () => {
+        const from = [...ticked][0], to = h("input", { value: from });
+        ask("Rename", [["From", h("span", { textContent: from })], ["To", to]], async () => {
+          const ok = await call("rename_line_style", { from, to: to.value });
+          if (ok) { ticked.clear(); ticked.add(to.value.trim()); render(); }
+          return ok;
+        });
+      };
+      const pick = (fn) => () => { const L = lines(); fn(Object.keys(L.subcategories).filter((n) => !search || n.toLowerCase().includes(search))); render(); };
+      const selAll = h("button", { textContent: "Select All" }), selNone = h("button", { textContent: "Select None" }), invert = h("button", { textContent: "Invert" });
+      selAll.onclick = pick((ns) => ns.forEach((n) => ticked.add(n)));
+      selNone.onclick = pick(() => ticked.clear());
+      invert.onclick = pick((ns) => ns.forEach((n) => (ticked.has(n) ? ticked.delete(n) : ticked.add(n))));
+      body.append(
+        h("label", { className: "ls-searchrow" }, "Category name search: ", searchIn),
+        host,
+        h("div", { className: "ls-bottom" },
+          h("div", { className: "row" }, selAll, selNone, invert),
+          h("fieldset", { className: "ls-modify" }, h("legend", { textContent: "Modify Subcategories" }), add, del, ren)),
+        msg,
+      );
+      foot.append(button("OK", () => finish("ok"), true), button("Cancel", () => finish("cancel")), button("Apply", () => finish("apply")));
+      render();
+    }, { wide: true });
+  }
+
   // ------------------------------------------------------------------ Materials
   // Opened on its own (Manage > Materials) it edits the project's materials. Opened to pick one (`pick`), OK also
   // hands back the material selected; `extras` are choices that are not materials, listed first.
@@ -571,5 +699,5 @@
     return result;
   }
 
-  Object.assign(window, { openObjectStyles, openMaterials, openLineWeights, openPatterns, pickMaterial, pickFillPattern, pickerField });
+  Object.assign(window, { openObjectStyles, openLineStyles, openMaterials, openLineWeights, openPatterns, pickMaterial, pickFillPattern, pickerField });
 })();

@@ -1,6 +1,8 @@
 // Elevation views: the model seen from an elevation marker, drawn back to front, with the level
 // lines across it. Data comes from the `elevation` command; picking and editing go through callbacks
-// so the rest of the app treats a click here like a click in plan.
+// so the rest of the app treats a click here like a click in plan. Sections are drawn here too.
+// Detail lines, regions and text notes (details.js) live in the view's own frame: x along the view, y up. The sketch
+// session (sketch.js) is hosted here while Detail Line or a region is drawn in the view.
 const Elev = (() => {
   const canvas = document.getElementById("elev");
   const ctx = canvas.getContext("2d");
@@ -11,7 +13,7 @@ const Elev = (() => {
   };
   let data = null;
   let cam = { u: 0, z: 1500, s: 0.1 }; // centre (mm along the view's right axis, mm of height) and pixels per mm
-  let tool = "select"; // select | level | grid | move | copy | align
+  let tool = "select"; // select | level | grid | move | copy | align | text | noteleader | sketch
   let sel = new Set();
   let hoverIds = null;
   let hoverLevel = null;
@@ -32,6 +34,10 @@ const Elev = (() => {
   let lastMove = null;
   let tabIdx = 0; // which of the things under the cursor Tab has stepped to
   let levelPins = []; // screen position of each padlock between aligned level ends
+  let hover = null; // the snapped point under the cursor while a sketch or the Text tool is on
+  let snapCycle = 0; // Tab steps through the snap points in reach
+  let band = null; // a window or crossing box in the sketch's Select tool
+  let detDrag = null; // selected detail items carried by a drag: { ids, p0, d }
   const EDIT = ["move", "copy", "align"];
   const isEdit = () => EDIT.includes(tool);
 
@@ -190,7 +196,7 @@ const Elev = (() => {
   // everything under the cursor that a click could pick, nearest first: elements drawn there, then a level (a grid crosses
   // it), then a grid. Tab steps through them.
   function candIds(sx, sy) {
-    const out = itemsAt(sx, sy), lid = levelAt(sx, sy), gid = gridAt(sx, sy);
+    const out = [...detailAt(sx, sy), ...itemsAt(sx, sy)], lid = levelAt(sx, sy), gid = gridAt(sx, sy);
     if (lid !== null) out.push(lid);
     if (gid !== null) out.push(gid);
     return out;
@@ -595,6 +601,7 @@ const Elev = (() => {
         ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       } else {
         for (const it of data.items) if (it.id === id) for (const poly of it.polys) { polyPath(poly.map(([u, z]) => [u + du, z + dz])); ctx.stroke(); }
+        for (const e of Det.elements()) if (e.id === id) for (const r of e.rings || [e.ring]) { polyPath(r.map(([u, z]) => [u + du, z + dz])); ctx.stroke(); }
       }
     }
     ctx.restore();
@@ -709,6 +716,8 @@ const Elev = (() => {
       ctx.save(); ctx.strokeStyle = mix(text, viewBg, 0.45); ctx.lineWidth = 1; ctx.setLineDash([10, 4, 2, 4]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
     }
+    const hov = new Set(tool === "select" && hoverIds ? hoverIds : []);
+    Det.drawItems(sel, hov, accent);
     drawGrids();
     drawCrop();
     for (const l of data.levels) {
@@ -750,8 +759,28 @@ const Elev = (() => {
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
       label(String(Math.round(u)), a.x + 8, a.y + 12, accent, "left", true);
     }
+    Det.drawNotes(sel, hov, accent, tool === "select");
+    if (tool === "text") Det.preview(hover);
+    if (detDrag) drawGhost(detDrag.d.x, detDrag.d.y);
     drawEdit();
     drawDims();
+    if (tool === "sketch") Sketch.draw(ctx);
+    if (band) {
+      const x = Math.min(band.x0, band.x1), y = Math.min(band.y0, band.y1), win = band.x1 >= band.x0;
+      ctx.save(); ctx.strokeStyle = win ? accent : "#3c965a"; ctx.lineWidth = 1.2; ctx.setLineDash(win ? [] : [6, 4]);
+      ctx.strokeRect(x + 0.5, y + 0.5, Math.abs(band.x1 - band.x0), Math.abs(band.y1 - band.y0)); ctx.restore();
+    }
+    // the snap under the cursor, with its name
+    if (hover && hover.label && (tool === "text" || tool === "noteleader" || (tool === "sketch" && Sketch.wantsSnap()))) {
+      const s2 = toScreen(hover.x, hover.y);
+      Snap.drawGuides(ctx, hover, (p) => toScreen(p.x, p.y));
+      Snap.glyph(ctx, hover.kind, s2.x, s2.y);
+      ctx.font = "11px system-ui, sans-serif";
+      const tw = ctx.measureText(hover.label).width;
+      ctx.fillStyle = "#fffbe6"; ctx.strokeStyle = "#999"; ctx.lineWidth = 1;
+      ctx.fillRect(s2.x + 10, s2.y + 8, tw + 8, 16); ctx.strokeRect(s2.x + 10.5, s2.y + 8.5, tw + 8, 16);
+      ctx.fillStyle = "#222"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.fillText(hover.label, s2.x + 14, s2.y + 20);
+    }
     label(data.name, 10, 14, css("--muted"), "left", true);
   }
 
@@ -788,7 +817,12 @@ const Elev = (() => {
     canvas.setPointerCapture(e.pointerId);
     if (e.button === 1 || e.button === 2) { pan = { x: e.clientX, y: e.clientY, moved: false, button: e.button }; return; }
     down = { x: e.offsetX, y: e.offsetY };
+    if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
+    if (tool === "select" && data && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data) {
+      // pressing on a selected detail line, region or text note and moving carries the selected ones
+      const dids = new Set(Det.elements().map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
+      if (at.some((i) => sel.has(i)) && [...sel].every((i) => dids.has(i))) down.drag = { ids: [...sel], p0: snap(e.offsetX, e.offsetY) };
       const cg = cropBoxes.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (cg) { cropDrag = { side: cg.side, v: 0, moved: false }; down = null; return; }
       const pin = levelPins.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 9);
@@ -819,6 +853,28 @@ const Elev = (() => {
       return;
     }
     if (!data) return;
+    if (Det.dragging) { Det.gripMove(e.offsetX, e.offsetY); return; }
+    if (Sketch.gripDragging && tool === "sketch") { hover = snap(e.offsetX, e.offsetY); Sketch.gripMove(e.offsetX, e.offsetY, hover); return; }
+    const moved = down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) > 5;
+    if (moved && down.drag && !detDrag) detDrag = { ids: down.drag.ids, p0: down.drag.p0, d: { x: 0, y: 0 } };
+    if (detDrag) {
+      hover = snap(e.offsetX, e.offsetY);
+      detDrag.d = { x: hover.x - detDrag.p0.x, y: hover.y - detDrag.p0.y };
+      if (e.shiftKey) { if (Math.abs(detDrag.d.x) >= Math.abs(detDrag.d.y)) detDrag.d.y = 0; else detDrag.d.x = 0; }
+      render();
+      return;
+    }
+    if (moved && !band && tool === "sketch" && Sketch.canBand()) band = { x0: down.x, y0: down.y, x1: e.offsetX, y1: e.offsetY };
+    if (band) { band.x1 = e.offsetX; band.y1 = e.offsetY; render(); return; }
+    if (!lastMove || Math.hypot(e.offsetX - lastMove.x, e.offsetY - lastMove.y) > 3) snapCycle = 0;
+    if (tool === "sketch" || tool === "text" || tool === "noteleader") {
+      lastMove = { x: e.offsetX, y: e.offsetY };
+      hover = tool === "sketch" ? snap(e.offsetX, e.offsetY) : Det.toolSnap(e.offsetX, e.offsetY);
+      cb.cursor(`${Math.round(hover.x)}, ${fmtElev(hover.y - datum())}`);
+      if (tool === "sketch") Sketch.move(hover, e.offsetX, e.offsetY);
+      render();
+      return;
+    }
     if (cropDrag) {
       const w = toWorld(e.offsetX, e.offsetY), s = cropDrag.side;
       cropDrag.moved = true;
@@ -854,6 +910,21 @@ const Elev = (() => {
     render();
   });
   canvas.addEventListener("pointerup", (e) => {
+    if (Det.dragging) { down = null; Det.gripUp(); return; }
+    if (Sketch.gripDragging && tool === "sketch") { down = null; Sketch.gripUp(); return; }
+    if (detDrag) {
+      const d = detDrag; detDrag = null; down = null; hover = null;
+      if (Math.hypot(d.d.x, d.d.y) > 0.5) cb.moveBy(d.ids, Math.round(d.d.x * 1000) / 1000, Math.round(d.d.y * 1000) / 1000, !!e.ctrlKey);
+      render();
+      return;
+    }
+    if (band) {
+      const b = band; band = null; down = null;
+      const a = W(b.x0, b.y0), c = W(b.x1, b.y1);
+      Sketch.bandSelect({ x0: Math.min(a.x, c.x), y0: Math.min(a.y, c.y), x1: Math.max(a.x, c.x), y1: Math.max(a.y, c.y) }, b.x1 >= b.x0, e);
+      render();
+      return;
+    }
     if (cropDrag) {
       const c = cropDrag; cropDrag = null;
       if (c.moved) cb.cropSection(c.side, c.v);
@@ -885,6 +956,7 @@ const Elev = (() => {
     if (pan) {
       const wasClick = !pan.moved && pan.button === 2;
       pan = null;
+      if (wasClick && tool === "sketch") { Sketch.rightClick(); return; }
       if (wasClick && tool !== "select") setTool("select");
       return;
     }
@@ -899,6 +971,19 @@ const Elev = (() => {
       return;
     }
     if (down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5) {
+      if (tool === "sketch") {
+        const p = snap(e.offsetX, e.offsetY);
+        Snap.clearOverride(); snapCycle = 0; down = null;
+        Sketch.click(p, e.offsetX, e.offsetY, e);
+        return;
+      }
+      if (tool === "text" || tool === "noteleader") {
+        const p = Det.toolSnap(e.offsetX, e.offsetY);
+        Snap.clearOverride(); snapCycle = 0; down = null;
+        if (tool === "noteleader") Det.leaderClick(p); else Det.toolClick(p);
+        cb.prompt(promptText()); render();
+        return;
+      }
       if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
       else if (isEdit()) editClick(e);
       else if (tool === "level") {
@@ -910,7 +995,16 @@ const Elev = (() => {
     down = null;
   });
   canvas.addEventListener("dblclick", (e) => {
+    if (tool === "sketch") { Sketch.dblclick(); return; }
     if (tool !== "select" || !data) return;
+    // a text note opens its text; a detail line, Detail Line with it selected; a region, Edit Boundary
+    const did = detailAt(e.offsetX, e.offsetY)[0];
+    if (did !== undefined) {
+      if ((data.text_notes || []).some((x) => x.id === did)) cb.editNote(did);
+      else if ((data.detail_lines || []).some((x) => x.id === did)) cb.editDetail(did);
+      else if ((data.regions || []).some((x) => x.id === did)) cb.editRegion(did);
+      return;
+    }
     const lid = levelAt(e.offsetX, e.offsetY);
     if (lid === null || itemsAt(e.offsetX, e.offsetY).length) return;
     const l = data.levels.find((x) => x.id === lid);
@@ -930,19 +1024,114 @@ const Elev = (() => {
   new ResizeObserver(render).observe(canvas);
 
   function setTool(t) {
-    tool = t; typed = ""; candTab = 0;
+    if (t !== "text") Det.clearPicks();
+    if (t !== "noteleader") Det.stopLeader();
+    tool = t; typed = ""; candTab = 0; hover = null; band = null;
     ed = isEdit() ? newEd() : null;
-    canvas.style.cursor = t === "level" || t === "grid" || isEdit() ? "crosshair" : "default";
+    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch"].includes(t) || isEdit() ? "crosshair" : "default";
     cb.prompt(promptText());
     if (typeof cb.tool === "function") cb.tool(t);
     render();
   }
   function promptText() {
+    if (tool === "sketch") return Sketch.promptText();
+    if (tool === "text" || tool === "noteleader") return Det.promptText(tool);
     if (tool === "level") return typed ? `Elevation ${typed}. Press Enter to place the level, Esc to clear.` : "Level: click at the height of the new level, or type its elevation and press Enter. Esc to finish.";
     if (tool === "grid") return "Grid: click where the grid line goes. It runs away from the view. Esc to finish.";
     if (isEdit()) return editPrompt();
     return "Ready.";
   }
+
+  // ---- detail items, snapping and the sketch's host ------------------------------------------------------------------
+  const P = (p) => toScreen(p.x, p.y);
+  const W = (sx, sy) => { const w = toWorld(sx, sy); return { x: w.u, y: w.z }; };
+  // detail items a sketch here is holding: the view's detail lines while Detail Line is on, a region's edges in Edit Boundary
+  function heldBySketch(x) {
+    if (tool !== "sketch" || !Sketch.active) return false;
+    if (Sketch.kind === "detail") return x.line != null;
+    return Sketch.kind === "region" && Sketch.editingId != null && x.region === Sketch.editingId;
+  }
+  const inRing = (p, r) => {
+    let inside = false;
+    for (let i = 0, j = r.length - 1; i < r.length; j = i++) if ((r[i][1] > p.y) !== (r[j][1] > p.y) && p.x < ((r[j][0] - r[i][0]) * (p.y - r[i][1])) / (r[j][1] - r[i][1]) + r[i][0]) inside = !inside;
+    return inside;
+  };
+  // the detail lines, regions and text notes under the cursor (a region by its inside, holes left out)
+  function detailAt(sx, sy) {
+    if (!data) return [];
+    const p = W(sx, sy), out = [];
+    for (const e of Det.elements()) {
+      const rings = e.rings || [e.ring];
+      const hit = e.kind === "region" ? rings.reduce((n, r) => n + (inRing(p, r) ? 1 : 0), 0) % 2 === 1 : rings.some((r) => inRing(p, r));
+      if (hit && !out.includes(e.id)) out.push(e.id);
+    }
+    return out.reverse(); // the last drawn is on top
+  }
+  // snapping: the edges of everything drawn, the levels and grids, the detail lines
+  let snapPts = [];
+  function buildSnap() {
+    const segs = [];
+    snapPts = [];
+    if (!data) { Snap.build(segs, "elev"); return; }
+    for (const it of data.items) {
+      for (const poly of it.polys) for (let i = 0; i < poly.length; i++) { const a = poly[i], b = poly[(i + 1) % poly.length]; if (Math.hypot(b[0] - a[0], b[1] - a[1]) > 0.5) segs.push([a[0], a[1], b[0], b[1], 3]); }
+      for (const [a, b] of it.lines || []) segs.push([a[0], a[1], b[0], b[1]]);
+    }
+    for (const l of data.levels) segs.push([l.u0, l.z, l.u1, l.z]);
+    for (const g of data.grids || []) segs.push([g.u, g.z0, g.u, g.z1]);
+    const det = data.detail, ds = data.scale || 100;
+    if (det) for (const st of det.strokes) {
+      if (heldBySketch(st)) continue;
+      const q = st.pts.map(([x, y]) => [x * ds, y * ds]), straight = q.length === 2;
+      for (let i = 0; i + 1 < q.length; i++) segs.push(straight ? [...q[i], ...q[i + 1], 4] : [...q[i], ...q[i + 1], 2]);
+      if (!straight && !st.closed) snapPts.push({ x: q[0][0], y: q[0][1], kind: "endpoint" }, { x: q[q.length - 1][0], y: q[q.length - 1][1], kind: "endpoint" });
+    }
+    Snap.build(segs, "elev");
+  }
+  // the snapped point under the cursor; `o` asks for one measured from a point (a text note's leader)
+  function snap(sx, sy, o) {
+    if (Snap.owner !== "elev") buildSnap();
+    const w = W(sx, sy), base = { zoom: cam.s, cycle: snapCycle, shift: !!(mouse && mouse.shift), gridStep: 0 };
+    if (o) return Snap.resolve(w, { ...base, last: o.last || null, extra: [], points: snapPts, hvDeg: o.hvDeg });
+    if (tool === "sketch" && Sketch.active) return Snap.resolve(w, { ...base, last: Sketch.last(), extra: Sketch.segs(), points: [...Sketch.points(), ...snapPts], track: Sketch.trackPoints() });
+    return Snap.resolve(w, { ...base, last: null, extra: [], points: snapPts });
+  }
+  // the model's edges near the cursor, for Pick Lines
+  function edgesNear(sx, sy) {
+    const out = [];
+    for (const it of data.items) for (const poly of it.polys) for (let i = 0; i < poly.length; i++) {
+      const a = poly[i], b = poly[(i + 1) % poly.length], d = segDist(sx, sy, toScreen(a[0], a[1]), toScreen(b[0], b[1]));
+      if (d <= 8) out.push({ d, a: { x: a[0], y: a[1] }, b: { x: b[0], y: b[1] } });
+    }
+    return out.sort((p, q) => p.d - q.d).map(({ a, b }) => ({ a, b }));
+  }
+  const Det = makeDetails({
+    ctx: () => ctx, toScreen: P, toWorld: W, css, render: () => render(),
+    zoom: () => cam.s,
+    scale: () => (data && data.scale) || 100,
+    data: () => data || {},
+    thin: () => Plan.thinLines,
+    held: (x) => heldBySketch(x),
+    snap: (sx, sy, o) => snap(sx, sy, o),
+    options: () => DetailCallbacks.options(),
+    cb: DetailCallbacks,
+  });
+  const elevHost = {
+    get ctx() { return ctx; },
+    get canvas() { return canvas; },
+    size, toScreen: P, toWorld: W, css, render: () => render(),
+    label: (text, at, color) => {
+      ctx.font = "11px system-ui, sans-serif";
+      const m = ctx.measureText(text);
+      ctx.fillStyle = css("--panel"); ctx.fillRect(at.x - m.width / 2 - 3, at.y - 8, m.width + 6, 16);
+      ctx.fillStyle = color; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, at.x, at.y);
+    },
+    scale: () => cam.s,
+    wallAt: () => null, wallById: () => null, wallChain: (id) => [id],
+    edgeAt: (sx, sy) => edgesNear(sx, sy)[0] || null,
+    edgesNear: (sx, sy) => edgesNear(sx, sy),
+    cycleSnap: (d) => { snapCycle += d; if (mouse) { hover = snap(mouse.x, mouse.y); Sketch.move(hover, mouse.x, mouse.y); } render(); },
+  };
 
   function fit() {
     if (!data) return;
@@ -961,9 +1150,10 @@ const Elev = (() => {
     setTool,
     setData(d, refit) {
       data = d;
-      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id)]);
+      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id)]);
       sel = new Set([...sel].filter((i) => ids.has(i)));
       index();
+      buildSnap();
       if (refit) fit();
       render();
     },
@@ -973,7 +1163,39 @@ const Elev = (() => {
     setSelection(ids) { sel = new Set(ids); render(); },
     selection: () => [...sel],
     render,
+    // Detail Line and the regions sketch here when the view is open
+    startSketch(o) {
+      setTool("select");
+      tool = "sketch";
+      sel = new Set();
+      Sketch.attach(elevHost);
+      Sketch.begin(o);
+      buildSnap();
+      canvas.style.cursor = "crosshair";
+      if (typeof cb.tool === "function") cb.tool("sketch");
+      render();
+    },
+    endSketch() { Sketch.end(); setTool("select"); buildSnap(); render(); },
+    get sketching() { return tool === "sketch"; },
+    viewId: () => data && data.view_id,
+    viewScale: () => (data && data.scale) || 100,
+    paperPx: () => ((data && data.scale) || 100) * cam.s,
+    screenOf: (x, y) => toScreen(x, y),
+    canvasRect: () => canvas.getBoundingClientRect(),
+    textNotes: () => (data && data.text_notes) || [],
+    detailLines: () => (data && data.detail_lines) || [],
+    regions: () => (data && data.regions) || [],
+    setEditingNote(id) { Det.setEditing(id); },
+    startNoteLeader(id, side, arc) { setTool("noteleader"); Det.startLeader(id, side, arc); sel = new Set([id]); cb.prompt(promptText()); render(); },
+    noteOptionsChanged() { Det.clearPicks(); cb.prompt(promptText()); render(); },
+    refreshSnap() { if (mouse && (tool === "sketch" || tool === "text")) hover = tool === "sketch" ? snap(mouse.x, mouse.y) : Det.toolSnap(mouse.x, mouse.y); render(); },
     key(e) {
+      // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
+      if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
+      if (tool === "sketch") return Sketch.key(e);
+      if (tool === "text" && e.key === "Escape") { if (Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); } else setTool("select"); return true; }
+      if (tool === "noteleader" && e.key === "Escape") { setTool("select"); return true; }
+      if (detDrag && e.key === "Escape") { detDrag = null; down = null; render(); return true; }
       if (tgrip && e.key === "Escape") { tgrip = null; render(); return true; }
       if (e.key === "Tab" && tool === "select" && lastMove && !drag && !pan && !input) {
         const c = candIds(lastMove.x, lastMove.y);
@@ -1009,6 +1231,7 @@ const Elev = (() => {
     },
     // test hooks
     toScreen: (u, z) => toScreen(u, z),
+    hoverSnap: () => hover,
     levelScreen: (id) => { const l = data.levels.find((x) => x.id === id); return l ? toScreen((l.u0 + l.u1) / 2, l.z) : null; },
     get data() { return data; },
     cropGrips: () => cropBoxes,

@@ -102,9 +102,10 @@ async function renderProperties() {
   if (app.selection.length === 1) d = await run("describe", { id: app.selection[0] });
   else if (app.selection.length > 1) d = await run("describe_multi", { ids: app.selection });
   else if (!app.selection.length && app.browserSel != null && viewById(app.browserSel)) d = await run("describe", { id: app.browserSel });
-  else if (!app.selection.length && Plan.tool === "select" && app.view.kind !== "schedule" && curView()) d = await run("describe", { id: curView().id });
+  // the view's own tool: a plan's, or an elevation's or section's
+  const tool = app.view.kind === "elevation" ? Elev.tool : Plan.tool;
+  if (!app.selection.length && !d && tool === "select" && app.view.kind !== "schedule" && curView()) d = await run("describe", { id: curView().id });
   if (token !== propsRender) return; // a newer render started while this one waited
-  const tool = Plan.tool;
 
   let types = null, current = null, onType = null, title = "No selection";
   const groups = [];

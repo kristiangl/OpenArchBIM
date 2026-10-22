@@ -494,3 +494,17 @@ table.asm-layers select.prio { width: 52px; }
 .ctx-menu button { text-align: left; padding: 4px 12px; border: none; background: none; color: inherit; font: inherit; cursor: pointer; border-radius: 3px; }
 .ctx-menu button:hover:not(:disabled) { background: var(--accent); color: #fff; }
 .ctx-menu button:disabled { color: var(--muted); cursor: default; }
+
+/* Line Styles (Manage > Additional Settings) */
+.ls-searchrow { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
+.ls-search { width: 220px; }
+.ls-host { max-height: 52vh; overflow: auto; }
+.ls-host tr.on td { background: var(--panel-2); }
+.ls-bottom { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; margin-top: 8px; }
+.ls-bottom .row { display: flex; gap: 6px; }
+.ls-modify { display: flex; gap: 6px; padding: 4px 8px 6px; border: 1px solid var(--line); border-radius: 4px; }
+.ls-modify legend { font-size: 11px; color: var(--muted); }
+
+/* ribbon buttons that show only their icon (the text tool's leader, attachment and alignment toggles) */
+#ribbon .cmd.icon-only > span:not(.ico) { display: none; }
+#ribbon .cmd.icon-only { padding: 2px 4px; }

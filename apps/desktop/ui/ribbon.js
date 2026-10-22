@@ -52,9 +52,7 @@ const RIBBON = {
       { id: "det-comp", label: "Component", big: true }, { id: "det-insulation", label: "Insulation", big: true },
       { id: "det-revcloud", label: "Revision Cloud", big: true } ] },
     { label: "Text", items: [
-      { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true },
-      // shown while a text note is selected
-      { id: "text-lead-l", label: "Add Left Leader" }, { id: "text-lead-r", label: "Add Right Leader" }, { id: "text-lead-rm", label: "Remove Last Leader" } ] },
+      { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true } ] },
     { label: "Tag", items: [
       { id: "tag-all", label: "Tag All", big: true }, { id: "tag-cat", label: "Tag by Category", big: true },
       { id: "tag-mat", label: "Material Tag", big: true } ] },
@@ -89,6 +87,7 @@ const RIBBON = {
       { id: "m-styles", label: "Object Styles", big: true }, { id: "m-phases", label: "Phasing", big: true },
       { id: "m-revisions", label: "Revisions", big: true }, { id: "m-snaps", label: "Snaps", big: true } ] },
     { label: "Additional Settings", items: [
+      { id: "m-linestyles", label: "Line Styles", big: true },
       { id: "m-lineweights", label: "Line Weights", big: true }, { id: "m-linepatterns", label: "Line Patterns", big: true },
       { id: "m-fillpatterns", label: "Fill Patterns", big: true }, { id: "m-tempdim", label: "Temporary Dimensions", big: true },
       { id: "m-families", label: "Families", big: true } ] },
