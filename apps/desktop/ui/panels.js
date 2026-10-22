@@ -125,6 +125,10 @@ async function renderProperties() {
     types = app.info.roof_types; current = d.type_id;
     onType = async (id) => { await run("set_roof_type", { id: d.id, type_id: id }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "DetailRegion" && d.type_id != null) {
+    types = app.info.filled_region_types; current = d.type_id;
+    onType = async (id) => { await run("patch_detail_region", { id: d.id, patch: { region_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Grid") {
     types = app.info.grid_types; current = d.type_id;
     onType = async (id) => { await run("patch_grid", { id: d.id, patch: { grid_type: id } }); await refresh(); };
@@ -176,6 +180,13 @@ async function renderProperties() {
     onType = (id) => { app.floorTypeId = id; renderProperties(); };
     groups.push({ name: "Constraints", rows: [{ label: "Level", value: currentLevel().name, kind: "ro" }] });
     if (tool === "sketch") title = "Create Floor Boundary";
+  } else if (tool === "sketch" && Sketch.kind === "region" && !Sketch.editingId && !app.regionMasking) {
+    types = app.info.filled_region_types; current = app.regionTypeId;
+    onType = (id) => { app.regionTypeId = id; renderProperties(); };
+    title = "Create Filled Region Boundary";
+  } else if (tool === "sketch" && (Sketch.kind === "detail" || Sketch.kind === "region")) {
+    title = Sketch.kind === "detail" ? "Detail Lines" : app.regionMasking ? "Masking Region" : "Filled Region";
+    groups.push({ name: "Graphics", rows: [{ label: "Line Style", value: Sketch.kind === "detail" ? app.lineStyle : app.edgeStyle, kind: "ro" }] });
   } else if (tool === "sketch" && Sketch.kind === "roof" && !Sketch.editingId) {
     types = app.info.roof_types; current = app.roofTypeId;
     onType = (id) => { app.roofTypeId = id; renderProperties(); };

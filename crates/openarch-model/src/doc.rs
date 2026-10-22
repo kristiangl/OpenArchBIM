@@ -181,6 +181,7 @@ impl Document {
         d.ensure_site_defaults();
         d.ensure_annotation_defaults();
         d.ensure_view_types();
+        d.ensure_detail_defaults();
         d.undo.clear(); // starting state is not undoable
         d
     }
@@ -193,7 +194,7 @@ impl Document {
         match out {
             Ok(v) => {
                 if !changes.is_empty() {
-                    let model = changes.iter().any(|c| !matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Dimension(_) | Element::DimensionType(_) | Element::Spot(_) | Element::SpotType(_))));
+                    let model = changes.iter().any(|c| !matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Dimension(_) | Element::DimensionType(_) | Element::Spot(_) | Element::SpotType(_) | Element::DetailLine(_) | Element::DetailRegion(_) | Element::FilledRegionType(_))));
                     let redo = if model && self.defer_settle == 0 && !self.settling { Some(self.redo.clone()) } else { None };
                     self.undo.push(Entry { name: name.to_string(), changes });
                     self.redo.clear();
@@ -672,12 +673,24 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, views and view templates can be deleted for now".into()),
+                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) => {}
+                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, views and view templates can be deleted for now".into()),
                 None => return Err(format!("no element {id}")),
             }
         }
-        // doors and windows go with the wall they are hosted in
+        // doors and windows go with the wall they are hosted in; detail items go with their view
         let mut ids: Vec<Id> = ids.to_vec();
+        let views: Vec<Id> = ids.iter().copied().filter(|i| matches!(self.get(*i), Some(Element::View(_)))).collect();
+        for (i, e) in self.iter() {
+            let view = match e {
+                Element::DetailLine(l) => Some(l.view),
+                Element::DetailRegion(r) => Some(r.view),
+                _ => None,
+            };
+            if view.is_some_and(|v| views.contains(&v)) && !ids.contains(&i) {
+                ids.push(i);
+            }
+        }
         for h in self.hosted_in(&ids.clone()) {
             if !ids.contains(&h) {
                 ids.push(h);

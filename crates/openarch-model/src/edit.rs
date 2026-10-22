@@ -327,8 +327,10 @@ impl Document {
         }
         let set: BTreeSet<Id> = ids.iter().copied().collect();
         let (mut walls, mut floors, mut insts, mut grids, mut roofs) = (vec![], vec![], vec![], vec![], vec![]);
+        let mut details = vec![];
         for &id in &set {
             match self.get(id) {
+                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -338,11 +340,11 @@ impl Document {
                 None => return Err(format!("no element {id}")),
             }
         }
-        if walls.is_empty() && floors.is_empty() && insts.is_empty() && grids.is_empty() && roofs.is_empty() {
-            return Err("select walls, floors, roofs, grids, doors or windows".into());
+        if walls.is_empty() && floors.is_empty() && insts.is_empty() && grids.is_empty() && roofs.is_empty() && details.is_empty() {
+            return Err("select walls, floors, roofs, grids, doors, windows, detail lines or regions".into());
         }
         if !opt.copy {
-            let all: Vec<Id> = walls.iter().chain(&floors).chain(&insts).chain(&grids).chain(&roofs).copied().collect();
+            let all: Vec<Id> = walls.iter().chain(&floors).chain(&insts).chain(&grids).chain(&roofs).chain(&details).copied().collect();
             self.refuse_pinned(&all, x.verb())?;
         }
         let mirror = matches!(x, Xform::Mirror { .. });
@@ -369,6 +371,28 @@ impl Document {
         let mut new_grids: Vec<Grid> = vec![];
         let mut new_roofs: Vec<crate::roof::Roof> = vec![];
         let mut new_insts: Vec<(Id, FamilyInstance, bool)> = vec![]; // (original, copy, follows a copied wall)
+        let mut new_details: Vec<Element> = vec![];
+
+        // detail lines and regions are curves in their view: they carry the change as it is
+        for &id in &details {
+            let e = match self.get(id) {
+                Some(Element::DetailLine(l)) => Element::DetailLine(crate::detail::DetailLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
+                Some(Element::DetailRegion(r)) => {
+                    let mut nr = r.clone();
+                    for e in nr.loops.iter_mut().flatten() {
+                        e.curve = e.curve.transform(x);
+                    }
+                    nr.pinned = r.pinned && !opt.copy;
+                    Element::DetailRegion(nr)
+                }
+                _ => continue,
+            };
+            if opt.copy {
+                new_details.push(e);
+            } else {
+                updates.push((id, e));
+            }
+        }
 
         if opt.copy {
             for &id in &walls {
@@ -535,6 +559,9 @@ impl Document {
             }
             for r in new_roofs {
                 result.push(tx.add(Element::Roof(r)));
+            }
+            for e in new_details {
+                result.push(tx.add(e));
             }
             for mut g in new_grids {
                 g.name = tx.doc_ref().next_grid_name();

@@ -68,6 +68,7 @@ impl Document {
         d.ensure_site_point_overrides(); // projects saved before the base and survey points had categories
         d.ensure_annotation_defaults(); // projects saved before annotation families
         d.ensure_view_types(); // projects saved before view types
+        d.ensure_detail_defaults(); // projects saved before detail items
         if v < 2 {
             d.use_hidden_line_in_elevations_and_3d(); // projects saved before the visual style was drawn
         }

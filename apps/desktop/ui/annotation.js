@@ -15,7 +15,7 @@ const Ann = (() => {
 
   // A fill pattern over a region: solid, or its pattern lines (paper mm, anchored to the family's origin and turned
   // with it) clipped to the region.
-  function pattern(ctx, f, name, colour, trace, m, o, pats) {
+  function pattern(ctx, f, name, colour, trace, m, o, pats, modelScale) {
     const def = (pats || {})[name];
     if (!def || def.solid) { trace(); ctx.fillStyle = colour; ctx.fill("evenodd"); return; }
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -25,19 +25,21 @@ const Ann = (() => {
     trace(); ctx.clip("evenodd");
     ctx.strokeStyle = colour; ctx.fillStyle = colour; ctx.lineWidth = Math.max(0.6, f.pen_mm * o.k); ctx.lineCap = "butt";
     let budget = 2000;
+    // a model pattern's sizes are model mm: over the view's scale they are paper mm, as the drawing is
+    const u = def.model ? 1 / (modelScale || 1) : 1;
     for (const L of def.lines) {
-      const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, sp = L.spacing;
+      const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, sp = L.spacing * u;
       if (sp * o.k < 2) { ctx.globalAlpha *= 0.35; trace(); ctx.fill("evenodd"); break; } // too dense to resolve
-      const v0 = L.origin[0] * nx + L.origin[1] * ny, u0 = L.origin[0] * dx + L.origin[1] * dy;
+      const v0 = (L.origin[0] * nx + L.origin[1] * ny) * u, u0 = (L.origin[0] * dx + L.origin[1] * dy) * u;
       const vs = corners.map(([x, y]) => x * nx + y * ny), us = corners.map(([x, y]) => x * dx + y * dy);
       const k0 = Math.ceil((Math.min(...vs) - v0) / sp), k1 = Math.floor((Math.max(...vs) - v0) / sp), umin = Math.min(...us), umax = Math.max(...us);
       budget -= k1 - k0 + 1;
       if (budget < 0) break;
-      const dash = (L.dashes || []).map((d) => Math.max(d * o.k, 0.6)), period = dash.reduce((t, d) => t + d, 0);
+      const dash = (L.dashes || []).map((d) => Math.max(d * u * o.k, 0.6)), period = dash.reduce((t, d) => t + d, 0);
       ctx.setLineDash(dash);
       for (let n = k0; n <= k1; n++) {
         const v = v0 + n * sp, p0 = m([umin * dx + v * nx, umin * dy + v * ny]), p1 = m([umax * dx + v * nx, umax * dy + v * ny]);
-        if (period) ctx.lineDashOffset = ((((umin - (u0 + n * (L.shift || 0))) * o.k) % period) + period) % period;
+        if (period) ctx.lineDashOffset = ((((umin - (u0 + n * (L.shift || 0) * u)) * o.k) % period) + period) % period;
         ctx.beginPath(); ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y); ctx.stroke();
       }
     }
@@ -46,7 +48,8 @@ const Ann = (() => {
 
   // A symbol's paths. `col` draws everything in one colour (a selected or highlighted symbol), otherwise each path
   // keeps its own. `bg` is the view's background, which masking paints. opt: { pats (fill pattern definitions),
-  // widen (line width factor), hidden (show what a project leaves out, greyed), only (a test on each path) }.
+  // widen (line width factor), hidden (show what a project leaves out, greyed), only (a test on each path), thin (every
+  // line one pixel, the view's Thin Lines), modelScale (a view's scale, for model patterns) }.
   function paths(ctx, p, o, col, bg, opt = {}) {
     if (!p) return;
     const m = mapper(o), widen = opt.widen || 1, grey = "#9aa0a8";
@@ -61,8 +64,8 @@ const Ann = (() => {
       };
       ctx.globalAlpha = f.hidden ? 0.35 : 1;
       if (f.masking && bg) { trace(); ctx.fillStyle = bg; ctx.fill("evenodd"); }
-      if (f.background) pattern(ctx, f, f.background, col || rgb(f.background_color), trace, m, o, opt.pats);
-      if (f.foreground) pattern(ctx, f, f.foreground, col || rgb(f.foreground_color), trace, m, o, opt.pats);
+      if (f.background) pattern(ctx, f, f.background, col || rgb(f.background_color), trace, m, o, opt.pats, opt.modelScale);
+      if (f.foreground) pattern(ctx, f, f.foreground, col || rgb(f.foreground_color), trace, m, o, opt.pats, opt.modelScale);
     }
     ctx.globalAlpha = 1;
     for (const s of p.strokes || []) {
@@ -71,7 +74,7 @@ const Ann = (() => {
       s.pts.forEach((q, i) => { const a = m(q); i ? ctx.lineTo(a.x, a.y) : ctx.moveTo(a.x, a.y); });
       if (s.closed) ctx.closePath();
       ctx.strokeStyle = col || (s.hidden ? grey : rgb(s.color));
-      ctx.lineWidth = Math.max(1, s.width_mm * o.k) * widen;
+      ctx.lineWidth = (opt.thin ? 1 : Math.max(1, s.width_mm * o.k)) * widen;
       ctx.setLineDash(s.hidden ? [4, 3] : (s.dash || []).map((d) => Math.max(d * o.k, 0.8)));
       ctx.stroke();
     }

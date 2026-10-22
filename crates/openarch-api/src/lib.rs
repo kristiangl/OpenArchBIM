@@ -344,6 +344,41 @@ impl Session {
                 self.doc.patch_grid(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
+            // ---- detail items: detail lines, filled and masking regions (openarch_model::detail) ----
+            "set_detail_lines" => {
+                let lines: Vec<openarch_model::detail::DetailLineEdit> = serde_json::from_value(p.get("lines").cloned().ok_or("missing lines")?).map_err(|e| format!("bad lines: {e}"))?;
+                Ok(json!({ "ids": self.doc.set_detail_lines(id_of(p, "view_id")?, lines)? }))
+            }
+            "patch_detail_line" => {
+                self.doc.patch_detail_line(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "add_detail_region" => {
+                let edges: Vec<openarch_model::annotation::RegionEdge> = serde_json::from_value(p.get("edges").cloned().ok_or("missing edges")?).map_err(|e| format!("bad edges: {e}"))?;
+                let t = p.get("type_id").and_then(|v| v.as_u64());
+                Ok(json!({ "id": self.doc.add_detail_region(id_of(p, "view_id")?, edges, t)? }))
+            }
+            "set_detail_region_edges" => {
+                let edges: Vec<openarch_model::annotation::RegionEdge> = serde_json::from_value(p.get("edges").cloned().ok_or("missing edges")?).map_err(|e| format!("bad edges: {e}"))?;
+                self.doc.set_detail_region_edges(id_of(p, "id")?, edges)?;
+                Ok(json!({}))
+            }
+            // a region's edges as a sketch session holds them, for Edit Boundary
+            "detail_region_sketch" => {
+                let id = id_of(p, "id")?;
+                let Some(Element::DetailRegion(r)) = self.doc.get(id) else { return Err("not a region".into()) };
+                let edges: Vec<Value> = r.loops.iter().flatten().map(|e| { let mut v = describe_curve(&e.curve); v["style"] = json!(e.subcategory); v }).collect();
+                Ok(json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "view_id": r.view, "edges": edges }))
+            }
+            "patch_detail_region" => {
+                self.doc.patch_detail_region(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "patch_filled_region_type" => {
+                self.doc.patch_filled_region_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "duplicate_filled_region_type" => Ok(json!({ "id": self.doc.duplicate_filled_region_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "patch_grid_type" => {
                 self.doc.patch_grid_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
@@ -1475,6 +1510,8 @@ impl Session {
             "grid_types": d.grid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "view_types": d.view_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind, "template_for_new": t.template_for_new })).collect::<Vec<_>>(),
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
+            "line_styles": d.line_styles(),
+            "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind, "category": f.kind.category(), "in_use": d.annotation_family_in_use(*id) })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
             "model_categories": MODEL_CATEGORIES,
@@ -1943,6 +1980,11 @@ impl Session {
             "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
+            "detail": d.detail_paths(vid, settings.scale as f64, ann_shown("Lines"), ann_shown("Detail Items")),
+            "detail_lines": d.detail_lines(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+            "regions": d.detail_regions(vid).iter().map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
+            "line_styles": d.line_styles(),
+            "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name })).collect::<Vec<_>>(),
         }))
     }
 
@@ -2025,6 +2067,8 @@ impl Session {
             Element::Grid(g) => Ok(props::grid_props(d, id, g)),
             Element::Dimension(x) => Ok(props::dimension_props(d, id, x)),
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
+            Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
+            Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
             _ => Err("nothing to show".into()),
         }
     }
@@ -2053,6 +2097,13 @@ impl Session {
                 v["family"] = json!("Grid");
                 v["patch"] = json!("patch_grid_type");
                 v["duplicate"] = json!("duplicate_grid_type");
+                v
+            }
+            Element::FilledRegionType(t) => {
+                let mut v = props::filled_region_type_props(d, id, t);
+                v["family"] = json!("Filled region");
+                v["patch"] = json!("patch_filled_region_type");
+                v["duplicate"] = json!("duplicate_filled_region_type");
                 v
             }
             Element::LevelType(t) => {
@@ -3074,6 +3125,33 @@ mod tests {
         call(&mut s, "align", json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 750], [4000, 750]] }));
         assert_eq!(ends(&mut s, o).0, json!([0.0, 900.0]));
         assert!(s.handle("align", &json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 900], [4000, 900]] })).is_err());
+    }
+
+    #[test]
+    fn detail_lines_and_regions_are_drawn_in_their_view_and_edited_through_the_api() {
+        let (mut s, _lvl, _wt, view) = setup();
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let r = call(&mut s, "set_detail_lines", json!({ "view_id": view, "lines": [{ "curve": line([0.0, 0.0], [2000.0, 0.0]), "style": "Wide Lines" }] }));
+        let id = r["ids"][0].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert_eq!(plan["detail_lines"][0]["id"], id);
+        assert_eq!(plan["detail"]["strokes"][0]["line"], id);
+        assert_eq!(plan["detail"]["strokes"][0]["pts"][1][0], 20.0, "paper mm at 1:100");
+        assert!(plan["line_styles"].as_array().unwrap().iter().any(|x| x == "Thin Lines"));
+        let d = call(&mut s, "describe", json!({ "id": id }));
+        assert_eq!(d["kind"], "DetailLine");
+        let edge = |a: [f64; 2], b: [f64; 2]| json!({ "curve": line(a, b), "subcategory": "Thin Lines" });
+        let info = call(&mut s, "doc_info", json!({}));
+        let t = info["filled_region_types"][0]["id"].as_u64().unwrap();
+        let rid = call(&mut s, "add_detail_region", json!({ "view_id": view, "type_id": t, "edges": [edge([0.0, 0.0], [1000.0, 0.0]), edge([1000.0, 0.0], [1000.0, 1000.0]), edge([1000.0, 1000.0], [0.0, 0.0])] }))["id"].as_u64().unwrap();
+        let sk = call(&mut s, "detail_region_sketch", json!({ "id": rid }));
+        assert_eq!(sk["edges"].as_array().unwrap().len(), 3);
+        assert_eq!(sk["edges"][0]["style"], "Thin Lines");
+        let ty = call(&mut s, "describe_any_type", json!({ "id": t }));
+        assert_eq!(ty["patch"], "patch_filled_region_type");
+        call(&mut s, "delete", json!({ "ids": [id, rid] }));
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert!(plan["detail"]["strokes"].as_array().unwrap().is_empty() && plan["detail"]["fills"].as_array().unwrap().is_empty());
     }
 
     #[test]

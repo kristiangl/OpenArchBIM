@@ -47,7 +47,8 @@ const RIBBON = {
     { label: "Modify Dimension", items: [
       { id: "edit-witness", label: "Edit Witness Lines", big: true } ] },
     { label: "Detail", items: [
-      { id: "det-line", label: "Detail Line", big: true }, { id: "det-region", label: "Region", big: true },
+      { id: "det-line", label: "Detail Line", big: true }, { id: "det-region", label: "Region", big: true, menu: [
+        { id: "det-filled", label: "Filled Region" }, { id: "det-masking", label: "Masking Region" } ] },
       { id: "det-comp", label: "Component", big: true }, { id: "det-insulation", label: "Insulation", big: true },
       { id: "det-revcloud", label: "Revision Cloud", big: true } ] },
     { label: "Text", items: [

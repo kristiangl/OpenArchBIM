@@ -210,6 +210,9 @@ table.range select, table.range input { width: 100%; padding: 1px 4px; backgroun
 .mat-item.active { background: var(--accent); color: #fff; }
 .mat-chip { width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 2px; flex: none; }
 .mat-item.mat-extra { font-style: italic; }
+/* a list in a ribbon group (a sketch's Line Style) */
+.rb-select { display: flex; align-items: center; padding: 6px 6px 0; }
+.rb-select select { min-width: 150px; }
 /* Edit Label (annotation families): category parameters, add and remove, the label's parameters */
 .el-grid { display: grid; grid-template-columns: 210px auto 1fr; gap: 10px; align-items: start; }
 .el-col { display: flex; flex-direction: column; gap: 6px; min-width: 0; }

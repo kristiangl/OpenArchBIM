@@ -1362,6 +1362,8 @@ function makeSketch() {
     setSlope, removeSlope, removeSpan, patchSelected, selectedAttr,
     gripDown, gripMove, gripUp, nudge,
     get gripDragging() { return !!(S && S.grip); },
+    // the select tool with nothing selected or in progress: Esc there leaves a session that has no Finish
+    get idle() { return !!S && S.tool === "select" && !S.sel.size && !S.pts.length && !S.grip && !S.typed; },
     segs, points, last, promptText, wantsSnap, canBand, bandSelect, undoOrLeave,
     get active() { return !!S; },
     get tool() { return S ? S.tool : null; },

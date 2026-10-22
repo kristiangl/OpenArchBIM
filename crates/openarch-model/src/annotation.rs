@@ -610,8 +610,13 @@ fn section_marker_shapes() -> (Vec<AnnShape>, Vec<AnnShape>) {
 
 /// Group a region's edges into loops, each head to tail and closed, as Finish does for a region's sketch.
 pub fn region_loops(edges: &[RegionEdge]) -> Result<Vec<Vec<RegionEdge>>, SketchError> {
-    let scaled: Vec<Curve> = edges.iter().map(|e| e.curve.scaled(SKETCH_SCALE)).collect();
-    let order = curve::sketch_loop_order(&scaled).map_err(|e| SketchError { at: e.at.map(|a| [a[0] / SKETCH_SCALE, a[1] / SKETCH_SCALE]), ..e })?;
+    edge_loops(edges, SKETCH_SCALE)
+}
+
+/// As `region_loops`, checking the edges at `scale` times their size (1 for model mm).
+pub fn edge_loops(edges: &[RegionEdge], scale: f64) -> Result<Vec<Vec<RegionEdge>>, SketchError> {
+    let scaled: Vec<Curve> = edges.iter().map(|e| e.curve.scaled(scale)).collect();
+    let order = curve::sketch_loop_order(&scaled).map_err(|e| SketchError { at: e.at.map(|a| [a[0] / scale, a[1] / scale]), ..e })?;
     Ok(order
         .iter()
         .map(|l| l.iter().map(|&(i, rev)| RegionEdge { curve: if rev { edges[i].curve.reversed() } else { edges[i].curve.clone() }, subcategory: edges[i].subcategory.clone() }).collect())

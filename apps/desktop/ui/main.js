@@ -44,6 +44,9 @@ const COMMANDS = {
   wall: async () => { if (await ensurePlan("A wall")) Plan.setTool("wall"); },
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
+  "det-line": () => startDetailLines(null, "line"),
+  "det-filled": () => startRegionSketch(false, null),
+  "det-masking": () => startRegionSketch(true, null),
   "edit-boundary": () => {
     const t = editBoundaryTarget();
     if (!t) { setPrompt("Select an element with a boundary (a floor or a roof) to edit it.", true); return; }
@@ -155,6 +158,7 @@ function newPlanDialog(kind) {
 const BOUNDARY_EDITORS = {
   Floors: { label: "Edit Floor Boundary", run: (id) => startFloorSketch(id) },
   Roofs: { label: "Edit Roof Footprint", run: (id) => startRoofSketch(id) },
+  "Detail Items": { label: "Edit Boundary", run: (id) => startRegionSketch(null, id) },
 };
 function editBoundaryTarget() {
   if (app.selection.length !== 1 || app.view.kind !== "plan") return null;
@@ -284,6 +288,12 @@ function runCommand(id, e) {
   if (Sketch.active) {
     if (SKETCH_MODIFY[id]) { Sketch.setTool(SKETCH_MODIFY[id]); renderSketchRibbon(); return; }
     if (id === "del") { Sketch.key({ key: "Delete", preventDefault() {} }); return; }
+    // Detail Line has no Finish: another command leaves it (its lines are already in the model)
+    if (Sketch.kind === "detail") {
+      if (id === "det-line") { Sketch.setTool("line"); return; }
+      leaveDetailLines().then(() => { const f = commandFor(id); if (f) f(e); });
+      return;
+    }
     setPrompt("Finish or cancel the sketch first.", true);
     return;
   }
@@ -1571,6 +1581,8 @@ async function deleteSelection() {
 async function undo() {
   if (app.doc === "family") { await FamModel.undo(); updateUndoButtons(); return; }
   if (app.doc === "annotation") { AnnModel.undo(); updateUndoButtons(); return; }
+  // Detail Line's changes are in the model already: undo them there and pick the lines up again
+  if (Sketch.active && Sketch.kind === "detail") { await syncDetailLines(); if (app.info.undo) { await run("undo", {}); await refresh(); restartDetailLines(); } return; }
   if (Sketch.active) { if (Sketch.undoOrLeave() === "left") setPrompt("Left the sketch. Undo again to undo the last change to the model."); return; }
   if (app.info.undo) { await run("undo", {}); await refresh(); }
   updateUndoButtons();
@@ -1578,6 +1590,7 @@ async function undo() {
 async function redo() {
   if (app.doc === "family") { await FamModel.redo(); updateUndoButtons(); return; }
   if (app.doc === "annotation") { AnnModel.redo(); updateUndoButtons(); return; }
+  if (Sketch.active && Sketch.kind === "detail") { if (app.info.redo) { await run("redo", {}); await refresh(); restartDetailLines(); } return; }
   if (Sketch.active) { Sketch.redo(); return; }
   if (app.info.redo) { await run("redo", {}); await refresh(); }
 }
@@ -1586,7 +1599,7 @@ function updateUndoButtons() {
   const u = $("#qa-undo"), r = $("#qa-redo");
   const fs = (app.doc === "family" && FamModel.undoState()) || (app.doc === "annotation" && AnnModel.undoState());
   if (fs) { u.disabled = !fs.undo; r.disabled = !fs.redo; u.title = fs.undo ? "Undo (Ctrl+Z)" : "Nothing to undo"; r.title = fs.redo ? "Redo (Ctrl+Y)" : "Nothing to redo"; return; }
-  const sk = Sketch.active;
+  const sk = Sketch.active && Sketch.kind !== "detail";
   u.disabled = !(app.info.undo || (sk && Sketch.canUndo));
   u.title = sk && Sketch.canUndo ? "Undo sketch step (Ctrl+Z)" : app.info.undo ? `Undo ${app.info.undo} (Ctrl+Z)` : "Nothing to undo";
   r.disabled = sk ? !Sketch.canRedo : !app.info.redo;
@@ -1779,6 +1792,24 @@ function renderSketchRibbon() {
   const mods = Sketch.MODIFY.map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
   const draws = Sketch.DRAW.map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
   const notes = Sketch.ANNOTATE.map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
+  // Detail Line and the regions: no slope or span; a line style for new lines and the selected ones
+  if (Sketch.kind === "detail" || Sketch.kind === "region") {
+    const detail = Sketch.kind === "detail";
+    if (detail) ctx.textContent = Sketch.DRAW.some((t) => t.id === cur) ? "Modify | Place Detail Lines" : "Modify | Detail Lines";
+    const draw2 = Sketch.DRAW.filter((t) => t.id !== "pick_walls").map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
+    const a = Sketch.selectedAttr();
+    const styles = [...(app.info.line_styles || []), ...(detail ? [] : ["<Invisible lines>"])];
+    const now = a ? a.style : detail ? app.lineStyle : app.edgeStyle;
+    const s = el("select", { title: detail ? "The line style of new lines, and of the selected ones" : "The line style of new boundary lines, and of the selected ones" }, styles.map((n) => new Option(n, n, false, n === now)));
+    if (a && a.style === null) s.add(new Option("<varies>", "*", false, true));
+    s.onchange = () => {
+      if (s.value === "*") return;
+      if (detail) app.lineStyle = s.value; else app.edgeStyle = s.value;
+      if (Sketch.selectedAttr()) Sketch.patchSelected({ style: s.value });
+    };
+    ribbon.replaceChildren(...(detail ? [] : [group("Mode", modes)]), group("Modify", mods), group("Draw", draw2), group("Line Style", [{ big: true, node: el("div", { className: "rb-select" }, [s]) }]));
+    return;
+  }
   ribbon.replaceChildren(group("Mode", modes), group("Modify", mods), group("Draw", draws), ...(Sketch.isRoof ? [] : [group("Slope and Span", notes)]));
 }
 
@@ -1840,7 +1871,7 @@ function renderSketchUI() {
 // Finish and Cancel always reachable, whatever ribbon tab is showing
 function renderSketchToolbar() {
   let bar = $("#sketch-toolbar");
-  if (!Sketch.active) { if (bar) bar.remove(); return; }
+  if (!Sketch.active || Sketch.kind === "detail") { if (bar) bar.remove(); return; }
   if (!bar) {
     bar = el("div", { id: "sketch-toolbar" });
     $("#viewport-wrap").append(bar);
@@ -1890,10 +1921,11 @@ function openSlopeDialog() {
   });
 }
 
-Sketch.callbacks.change = () => renderSketchUI();
+Sketch.callbacks.change = () => { if (Sketch.kind === "detail") syncDetailLines(); renderSketchUI(); };
 Sketch.callbacks.prompt = (t, isError) => setPrompt(t, !!isError);
 Sketch.callbacks.slope = () => openSlopeDialog();
 Sketch.callbacks.finish = async (o) => {
+  if (o.kind === "region") return finishRegion(o);
   const roof = o.kind === "roof";
   const r = roof
     ? (o.id ? await run("set_roof_sketch", { id: o.id, edges: o.edges }) : await run("add_roof_sketch", { type_id: app.roofTypeId, level_id: o.levelId, edges: o.edges }))
@@ -1916,6 +1948,113 @@ Sketch.callbacks.cancel = () => {
   renderProperties();
   setPrompt("Sketch cancelled.");
 };
+
+// ---- Detail Line and the regions (private notes: annotate-tools.md) ----------------------------------
+// Detail Line works on the view's detail lines themselves: the sketch session holds them all, every Draw tool places
+// lines and the Modify tools change them, and each change goes into the model at once (one undo step). It has no
+// Finish: Esc in its select tool, or another command, leaves it. Filled Region and Masking Region sketch closed loops
+// with Finish and Cancel; each edge has its own line style.
+let detailSync = Promise.resolve(), detailKey = "";
+const detailPayload = (curves) => curves.map((c) => ({ id: c.attr.id ?? null, curve: c.curve, style: c.attr.style || app.lineStyle }));
+
+async function startDetailLines(selectId, tool) {
+  if (Sketch.active) {
+    if (Sketch.kind === "detail") { if (tool) Sketch.setTool(tool); return; }
+    setPrompt("Finish or cancel the sketch first.", true);
+    return;
+  }
+  if (!(await ensurePlan("A detail line"))) return;
+  app.lineStyle ||= "Thin Lines";
+  sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Annotate";
+  app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+  beginDetailSession(selectId, tool || "line");
+  setPrompt(Sketch.promptText());
+}
+function beginDetailSession(selectId, tool) {
+  const lines = Plan.detailLines();
+  Plan.startSketch({
+    kind: "detail", title: "Detail Lines", tool, fade: false, ink: getComputedStyle(document.documentElement).getPropertyValue("--text").trim(),
+    curves: lines.map((l) => ({ ...l.entry, attr: { id: l.id, style: l.style } })),
+    attr: (extra) => ({ style: app.lineStyle, ...(extra || {}) }),
+  });
+  const st = Sketch.state();
+  if (selectId) { const c = st.curves.find((x) => x.attr.id === selectId); if (c) st.sel = new Set([c.uid]); }
+  detailKey = JSON.stringify(detailPayload(st.curves));
+  renderSketchUI();
+}
+// after an undo or redo of the model: the view's lines as they are now, the same tool on
+function restartDetailLines() {
+  const t = Sketch.tool;
+  Sketch.end();
+  beginDetailSession(null, t);
+}
+// the session's lines into the model, one change at a time; each line learns the element it is
+function syncDetailLines() {
+  detailSync = detailSync.then(async () => {
+    if (!Sketch.active || Sketch.kind !== "detail") return;
+    const entries = Sketch.state().curves.slice(), payload = detailPayload(entries), key = JSON.stringify(payload);
+    if (key === detailKey) return;
+    const r = await run("set_detail_lines", { view_id: Plan.viewId(), lines: payload });
+    if (!r) { detailKey = key; return; } // run() put the reason in the status bar
+    entries.forEach((c, i) => { if (r.ids[i] != null) c.attr.id = r.ids[i]; });
+    if (Sketch.active) detailKey = JSON.stringify(detailPayload(Sketch.state().curves));
+    await refresh();
+  });
+  return detailSync;
+}
+async function leaveDetailLines() {
+  if (!Sketch.active || Sketch.kind !== "detail") return;
+  await syncDetailLines();
+  Plan.endSketch();
+  endSketchUI();
+  await refresh();
+  renderProperties();
+  setPrompt("Ready.");
+}
+
+async function startRegionSketch(masking, editId) {
+  if (Sketch.active) {
+    if (Sketch.kind === "detail") await leaveDetailLines();
+    else { setPrompt("Finish or cancel the sketch first.", true); return; }
+  }
+  if (!(await ensurePlan(masking ? "A masking region" : "A region"))) return;
+  sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Annotate";
+  let curves = [];
+  if (editId) {
+    const r = await run("detail_region_sketch", { id: editId });
+    if (!r) return;
+    masking = r.masking;
+    curves = r.edges.map((e) => ({ ...e, attr: { style: e.style } }));
+  }
+  app.lineStyle ||= "Thin Lines";
+  app.regionMasking = !!masking;
+  // a masking region's edges start invisible, so it hides what is behind it without an outline
+  app.edgeStyle = masking ? "<Invisible lines>" : app.lineStyle;
+  if (app.regionTypeId == null || !(app.info.filled_region_types || []).some((t) => t.id === app.regionTypeId)) app.regionTypeId = ((app.info.filled_region_types || [])[0] || {}).id;
+  app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+  const noun = masking ? "Masking Region" : "Filled Region";
+  Plan.startSketch({ kind: "region", id: editId || null, title: editId ? "Edit Boundary" : `Create ${noun} Boundary`, curves, tool: editId ? "select" : "line", attr: (extra) => ({ style: app.edgeStyle, ...(extra || {}) }) });
+  renderSketchUI();
+  renderProperties();
+}
+async function finishRegion(o) {
+  const edges = (o.edges || []).map((e) => ({ curve: e.curve, subcategory: e.style || app.edgeStyle }));
+  const r = o.id
+    ? await run("set_detail_region_edges", { id: o.id, edges })
+    : await run("add_detail_region", { view_id: Plan.viewId(), edges, type_id: app.regionMasking ? null : app.regionTypeId });
+  if (!r) return false;
+  const id = o.id || r.id;
+  Plan.endSketch();
+  endSketchUI();
+  await refresh();
+  app.selection = [id]; Plan.setSelection([id]); app.vp?.setSelection([id]);
+  renderProperties();
+  setPrompt(o.id ? "Boundary updated." : app.regionMasking ? "Masking region created." : "Filled region created.");
+  return true;
+}
+Plan.callbacks.leaveDetail = () => leaveDetailLines();
+Plan.callbacks.editDetail = (id) => startDetailLines(id, "select");
+Plan.callbacks.editRegion = (id) => startRegionSketch(null, id);
 
 // ---- viewport -------------------------------------------------------------------
 async function initViewport() {

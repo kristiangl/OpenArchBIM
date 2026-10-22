@@ -588,6 +588,7 @@ pub fn multi_props(d: &Document, ids: &[Id]) -> Res {
             Element::Roof(r) => roof_props(d, id, r),
             Element::FamilyInstance(i) => instance_props(d, id, i)?,
             Element::Grid(g) => grid_props(d, id, g),
+            Element::DetailLine(l) => detail_line_props(d, id, l),
             _ => return Err("these elements cannot be edited together".into()),
         });
     }
@@ -598,6 +599,7 @@ pub fn multi_props(d: &Document, ids: &[Id]) -> Res {
         Some("Floor") => "Floors".to_string(),
         Some("Roof") => "Roofs".to_string(),
         Some("Grid") => "Grids".to_string(),
+        Some("DetailLine") => "Lines".to_string(),
         _ => "Elements".to_string(),
     };
     let label = kind_of(first);
@@ -771,6 +773,60 @@ pub fn grid_props(d: &Document, id: Id, g: &openarch_model::grid::Grid) -> Value
             group("Constraints", vec![boolean("Pinned", "pinned", g.pinned, true), ro("Scope Box", if g.scope_box.is_some() { "Set" } else { "None" })]),
             group("Dimensions", vec![ro("Length", format!("{:.0}", g.length())), ro("Shape", kind)]),
             group("Identity Data", vec![text("Name", "name", &g.name)]),
+        ],
+    })
+}
+
+/// Properties of a detail line: its line style and length.
+pub fn detail_line_props(d: &Document, id: Id, l: &openarch_model::detail::DetailLine) -> Value {
+    let styles: Vec<(String, Value, bool)> = d.line_styles().into_iter().map(|s| (s.clone(), json!({ "style": s }), s == l.style)).collect();
+    json!({
+        "id": id, "kind": "DetailLine", "title": "Lines (1)", "type_label": "Detail Lines",
+        "target": { "method": "patch_detail_line", "id": id },
+        "groups": [
+            group("Graphics", vec![select("Line Style", styles)]),
+            group("Constraints", vec![boolean("Pinned", "pinned", l.pinned, true)]),
+            group("Dimensions", vec![ro("Length", format!("{:.0}", l.curve.length()))]),
+        ],
+    })
+}
+
+/// Properties of a filled region (its type, with Edit Type) or a masking region, and its area.
+pub fn detail_region_props(d: &Document, id: Id, r: &openarch_model::detail::DetailRegion) -> Value {
+    let types: Vec<(String, Value, bool)> = d.filled_region_types().into_iter().map(|(tid, t)| (t.name.clone(), json!({ "region_type": tid }), Some(tid) == r.region_type)).collect();
+    let area = d.detail_region_area(r) / 1.0e6;
+    let mut groups = vec![];
+    if !r.masking {
+        groups.push(group("Graphics", vec![select("Filled Region Type", types)]));
+    }
+    groups.push(group("Constraints", vec![boolean("Pinned", "pinned", r.pinned, true)]));
+    groups.push(group("Dimensions", vec![ro("Area", format!("{area:.3} m²"))]));
+    json!({
+        "id": id, "kind": "DetailRegion", "title": if r.masking { "Masking Region" } else { "Filled Region" },
+        "type_label": if r.masking { "Masking Region" } else { "Filled region" },
+        "type_id": r.region_type,
+        "target": { "method": "patch_detail_region", "id": id },
+        "groups": groups,
+    })
+}
+
+/// Type Properties of a filled region type: what it is filled with.
+pub fn filled_region_type_props(d: &Document, id: Id, t: &openarch_model::annotation::RegionType) -> Value {
+    let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    let weights: Vec<(String, Value, bool)> = (1..=16u8).map(|w| (w.to_string(), json!({ "line_weight": w }), w == t.line_weight)).collect();
+    json!({
+        "id": id, "kind": "FilledRegionType", "title": t.name,
+        "siblings": d.filled_region_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "groups": [
+            group("Graphics", vec![
+                fill_pattern_row("Foreground Fill Pattern", "foreground", t.foreground.as_deref(), "drafting"),
+                json!({ "label": "Foreground Pattern Color", "value": hex(t.foreground_color), "raw": t.foreground_color, "kind": "color", "path": "foreground_color" }),
+                fill_pattern_row("Background Fill Pattern", "background", t.background.as_deref(), "drafting"),
+                json!({ "label": "Background Pattern Color", "value": hex(t.background_color), "raw": t.background_color, "kind": "color", "path": "background_color" }),
+                select("Line Weight", weights),
+                boolean("Masking", "masking", t.masking, true),
+            ]),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
         ],
     })
 }

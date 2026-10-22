@@ -235,12 +235,46 @@ const Plan = (() => {
     for (const d of data.dimensions || []) { const h = Dims.hitRings(d); out.push({ id: d.id, kind: "dimension", ring: h.ring, rings: h.rings, pinned: d.pinned, category: "Dimensions", display: "normal" }); }
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
+    // detail lines (a band either side, as grids) and regions; what a sketch holds is picked there instead
+    const det = data.detail, ds = (data.view && data.view.scale) || 100, mm = (r) => r.map(([x, y]) => [x * ds, y * ds]);
+    if (det) {
+      const pinned = new Map([...(data.detail_lines || []), ...(data.regions || [])].map((x) => [x.id, x.pinned]));
+      const lt = 4 / cam.s;
+      for (const s of det.strokes) if (s.line != null && !heldBySketch(s)) out.push({ id: s.line, kind: "detail", ring: bandRing(mm(s.pts), lt, lt), pinned: pinned.get(s.line), category: "Lines", display: "normal" });
+      for (const f of det.fills) if (!heldBySketch(f)) { const rings = f.rings.map(mm); out.push({ id: f.region, kind: "region", ring: rings[0], rings, pinned: pinned.get(f.region), category: "Detail Items", display: "normal" }); }
+      // a region whose every edge is invisible is still picked by its outline
+    }
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
       if (sp.survey) out.push({ id: sp.survey.id, kind: "sitepoint", ring: sq(sp.survey.x, sp.survey.y, rw * 0.8), pinned: sp.survey.pinned, category: "Survey Point", display: "normal" });
     }
     return out;
+  }
+  // detail items a sketch is holding: the view's detail lines while Detail Line is on, a region's edges in Edit Boundary
+  function heldBySketch(x) {
+    if (!Sketch.active) return false;
+    if (Sketch.kind === "detail") return x.line != null;
+    return Sketch.kind === "region" && Sketch.editingId != null && x.region === Sketch.editingId;
+  }
+  // detail lines and regions are paper sized (line widths, patterns, dashes): the core sends them in paper mm, drawn
+  // round the model origin at the view's scale
+  function drawDetails(accent) {
+    const det = data.detail;
+    if (!det || (!det.strokes.length && !det.fills.length)) return;
+    const ds = (data.view && data.view.scale) || 100, o = toScreen({ x: 0, y: 0 }), base = { x: o.x, y: o.y, k: ds * cam.s };
+    const opt = { pats: data.fill_patterns, modelScale: ds, thin, only: (x) => !heldBySketch(x) };
+    Ann.paths(ctx, det, base, null, css("--view-bg"), opt);
+    // selected regions show as floors do; selected and hovered lines in the accent or the hover colour
+    const hov = new Set(tool === "select" && selHover ? selHover : []);
+    for (const f of det.fills) {
+      if (!sel.has(f.region) || heldBySketch(f)) continue;
+      ctx.beginPath();
+      for (const r of f.rings) { r.forEach(([x, y], i) => { const s = toScreen({ x: x * ds, y: y * ds }); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
+      ctx.fillStyle = "rgba(46,111,158,0.30)"; ctx.fill("evenodd"); ctx.strokeStyle = accent; ctx.lineWidth = 2; ctx.stroke();
+    }
+    Ann.paths(ctx, { strokes: det.strokes }, base, accent, null, { thin, widen: 1.6, only: (x) => !heldBySketch(x) && x.line != null && sel.has(x.line) });
+    if (hov.size) Ann.paths(ctx, { strokes: det.strokes }, base, "#d4572f", null, { thin, widen: 1.6, only: (x) => !heldBySketch(x) && ((x.line != null && hov.has(x.line) && !sel.has(x.line)) || (x.region != null && hov.has(x.region) && !sel.has(x.region))) });
   }
   // radius of the marker and point symbols in pixels: 3.5 mm on paper at the view scale, so they keep their printed size against the model
   function symR() { const denom = (data.view && data.view.scale) || 100; return Math.max(2, 3.5 * denom * cam.s); }
@@ -266,7 +300,7 @@ const Plan = (() => {
   function candidates(sx, sy) {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, grid: 0, insert: 0, wall: 1, roof: 2, floor: 3 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, detail: 0, grid: 0, insert: 0, region: 1, wall: 1, roof: 2, floor: 3 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1234,6 +1268,7 @@ const Plan = (() => {
       ctx.lineWidth = 1.5;
       for (const [a, b] of rf.ridges) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
     }
+    drawDetails(accent);
     ctx.restore();
     drawGrids();
     drawMarkers();
@@ -2157,7 +2192,10 @@ const Plan = (() => {
       // double-clicking a section opens the view it makes
       const c = candidates(e.offsetX, e.offsetY), sec = c.length ? (data.sections || []).find((s) => c[0].includes(s.id)) : null;
       if (sec && sec.view_id) { cb.openView(sec.view_id); return; }
-      const id = hit(e.offsetX, e.offsetY); const f = id && data.floors.find((x) => x.id === id); if (f) cb.editFloor(f.id); else { const rf = id && (data.roofs || []).find((x) => x.id === id); if (rf) cb.editRoof(rf.id); } }
+      const id = hit(e.offsetX, e.offsetY); const f = id && data.floors.find((x) => x.id === id); if (f) cb.editFloor(f.id); else { const rf = id && (data.roofs || []).find((x) => x.id === id); if (rf) cb.editRoof(rf.id); }
+      // a detail line opens Detail Line with it selected; a region, Edit Boundary
+      if (id && (data.detail_lines || []).some((x) => x.id === id)) cb.editDetail(id);
+      else if (id && (data.regions || []).some((x) => x.id === id)) cb.editRegion(id); }
   });
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
@@ -2262,7 +2300,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : [])].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : [])].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setSelection(ids) { sel = new Set(ids); render(); },
     gridOptions: () => ({ shape: gridShape, offset: gridOffset }),
     setGridOptions(o) { if (o.shape) { gridShape = o.shape; draw = null; gridHover = null; } if (o.offset !== undefined) gridOffset = Math.max(0, o.offset); cb.prompt(promptText()); render(); },
@@ -2276,6 +2314,8 @@ const Plan = (() => {
     startSpot(kind) { setTool("spot"); Spots.start(kind); },
     spots: () => data.spots || [],
     sections: () => data.sections || [],
+    detailLines: () => data.detail_lines || [],
+    viewId: () => data.view && data.view.id,
     dimensions: () => data.dimensions || [],
     tempGrips2: () => tdimUI.filter((u) => u.type === "promote").map((u) => ({ x: u.x, y: u.y, key: u.dim.key })),
     setTempDims(list) { tdims = list || []; if (!tdims.length) closeTdimInput(); render(); },
@@ -2320,6 +2360,8 @@ const Plan = (() => {
     },
     render,
     key(e) {
+      // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
+      if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
       if (tool === "select" && sel.size && !wgrip && !dragging && !down && !e.ctrlKey && !e.metaKey && !e.altKey && ARROWS[e.key]) {
         // arrow keys nudge the selection: one press moves about 8 screen pixels, rounded down to a plain step; Shift moves ten times as far

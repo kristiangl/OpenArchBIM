@@ -653,6 +653,9 @@ pub enum Element {
     SpotType(crate::spot::SpotType),
     Section(crate::section::Section),
     ViewType(crate::view::ViewType),
+    DetailLine(crate::detail::DetailLine),
+    DetailRegion(crate::detail::DetailRegion),
+    FilledRegionType(crate::annotation::RegionType),
 }
 
 impl Element {
@@ -687,6 +690,9 @@ impl Element {
             Element::SpotType(_) => "SpotType",
             Element::Section(_) => "Section",
             Element::ViewType(_) => "ViewType",
+            Element::DetailLine(_) => "DetailLine",
+            Element::DetailRegion(_) => "DetailRegion",
+            Element::FilledRegionType(_) => "FilledRegionType",
         }
     }
 }

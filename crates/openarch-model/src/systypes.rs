@@ -313,6 +313,7 @@ impl Document {
                 | Element::DimensionType(_)
                 | Element::SpotType(_)
                 | Element::ViewType(_)
+                | Element::FilledRegionType(_)
         );
         if !is_type {
             return Err("not a type".into());
