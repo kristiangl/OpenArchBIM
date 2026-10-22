@@ -1048,6 +1048,12 @@ impl FamilyBody {
     /// Type a new value into a dimension that has no label: the plane at its far end moves (or
     /// the near one when the far one is fixed). A locked dimension keeps the new value.
     pub fn set_dim_value(&mut self, id: u32, seg: usize, value: f64, env: &mut Env) -> Result<(), String> {
+        self.set_dim_value_moving(id, seg, value, None, env)
+    }
+
+    /// As `set_dim_value`, moving `prefer` (the plane the person has selected) when it is one of the segment's two
+    /// references and free to move.
+    pub fn set_dim_value_moving(&mut self, id: u32, seg: usize, value: f64, prefer: Option<PlaneId>, env: &mut Env) -> Result<(), String> {
         self.fix_dim_ids();
         let di = self.dim_index(id)?;
         let saved = (self.planes.clone(), self.dims.clone());
@@ -1067,7 +1073,16 @@ impl FamilyBody {
             }
             let taken = this.driven_elsewhere(di);
             let (lo, hi) = (refs[seg], refs[seg + 1]);
-            let (target, base, sign) = if !this.is_origin(hi) && !taken.contains(&hi) { (hi, lo, 1.0) } else if !this.is_origin(lo) && !taken.contains(&lo) { (lo, hi, -1.0) } else { return Err("both references are fixed".into()) };
+            let free = |p: PlaneId| !this.is_origin(p) && !taken.contains(&p);
+            let (target, base, sign) = if prefer == Some(lo) && free(lo) {
+                (lo, hi, -1.0)
+            } else if free(hi) {
+                (hi, lo, 1.0)
+            } else if free(lo) {
+                (lo, hi, -1.0)
+            } else {
+                return Err("both references are fixed".into());
+            };
             this.move_plane(target, pos[&base] + sign * value, env)?;
             let pos2 = this.solve_planes(env)?;
             if this.dims[di].locked {
@@ -1533,7 +1548,7 @@ pub fn tessellate_shaped(pts: &[Point], shapes: &[Option<PlacedShape>], l: &Loop
 const TOL: f64 = 0.5;
 
 /// A number as it goes into an expression: no trailing noise from float arithmetic.
-fn fmt_num(v: f64) -> String {
+pub(crate) fn fmt_num(v: f64) -> String {
     let r = (v * 1e6).round() / 1e6;
     if r == 0.0 { "0".into() } else { format!("{r}") }
 }
@@ -2931,6 +2946,20 @@ mod tests {
         assert_eq!(pos_of(&b, m2, env), 800.0);
         // a driven plane cannot be dragged
         assert!(b.move_plane(m1, 10.0, env).unwrap_err().contains("equal"));
+    }
+
+    #[test]
+    fn a_typed_dimension_value_moves_the_selected_plane() {
+        let mut b = FamilyBody::template();
+        let a = b.add_offset_plane("A", PLANE_LR, "100").unwrap();
+        let c = b.add_offset_plane("C", PLANE_LR, "400").unwrap();
+        let d = b.add_dim(&[a, c], None, &mut params(&[])).unwrap();
+        // nothing selected: the far plane moves
+        b.set_dim_value(d, 0, 200.0, &mut params(&[])).unwrap();
+        assert_eq!((pos_of(&b, a, &mut params(&[])), pos_of(&b, c, &mut params(&[]))), (100.0, 300.0));
+        // the near plane selected: it moves and the far one stays
+        b.set_dim_value_moving(d, 0, 250.0, Some(a), &mut params(&[])).unwrap();
+        assert_eq!((pos_of(&b, a, &mut params(&[])), pos_of(&b, c, &mut params(&[]))), (50.0, 300.0));
     }
 
     #[test]

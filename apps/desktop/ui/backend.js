@@ -4,7 +4,12 @@ const Backend = {
   isDesktop: !!(window.__TAURI__ && window.__TAURI__.core),
 
   async call(method, params = {}) {
-    if (this.isDesktop) return window.__TAURI__.core.invoke("rpc", { method, params });
+    // the desktop app queues the request (in the order made) and then waits for its answer, so a long one does not
+    // hold the window up
+    if (this.isDesktop) {
+      const ticket = await window.__TAURI__.core.invoke("rpc_send", { method, params });
+      return window.__TAURI__.core.invoke("rpc_wait", { ticket });
+    }
     const r = await fetch("/rpc", { method: "POST", body: JSON.stringify({ method, params }) });
     const j = await r.json();
     if (j.err !== undefined) throw new Error(j.err);

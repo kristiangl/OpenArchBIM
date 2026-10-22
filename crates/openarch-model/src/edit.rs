@@ -393,6 +393,17 @@ impl Document {
                         l.end = x.apply(l.end);
                         l.elbow = l.elbow.map(|e| x.apply(e));
                     }
+                    // the text turns with a rotation; a mirror reverses its direction, turned round to stay readable
+                    let turn = match x {
+                        Xform::Move { .. } => t.rotation_deg,
+                        Xform::Rotate { angle_deg, .. } => t.rotation_deg + angle_deg,
+                        Xform::Mirror { ax, ay, bx, by } => 2.0 * (by - ay).atan2(bx - ax).to_degrees() - t.rotation_deg,
+                    };
+                    let mut r = turn.rem_euclid(360.0);
+                    if matches!(x, Xform::Mirror { .. }) && r > 90.0 && r <= 270.0 {
+                        r = (r + 180.0).rem_euclid(360.0);
+                    }
+                    nt.rotation_deg = if (r - 360.0).abs() < 1e-9 { 0.0 } else { r };
                     nt.pinned = t.pinned && !opt.copy;
                     Element::TextNote(nt)
                 }

@@ -186,7 +186,7 @@ const FAM_RIBBON = {
     FAM_EDITOR_GROUP,
   ],
   Annotate: [
-    { label: "Dimension", items: [{ id: "f-dim", label: "Aligned", big: true }, { id: "f-eq", label: "Equal", big: true }] },
+    { label: "Dimension", items: [{ id: "f-dim", label: "Aligned", big: true }] },
     { label: "Detail", items: [
       { id: "f-sym", label: "Symbolic Line", big: true }, { id: "f-region", label: "Filled Region", big: true },
       { id: "f-mask", label: "Masking Region", big: true }, { id: "f-text", label: "Text", big: true } ] },
@@ -206,8 +206,10 @@ const FAM_RIBBON = {
   ],
   Modify: [
     { label: "Modify", items: [
-      { id: "f-select", label: "Select", big: true }, { id: "f-align", label: "Align", big: true },
-      { id: "f-mv", label: "Move", big: true }, { id: "f-cp", label: "Copy", big: true }, { id: "f-del", label: "Delete", big: true } ] },
+      { id: "f-select", label: "Select", big: true }, { id: "f-align", label: "Align", big: true }, { id: "f-of", label: "Offset", big: true },
+      { id: "f-mi-pick", label: "Mirror - Pick Axis", big: true }, { id: "f-mi-draw", label: "Mirror - Draw Axis", big: true },
+      { id: "f-mv", label: "Move", big: true }, { id: "f-cp", label: "Copy", big: true }, { id: "f-ro", label: "Rotate", big: true },
+      { id: "f-del", label: "Delete", big: true } ] },
     FAM_EDITOR_GROUP,
   ],
 };

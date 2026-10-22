@@ -4,12 +4,13 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>OpenArch BIM</title>
+<link rel="icon" href="app-icon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
 <div id="app">
   <header id="titlebar">
-    <span class="logo">OpenArch BIM</span>
+    <span class="logo"><img src="app-icon.svg" alt="" class="logo-mark">OpenArch BIM</span>
     <span class="qa">
       <button id="qa-new" title="New project or family">New</button>
       <button id="qa-open" title="Open project">Open</button>
@@ -122,7 +123,7 @@
     <section id="fam-center">
       <div id="fam-vtabs"></div>
       <div id="fam-options" hidden></div>
-      <div id="fam-wrap"><canvas id="fam-canvas"></canvas></div>
+      <div id="fam-wrap"><canvas id="fam-3d"></canvas><canvas id="fam-canvas"></canvas></div>
       <div id="fam-viewbar"></div>
     </section>
   </main>
@@ -141,6 +142,7 @@
 <script src="icons.js"></script>
 <script src="ribbon.js"></script>
 <script src="units.js"></script>
+<script src="color.js"></script>
 <script src="snap.js"></script>
 <script src="annotation.js"></script>
 <script src="sketch.js"></script>

@@ -717,7 +717,7 @@ const Elev = (() => {
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
     }
     const hov = new Set(tool === "select" && hoverIds ? hoverIds : []);
-    Det.drawItems(sel, hov, accent);
+    Det.drawItems(sel, hov, accent, tool === "select");
     drawGrids();
     drawCrop();
     for (const l of data.levels) {
@@ -1092,7 +1092,7 @@ const Elev = (() => {
   function snap(sx, sy, o) {
     if (Snap.owner !== "elev") buildSnap();
     const w = W(sx, sy), base = { zoom: cam.s, cycle: snapCycle, shift: !!(mouse && mouse.shift), gridStep: 0 };
-    if (o) return Snap.resolve(w, { ...base, last: o.last || null, extra: [], points: snapPts, hvDeg: o.hvDeg });
+    if (o) return Snap.resolve(w, { ...base, last: o.last || null, extra: [], points: snapPts, hvDeg: o.hvDeg, track: o.track });
     if (tool === "sketch" && Sketch.active) return Snap.resolve(w, { ...base, last: Sketch.last(), extra: Sketch.segs(), points: [...Sketch.points(), ...snapPts], track: Sketch.trackPoints() });
     return Snap.resolve(w, { ...base, last: null, extra: [], points: snapPts });
   }
@@ -1113,6 +1113,7 @@ const Elev = (() => {
     thin: () => Plan.thinLines,
     held: (x) => heldBySketch(x),
     snap: (sx, sy, o) => snap(sx, sy, o),
+    shift: () => !!(mouse && mouse.shift),
     options: () => DetailCallbacks.options(),
     cb: DetailCallbacks,
   });
@@ -1193,9 +1194,11 @@ const Elev = (() => {
       // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
+      if (tool === "text" && e.key === " " && Det.flipArc()) return true;
       if (tool === "text" && e.key === "Escape") { if (Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); } else setTool("select"); return true; }
       if (tool === "noteleader" && e.key === "Escape") { setTool("select"); return true; }
       if (detDrag && e.key === "Escape") { detDrag = null; down = null; render(); return true; }
+      if (e.key === "Escape" && Det.cancelDrag()) return true;
       if (tgrip && e.key === "Escape") { tgrip = null; render(); return true; }
       if (e.key === "Tab" && tool === "select" && lastMove && !drag && !pan && !input) {
         const c = candIds(lastMove.x, lastMove.y);

@@ -163,11 +163,12 @@ const FamModel = (() => {
     S = {
       id: familyId, def, body: clone(def.body), params: clone(def.params), settings: clone(def.settings || {}), types: clone(def.types),
       typeId: first ? first.id : null, values: {}, sourcePath: def.source_path || null, fileDirty: false, projDirty: false, view: "plan", tool: "select", sketch: "rect", sel: null,
-      draft: null, pv: null, cams: {}, dirty: false, undo: [], redo: [], mouse: null, tick: 0, rot: { a: -0.6, b: 0.5 }, drag: null,
+      draft: null, pv: null, cams: {}, dirty: false, undo: [], redo: [], mouse: null, tick: 0, drag: null,
       start: "0", end: "100", a0: "0", a1: "360", pathMode: "line", pathClosed: false, blend: null, rev: null, wp: null, msg: "",
       show: { names: true, dims: def.body.planes.length <= 14 }, symMode: "line", ctrlKind: "single_horizontal", connKind: "duct", open: ["plan", "front"],
       lockNew: true, alignOpts: { multiple: false, lock: false, prefer: "planes" }, alignRef: null, wps: {}, showWp: false, editing: null, lockHits: [],
     };
+    vp3Fitted = false; vp3Key = null; // a new family is framed afresh in 3D
     mount();
     await preview();
     loadComps();
@@ -181,13 +182,15 @@ const FamModel = (() => {
     try { S.comps = (await Backend.call("family_components", { id: S.id })).families; } catch (e) { S.comps = []; }
     if (S.tool === "comp") toolbar();
   }
-  function snapshot() { return JSON.stringify({ body: S.body, params: S.params, settings: S.settings }); }
+  // what undo takes back: the body, parameters and settings, and the open type's values (a labelled dimension and
+  // Flex change those)
+  function snapshot() { return JSON.stringify({ body: S.body, params: S.params, settings: S.settings, values: S.values, saveVals: S.saveVals || {} }); }
   // Unsaved changes: ones the project copy has not got (Load into Project) and ones the family file has not got (Save)
   function touch() { S.projDirty = true; S.fileDirty = true; }
   const isDirty = () => !!(S && (S.projDirty || S.fileDirty));
   const today = () => new Date().toISOString().slice(0, 10);
   function pushUndo() { S.undo.push(snapshot()); if (S.undo.length > 100) S.undo.shift(); S.redo = []; touch(); }
-  function restore(js) { const o = JSON.parse(js); S.body = o.body; S.params = o.params; if (o.settings) S.settings = o.settings; S.sel = null; }
+  function restore(js) { const o = JSON.parse(js); S.body = o.body; S.params = o.params; if (o.settings) S.settings = o.settings; if (o.values) S.values = o.values; if (o.saveVals) S.saveVals = o.saveVals; S.sel = null; }
   async function undo() { if (!S.undo.length) return; S.redo.push(snapshot()); restore(S.undo.pop()); await preview(); props(); render(); }
   async function redo() { if (!S.redo.length) return; S.undo.push(snapshot()); restore(S.redo.pop()); await preview(); props(); render(); }
 
@@ -341,17 +344,26 @@ const FamModel = (() => {
   }
 
   // Closing with changes: the project copy and the family file are separate, so each can be saved on its own.
-  function askSave() {
+  // `done(closed)` hears how it ended: true once the editor has closed, false when the person stays.
+  function askSave(done = () => {}) {
     activate();
     openModal(`Close ${S.def.name}`, (body, foot, close) => {
       const gaps = [];
       if (S.projDirty) gaps.push("loaded into the project");
       if (S.fileDirty) gaps.push(S.sourcePath ? "saved to its family file" : "saved to a family file");
       body.append(el("div", "modal-msg", `This family has changes that are not ${gaps.join(" and not ")}.`));
-      foot.append(button("Cancel", close), button("Don't Save", () => { close(); closeEditor(true); }));
-      if (S.fileDirty) foot.append(button(S.sourcePath ? "Save Family File" : "Save Family File...", async () => { close(); if (await saveFile(false)) { if (S.projDirty) askSave(); else closeEditor(true); } }, !S.projDirty));
-      if (S.projDirty) foot.append(button("Load into Project and Close", async () => { close(); await loadIntoProject(true); }, true));
+      const stay = () => { close(); done(false); };
+      body.closest(".modal-back").onEscape = stay;
+      foot.append(button("Cancel", stay), button("Don't Save", () => { close(); closeEditor(true); done(true); }));
+      if (S.fileDirty) foot.append(button(S.sourcePath ? "Save Family File" : "Save Family File...", async () => { close(); if (await saveFile(false)) { if (S.projDirty) askSave(done); else { closeEditor(true); done(true); } } else done(false); }, !S.projDirty));
+      if (S.projDirty) foot.append(button("Load into Project and Close", async () => { close(); await loadIntoProject(true); done(!S); }, true));
     });
+  }
+  // Closing as the program closes: resolves true once the editor is closed, false when the person stays
+  function closeForExit() {
+    if (!S) return Promise.resolve(true);
+    if (!isDirty()) { closeEditor(true); return Promise.resolve(true); }
+    return new Promise((resolve) => askSave(resolve));
   }
 
   // Write the editor's state into this project's copy of the family (not into any file).
@@ -430,15 +442,16 @@ const FamModel = (() => {
     "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
     "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-swblend": "swblend", "f-sym": "sym", "f-region": "region",
     "f-mline": "mline", "f-control": "control", "f-mtext": "mtext", "f-comp": "comp",
+    "f-mv": "move", "f-cp": "copy", "f-ro": "rotate", "f-of": "offset",
   };
-  function setTool(t) {
+  function setTool(t, o = {}) {
     // in sketch mode only the sketch's own tools work, until Finish or Cancel
     if (S.sk) { if (t !== S.tool) { S.msg = "Finish or cancel the sketch first."; status(); } return; }
     S.voidNext = false; S.openingNext = false;
-    S.tool = t; S.draft = null; S.alignRef = null; S.blend = null; S.rev = null; S.picks = [];
+    S.tool = t; S.draft = null; S.alignRef = null; S.blend = null; S.rev = null; S.picks = []; S.mod = { pts: [] };
     if (t === "comp") loadComps();
-    // Extrusion and Void Extrusion open a sketch
-    if ((t === "ext" || t === "void") && !S.editing) { startFormSketch({ kind: t }); return; }
+    // every form is sketched: Extrusion and Void Extrusion, Blend, Revolve, Sweep and Swept Blend (and their voids)
+    if (["ext", "void", "blend", "revolve", "sweep", "swblend"].includes(t) && !S.editing) { startFormSketch({ kind: t, isVoid: !!o.isVoid }); return; }
     toolbar(); status(); render(); ctxRefresh();
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
@@ -446,10 +459,10 @@ const FamModel = (() => {
     "f-types": () => typesDialog(),
     // Void Forms: the same five forms, made as voids
     "f-void-ext": () => setTool("void"),
-    "f-void-blend": () => { setTool("blend"); S.voidNext = true; toolbar(); status(); },
-    "f-void-revolve": () => { setTool("revolve"); S.voidNext = true; toolbar(); status(); },
-    "f-void-sweep": () => { setTool("sweep"); S.voidNext = true; toolbar(); status(); },
-    "f-void-swblend": () => { setTool("swblend"); S.voidNext = true; toolbar(); status(); },
+    "f-void-blend": () => setTool("blend", { isVoid: true }),
+    "f-void-revolve": () => setTool("revolve", { isVoid: true }),
+    "f-void-sweep": () => setTool("sweep", { isVoid: true }),
+    "f-void-swblend": () => setTool("swblend", { isVoid: true }),
     "f-opening": () => { setTool("void"); S.openingNext = true; toolbar(); status(); },
     "f-conn-electrical": () => { S.connKind = "electrical"; setTool("conn"); },
     "f-conn-duct": () => { S.connKind = "duct"; setTool("conn"); },
@@ -463,7 +476,9 @@ const FamModel = (() => {
       set: async (next) => { const ok = await change((b) => { b.lookup_tables = next; }); return ok ? null : S.msg || "That does not solve."; },
     }),
     "f-del": () => deleteSel(),
-    "f-eq": () => toggleEq(),
+    "f-mi-pick": () => { S.mirrorPick = true; setTool("mirror"); },
+    "f-mi-draw": () => { S.mirrorPick = false; setTool("mirror"); },
+    "f-eq": () => toggleEq(), // kept for keyboard and old ribbons; EQ is on the dimension itself
     "f-load": () => loadIntoProject(false),
     "f-loadclose": () => loadIntoProject(true),
     "f-3d": () => openFamView("3d"),
@@ -479,7 +494,7 @@ const FamModel = (() => {
   function syncRibbon() {
     document.querySelectorAll("#ribbon button.cmd[data-id^='f-']").forEach((b) => {
       const id = b.dataset.id;
-      b.classList.toggle("on", S ? (TOOL_OF[id] ? TOOL_OF[id] === S.tool : (id === "f-names" ? S.show.names : id === "f-dims" ? S.show.dims : id === "f-wpshow" ? S.showWp : id === "f-void-menu" ? ((S.tool === "void" && !S.openingNext) || !!S.voidNext) : id === "f-opening" ? !!S.openingNext : id === "f-conn" ? S.tool === "conn" : false)) : false);
+      b.classList.toggle("on", S ? (TOOL_OF[id] ? TOOL_OF[id] === S.tool : id === "f-mi-pick" || id === "f-mi-draw" ? S.tool === "mirror" && !!S.mirrorPick === (id === "f-mi-pick") : (id === "f-names" ? S.show.names : id === "f-dims" ? S.show.dims : id === "f-wpshow" ? S.showWp : id === "f-void-menu" ? ((S.tool === "void" && !S.openingNext) || !!S.voidNext) : id === "f-opening" ? !!S.openingNext : id === "f-conn" ? S.tool === "conn" : false)) : false);
     });
   }
 
@@ -508,6 +523,22 @@ const FamModel = (() => {
       }
     }
     if (S.tool === "mtext") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
+    if (S.tool === "copy") { const l = el("label", "fe-opt", "Multiple"); l.prepend(checkIn(!!S.copyMany, (v) => { S.copyMany = v; })); bar.append(l); }
+    if (S.tool === "rotate") {
+      const l = el("label", "fe-opt", "Place centre"); l.title = "Click where to turn about first (otherwise the middle of the selection)";
+      l.prepend(checkIn(!!S.rotPlace, (v) => { S.rotPlace = v; S.mod = { pts: [] }; render(); }));
+      const ang = el("input"); ang.type = "text"; ang.style.width = "60px"; ang.placeholder = "degrees";
+      ang.onkeydown = (e) => { if (e.key === "Enter") { const d = parseFloat(ang.value); if (Number.isFinite(d) && d) applyXf({ type: "rotate", cu: rotCentre().u, cv: rotCentre().v, deg: d }, false); } e.stopPropagation(); };
+      bar.append(l, el("span", "fe-opt", "Angle"), ang);
+    }
+    if (S.tool === "mirror") bar.append(el("span", "fe-opt", "Axis"), selIn([["pick", "Pick Axis (a reference plane)"], ["draw", "Draw Axis"]], S.mirrorPick ? "pick" : "draw", (v) => { S.mirrorPick = v === "pick"; S.mod = { pts: [] }; syncRibbon(); status(); render(); }), (() => { const l = el("label", "fe-opt", "Copy"); l.prepend(checkIn(S.mirrorCopy !== false, (v) => { S.mirrorCopy = v; })); return l; })());
+    if (S.tool === "offset") {
+      const d = el("input"); d.type = "text"; d.style.width = "70px"; d.value = String(S.offsetDist || 100);
+      d.onchange = () => { const v = parseFloat(d.value); if (v > 0) S.offsetDist = v; else d.value = String(S.offsetDist || 100); };
+      d.onkeydown = (e) => e.stopPropagation();
+      const l = el("label", "fe-opt", "Copy"); l.prepend(checkIn(!!S.offsetCopy, (v) => { S.offsetCopy = v; }));
+      bar.append(el("span", "fe-opt", "Offset"), d, l);
+    }
     if (S.tool === "control") bar.append(el("span", "fe-opt", "Control"), selIn(CONTROL_KINDS, S.ctrlKind, (v) => { S.ctrlKind = v; }));
     if (S.tool === "conn") bar.append(el("span", "fe-opt", "Connector"), selIn(Object.entries(CONN).map(([k, c]) => [k, c.label]), S.connKind, (v) => { S.connKind = v; status(); }), el("span", "fe-opt", "Face (work plane)"), planeSel());
     if (S.tool === "sweep" || S.tool === "swblend") sweepBar(bar);
@@ -526,13 +557,15 @@ const FamModel = (() => {
       // sketch mode: the depth and work plane of the form, Lock, then the sketch tool's own options
       const st = el("input"), en = el("input");
       st.type = en.type = "text"; st.style.width = en.style.width = "60px"; st.id = "fe-sk-start"; en.id = "fe-sk-end";
-      st.value = S.sk.start; en.value = S.sk.end;
-      st.onchange = () => { S.sk.start = st.value; }; en.onchange = () => { S.sk.end = en.value; };
+      const k = S.sk.kind, rev = k === "revolve", path = k === "sweep" || k === "swblend";
+      st.value = rev ? S.sk.a0 : S.sk.start; en.value = rev ? S.sk.a1 : S.sk.end;
+      st.onchange = () => { if (rev) S.sk.a0 = st.value; else S.sk.start = st.value; }; en.onchange = () => { if (rev) S.sk.a1 = en.value; else S.sk.end = en.value; };
       const wp = el("select");
       const axis = (planeById(S.sk.plane) || {}).axis;
       S.body.planes.filter((p) => p.axis === axis).forEach((p) => { const o = el("option", "", p.name); o.value = p.id; wp.append(o); });
       wp.value = S.sk.plane; wp.onchange = () => { S.sk.plane = Number(wp.value); };
-      bar.append(el("span", "fe-opt", "Work plane"), wp, el("span", "fe-opt", "Start"), st, el("span", "fe-opt", "End"), en, lockOpt(), ...sketchBarKids(FSk));
+      const depth = path ? [] : [el("span", "fe-opt", rev ? "Start angle" : k === "blend" ? "First end" : "Start"), st, el("span", "fe-opt", rev ? "End angle" : k === "blend" ? "Second end" : "End"), en];
+      bar.append(el("span", "fe-opt", "Work plane"), wp, ...depth, lockOpt(), ...sketchBarKids(FSk));
       bar.hidden = false;
       return;
     }
@@ -688,10 +721,15 @@ const FamModel = (() => {
       dim: "Click two or more parallel reference planes, then click in empty space to place the dimension. Select it to label it with a parameter, lock it or equalise it (EQ).",
       ext: "Sketch the profile on the work plane. Points near a reference plane lock to it (Lock to planes in the options bar). Select the form to see a padlock on each edge that sits on a plane.",
       void: "Sketch the void. A void that cuts the host makes the opening in the wall.",
-      blend: "Sketch the base, then the top. Both need the same number of points. The solid blends from the base height to the top height.",
-      revolve: "Sketch the profile, then click two points for the axis it turns about. Set the start and end angle above.",
-      swblend: "Draw the open path: click points, double-click or press Enter to finish. Then set the start and end profile in Properties.",
-      sweep: "Draw the path: click points, double-click or press Enter to finish. In 3-Point Arc mode click the end, then a point on the arc. Then set the profile in Properties.",
+      blend: "Sketch the base (one closed loop), then Edit Top on the ribbon and sketch the top with the same number of points. Finish Edit Mode makes the blend from the first end to the second.",
+      revolve: "Sketch the profile with Boundary Line, then choose Axis Line and draw the axis it turns about. Set the angles in the options bar, then Finish Edit Mode.",
+      swblend: "Sketch Path: draw the path with the Draw tools (open), then Finish Edit Mode. Set the start and end profile in Properties.",
+      sweep: "Sketch Path: draw the path with the Draw tools (open or closed), then Finish Edit Mode. Set the profile in Properties.",
+      move: "Click a start point, then where it goes. Points near a reference plane take its position. Esc cancels.",
+      copy: "Click a start point, then where the copy goes. Multiple in the options bar keeps copying. Esc finishes.",
+      rotate: "Click a point on the line to turn from, then on the line to turn to (about the middle of the selection, or the centre placed first). Or type the angle in the options bar.",
+      mirror: "Pick Axis: click a reference plane to mirror across. Draw Axis: click two points of the axis. Copy in the options bar keeps the original.",
+      offset: "Set the distance in the options bar, then click a model line or symbolic line on the side to offset it to. Copy keeps the original.",
       align: "Click a reference plane or the edge of a form to align to, then click the edge to move to it. Lock in the options bar ties it to a reference plane; Multiple Alignment (or Ctrl) keeps the same reference.",
       sym: "Line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. Shows only in this kind of view.",
       mline: "Model line: click points, double-click to finish. 3-Point Arc: click the start, the end, then a point on the arc. It is 3D, so it shows in every view its visibility settings allow.",
@@ -705,7 +743,7 @@ const FamModel = (() => {
     const err = !!S.msg && S.msg !== "Saved.";
     // the sketch's own prompts, as in the project's sketch mode
     if (app.doc === "family" && skActive()) { setPrompt(S.msgErr && S.msg ? S.msg : FSk.promptText(), !!S.msgErr); S.msgErr = false; syncTitle(); return; }
-    if (app.doc === "family") setPrompt((S.msg ? S.msg + "   " : "") + (S.view === "3d" ? "Drag to turn the model." : tips[S.tool] || ""), err);
+    if (app.doc === "family") setPrompt((S.msg ? S.msg + "   " : "") + (S.view === "3d" ? "Drag to orbit, right-drag or Shift-drag to pan, wheel to zoom, click to select." : tips[S.tool] || ""), err);
     syncTitle();
   }
 
@@ -1192,9 +1230,10 @@ const FamModel = (() => {
     }));
   }
   async function setFlex(p, v) {
+    const before = snapshot();
     S.values[p.name] = v;
     const ok = await preview();
-    if (!ok) { S.msg = S.pvError; delete S.values[p.name]; await preview(); } else S.msg = "";
+    if (!ok) { S.msg = S.pvError; delete S.values[p.name]; await preview(); } else { S.msg = ""; S.undo.push(before); S.redo = []; }
     status(); render(); props();
   }
 
@@ -1640,6 +1679,7 @@ const FamModel = (() => {
     const { ctx, canvas } = S;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.fillStyle = css("--view-bg"); ctx.fillRect(0, 0, canvas.width, canvas.height);
+    $q("#fam-wrap").classList.toggle("v3d", S.view === "3d");
     if (!S.pv) return;
     if (S.view === "3d") { render3D(); return; }
     const V = VIEWS[S.view];
@@ -1696,6 +1736,7 @@ const FamModel = (() => {
       else { ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText(p.name, 6, slot - 2); }
     }
     drawDims(V);
+    drawModTool();
     const sf = S.sel && S.sel.kind === "form" ? formById(S.sel.id) : null;
     if (sf && sf.shape.type === "revolve" && planeById(sf.shape.plane) && planeById(sf.shape.plane).axis === V.n) {
       const a = nodePos(sf.shape.axis_a), b = nodePos(sf.shape.axis_b), pa = w2s(a.u, a.v), pb = w2s(b.u, b.v);
@@ -1857,9 +1898,11 @@ const FamModel = (() => {
     S.dimHits = [];
     ctx.font = "11px system-ui, sans-serif";
     let ih = 0, iv = 0;
-    // planes that follow a parameter but have no dimension object yet (older families): a plain read-out
+    // planes that follow a parameter but have no dimension object yet (older families): a plain read-out. A plane
+    // placed at a plain distance shows nothing until a dimension is added (or it is selected: temporary dimensions).
     const covered = new Set((S.body.dims || []).flatMap((d) => d.drives || []));
-    const implicit = S.body.planes.filter((p) => p.anchor.type === "offset" && !covered.has(p.id) && (p.axis === V.h || p.axis === V.v) && (S.show.dims || p.id === selPlane));
+    const formula = (p) => !/^\s*-?\d+(\.\d+)?\s*$/.test(String(p.anchor.by));
+    const implicit = S.body.planes.filter((p) => p.anchor.type === "offset" && formula(p) && !covered.has(p.id) && (p.axis === V.h || p.axis === V.v) && (S.show.dims || p.id === selPlane));
     for (const p of implicit) {
       const a = pos(p.anchor.from), b = pos(p.id);
       if (a === undefined || b === undefined) continue;
@@ -1883,6 +1926,33 @@ const FamModel = (() => {
       if (d.view ? d.view !== S.view : !S.show.dims) continue;
       if (d.view && !S.show.dims && !selHas("dim", d.id)) continue;
       drawChain(d, selHas("dim", d.id));
+    }
+    // temporary dimensions of the selected plane: to the nearest parallel plane each side; click a value to type it
+    if (selPlane != null && S.tool === "select" && !(S.drag && S.drag.plane)) {
+      const sp = planeById(selPlane), at = pos(selPlane);
+      if (sp && at !== undefined && (sp.axis === V.h || sp.axis === V.v)) {
+        const horizontal = sp.axis === V.h;
+        const others = viewPlanes().filter((p) => p.id !== selPlane && p.axis === sp.axis).map((p) => ({ p, at: pos(p.id) })).filter((o) => o.at !== undefined && Math.abs(o.at - at) > 0.01);
+        const below = others.filter((o) => o.at < at).sort((x, y) => y.at - x.at)[0], above = others.filter((o) => o.at > at).sort((x, y) => x.at - y.at)[0];
+        ctx.save(); ctx.strokeStyle = accent; ctx.fillStyle = accent; ctx.lineWidth = 1;
+        const lineAt = horizontal ? Math.min(S.canvas.height - 60, Math.max(60, (S.tdimAt ? S.tdimAt.y : S.canvas.height / 2) - 30)) : Math.min(S.canvas.width - 60, Math.max(60, (S.tdimAt ? S.tdimAt.x : S.canvas.width / 2) + 30));
+        for (const o of [below, above]) {
+          if (!o) continue;
+          const s0 = horizontal ? w2s(at, 0).x : w2s(0, at).y, s1 = horizontal ? w2s(o.at, 0).x : w2s(0, o.at).y;
+          ctx.beginPath();
+          if (horizontal) { ctx.moveTo(s0, lineAt); ctx.lineTo(s1, lineAt); } else { ctx.moveTo(lineAt, s0); ctx.lineTo(lineAt, s1); }
+          ctx.stroke();
+          tick(horizontal ? s0 : lineAt, horizontal ? lineAt : s0, horizontal); tick(horizontal ? s1 : lineAt, horizontal ? lineAt : s1, horizontal);
+          const str = Math.abs(o.at - at).toFixed(0), w = ctx.measureText(str).width + 8, mid = (s0 + s1) / 2;
+          const box = horizontal ? { x: mid - w / 2, y: lineAt - 17, w, h: 15 } : { x: lineAt - 17, y: mid - w / 2, w: 15, h: w };
+          ctx.fillStyle = css("--view-bg"); ctx.fillRect(box.x, box.y, box.w, box.h); ctx.strokeRect(box.x + 0.5, box.y + 0.5, box.w - 1, box.h - 1);
+          ctx.fillStyle = accent; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+          if (horizontal) ctx.fillText(str, mid, lineAt - 9.5);
+          else { ctx.save(); ctx.translate(lineAt - 9.5, mid); ctx.rotate(-Math.PI / 2); ctx.fillText(str, 0, 0); ctx.restore(); }
+          S.dimHits.push({ kind: "tval", plane: selPlane, other: o.p.id, value: Math.abs(o.at - at), sign: Math.sign(at - o.at), ...box });
+        }
+        ctx.restore();
+      }
     }
     // the dimension being made follows the pointer once two references are picked
     const picks = S.tool === "dim" ? S.picks || [] : [];
@@ -1926,6 +1996,7 @@ const FamModel = (() => {
         const str = d.eq ? "EQ" : lab ? `${lab} = ${val.toFixed(0)}` : d.reports_to ? `${d.reports_to} = ${val.toFixed(0)}` : val.toFixed(0);
         text(str, s[j], s[j + 1], 0, j);
       }
+      // EQ: the whole length above the parts (the value a click on it edits)
       if (d.eq && d.label) text(`${d.label} = ${Math.abs(ps[n] - ps[0]).toFixed(0)}`, s[0], s[n], 1, 0);
       else if (d.eq) text(`${Math.abs(ps[n] - ps[0]).toFixed(0)}`, s[0], s[n], 1, 0);
       if (ghost) return;
@@ -1950,7 +2021,7 @@ const FamModel = (() => {
 
   function hitDim(sx, sy) {
     const hits = S.dimHits || [];
-    for (const kind of ["lock", "eq", "val", "line"]) {
+    for (const kind of ["tval", "lock", "eq", "val", "line"]) {
       const h = hits.find((q) => q.kind === kind && sx >= q.x && sx <= q.x + q.w && sy >= q.y && sy <= q.y + q.h);
       if (h) return h;
     }
@@ -2049,78 +2120,81 @@ const FamModel = (() => {
     ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill();
   }
 
-  // ---- 3D preview ----
-  function render3D() {
-    const { ctx, canvas } = S;
-    const { a, b } = S.rot;
-    const rot = ([x, y, z]) => {
-      // z up; turn about z by a, then tilt by b
-      const x1 = x * Math.cos(a) - y * Math.sin(a), y1 = x * Math.sin(a) + y * Math.cos(a);
-      return [x1, y1 * Math.cos(b) - z * Math.sin(b), y1 * Math.sin(b) + z * Math.cos(b)];
-    };
-    const tris = [], edgeMap = {};
-    let mn = [Infinity, Infinity], mx = [-Infinity, -Infinity];
+  // ---- 3D preview: the project's 3D viewport (drag to orbit, right-drag or Shift-drag to pan, wheel to zoom, click to
+  // pick), with the model lines, connectors and work plane drawn over it on the 2D canvas, in step with its camera
+  let vp3 = null, vp3Starting = false, vp3Key = null, vp3Fitted = false;
+  function ensure3D() {
+    if (vp3 || vp3Starting) return vp3;
+    vp3Starting = true;
+    Viewport.init($q("#fam-3d"), null, { minDist: 0.05, minFit: 0.6 }).then((v) => {
+      vp3 = v; vp3Starting = false;
+      v.onPick((id, additive) => pick3D(id, additive));
+      v.onRender(() => { if (S && S.view === "3d" && app.doc === "family") overlay3D(); });
+      render();
+    }).catch((e) => { vp3Starting = false; if (S) { S.msg = `The 3D view could not start: ${e.message || e}`; status(); } });
+    return null;
+  }
+  // the forms as the viewport's meshes: metres, a flat normal per triangle; voids pink, glass as glass
+  function formMeshes() {
+    const out = [];
     for (const f of S.pv.forms) {
-      if (!f.present) continue;
-      for (let i = 0; i + 8 < f.tris.length; i += 9) {
-        const p = [0, 1, 2].map((k) => rot([f.tris[i + k * 3], f.tris[i + k * 3 + 1], f.tris[i + k * 3 + 2]]));
-        const u = [p[1][0] - p[0][0], p[1][1] - p[0][1], p[1][2] - p[0][2]], v = [p[2][0] - p[0][0], p[2][1] - p[0][1], p[2][2] - p[0][2]];
-        const n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
-        const l = Math.hypot(...n) || 1;
-        const depth = (p[0][1] + p[1][1] + p[2][1]) / 3;
-        const o = [0, 1, 2].map((k) => [f.tris[i + k * 3], f.tris[i + k * 3 + 1], f.tris[i + k * 3 + 2]]);
-        const ou = [o[1][0] - o[0][0], o[1][1] - o[0][1], o[1][2] - o[0][2]], ov = [o[2][0] - o[0][0], o[2][1] - o[0][1], o[2][2] - o[0][2]];
-        const on = [ou[1] * ov[2] - ou[2] * ov[1], ou[2] * ov[0] - ou[0] * ov[2], ou[0] * ov[1] - ou[1] * ov[0]];
-        const ol = Math.hypot(...on) || 1;
-        const nn = on.map((c) => c / ol);
-        const edges = [[0, 1], [1, 2], [2, 0]].map(([e0, e1]) => {
-          const key = f.id + ":" + [o[e0], o[e1]].map((q) => q.map((c) => Math.round(c)).join(",")).sort().join("|");
-          (edgeMap[key] = edgeMap[key] || []).push(nn);
-          return key;
-        });
-        tris.push({ p, edges, depth, shade: Math.abs(n[2] / l) * 0.6 + 0.4, face: n[1] / l, void: f.void, glass: f.sub === "Glass", id: f.id });
-        for (const q of p) { mn = [Math.min(mn[0], q[0]), Math.min(mn[1], q[2])]; mx = [Math.max(mx[0], q[0]), Math.max(mx[1], q[2])]; }
+      if (!f.present || !f.tris || f.tris.length < 9) continue;
+      const t = f.tris, verts = [];
+      // a solid whose triangles face inward (its volume comes out negative) is turned round so its faces light
+      let vol = 0;
+      for (let i = 0; i + 8 < t.length; i += 9) vol += t[i] * (t[i + 4] * t[i + 8] - t[i + 5] * t[i + 7]) - t[i + 1] * (t[i + 3] * t[i + 8] - t[i + 5] * t[i + 6]) + t[i + 2] * (t[i + 3] * t[i + 7] - t[i + 4] * t[i + 6]);
+      const order = vol < 0 ? [0, 2, 1] : [0, 1, 2];
+      for (let i = 0; i + 8 < t.length; i += 9) {
+        const [a, b, c] = order.map((k) => i + k * 3);
+        const ux = t[b] - t[a], uy = t[b + 1] - t[a + 1], uz = t[b + 2] - t[a + 2], vx = t[c] - t[a], vy = t[c + 1] - t[a + 1], vz = t[c + 2] - t[a + 2];
+        let nx = uy * vz - uz * vy, ny = uz * vx - ux * vz, nz = ux * vy - uy * vx;
+        const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
+        for (const k of [a, b, c]) verts.push(t[k] / 1000, t[k + 1] / 1000, t[k + 2] / 1000, nx, ny, nz);
       }
+      out.push({ id: f.id, kind: f.sub === "Glass" ? "Glass" : "Form", verts, color: f.void ? [214, 120, 190] : null });
     }
-    if (!tris.length) return;
-    const k = Math.min((canvas.width - 80) / Math.max(mx[0] - mn[0], 1), (canvas.height - 80) / Math.max(mx[1] - mn[1], 1));
-    const ox = canvas.width / 2 - ((mx[0] + mn[0]) / 2) * k, oy = canvas.height / 2 + ((mx[1] + mn[1]) / 2) * k;
-    // solids back to front, then the translucent voids over them
-    tris.sort((p, q) => (p.void - q.void) || (q.depth - p.depth));
-    for (const t of tris) {
+    return out;
+  }
+  const selFormIds = () => S.pv.forms.filter((f) => isSel("form", f.id)).map((f) => f.id);
+  function pick3D(id, additive) {
+    if (!S) return;
+    const hit = id == null ? null : ownerOf(id) != null ? { kind: "comp", id: ownerOf(id) } : mtextById(id) ? { kind: "mtext", id } : { kind: "form", id };
+    if (additive) { if (hit) { const cur = selItems(); setSel(cur.some((x) => x.kind === hit.kind && x.id === hit.id) ? cur.filter((x) => !(x.kind === hit.kind && x.id === hit.id)) : [...cur, hit]); } }
+    else S.sel = hit;
+    props(); render(); ctxRefresh();
+  }
+  function render3D() {
+    overlay3D();
+    const v = ensure3D();
+    if (!v) return;
+    if (vp3Key !== S.pv) {
+      vp3Key = S.pv;
+      v.setMeshes(formMeshes(), selFormIds());
+      if (!vp3Fitted) { v.fit(); vp3Fitted = true; }
+    } else v.setSelection(selFormIds());
+    v.poke();
+  }
+  // what is drawn over the 3D view, from the camera as it stands
+  function overlay3D() {
+    const { ctx, canvas } = S;
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+    if (!vp3 || !S.pv) return;
+    const T = (q) => { const p = vp3.project([q[0] / 1000, q[1] / 1000, q[2] / 1000]); return [p.x, p.y]; };
+    for (const m of S.pv.model_lines || []) {
+      if (!m.present) continue;
+      const selected = selHas("mline", m.id) || ownedSel(m.id);
       ctx.beginPath();
-      t.p.forEach((q, i) => { const x = ox + q[0] * k, y = oy - q[2] * k; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-      ctx.closePath();
-      const sel = isSel("form", t.id);
-      const g = Math.round(150 + 90 * t.shade);
-      ctx.fillStyle = t.void ? "rgba(200,60,150,0.18)" : t.glass ? "rgba(110,190,230,0.4)" : sel ? `rgb(${g - 40},${g},${g + 15})` : `rgb(${g - 30},${g - 10},${g})`;
-      ctx.fill();
-      ctx.strokeStyle = sel ? css("--accent") : "rgba(0,0,0,0.35)"; ctx.lineWidth = sel ? 1.5 : 0.7;
-      // outline real edges only: skip the diagonal between two triangles on the same face
-      for (let e = 0; e < 3; e++) {
-        const ns = edgeMap[t.edges[e]];
-        if (ns.length === 2 && ns[0][0] * ns[1][0] + ns[0][1] * ns[1][1] + ns[0][2] * ns[1][2] > 0.999) continue;
-        const a0 = t.p[e], a1 = t.p[(e + 1) % 3];
-        ctx.beginPath(); ctx.moveTo(ox + a0[0] * k, oy - a0[2] * k); ctx.lineTo(ox + a1[0] * k, oy - a1[2] * k); ctx.stroke();
-      }
+      m.points.forEach((q, i) => { const [x, y] = T(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+      if (m.closed) ctx.closePath();
+      ctx.strokeStyle = selected ? css("--accent") : "#7a4fb5"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
     }
-    {
-      const T = (q) => { const r = rot(q); return [ox + r[0] * k, oy - r[2] * k]; };
-      for (const m of S.pv.model_lines || []) {
-        if (!m.present) continue;
-        const selected = selHas("mline", m.id) || ownedSel(m.id);
-        ctx.beginPath();
-        m.points.forEach((q, i) => { const [x, y] = T(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
-        if (m.closed) ctx.closePath();
-        ctx.strokeStyle = selected ? css("--accent") : "#7a4fb5"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
-      }
-      for (const c of S.pv.connectors || []) {
-        const selected = selHas("conn", c.id);
-        const [x, y] = T(c.origin), [x2, y2] = T(c.origin.map((v, i) => v + c.direction[i] * 120));
-        ctx.strokeStyle = selected ? css("--accent") : "#b5651d"; ctx.lineWidth = 2;
-        ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
-        ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x2, y2); ctx.stroke();
-      }
+    for (const c of S.pv.connectors || []) {
+      const selected = selHas("conn", c.id);
+      const [x, y] = T(c.origin), [x2, y2] = T(c.origin.map((v, i) => v + c.direction[i] * 120));
+      ctx.strokeStyle = selected ? css("--accent") : "#b5651d"; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(x, y, 5, 0, Math.PI * 2); ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x2, y2); ctx.stroke();
     }
     if (S.showWp) {
       // the work plane as a sheet a little larger than the model
@@ -2128,16 +2202,135 @@ const FamModel = (() => {
       if (p && at !== undefined) {
         const lo = [Infinity, Infinity, Infinity], hi = [-Infinity, -Infinity, -Infinity];
         for (const f of S.pv.forms) for (let i = 0; i + 2 < f.tris.length; i += 3) for (let c = 0; c < 3; c++) { lo[c] = Math.min(lo[c], f.tris[i + c]); hi[c] = Math.max(hi[c], f.tris[i + c]); }
+        if (!Number.isFinite(lo[0])) { lo.fill(-500); hi.fill(500); }
         const m = 150, A = [lo[0] - m, hi[0] + m], B = [lo[1] - m, hi[1] + m], C = [lo[2] - m, hi[2] + m];
         const quad = p.axis === "z" ? [[A[0], B[0], at], [A[1], B[0], at], [A[1], B[1], at], [A[0], B[1], at]] : p.axis === "y" ? [[A[0], at, C[0]], [A[1], at, C[0]], [A[1], at, C[1]], [A[0], at, C[1]]] : [[at, B[0], C[0]], [at, B[1], C[0]], [at, B[1], C[1]], [at, B[0], C[1]]];
         ctx.beginPath();
-        quad.forEach((q, i) => { const r = rot(q), x = ox + r[0] * k, y = oy - r[2] * k; i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+        quad.forEach((q, i) => { const [x, y] = T(q); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
         ctx.closePath(); ctx.fillStyle = "rgba(60,160,90,0.14)"; ctx.fill();
         ctx.strokeStyle = "rgba(40,140,70,0.9)"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
-        const r0 = rot(quad[0]); ctx.fillStyle = "rgb(30,120,60)"; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
-        ctx.fillText(`Work plane: ${p.name}`, ox + r0[0] * k + 4, oy - r0[2] * k - 4);
+        const [x0, y0] = T(quad[0]); ctx.fillStyle = "rgb(30,120,60)"; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+        ctx.fillText(`Work plane: ${p.name}`, x0 + 4, y0 - 4);
       }
     }
+  }
+
+  // ---- Modify tools: Move, Copy, Rotate, Mirror and Offset (famedit.rs does the work, in the view's coordinates) ----
+  const MOD_TOOLS = new Set(["move", "copy", "rotate", "mirror", "offset"]);
+  // the selection as the core names it; dimensions stay out (they follow their planes)
+  const modItems = () => selItems().filter((x) => ["form", "sym", "mline", "mtext", "ctrl", "conn", "comp", "plane"].includes(x.kind));
+  // the view coordinates of the change, as famedit.rs works them (for the preview)
+  function xfMap(xf) {
+    if (xf.type === "move") return ([u, v]) => [u + xf.du, v + xf.dv];
+    if (xf.type === "rotate") { const r = (xf.deg * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r); return ([u, v]) => [xf.cu + (u - xf.cu) * c - (v - xf.cv) * s, xf.cv + (u - xf.cu) * s + (v - xf.cv) * c]; }
+    const dx = xf.bu - xf.au, dy = xf.bv - xf.av, l2 = dx * dx + dy * dy || 1, a = (dx * dx - dy * dy) / l2, b = (2 * dx * dy) / l2;
+    return ([u, v]) => [xf.au + a * (u - xf.au) + b * (v - xf.av), xf.av + b * (u - xf.au) - a * (v - xf.av)];
+  }
+  // the outlines of what is selected in this view (view coordinates)
+  function selOutlines() {
+    const out = [];
+    for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) if (isSel("form", pc.form)) for (const r of pc.rings) out.push({ pts: r, closed: true });
+    for (const y of S.pv.syms || []) if (y.view === S.view && selHas("sym", y.id)) out.push({ pts: y.points, closed: y.closed });
+    for (const ml of S.pv.model_lines || []) if (ml.present && (selHas("mline", ml.id) || ownedSel(ml.id))) out.push({ pts: ml.points.map(proj), closed: ml.closed });
+    const V = VIEWS[S.view];
+    for (const it of selItems()) {
+      if (it.kind !== "plane") continue;
+      const p = planeById(it.id), at = pos(it.id);
+      if (!p || at === undefined || (p.axis !== V.h && p.axis !== V.v)) continue;
+      const a = s2w(0, 0), b = s2w(S.canvas.width, S.canvas.height);
+      out.push({ pts: p.axis === V.h ? [[at, a.v], [at, b.v]] : [[a.u, at], [b.u, at]], closed: false });
+    }
+    return out;
+  }
+  // the middle of the selection's outlines: where Rotate turns about unless a centre is placed
+  function rotCentre() {
+    if (S.rotPlace && S.mod && S.mod.centre) return S.mod.centre;
+    let lo = [Infinity, Infinity], hi = [-Infinity, -Infinity];
+    for (const o of selOutlines()) for (const [u, v] of o.pts) { lo = [Math.min(lo[0], u), Math.min(lo[1], v)]; hi = [Math.max(hi[0], u), Math.max(hi[1], v)]; }
+    return Number.isFinite(lo[0]) ? { u: (lo[0] + hi[0]) / 2, v: (lo[1] + hi[1]) / 2 } : { u: 0, v: 0 };
+  }
+  // the angle from the start ray to the cursor's, in whole degrees, held at multiples of 15 within 3
+  function rotAngle(c, a, b) {
+    let d = ((Math.atan2(b.v - c.v, b.u - c.u) - Math.atan2(a.v - c.v, a.u - c.u)) * 180) / Math.PI;
+    d = ((d + 540) % 360) - 180;
+    const n15 = Math.round(d / 15) * 15;
+    return Math.abs(d - n15) < 3 ? n15 : Math.round(d);
+  }
+  // the change the picks so far, and the cursor, make (null until there are enough)
+  function modXf(cur) {
+    const M = S.mod || { pts: [] }, p = M.pts;
+    if (S.tool === "move" || S.tool === "copy") return p.length ? { type: "move", du: cur.u - p[0].u, dv: cur.v - p[0].v } : null;
+    if (S.tool === "rotate") { const c = rotCentre(); return p.length ? { type: "rotate", cu: c.u, cv: c.v, deg: rotAngle(c, p[0], cur) } : null; }
+    if (S.tool === "mirror" && !S.mirrorPick) return p.length ? { type: "mirror", au: p[0].u, av: p[0].v, bu: cur.u, bv: cur.v } : null;
+    return null;
+  }
+  async function applyXf(xf, copy) {
+    const items = modItems();
+    if (!items.length) { S.msg = "Select what to change first."; status(); return; }
+    const r = await edit("transform", { items, view: S.view, xf, copy });
+    S.mod = { pts: [] };
+    if (!r) return;
+    setSel(r.items.map((x) => ({ kind: x.kind, id: x.id })));
+    const many = S.tool === "copy" && S.copyMany;
+    S.msg = copy ? (many ? "Copied. Click another start point, or press Esc." : "Copied.") : "Done.";
+    if (!many) setTool("select");
+    props(); status(); render(); ctxRefresh();
+  }
+  async function modClick(m) {
+    const sp = snapPoint(m.x, m.y).pt, t = S.tool, M = S.mod || (S.mod = { pts: [] });
+    if (t === "offset") {
+      const h = hitItem(m.x, m.y);
+      if (!h || (h.kind !== "sym" && h.kind !== "mline")) { S.msg = "Click a model line or a symbolic line, on the side to offset it to."; status(); return; }
+      const r = await edit("offset", { item: { kind: h.kind, id: h.id }, view: S.view, dist: S.offsetDist || 100, toward: [sp.u, sp.v], copy: !!S.offsetCopy });
+      if (r && r.items.length) { S.sel = { kind: r.items[0].kind, id: r.items[0].id }; S.msg = "Offset."; props(); status(); render(); }
+      return;
+    }
+    if (!modItems().length) { S.msg = "Select what to change first (Esc, then click it), then pick the tool."; status(); return; }
+    if (t === "mirror" && S.mirrorPick) {
+      // a reference plane seen edge on is the axis
+      const pl = hitPlane(m.x, m.y), V = VIEWS[S.view], at = pl && pos(pl.id);
+      if (!pl || at === undefined) { S.msg = "Click a reference plane to mirror across, or choose Draw Axis."; status(); return; }
+      const xf = pl.axis === V.h ? { type: "mirror", au: at, av: 0, bu: at, bv: 1000 } : { type: "mirror", au: 0, av: at, bu: 1000, bv: at };
+      await applyXf(xf, S.mirrorCopy !== false);
+      return;
+    }
+    if (t === "rotate" && S.rotPlace && !M.centre) { M.centre = sp; S.msg = "Centre placed. Click a point on the line to turn from."; status(); render(); return; }
+    if (!M.pts.length) { M.pts.push(sp); S.msg = t === "rotate" ? "Click on the line to turn to (or type the angle)." : t === "mirror" ? "Click the second point of the axis." : "Click where it goes."; status(); render(); return; }
+    const xf = modXf(sp);
+    if (!xf) return;
+    if (xf.type === "rotate" && !xf.deg) { S.msg = "That is no turn."; status(); return; }
+    await applyXf(xf, t === "copy" || (t === "mirror" && S.mirrorCopy !== false));
+  }
+  // the picks, and the selection where the change would put it
+  function drawModTool() {
+    if (!MOD_TOOLS.has(S.tool) || S.tool === "offset" || !S.mouse) return;
+    const { ctx } = S, accent = css("--accent"), cur = snapPoint(S.mouse.x, S.mouse.y).pt;
+    const xf = modXf(cur), w = (q) => w2s(q[0], q[1]);
+    ctx.save();
+    ctx.strokeStyle = accent; ctx.lineWidth = 1.2; ctx.setLineDash([5, 4]);
+    if (xf) {
+      const f = xfMap(xf);
+      for (const o of selOutlines()) {
+        ctx.beginPath();
+        o.pts.forEach((q, i) => { const s2 = w(f(q)); i ? ctx.lineTo(s2.x, s2.y) : ctx.moveTo(s2.x, s2.y); });
+        if (o.closed) ctx.closePath();
+        ctx.stroke();
+      }
+    }
+    const M = S.mod || { pts: [] };
+    if (S.tool === "rotate") {
+      const c = rotCentre(), cs = w([c.u, c.v]);
+      ctx.setLineDash([]); ctx.beginPath(); ctx.arc(cs.x, cs.y, 5, 0, Math.PI * 2); ctx.moveTo(cs.x - 9, cs.y); ctx.lineTo(cs.x + 9, cs.y); ctx.moveTo(cs.x, cs.y - 9); ctx.lineTo(cs.x, cs.y + 9); ctx.stroke();
+      ctx.setLineDash([4, 3]);
+      for (const q of [M.pts[0], M.pts.length ? cur : null]) { if (!q) continue; const s2 = w([q.u, q.v]); ctx.beginPath(); ctx.moveTo(cs.x, cs.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
+      if (xf) { const s2 = w([cur.u, cur.v]); ctx.fillStyle = accent; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText(`${xf.deg}°`, s2.x + 10, s2.y - 6); }
+    } else if (M.pts.length) {
+      const a = w([M.pts[0].u, M.pts[0].v]), b = w([cur.u, cur.v]);
+      ctx.setLineDash(S.tool === "mirror" ? [10, 4, 2, 4] : [4, 3]);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      if (xf && xf.type === "move") { ctx.fillStyle = accent; ctx.font = "12px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText(`${Math.round(Math.hypot(xf.du, xf.dv))}`, b.x + 10, b.y - 6); }
+    }
+    ctx.restore();
   }
 
   // ---------------------------------------------------------------- pointer
@@ -2504,7 +2697,7 @@ const FamModel = (() => {
     S.canvas.setPointerCapture(e.pointerId);
     const m = mouse(e);
     S.mouse = m;
-    if (S.view === "3d") { S.drag = { rot: true, x: m.x, y: m.y, a: S.rot.a, b: S.rot.b }; return; }
+
     if (e.button === 1 || e.button === 2) { S.drag = { pan: true, x: m.x, y: m.y, ox: cam().ox, oy: cam().oy, button: e.button }; return; }
     if (await skDown(e, m)) return;
     const t = S.tool;
@@ -2538,7 +2731,8 @@ const FamModel = (() => {
       if (dh) { await clickDim(dh); return; }
       const pl = hitPlane(m.x, m.y);
       if (pl) {
-        S.sel = { kind: "plane", id: pl.id }; props(); render();
+        // temporary dimensions sit near where the plane was picked
+        S.sel = { kind: "plane", id: pl.id }; S.tdimAt = { x: m.x, y: m.y }; props(); render();
         const held = drivenBy(pl.id);
         if (held) { S.msg = `${pl.name} is held by a dimension. Change the dimension instead.`; status(); }
         S.drag = !held && pl.anchor.type === "offset" && /^\s*-?\d+(\.\d+)?\s*$/.test(String(pl.anchor.by)) ? { plane: pl.id, before: snapshot(), moved: false } : null;
@@ -2636,6 +2830,7 @@ const FamModel = (() => {
       if (r && r.dim) { S.sel = { kind: "dim", id: r.dim }; S.msg = "Dimension placed. Label it, lock it or set EQ in Properties."; props(); status(); render(); }
       return;
     }
+    if (MOD_TOOLS.has(t)) { await modClick(m); return; }
     if (t === "align") {
       const o = S.alignOpts;
       // the padlock left by the last alignment
@@ -2732,7 +2927,7 @@ const FamModel = (() => {
     if (skMove(e, m)) return;
     const d = S.drag;
     if (d) {
-      if (d.rot) { S.rot = { a: d.a + (m.x - d.x) * 0.01, b: Math.max(-1.5, Math.min(1.5, d.b + (m.y - d.y) * 0.01)) }; render(); return; }
+
       if (d.pan) { const c = cam(); c.ox = d.ox + m.x - d.x; c.oy = d.oy + m.y - d.y; render(); return; }
       if (d.box) { if (d.cur || Math.hypot(m.x - d.x, m.y - d.y) > 4) { d.cur = m; render(); } return; }
       if (d.shape) {
@@ -2872,7 +3067,7 @@ const FamModel = (() => {
       if (e.key === "Escape" || e.key === "Delete") e.preventDefault();
       return;
     }
-    if (e.key === "Escape") { if (S.alignRef || S.blend || S.rev) { S.alignRef = null; S.blend = null; S.rev = null; S.draft = null; S.msg = "Cancelled."; status(); render(); } else if (S.draft || (S.picks && S.picks.length)) { S.draft = null; S.picks = []; render(); } else if (S.tool !== "select") { setTool("select"); } else if (S.sel && !S.editing) { S.sel = null; props(); render(); } e.preventDefault(); e.stopPropagation(); return; }
+    if (e.key === "Escape") { if (S.alignRef || S.blend || S.rev) { S.alignRef = null; S.blend = null; S.rev = null; S.draft = null; S.msg = "Cancelled."; status(); render(); } else if (S.draft || (S.picks && S.picks.length) || (S.mod && S.mod.pts.length)) { S.draft = null; S.picks = []; S.mod = { pts: [] }; render(); } else if (S.tool !== "select") { setTool("select"); } else if (S.sel && !S.editing) { S.sel = null; props(); render(); } e.preventDefault(); e.stopPropagation(); return; }
     if (e.key === "Delete") { deleteSel(); e.preventDefault(); return; }
     if (e.key === "Enter" && S.draft && S.draft.kind === "poly") { await finishPoly(); render(); e.preventDefault(); return; }
     if (e.key === "Enter" && S.draft && S.draft.kind === "path") { await finishPath(); render(); e.preventDefault(); return; }
@@ -3039,17 +3234,9 @@ const FamModel = (() => {
       ...(canDraw ? [{ label: "Draw", items: [shape("rect", "Rectangle", "Rc"), shape("circle", "Circle", "Ci"), shape("poly", "Polygon", "Pg")] }] : []),
     ] };
   }
+  // Edit a form: its sketch opens in the sketch tools (Edit Extrusion, Edit Blend, Edit Revolve, Edit Path)
   function startEdit(id) {
-    const f = formById(id);
-    if (!f) return;
-    if (f.shape.type === "extrusion") { startFormSketch({ kind: f.void ? "void" : "ext", form: id }); return; }
-    const axis = planeById(f.shape.plane).axis;
-    S.editing = { id, before: snapshot(), undoLen: S.undo.length, loop: null };
-    S.sel = { kind: "form", id };
-    if (!VIEWS[S.view] || VIEWS[S.view].n !== axis) openFamView(VIEW_FOR_AXIS[axis]);
-    setTool("select");
-    props();
-    S.msg = `Editing ${f.name}. Drag its points, draw more loops, click a loop and Delete to remove it, then Finish Edit Mode.`; status();
+    if (formById(id)) startFormSketch({ form: id });
   }
   function finishEdit() {
     const e = S.editing;
@@ -3175,7 +3362,7 @@ const FamModel = (() => {
     edgesNear: (sx, sy) => skEdges(sx, sy),
     cycleSnap: (d) => { S.snapCycle = (S.snapCycle || 0) + d; if (S.mouse) { S.skHover = skSnap(S.mouse.x, S.mouse.y); FSk.move(S.skHover, S.mouse.x, S.mouse.y); } render(); },
   });
-  FSk.callbacks.finish = (out) => finishFormSketch(out);
+  FSk.callbacks.finish = () => finishFormSketch();
   FSk.callbacks.cancel = () => { endFormSketch(); S.msg = "Sketch cancelled."; status(); };
   FSk.callbacks.prompt = (t, err) => { if (!S) return; S.msg = t; S.msgErr = !!err; status(); };
   FSk.callbacks.change = () => {
@@ -3233,29 +3420,105 @@ const FamModel = (() => {
     S.msg = h.on ? `Unlocked from ${name}.` : `Locked to ${name}. The line follows the plane when it moves.`; status(); render();
   }
 
+  // A form's sketch: Extrusion and Void Extrusion (closed loops), Blend (closed loops for its base, then its top, switched
+  // with Edit Top and Edit Base), Revolve (closed loops of Boundary Line, and one Axis Line), Sweep and Swept Blend
+  // (Sketch Path: one chain of lines and arcs, open or closed; the profile is set in Properties). o: { kind, isVoid,
+  // form (editing that form) }.
+  const SK_KIND = { extrusion: "ext", blend: "blend", revolve: "revolve", sweep: "sweep", swept_blend: "swblend" };
+  const AXIS_INK = "#1f6fd1";
+  async function curvesOfLoops(loops) {
+    try { return await Backend.call("family_sketch_of", { loops, planes: S.pv.planes }); }
+    catch (e) { S.msg = String(e.message || e); status(); return null; }
+  }
   async function startFormSketch(o) {
     const f = o.form != null ? formById(o.form) : null;
+    const kind = f ? (f.shape.type === "extrusion" ? (f.void ? "void" : "ext") : SK_KIND[f.shape.type]) : o.kind;
+    const isVoid = f ? !!f.void : kind === "void" || !!o.isVoid;
     const plane = f ? f.shape.plane : workPlane();
     const axis = (planeById(plane) || {}).axis;
     if (S.view === "3d" || !VIEWS[S.view] || VIEWS[S.view].n !== axis) openFamView(VIEW_FOR_AXIS[axis]);
-    let curves = [], locks = [], kept = [];
+    // what an existing form's sketch holds, as curves (and for a blend, its top too; for a revolve, its axis)
+    let first = { curves: [], locks: [], kept: [] }, top = null;
     if (f) {
-      try { ({ curves, locks, kept } = await Backend.call("family_sketch_of", { loops: f.shape.profile, planes: S.pv.planes })); }
-      catch (e) { S.msg = String(e.message || e); status(); return; }
+      const sh = f.shape;
+      const loops = sh.type === "blend" ? sh.base : sh.type === "sweep" || sh.type === "swept_blend" ? [sh.path] : sh.profile;
+      const r = await curvesOfLoops(loops);
+      if (!r) return;
+      first = r;
+      if (sh.type === "blend") { const t = await curvesOfLoops(sh.top); if (!t) return; top = t; }
+      if (sh.type === "revolve") {
+        const pt = (n) => { const u = (n.u.plane != null ? pos(n.u.plane) || 0 : 0) + n.u.off, v = (n.v.plane != null ? pos(n.v.plane) || 0 : 0) + n.v.off; return { x: u, y: v }; };
+        try {
+          const ax = await Backend.call("sketch_describe", { curves: [{ type: "line", a: pt(sh.axis_a), b: pt(sh.axis_b) }] });
+          first.curves.push({ ...ax.curves[0], attr: { axis: true } });
+        } catch (e) { S.msg = String(e.message || e); status(); return; }
+      }
     }
-    S.tool = o.kind;
+    S.tool = kind === "void" ? "void" : kind;
     S.draft = null;
-    S.sk = { form: f ? f.id : null, kind: o.kind, plane, view: S.view, start: f ? f.shape.start : S.start, end: f ? f.shape.end : S.end, locks: new Map(), lockDefault: new Map(), seen: new Set(), alive: new Map(), kept, starting: true };
-    const noun = f ? NOUN(f) : "Extrusion";
-    FSk.begin({ kind: "family", title: f ? `Edit ${noun}` : o.kind === "void" ? "Create Void Extrusion" : "Create Extrusion", curves, tool: f ? "select" : "line" });
-    const st = FSk.state();
-    for (const c of st.curves) S.sk.seen.add(c.uid);
-    for (const l of locks) { const c = st.curves[l.curve]; if (c) S.sk.locks.set(c.uid, [...(S.sk.locks.get(c.uid) || []), { plane: l.plane, coord: l.coord, on: l.on }]); }
-    S.sk.alive = new Map(st.curves.map((c) => [c.uid, c]));
-    S.sk.starting = false;
+    const sh = f ? f.shape : null;
+    S.sk = {
+      form: f ? f.id : null, kind, isVoid, plane, view: S.view, stage: "base",
+      start: sh && sh.start != null ? sh.start : S.start, end: sh && sh.end != null ? sh.end : S.end,
+      a0: sh && sh.start_deg != null ? String(sh.start_deg) : S.a0, a1: sh && sh.end_deg != null ? String(sh.end_deg) : S.a1,
+      locks: new Map(), lockDefault: new Map(), seen: new Set(), alive: new Map(), kept: [...first.kept, ...(top ? top.kept : [])], starting: true,
+      drawAxis: false,
+      // the stage not being drawn (a blend's top while its base is, and the other way)
+      other: top ? { curves: top.curves, locks: top.locks } : { curves: [], locks: [] },
+    };
+    beginStage(first.curves, first.locks, f ? "select" : "line");
     S.sel = f ? { kind: "form", id: f.id } : null;
-    S.msg = f ? `Editing the sketch of ${f.name}. Change it with the Draw and Modify tools, then Finish Edit Mode.` : "Sketch closed loops with the Draw tools, then Finish Edit Mode. Loops inside loops make holes.";
+    S.msg = f ? `Editing ${f.name}. Change it with the Draw and Modify tools, then Finish Edit Mode.` : skHint();
     props(); toolbar(); status(); render(); ctxRefresh();
+  }
+  // what the sketch is for, in a sentence
+  function skHint() {
+    const k = S.sk.kind;
+    if (k === "blend") return S.sk.stage === "base" ? "Sketch the base: one closed loop. Then Edit Top and sketch the top with the same number of points, and Finish Edit Mode." : "Sketch the top: one closed loop with as many points as the base. Edit Base goes back to the base.";
+    if (k === "revolve") return "Sketch the profile with Boundary Line (closed loops), then draw one Axis Line it turns about. Set the angles in the options bar, then Finish Edit Mode.";
+    if (k === "sweep" || k === "swblend") return "Sketch the path: lines and arcs joined end to end, open or closed. Finish Edit Mode, then set the profile in Properties.";
+    return "Sketch closed loops with the Draw tools, then Finish Edit Mode. Loops inside loops make holes.";
+  }
+  function skTitle() {
+    const sk = S.sk, k = sk.kind, edit = sk.form != null, v = sk.isVoid ? "Void " : "";
+    if (k === "blend") return `${edit ? "Edit" : "Create"} ${v}Blend ${sk.stage === "base" ? "Base" : "Top"} Boundary`;
+    if (k === "revolve") return `${edit ? "Edit" : "Create"} ${v}Revolve`;
+    if (k === "sweep" || k === "swblend") return `${k === "sweep" ? "Sweep" : "Swept Blend"} > ${edit ? "Edit Path" : "Sketch Path"}`;
+    return edit ? `Edit ${sk.isVoid ? "Void " : ""}Extrusion` : k === "void" ? "Create Void Extrusion" : "Create Extrusion";
+  }
+  // start the sketch session on a set of curves (with locks by index)
+  function beginStage(curves, locks, tool) {
+    const sk = S.sk;
+    sk.starting = true; sk.locks = new Map(); sk.lockDefault = new Map(); sk.seen = new Set();
+    const revolve = sk.kind === "revolve";
+    FSk.begin({
+      kind: "family", title: skTitle(), curves, tool,
+      // a revolve's axis and a sweep's path are open: finishing checks those here
+      closed: !(revolve || sk.kind === "sweep" || sk.kind === "swblend"),
+      ...(revolve ? { attr: (extra) => ({ ...(sk.drawAxis ? { axis: true } : {}), ...(extra || {}) }), ink: (c) => (c.attr && c.attr.axis ? AXIS_INK : "#b0309c") } : {}),
+    });
+    const st = FSk.state();
+    for (const c of st.curves) sk.seen.add(c.uid);
+    for (const l of locks) { const c = st.curves[l.curve]; if (c) sk.locks.set(c.uid, [...(sk.locks.get(c.uid) || []), { plane: l.plane, coord: l.coord, on: l.on }]); }
+    sk.alive = new Map(st.curves.map((c) => [c.uid, c]));
+    sk.starting = false;
+  }
+  // the session's curves and their locks (by index), to keep or to finish
+  function stageNow() {
+    const st = FSk.state(), locks = [];
+    st.curves.forEach((c, i) => { for (const l of skLockCands(c)) locks.push({ curve: i, plane: l.plane, coord: l.coord, on: l.on }); });
+    return { curves: st.curves.map((c) => ({ curve: c.curve, poly: c.poly, closed: c.closed, snaps: c.snaps, attr: c.attr })), locks };
+  }
+  // a blend's base and top: keep the one drawn, sketch the other
+  function switchBlendStage() {
+    const sk = S.sk;
+    if (!sk || sk.kind !== "blend") return;
+    const now = stageNow(), next = sk.other;
+    sk.other = now;
+    sk.stage = sk.stage === "base" ? "top" : "base";
+    FSk.end();
+    beginStage(next.curves, next.locks, next.curves.length ? "select" : "line");
+    S.msg = skHint(); props(); toolbar(); status(); render(); ctxRefresh();
   }
   function endFormSketch() {
     FSk.end();
@@ -3264,45 +3527,88 @@ const FamModel = (() => {
     S.tool = "select"; S.voidNext = false; S.openingNext = false; S.drag = null;
     props(); toolbar(); render(); ctxRefresh();
   }
-  async function finishFormSketch(out) {
-    const sk = S.sk, st = FSk.state();
-    if (!sk || !st) return false;
-    const locks = [];
-    st.curves.forEach((c, i) => { for (const l of skLockCands(c)) locks.push({ curve: i, plane: l.plane, coord: l.coord, on: l.on }); });
-    let r;
-    try { r = await Backend.call("family_sketch_loops", { curves: out.curves, locks, kept: sk.kept, planes: S.pv.planes }); }
-    catch (e) { FSk.callbacks.prompt(String(e.message || e), true); return false; }
-    if (!r.ok) { FSk.callbacks.prompt(r.error.message, true); return false; }
-    let ok, id = sk.form;
-    if (id != null) ok = await change((b) => { formById(id).shape.profile = r.loops; }, true);
-    else {
+  // the loops of a set of curves (with locks by index), or the reason they do not make any
+  async function loopsOf(stage) {
+    const r = await Backend.call("family_sketch_loops", { curves: stage.curves.map((c) => c.curve), locks: stage.locks, kept: S.sk.kept, planes: S.pv.planes });
+    if (!r.ok) throw new Error(r.error.message);
+    return r.loops;
+  }
+  // a point of the sketch (an axis end) as a node at plain distances
+  const skNode = (q) => ({ u: { plane: null, off: Math.round(q.x * 1000) / 1000 }, v: { plane: null, off: Math.round(q.y * 1000) / 1000 } });
+  async function finishFormSketch() {
+    const sk = S.sk;
+    if (!sk || !FSk.state()) return false;
+    const now = stageNow(), k = sk.kind, editing = sk.form != null;
+    const name = (stem) => { const n = S.body.forms.filter((f) => !!f.void === sk.isVoid && f.name.replace(/^Void /, "").startsWith(stem)).length + 1; return `${sk.isVoid ? "Void " : ""}${stem} ${n}`; };
+    let shape, made;
+    try {
+      if (k === "ext" || k === "void") shape = { type: "extrusion", plane: sk.plane, start: sk.start, end: sk.end, profile: await loopsOf(now) };
+      else if (k === "blend") {
+        const [base, top] = sk.stage === "base" ? [now, sk.other] : [sk.other, now];
+        if (!top.curves.length) throw new Error("Sketch the top as well: Edit Top, then draw one closed loop with as many points as the base.");
+        const bl = await loopsOf(base), tl = await loopsOf(top);
+        if (bl.length !== 1 || tl.length !== 1) throw new Error("A blend's base and top are one closed loop each.");
+        if (bl[0].nodes.length !== tl[0].nodes.length) throw new Error(`The base has ${bl[0].nodes.length} points and the top ${tl[0].nodes.length}: they need the same number.`);
+        shape = { type: "blend", plane: sk.plane, start: sk.start, end: sk.end, base: bl, top: tl };
+      } else if (k === "revolve") {
+        const axes = now.curves.map((c, i) => ({ c, i })).filter((x) => x.c.attr && x.c.attr.axis);
+        if (axes.length !== 1 || axes[0].c.curve.type !== "line") throw new Error("A revolve needs one straight Axis Line to turn about: choose Axis Line on the ribbon and draw it.");
+        const keep = now.curves.map((c, i) => i).filter((i) => i !== axes[0].i), remap = new Map(keep.map((i, j) => [i, j]));
+        const boundary = { curves: keep.map((i) => now.curves[i]), locks: now.locks.filter((l) => remap.has(l.curve)).map((l) => ({ ...l, curve: remap.get(l.curve) })) };
+        if (!boundary.curves.length) throw new Error("Sketch the profile with Boundary Line as well as the axis.");
+        const ax = axes[0].c.curve;
+        const a0 = Number(sk.a0) || 0, a1 = sk.a1 === "" || isNaN(Number(sk.a1)) ? 360 : Number(sk.a1);
+        shape = { type: "revolve", plane: sk.plane, axis_a: skNode(ax.a), axis_b: skNode(ax.b), start_deg: a0, end_deg: a1, profile: await loopsOf(boundary) };
+      } else {
+        const r = await Backend.call("family_sketch_path", { curves: now.curves.map((c) => c.curve), locks: now.locks, kept: sk.kept, planes: S.pv.planes });
+        if (!r.ok) throw new Error(r.error.message);
+        if (editing) shape = { ...formById(sk.form).shape, path: r.path, plane: sk.plane };
+        else {
+          const sq = (h) => [{ type: "poly", points: [[-h, -h], [h, -h], [h, h], [-h, h]].map(([u, v]) => ({ u: String(u), v: String(v) })), bulges: [] }];
+          shape = k === "swblend" ? { type: "swept_blend", plane: sk.plane, path: r.path, profile: sq(25), profile_end: sq(10), profile_angle: 0, flip: false } : { type: "sweep", plane: sk.plane, path: r.path, profile: sq(25), profile_angle: 0, flip: false };
+        }
+      }
+    } catch (e) { FSk.callbacks.prompt(String(e.message || e), true); return false; }
+    let id = sk.form, ok;
+    if (editing) {
+      // an edit keeps what the form had beyond its sketch (locked ends, materials, the profile of a sweep)
+      ok = await change(() => { const f = formById(id); f.shape = { ...f.shape, ...shape }; }, true);
+    } else {
       ok = await change((b) => {
         id = newId();
-        const isVoid = sk.kind === "void";
-        const n = b.forms.filter((f) => !!f.void === isVoid).length + 1;
+        const stem = { ext: "Extrusion", void: "Extrusion", blend: "Blend", revolve: "Revolve", sweep: "Sweep", swblend: "Swept Blend" }[k];
         const no = b.forms.filter((f) => f.opening).length + 1;
         b.forms.push({
-          id, name: S.openingNext ? `Opening ${no}` : isVoid ? `Void ${n}` : `Extrusion ${n}`, void: isVoid, cuts_host: true, opening: !!S.openingNext, cut_by: [],
-          shape: { type: "extrusion", plane: sk.plane, start: sk.start, end: sk.end, profile: r.loops },
-          material: "", material_param: null, subcategory: isVoid ? "" : "Frame/Mullion", vis: {},
+          id, name: S.openingNext && k === "void" ? `Opening ${no}` : name(stem), void: sk.isVoid, cuts_host: true, opening: !!(S.openingNext && k === "void"), cut_by: [],
+          shape, material: "", material_param: null, subcategory: sk.isVoid ? "" : "Frame/Mullion", vis: {},
         });
       }, true);
-      if (ok) { S.start = sk.start; S.end = sk.end; }
+      if (ok) { S.start = sk.start; S.end = sk.end; S.a0 = sk.a0; S.a1 = sk.a1; }
     }
     if (!ok) { FSk.callbacks.prompt(S.msg || "That sketch does not make a form.", true); return false; }
+    made = formById(id);
     endFormSketch();
     S.sel = { kind: "form", id };
-    const f = formById(id);
-    S.msg = `${f ? f.name : "The form"} ${sk.form != null ? "updated" : "made"}. Drag the arrows on its faces to stretch it; a face dropped on a reference plane offers a padlock.`;
+    S.msg = k === "sweep" || k === "swblend"
+      ? `${made ? made.name : "The sweep"} ${editing ? "updated" : "made"}. Set its profile in Properties.`
+      : `${made ? made.name : "The form"} ${editing ? "updated" : "made"}. Drag the arrows on its faces to stretch it; a face dropped on a reference plane offers a padlock.`;
     props(); status(); render(); ctxRefresh();
     return true;
   }
   function skContext() {
-    const t = FSk.tool;
-    return { auto: true, title: `Modify | ${FSk.title}`, groups: [
-      { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => FSk.finish() }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => FSk.cancel() }] },
+    const t = FSk.tool, sk = S.sk;
+    const mode = [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => FSk.finish() }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => FSk.cancel() }];
+    if (sk && sk.kind === "blend") mode.push(sk.stage === "base" ? { label: "Edit Top", ico: "Ed", big: true, onclick: () => switchBlendStage() } : { label: "Edit Base", ico: "Ed", big: true, onclick: () => switchBlendStage() });
+    // a revolve draws two kinds of line: its boundary and the axis it turns about
+    const kinds = sk && sk.kind === "revolve" ? [
+      { label: "Boundary Line", icon: "symbolicLine", on: !sk.drawAxis, onclick: () => { sk.drawAxis = false; ctxRefresh(); status(); } },
+      { label: "Axis Line", icon: "refLine", on: !!sk.drawAxis, onclick: () => { sk.drawAxis = true; if (FSk.tool !== "line") FSk.setTool("line"); S.msg = "Axis Line: click its two points."; ctxRefresh(); status(); } },
+    ] : [];
+    return { auto: true, title: `Modify | ${sk ? skTitle() : FSk.title}`, groups: [
+      { label: "Mode", items: mode },
       { label: "Modify", items: FSk.MODIFY.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id })) },
-      { label: "Draw", items: SK_DRAW.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id })) },
+      { label: "Draw", items: [...kinds, ...SK_DRAW.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id }))] },
+      { label: "Work Plane", items: [{ label: "Set", icon: "setWp", onclick: () => commands["f-wpset"]() }, { label: "Show", icon: "showWp", on: !!S.showWp, onclick: () => commands["f-wpshow"]() }, { label: "Viewer", icon: "viewer", onclick: () => commands["f-wpviewer"]() }] },
     ] };
   }
   const worldRect = (x0, y0, x1, y1) => { const a = s2w(x0, y0), b = s2w(x1, y1); return { x0: Math.min(a.u, b.u), y0: Math.min(a.v, b.v), x1: Math.max(a.u, b.u), y1: Math.max(a.v, b.v) }; };
@@ -3366,9 +3672,11 @@ const FamModel = (() => {
   async function dimPatch(d, patch) { return edit("patch_dim", { dim: d.id, patch }); }
 
   // The segment's value: a labelled dimension changes its parameter for the open type; a plain one moves its plane.
-  function editDimValue(d, seg) {
-    const refs = dimRefs(d), val = Math.abs(pos(refs[seg + 1]) - pos(refs[seg]));
-    const single = refs.length === 2 || d.eq;
+  // `movePlane`: the selected plane, which moves when the value is typed (when it can)
+  function editDimValue(d, seg, movePlane) {
+    const refs = dimRefs(d), single = refs.length === 2 || d.eq;
+    // an EQ dimension's value is its whole length, not one of its equal parts
+    const val = d.eq ? Math.abs(pos(refs[refs.length - 1]) - pos(refs[0])) : Math.abs(pos(refs[seg + 1]) - pos(refs[seg]));
     const label = single ? d.label : (d.seg_labels || [])[seg];
     if (d.reports_to) { S.msg = `${d.reports_to} reads this dimension, so it cannot be typed over.`; status(); return; }
     if (label) {
@@ -3376,16 +3684,31 @@ const FamModel = (() => {
       askText("Dimension", label, String(Math.round(val * 100) / 100), [], async (v) => {
         await setFlex(p, num(v));
         S.saveVals = { ...(S.saveVals || {}), ...(p.instance ? {} : { [p.name]: num(v) }) }; touch();
+        render();
       });
       return;
     }
     if (d.eq) { S.msg = "Equal segments follow the whole length: label the dimension and change its parameter."; status(); return; }
-    askText("Dimension", "Length", String(Math.round(val * 100) / 100), [], (v) => edit("dim_value", { dim: d.id, seg, value: num(v) }));
+    askText("Dimension", "Length", String(Math.round(val * 100) / 100), [], (v) => edit("dim_value", { dim: d.id, seg, value: num(v), ...(movePlane != null ? { move: movePlane } : {}) }));
+  }
+  // a temporary dimension's value typed: the selected plane moves to that distance from the other plane
+  function editTempDim(h) {
+    askText("Dimension", "Length", String(Math.round(h.value * 100) / 100), [], async (v) => {
+      const n = num(v);
+      if (!(n >= 0)) return;
+      S.sel = { kind: "plane", id: h.plane };
+      await edit("move_plane", { plane: h.plane, to: pos(h.other) + h.sign * n });
+      S.sel = { kind: "plane", id: h.plane }; props(); render();
+    });
   }
 
   async function clickDim(h) {
+    if (h.kind === "tval") { editTempDim(h); return; }
     const d = dimById(h.id);
     if (!d) return;
+    // with a reference plane selected, a dimension to it takes a typed value at once and moves that plane
+    const plane = S.sel && S.sel.kind === "plane" && dimRefs(d).includes(S.sel.id) ? S.sel.id : null;
+    if (h.kind === "val" && plane != null) { editDimValue(d, h.seg, plane); return; }
     const was = S.sel && S.sel.kind === "dim" && S.sel.id === d.id;
     S.sel = { kind: "dim", id: d.id };
     if (h.kind === "lock") { await dimPatch(d, { locked: !d.locked }); return; }
@@ -3880,5 +4203,7 @@ const FamModel = (() => {
   }
 
   return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? (skActive() ? { undo: FSk.canUndo ? 1 : 0, redo: FSk.canRedo ? 1 : 0 } : { undo: S.undo.length, redo: S.redo.length }) : null),
-    undo: () => (skActive() ? FSk.undo() : undo()), redo: () => (skActive() ? FSk.redo() : redo()), save: saveFile, _state: () => S };
+    undo: () => (skActive() ? FSk.undo() : undo()), redo: () => (skActive() ? FSk.redo() : redo()), save: saveFile, closeForExit, _state: () => S,
+    // test hooks: where a point of the open view is on the canvas, the sketch session, the 3D view
+    _screenOf: (u, v) => w2s(u, v), _sketch: FSk, _vp3: () => vp3, _refresh: async () => { await preview(); props(); render(); } };
 })();

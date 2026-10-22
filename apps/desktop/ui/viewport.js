@@ -514,7 +514,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
   }
 
   // ---------------------------------------------------------------- the viewport
-  async function init(canvas, onFrame) {
+  // opts: { minDist (how close the camera may come, metres), minFit (the least distance Fit leaves) }: a family is
+  // looked at closer than a building
+  async function init(canvas, onFrame, opts = {}) {
+    const minDist = opts.minDist ?? 2, minFit = opts.minFit ?? 6;
+    let afterRender = null;
     let want = null;
     try { want = new URLSearchParams(location.search).get("renderer") || localStorage.getItem("openarch.renderer"); } catch { /* storage can be unavailable */ }
     let be = null, why = "";
@@ -556,6 +560,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const u = new Float32Array(28); u.set(vp, 0); u.set([0.4, -0.5, 0.8, lineMode === 1 ? 1 : 0], 16); u.set([...page, 1], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
       be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g) });
+      if (afterRender) afterRender();
     }
 
     // ---- picking: cast a ray from the camera through the cursor and take the nearest triangle ----
@@ -639,7 +644,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       }
       dirty = true;
     });
-    canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.dist = Math.min(3000, Math.max(2, cam.dist * Math.exp(e.deltaY * 0.001))); dirty = true; }, { passive: false });
+    canvas.addEventListener("wheel", (e) => { e.preventDefault(); cam.dist = Math.min(3000, Math.max(minDist, cam.dist * Math.exp(e.deltaY * 0.001))); dirty = true; }, { passive: false });
     new ResizeObserver(() => (dirty = true)).observe(canvas);
     requestAnimationFrame(frame);
 
@@ -682,7 +687,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         if (!isFinite(lo[0])) { cam.target = [3, 2, 1]; cam.dist = 14; }
         else {
           cam.target = [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2];
-          cam.dist = Math.max(6, Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 1.2);
+          cam.dist = Math.max(minFit, Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) * 1.2);
         }
         cam.az = -0.9; cam.el = 0.5;
         dirty = true;
@@ -693,6 +698,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       pick,
       /** Called with (elementId | null, additive) when the user clicks in the view. */
       onPick(fn) { pickHandler = fn; },
+      /** Called after each frame is drawn (to draw over the view in step with the camera). */
+      onRender(fn) { afterRender = fn; },
       /** Canvas pixel of a world point, for tests. */
       project(p) {
         const eye = eyePos(), vp = mat.mul(mat.perspective(0.9, canvas.clientWidth / canvas.clientHeight, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));

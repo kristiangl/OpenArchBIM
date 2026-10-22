@@ -274,7 +274,7 @@ const ICON_ALIAS = {
   "f-dim": "dimAligned", "f-eq": "equal", "f-sym": "symbolicLine", "f-region": "region", "f-mask": "masking", "f-text": "text",
   "f-3d": "view3d", "f-sec": "section", "f-names": "planeNames", "f-dims": "dimLinear", "f-vg": "visibility",
   "f-sharedparams": "shared", "f-styles": "styles", "f-materials": "materials", "f-lookup": "lookup",
-  "f-align": "align", "f-mv": "move", "f-cp": "copy", "f-del": "delete",
+  "f-align": "align", "f-mv": "move", "f-cp": "copy", "f-del": "delete", "f-ro": "rotate", "f-mi-pick": "mirror", "f-mi-draw": "mirror", "f-of": "offset",
   // annotation family editor
   "a-select": "select", "a-category": "category", "a-types": "familyTypes", "a-line": "detailLine", "a-region": "region", "a-mask": "masking",
   "a-text": "text", "a-label": "label", "a-symbol": "symbol", "a-refline": "refLine", "a-load": "loadIntoProject", "a-loadclose": "loadAndClose", "a-del": "delete",

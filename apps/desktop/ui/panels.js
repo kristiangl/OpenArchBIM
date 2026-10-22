@@ -56,9 +56,7 @@ function rowCells(r, target) {
       if (name != null) applyPatch(target, nestPatch(r.path, name || null));
     })));
   } else if (r.kind === "color") {
-    const inp = document.createElement("input");
-    inp.type = "color";
-    inp.value = r.value;
+    const inp = ColorPick.field(r.value);
     inp.onchange = () => {
       const h = inp.value;
       applyPatch(target, nestPatch(r.path, [1, 3, 5].map((k) => parseInt(h.slice(k, k + 2), 16))));
@@ -517,8 +515,9 @@ async function openVG() {
       const weight = document.createElement("select");
       weight.add(new Option("By category", ""));
       for (let i = 1; i <= 16; i++) weight.add(new Option(String(i), i, false, cur.weight === i));
-      const color = document.createElement("input"); color.type = "color"; color.value = cur.color ? rgb2hex(cur.color) : "#000000";
+      const color = ColorPick.field(cur.color ? rgb2hex(cur.color) : "#000000");
       const useColor = document.createElement("input"); useColor.type = "checkbox"; useColor.checked = !!cur.color;
+      color.onchange = () => { useColor.checked = true; }; // picking a colour means overriding it
       const pattern = document.createElement("select");
       for (const p of ["", ...linePats]) pattern.add(new Option(p || "By category", p, false, (cur.pattern || "") === p));
       popover(anchor, { nodes: [field("Weight", weight), field("Override colour", useColor), field("Colour", color), field("Pattern", pattern)] }, () => {
@@ -531,7 +530,8 @@ async function openVG() {
       const cur = ovOf(cat)[key] || (ovOf(cat)[key] = { visible: true });
       const vis = document.createElement("input"); vis.type = "checkbox"; vis.checked = cur.visible !== false;
       const useColor = document.createElement("input"); useColor.type = "checkbox"; useColor.checked = !!cur.color;
-      const color = document.createElement("input"); color.type = "color"; color.value = cur.color ? rgb2hex(cur.color) : "#969ba2";
+      const color = ColorPick.field(cur.color ? rgb2hex(cur.color) : "#969ba2");
+      color.onchange = () => { useColor.checked = true; };
       const pattern = document.createElement("select");
       for (const p of ["", ...fillPats]) pattern.add(new Option(p || "By category", p, false, (cur.pattern || "") === p));
       popover(anchor, { nodes: [field("Visible", vis), field("Override colour", useColor), field("Colour", color), field("Pattern", pattern)] }, () => {

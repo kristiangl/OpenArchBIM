@@ -108,6 +108,9 @@ pub struct TextNote {
     pub keep_readable: bool,
     #[serde(default)]
     pub pinned: bool,
+    /// How far the text is turned about its anchor, degrees counter-clockwise.
+    #[serde(default)]
+    pub rotation_deg: f64,
 }
 
 /// A text note ready to draw: its text in paper mm (model mm over the view's scale) and its leaders. The canvas lays
@@ -120,6 +123,8 @@ pub struct TextNoteDraw {
     pub left_attach: VAlign,
     pub right_attach: VAlign,
     pub pinned: bool,
+    /// The text's turn about its anchor, degrees counter-clockwise.
+    pub rotation_deg: f64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -300,6 +305,9 @@ impl Document {
         if !ok(t.at) || t.leaders.iter().any(|l| !ok(l.end) || l.elbow.is_some_and(|e| !ok(e))) {
             return Err("a text note needs a place".into());
         }
+        if !t.rotation_deg.is_finite() {
+            return Err("a text note's rotation must be a number of degrees".into());
+        }
         if !(t.width_mm.is_finite() && (0.0..500.0).contains(&t.width_mm)) {
             return Err("a text note's width must be 0 (as wide as its text) to 500 mm".into());
         }
@@ -394,6 +402,7 @@ impl Document {
                 left_attach: t.left_attach,
                 right_attach: t.right_attach,
                 pinned: t.pinned,
+                rotation_deg: t.rotation_deg,
             })
             .collect()
     }
@@ -744,7 +753,7 @@ mod tests {
         let mut d = Document::new_project();
         let v = plan(&d);
         let ty = d.text_note_types().into_iter().find(|(_, t)| t.name == "3.5mm Arial").unwrap().0;
-        let note = |text: &str| TextNote { view: v, at: p(1000.0, 2000.0), text: text.into(), text_type: ty, halign: HAlign::Left, valign: VAlign::Top, width_mm: 0.0, leaders: vec![], left_attach: VAlign::Top, right_attach: VAlign::Bottom, keep_readable: true, pinned: false };
+        let note = |text: &str| TextNote { view: v, at: p(1000.0, 2000.0), text: text.into(), text_type: ty, halign: HAlign::Left, valign: VAlign::Top, width_mm: 0.0, leaders: vec![], left_attach: VAlign::Top, right_attach: VAlign::Bottom, keep_readable: true, pinned: false, rotation_deg: 0.0 };
         assert!(d.add_text_note(note("  ")).unwrap_err().contains("text"), "no text and no leader");
         let mut arrow = note("");
         arrow.leaders.push(TextLeader { side: LeaderSide::Left, end: p(0.0, 0.0), elbow: None, arc: false });
@@ -760,6 +769,14 @@ mod tests {
         d.transform_elements(&[id], crate::edit::Xform::Move { dx: 100.0, dy: 0.0 }, crate::edit::EditOptions::default()).unwrap();
         let Some(Element::TextNote(t)) = d.get(id) else { panic!() };
         assert_eq!((t.at, t.leaders[0].end, t.leaders[0].elbow), (p(1100.0, 2000.0), p(3100.0, 0.0), Some(p(2600.0, 2000.0))));
+        // Rotate turns the text; Mirror reverses it, turned round to stay readable
+        d.transform_elements(&[id], crate::edit::Xform::Rotate { cx: 0.0, cy: 0.0, angle_deg: 30.0 }, crate::edit::EditOptions::default()).unwrap();
+        let Some(Element::TextNote(t)) = d.get(id) else { panic!() };
+        assert!((t.rotation_deg - 30.0).abs() < 1e-9);
+        d.transform_elements(&[id], crate::edit::Xform::Mirror { ax: 0.0, ay: 0.0, bx: 0.0, by: 1000.0 }, crate::edit::EditOptions::default()).unwrap();
+        let Some(Element::TextNote(t)) = d.get(id) else { panic!() };
+        assert!((t.rotation_deg - 330.0).abs() < 1e-9, "{}", t.rotation_deg);
+        assert_eq!(d.text_note_draws(v, 100.0).iter().find(|x| x.id == id).unwrap().rotation_deg, t.rotation_deg);
         assert!(d.duplicate_text_note_type(ty, "2.5mm Arial").is_err());
         let t2 = d.duplicate_text_note_type(ty, "Notes").unwrap();
         assert!(d.patch_text_note_type(t2, &serde_json::json!({ "size_mm": 0.0 })).is_err());

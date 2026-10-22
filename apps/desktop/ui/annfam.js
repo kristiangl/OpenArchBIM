@@ -92,17 +92,25 @@ const AnnModel = (() => {
     refresh(true);
   }
 
-  // Closing with changes the project has not got: load them, leave them, or stay
-  function askLoad() {
+  // Closing with changes the project has not got: load them, leave them, or stay. `done(closed)` hears how it ended.
+  function askLoad(done = () => {}) {
     activate();
     openModal(`Close ${S.fam.name}`, (body, foot, closeModal) => {
       body.append(el("p", "", `The changes to "${S.fam.name}" are not loaded into the project yet.`));
+      const stay = () => { closeModal(); done(false); };
+      body.closest(".modal-back").onEscape = stay;
       foot.append(
-        button("Load into Project and Close", async () => { closeModal(); await loadIntoProject(true); }, true),
-        button("Close without Loading", () => { closeModal(); close(true); }),
-        button("Cancel", closeModal),
+        button("Load into Project and Close", async () => { closeModal(); await loadIntoProject(true); done(!S); }, true),
+        button("Close without Loading", () => { closeModal(); close(true); done(true); }),
+        button("Cancel", stay),
       );
     });
+  }
+  // Closing as the program closes: resolves true once the family is closed, false when the person stays
+  function closeForExit() {
+    if (!S) return Promise.resolve(true);
+    if (!S.dirty) { close(true); return Promise.resolve(true); }
+    return new Promise((resolve) => askLoad(resolve));
   }
 
   async function loadIntoProject(andClose) {
@@ -468,7 +476,7 @@ const AnnModel = (() => {
       body.append(rows, msg);
       const hex = (c) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
       const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
-      const colour = (key) => { const i = el("input"); i.type = "color"; i.value = hex(cur[key]); i.onchange = () => { cur[key] = rgb(i.value); }; return i; };
+      const colour = (key) => { const i = ColorPick.field(hex(cur[key])); i.onchange = () => { cur[key] = rgb(i.value); }; return i; };
       const patternBtn = (key) => pickerField(cur[key] || "<none>", async () => {
         const v = await pickFillPattern(cur[key] || "", "drafting", "drafting");
         if (v === null) return;
@@ -684,7 +692,7 @@ const AnnModel = (() => {
         const nm = el("input"); nm.type = "text"; nm.value = cur.name;
         nm.onkeydown = (e) => e.stopPropagation();
         nm.onchange = () => { const v = nm.value.trim(); if (!v || types.some((t) => t !== cur && t.name === v)) { msg.textContent = "Each type needs a name of its own."; nm.value = cur.name; return; } msg.textContent = ""; cur._was = cur._was || cur.name; cur.name = v; draw(); };
-        const col = el("input"); col.type = "color"; col.value = hex(cur.color || [0, 0, 0]); col.onchange = () => { cur.color = rgb(col.value); };
+        const col = ColorPick.field(hex(cur.color || [0, 0, 0])); col.onchange = () => { cur.color = rgb(col.value); };
         const lw = el("select");
         for (let w = 1; w <= 16; w++) lw.add(new Option(String(w), String(w), false, w === cur.line_weight));
         lw.onchange = () => { cur.line_weight = parseInt(lw.value, 10); };
@@ -1157,7 +1165,7 @@ const AnnModel = (() => {
   }
 
   return {
-    open, close: () => close(false), activate, docInfo, commands, syncRibbon, context, undo, redo, undoState, save: () => loadIntoProject(false),
+    open, close: () => close(false), closeForExit, activate, docInfo, commands, syncRibbon, context, undo, redo, undoState, save: () => loadIntoProject(false),
     isOpen: (id) => !!S && S.id === id,
     // test hooks
     _state: () => S, _sketch: ASk,

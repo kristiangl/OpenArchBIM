@@ -1254,7 +1254,7 @@ const Plan = (() => {
       for (const [a, b] of rf.ridges) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
     }
     const hov = new Set(tool === "select" && selHover ? selHover : []);
-    Det.drawItems(sel, hov, accent);
+    Det.drawItems(sel, hov, accent, tool === "select");
     Det.drawNotes(sel, hov, accent, tool === "select");
     if (tool === "text") Det.preview(hover);
     ctx.restore();
@@ -2270,6 +2270,7 @@ const Plan = (() => {
     thin: () => thin,
     held: (x) => heldBySketch(x),
     snap: (sx, sy, o) => snap(sx, sy, o),
+    shift: () => shift,
     options: () => DetailCallbacks.options(),
     cb: DetailCallbacks,
   });
@@ -2391,6 +2392,7 @@ const Plan = (() => {
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }
+      if (tool === "text" && e.key === " " && Det.flipArc()) return true;
       if (tool === "select" && sel.size && !wgrip && !dragging && !down && !e.ctrlKey && !e.metaKey && !e.altKey && ARROWS[e.key]) {
         // arrow keys nudge the selection: one press moves about 8 screen pixels, rounded down to a plain step; Shift moves ten times as far
         const [ax, ay] = ARROWS[e.key], raw = 8 / cam.s, step = [1, 2, 5, 10, 20, 50, 100, 200, 500, 1000].filter((v) => v <= raw).pop() || 1, d = e.shiftKey ? step * 10 : step;
@@ -2411,6 +2413,7 @@ const Plan = (() => {
         setTool("select"); return true;
       }
       if (e.key === "Escape" && wgrip) { wgrip = null; hover = null; render(); return true; }
+      if (e.key === "Escape" && Det.cancelDrag()) return true;
       if (e.key === "Escape" && draw && draw.typed) { draw.typed = ""; cb.prompt(promptText()); render(); return true; }
       if (e.key === "Escape") { if (draw) { draw = null; } else if (tool !== "select") { setTool("select"); return true; } else { sel = new Set(); cb.select([]); } cb.prompt(promptText()); render(); return true; }
       if (e.key === "Tab" && tool === "select" && lastMouse) {

@@ -9,6 +9,7 @@ pub mod dimension;
 pub mod doc;
 pub mod edit;
 pub mod element;
+pub mod famedit;
 pub mod famgeom;
 pub mod famnest;
 pub mod famsketch;

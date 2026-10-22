@@ -748,6 +748,8 @@ impl Session {
                 let op = p.get("op").and_then(|v| v.as_str()).ok_or("missing op")?.to_string();
                 let num = |k: &str| p.get(k).and_then(|v| v.as_f64()).ok_or(format!("missing {k}"));
                 let mut made: Option<u32> = None;
+                let mut picked: Vec<openarch_model::famedit::FamItem> = vec![];
+                let view_of = |k: &str| -> Result<SymView, String> { serde_json::from_value(p.get(k).cloned().ok_or(format!("missing {k}"))?).map_err(|e| format!("bad {k}: {e}")) };
                 let body = d2.family_body_edit(id, tid, &over, body, |b, env| match op.as_str() {
                     "add_dim" => {
                         let refs: Vec<u32> = serde_json::from_value(p.get("refs").cloned().ok_or("missing refs")?).map_err(|e| format!("bad refs: {e}"))?;
@@ -767,12 +769,26 @@ impl Session {
                         b.patch_dim(num("dim")? as u32, &patch, env)
                     }
                     "remove_dim" => b.remove_dim(num("dim")? as u32, env),
-                    "dim_value" => b.set_dim_value(num("dim")? as u32, p.get("seg").and_then(|v| v.as_u64()).unwrap_or(0) as usize, num("value")?, env),
+                    // `move` is the plane the person has selected: it is the one that moves when it can
+                    "dim_value" => b.set_dim_value_moving(num("dim")? as u32, p.get("seg").and_then(|v| v.as_u64()).unwrap_or(0) as usize, num("value")?, p.get("move").and_then(|v| v.as_u64()).map(|v| v as u32), env),
                     "move_plane" => b.move_plane(num("plane")? as u32, num("to")?, env),
                     "remove_plane" => b.remove_plane(num("plane")? as u32),
+                    // the Modify tools: Move, Copy, Rotate and Mirror of the picked items, in the view's coordinates
+                    "transform" => {
+                        let items: Vec<openarch_model::famedit::FamItem> = serde_json::from_value(p.get("items").cloned().ok_or("missing items")?).map_err(|e| format!("bad items: {e}"))?;
+                        let x: openarch_model::famedit::FamXform = serde_json::from_value(p.get("xf").cloned().ok_or("missing xf")?).map_err(|e| format!("bad xf: {e}"))?;
+                        picked = b.transform_items(&items, view_of("view")?, x, p.get("copy").and_then(|v| v.as_bool()).unwrap_or(false), env)?;
+                        Ok(())
+                    }
+                    "offset" => {
+                        let item: openarch_model::famedit::FamItem = serde_json::from_value(p.get("item").cloned().ok_or("missing item")?).map_err(|e| format!("bad item: {e}"))?;
+                        let toward: [f64; 2] = serde_json::from_value(p.get("toward").cloned().ok_or("missing toward")?).map_err(|e| format!("bad toward: {e}"))?;
+                        picked = vec![b.offset_item(item, view_of("view")?, num("dist")?, toward, p.get("copy").and_then(|v| v.as_bool()).unwrap_or(false), env)?];
+                        Ok(())
+                    }
                     other => Err(format!("unknown family edit '{other}'")),
                 })?;
-                Ok(json!({ "body": body, "dim": made }))
+                Ok(json!({ "body": body, "dim": made, "items": picked }))
             }
             "export_family" => {
                 let f = self.doc.export_family(id_of(p, "id")?)?;
@@ -1384,6 +1400,19 @@ impl Session {
                 match openarch_model::famsketch::loops_from_curves(&curves, &locks, &kept, &planes) {
                     Ok(loops) => Ok(json!({ "ok": true, "loops": loops })),
                     Err(e) => Ok(json!({ "ok": false, "error": { "message": e.message, "at": e.at } })),
+                }
+            }
+            // a sweep's path from its sketch: one chain of the curves, open or closed
+            "family_sketch_path" => {
+                use openarch_model::famgeom::PlaneId;
+                use openarch_model::famsketch::{Kept, SketchLock};
+                let curves = curves_of(p, "curves")?;
+                let locks: Vec<SketchLock> = serde_json::from_value(p.get("locks").cloned().unwrap_or(json!([]))).map_err(|e| format!("bad locks: {e}"))?;
+                let kept: Vec<Kept> = serde_json::from_value(p.get("kept").cloned().unwrap_or(json!([]))).map_err(|e| format!("bad kept: {e}"))?;
+                let planes: std::collections::BTreeMap<PlaneId, f64> = serde_json::from_value(p.get("planes").cloned().unwrap_or(json!({}))).map_err(|e| format!("bad planes: {e}"))?;
+                match openarch_model::famsketch::path_from_curves(&curves, &locks, &kept, &planes) {
+                    Ok(path) => Ok(json!({ "ok": true, "path": path })),
+                    Err(e) => Ok(json!({ "ok": false, "error": { "message": e } })),
                 }
             }
             "floor_sketch" => {

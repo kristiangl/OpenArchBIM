@@ -24,7 +24,7 @@
   }
 
   function colorInput(rgb, onchange) {
-    const i = h("input", { type: "color", value: toHex(rgb || [0, 0, 0]) });
+    const i = ColorPick.field(toHex(rgb || [0, 0, 0]));
     i.onchange = () => onchange(toRgb(i.value));
     return i;
   }

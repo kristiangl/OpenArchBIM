@@ -405,6 +405,23 @@ function selectTab(name) {
   if (app.doc === "family") FamModel.syncRibbon(); else if (app.doc === "annotation") AnnModel.syncRibbon(); else updateRibbonContext();
 }
 
+// A ribbon wider than the window fits itself in steps (style.css #ribbon.fit-1 to fit-3) rather than scrolling: it
+// is checked whenever its buttons change and whenever the window changes size.
+function fitRibbon() {
+  const r = $("#ribbon");
+  r.classList.remove("fit-1", "fit-2", "fit-3");
+  for (const level of ["fit-1", "fit-2", "fit-3"]) {
+    if (r.scrollWidth <= r.clientWidth + 1) return;
+    r.classList.add(level);
+  }
+}
+{
+  let pending = false;
+  const soon = () => { if (pending) return; pending = true; requestAnimationFrame(() => { pending = false; fitRibbon(); }); };
+  new MutationObserver(soon).observe($("#ribbon"), { childList: true, subtree: true, attributes: true, attributeFilter: ["hidden"] });
+  new ResizeObserver(soon).observe($("#ribbon"));
+}
+
 // ---- project browser -----------------------------------------------------------
 const viewById = (id) => app.info.views.find((v) => v.id === id);
 const curView = () => viewById(app.view.viewId);
@@ -1651,6 +1668,48 @@ async function save(asNew) {
   if (await run("save", { path })) { setPrompt(`Saved ${path}`); await refresh(); }
 }
 
+// ---- closing the program: each open family is offered its own save first, then the project (Yes, No or Cancel)
+let exiting = false;
+function askYesNoCancel(title, text) {
+  return new Promise((resolve) => {
+    openModal(title, (body, foot, close) => {
+      const done = (v) => { close(); resolve(v); };
+      body.append(el("div", { className: "modal-msg", textContent: text }));
+      body.closest(".modal-back").onEscape = () => done("cancel");
+      foot.append(button("Yes", () => done("yes"), true), button("No", () => done("no")), button("Cancel", () => done("cancel")));
+    });
+  });
+}
+async function confirmExit() {
+  if (!(await FamModel.closeForExit())) return false;
+  if (!(await AnnModel.closeForExit())) return false;
+  await refresh();
+  if (!app.info.dirty) return true;
+  const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
+  const a = await askYesNoCancel("OpenArch BIM", `Save changes to ${name}?`);
+  if (a === "cancel") return false;
+  if (a === "no") return true;
+  await save(false);
+  await refresh();
+  return !app.info.dirty;
+}
+async function exitRequested() {
+  if (exiting) return; // already asking
+  exiting = true;
+  try { if (await confirmExit()) await window.__TAURI__.core.invoke("quit"); }
+  finally { exiting = false; }
+}
+if (Backend.isDesktop && window.__TAURI__.event) {
+  // the desktop shell holds the window open and asks here first; answering says the page is listening
+  window.__TAURI__.event.listen("close-requested", () => { window.__TAURI__.core.invoke("close_ack").catch(() => {}); exitRequested(); });
+} else {
+  // in a browser, leaving the page with unsaved work asks first
+  window.addEventListener("beforeunload", (e) => {
+    const fam = FamModel.docInfo(), ann = AnnModel.docInfo();
+    if ((app.info && app.info.dirty) || (fam && fam.dirty) || (ann && ann.dirty)) { e.preventDefault(); e.returnValue = ""; }
+  });
+}
+
 async function openProject() {
   const path = await Backend.pickOpenPath();
   if (!path) return;
@@ -1730,7 +1789,7 @@ document.addEventListener("keydown", (e) => {
   }
   if (typing) return;
   if (app.view.kind === "elevation" && Elev.key(e)) { e.preventDefault(); return; }
-  if (e.key === " " && !mod && !e.repeat && !Sketch.active && Plan.tool !== "elevation") { flipAction().then((used) => { if (used) renderProperties(); }); e.preventDefault(); return; }
+  if (e.key === " " && !mod && !e.repeat && !Sketch.active && Plan.tool !== "elevation" && !(app.view.kind === "plan" && Plan.tool === "text")) { flipAction().then((used) => { if (used) renderProperties(); }); e.preventDefault(); return; }
   if (app.view.kind === "plan" && Plan.key(e)) { e.preventDefault(); return; }
   if (app.view.kind === "3d" && e.key === "Escape" && app.selection.length) { app.selection = []; app.vp?.setSelection([]); Plan.setSelection([]); renderProperties(); return; }
   if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); return; }
@@ -2136,7 +2195,9 @@ DetailCallbacks.placeNote = (pts, o) => {
   if (!V) return;
   const type = noteType(), at = notePt(pts[pts.length - 1]), lead = pts.length > 1;
   const side = lead && pts[0].x > at.x ? "right" : "left";
-  const leaders = lead ? [{ side, end: notePt(pts[0]), elbow: pts.length === 3 ? notePt(pts[1]) : null, arc: o.leader === "arc" }] : [];
+  // a curved leader flipped with Space keeps its bend; one that was not bends the usual way, wherever the text goes
+  const arc = o.leader === "arc", flipBend = arc && o.arc_flip ? NoteGeom.arcBend([at.x, at.y], [pts[0].x, pts[0].y], true) : null;
+  const leaders = lead ? [{ side, end: notePt(pts[0]), elbow: pts.length === 3 ? notePt(pts[1]) : flipBend ? notePt({ x: flipBend[0], y: flipBend[1] }) : null, arc }] : [];
   noteEditor(at, type && type.style ? type.style.size_mm : 2.5, "", async (text) => {
     if (!text && !leaders.length) return;
     const note = { view: V.viewId(), at, text, text_type: app.textTypeId, halign: o.halign, valign: o.valign, width_mm: 0, leaders, left_attach: o.left_attach, right_attach: o.right_attach };
@@ -2154,9 +2215,9 @@ DetailCallbacks.placeNote = (pts, o) => {
 DetailCallbacks.editNote = (id) => {
   const V = noteView(), n = V && V.textNotes().find((x) => x.id === id);
   if (!n) return;
-  const ds = V.viewScale(), L = Ann.layout(n.text);
+  const ds = V.viewScale(), L = Ann.layout(n.text), tl = NoteGeom.corners(n, L)[0];
   V.setEditingNote(id);
-  noteEditor({ x: L.x0 * ds, y: L.top * ds }, n.text.style.size_mm, n.text.lines.map((l) => l.join("")).join("\n"), async (text) => {
+  noteEditor({ x: tl[0] * ds, y: tl[1] * ds }, n.text.style.size_mm, n.text.lines.map((l) => l.join("")).join("\n"), async (text) => {
     V.setEditingNote(null);
     if (!text && !n.leaders.length) { await run("delete", { ids: [id] }); app.selection = []; V.setSelection([]); }
     else await run("patch_text_note", { id, patch: { text } });
@@ -2164,6 +2225,19 @@ DetailCallbacks.editNote = (id) => {
   });
 };
 DetailCallbacks.patchNote = async (id, patch) => { await run("patch_text_note", { id, patch }); await refresh(); };
+// the ends of selected detail lines dragged by their grips: the view's lines go back with those ends moved (one undo step)
+DetailCallbacks.moveLineEnds = async (changes) => {
+  const V = noteView();
+  if (!V) return;
+  const lines = V.detailLines().map((l) => {
+    const c = { ...l.entry.curve };
+    for (const ch of changes) if (ch.id === l.id) c[ch.end] = notePt(ch.to);
+    return { id: l.id, curve: c, style: l.style };
+  });
+  if (lines.some((l) => l.curve.type === "line" && Math.hypot(l.curve.a.x - l.curve.b.x, l.curve.a.y - l.curve.b.y) < 1)) { setPrompt("That would leave a line with no length.", true); V.render(); return; }
+  await run("set_detail_lines", { view_id: V.viewId(), lines });
+  await refresh();
+};
 DetailCallbacks.addLeader = async (id, side, p, arc) => {
   const n = noteView().textNotes().find((x) => x.id === id);
   if (!n) return;
@@ -2186,7 +2260,8 @@ async function patchNotes(list, patch) {
     if (patch.halign || patch.valign) {
       const L = Ann.layout(n.text), ha = patch.halign || n.text.halign, va = patch.valign || n.text.valign;
       const x = ha === "right" ? L.x0 + L.w : ha === "center" ? L.x0 + L.w / 2 : L.x0, y = va === "top" ? L.top : va === "bottom" ? L.top - L.h : L.top - L.h / 2;
-      p.at = notePt({ x: x * ds, y: y * ds });
+      const q = NoteGeom.turn(n, [x, y]); // where that point is with the note turned
+      p.at = notePt({ x: q[0] * ds, y: q[1] * ds });
     }
     await run("patch_text_note", { id: n.id, patch: p });
   }

@@ -8,20 +8,31 @@
 // notes. One set serves every view.
 const DetailCallbacks = {
   options: () => ({ leader: "none", left_attach: "top", right_attach: "bottom", halign: "left", valign: "top" }),
-  placeNote() {}, patchNote() {}, addLeader() {},
+  placeNote() {}, patchNote() {}, addLeader() {}, moveLineEnds() {},
 };
 
-// The geometry of a text note's leaders, in paper mm: where a leader leaves the text and the points it runs through.
+// The geometry of a text note, in paper mm: its turn, where a leader leaves the text and the points it runs through.
+// A note's box is laid out upright (Ann.layout) and turned about its anchor by `rotation_deg`.
 const NoteGeom = (() => {
+  // a point of the upright box turned with the note, and back
+  function turn(n, q, back) {
+    const r = ((n.rotation_deg || 0) * Math.PI) / 180 * (back ? -1 : 1);
+    if (!r) return q;
+    const ax = n.text.x, ay = n.text.y, c = Math.cos(r), s = Math.sin(r), x = q[0] - ax, y = q[1] - ay;
+    return [ax + x * c - y * s, ay + x * s + y * c];
+  }
+  // the box's corners as drawn: top left, top right, bottom right, bottom left
+  const corners = (n, L) => [[L.x0, L.top], [L.x0 + L.w, L.top], [L.x0 + L.w, L.top - L.h], [L.x0, L.top - L.h]].map((q) => turn(n, q));
   // where a leader leaves the text: on its side of the box, at the height that side's attachment says (the middle of
   // the first line, of the box, or of the last line), the type's leader offset off the box
   function leaderStart(n, L, side) {
     const off = n.text.style.border_offset_mm || 0, att = side === "left" ? n.left_attach : n.right_attach;
     const y = att === "top" ? L.top - L.lh / 2 : att === "bottom" ? L.top - L.h + L.lh / 2 : L.top - L.h / 2;
-    return [side === "left" ? L.x0 - off : L.x0 + L.w + off, y];
+    return turn(n, [side === "left" ? L.x0 - off : L.x0 + L.w + off, y]);
   }
   // an arc leader with no bend of its own bows out a fifth of its length, to the left going from the text to the end
-  const arcBend = (s, e) => [(s[0] + e[0]) / 2 - (e[1] - s[1]) * 0.2, (s[1] + e[1]) / 2 + (e[0] - s[0]) * 0.2];
+  // (to the right when flipped)
+  const arcBend = (s, e, flip) => { const k = flip ? -0.2 : 0.2; return [(s[0] + e[0]) / 2 - (e[1] - s[1]) * k, (s[1] + e[1]) / 2 + (e[0] - s[0]) * k]; };
   // points along the circle through a, b and c, from a to c by way of b; nearly in line, the straight line
   function arcThrough(a, b, c, n = 24) {
     const d = 2 * (a[0] * (b[1] - c[1]) + b[0] * (c[1] - a[1]) + c[0] * (a[1] - b[1]));
@@ -46,19 +57,23 @@ const NoteGeom = (() => {
     if (l.arc) return arcThrough(s, l.elbow || arcBend(s, l.end), l.end);
     return l.elbow ? [s, l.elbow, l.end] : [s, l.end];
   }
-  return { leaderStart, arcBend, arcThrough, leaderPath };
+  return { turn, corners, leaderStart, arcBend, arcThrough, leaderPath };
 })();
 
 // host: { ctx(), toScreen({ x, y }), toWorld(sx, sy), zoom() (pixels in a view mm), scale() (the view's scale),
 //   data() (the view's data), thin() (Thin Lines), css(name), render(), held(path) (a sketch holds it),
-//   snap(sx, sy, { last, hvDeg }), options() (the Text tool's: leader, left_attach, right_attach, halign, valign),
-//   cb: { placeNote(points, options), patchNote(id, patch), addLeader(id, side, point, arc) } (DetailCallbacks) }
+//   snap(sx, sy, { last, hvDeg, track }), shift() (Shift is held), options() (the Text tool's: leader, left_attach, right_attach, halign, valign),
+//   cb: { placeNote(points, options), patchNote(id, patch), addLeader(id, side, point, arc),
+//   moveLineEnds([{ id, end, to }]) } (DetailCallbacks) }
 function makeDetails(host) {
   let pts = []; // the Text tool's picks so far (view mm): the leader's end, its elbow, then where it meets the text
   let leaderFor = null; // { id, side, arc } while Add Leader waits for the new leader's end
   let editing = null; // the note being typed in, left out of the drawing meanwhile
   let drag = null; // a grip of the selected note being dragged: { id, g, n (a copy that changes as it goes), L, moved }
   let grips = []; // the selected note's grips on screen
+  let arcFlip = false; // Space while placing a curved leader bends it the other way
+  let lineGrips = []; // the end grips of the selected straight detail lines on screen
+  let lineDrag = null; // one being dragged: { g: { x, y, members: [{ id, end }] }, cur, moved, sx, sy, snap }
   const ARROW_MM = 2.5, ARROW_HALF = 0.26; // a filled arrowhead, 2.5 mm long on paper and 30 degrees across
   const LEADER_HV = 8; // a leader's segments go horizontal or vertical within this many degrees
   const PICKS = { none: 1, one: 2, two: 3, arc: 2 };
@@ -81,7 +96,7 @@ function makeDetails(host) {
     return [...L, ...R.reverse()];
   }
 
-  const { leaderStart, arcBend, arcThrough, leaderPath } = NoteGeom;
+  const { turn, corners, leaderStart, arcBend, arcThrough, leaderPath } = NoteGeom;
 
   // A leader on screen (q: from the text to the end) with its arrowhead. The arrow's tip is the end; the line stops
   // inside the arrowhead, so neither its width nor its cap shows past the tip.
@@ -113,11 +128,15 @@ function makeDetails(host) {
   // ---- drawing -----------------------------------------------------------------------------------------------------
   // detail lines and regions are paper sized (line widths, patterns, dashes): drawn round the view's origin at its
   // scale. sel: the selection; hov: what a click would pick.
-  function drawItems(sel, hov, accent) {
+  function drawItems(sel, hov, accent, selecting) {
+    lineGrips = [];
     const det = data().detail;
     if (!det || (!det.strokes.length && !det.fills.length)) return;
     const c = host.ctx(), b = base(), thin = host.thin(), toS = ([x, y]) => host.toScreen(viewPt([x, y]));
-    Ann.paths(c, det, b, null, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: (x) => !host.held(x) });
+    // a line whose end is being dragged is drawn where it goes instead
+    const moving = lineDrag && lineDrag.moved ? new Set(lineDrag.g.members.map((m) => m.id)) : new Set();
+    const shown = (x) => !host.held(x) && !(x.line != null && moving.has(x.line));
+    Ann.paths(c, det, b, null, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: shown });
     // selected regions show as floors do; selected and hovered lines in the accent or the hover colour
     for (const f of det.fills) {
       if (!sel.has(f.region) || host.held(f)) continue;
@@ -125,12 +144,76 @@ function makeDetails(host) {
       for (const r of f.rings) { r.forEach((q, i) => { const s = toS(q); i ? c.lineTo(s.x, s.y) : c.moveTo(s.x, s.y); }); c.closePath(); }
       c.fillStyle = "rgba(46,111,158,0.30)"; c.fill("evenodd"); c.strokeStyle = accent; c.lineWidth = 2; c.stroke();
     }
-    Ann.paths(c, { strokes: det.strokes }, b, accent, null, { thin, widen: 1.6, only: (x) => !host.held(x) && x.line != null && sel.has(x.line) });
-    if (hov.size) Ann.paths(c, { strokes: det.strokes }, b, "#d4572f", null, { thin, widen: 1.6, only: (x) => !host.held(x) && ((x.line != null && hov.has(x.line) && !sel.has(x.line)) || (x.region != null && hov.has(x.region) && !sel.has(x.region))) });
+    Ann.paths(c, { strokes: det.strokes }, b, accent, null, { thin, widen: 1.6, only: (x) => shown(x) && x.line != null && sel.has(x.line) });
+    if (hov.size) Ann.paths(c, { strokes: det.strokes }, b, "#d4572f", null, { thin, widen: 1.6, only: (x) => shown(x) && ((x.line != null && hov.has(x.line) && !sel.has(x.line)) || (x.region != null && hov.has(x.region) && !sel.has(x.region))) });
+    if (!selecting) return;
+    c.save();
+    c.strokeStyle = accent; c.lineWidth = 2; c.setLineDash([]);
+    for (const m of lineDrag && lineDrag.moved ? lineDrag.g.members : []) {
+      const l = lineById(m.id);
+      if (!l) continue;
+      const o = host.toScreen(m.end === "a" ? l.b : l.a), q = host.toScreen(lineDrag.cur);
+      c.beginPath(); c.moveTo(o.x, o.y); c.lineTo(q.x, q.y); c.stroke();
+    }
+    // the ends of the selected straight lines: a grip each, one shared where selected lines meet
+    for (const g of lineGroups(sel)) {
+      const at = lineDrag && lineDrag.moved && Math.hypot(lineDrag.g.x - g.x, lineDrag.g.y - g.y) < 0.5 ? lineDrag.cur : g;
+      const s = host.toScreen(at), shared = g.members.length > 1;
+      c.fillStyle = "#ffffff"; c.lineWidth = 2;
+      c.beginPath(); c.arc(s.x, s.y, shared ? 7 : 5.5, 0, Math.PI * 2); c.fill(); c.stroke();
+      if (shared) { c.fillStyle = accent; c.beginPath(); c.arc(s.x, s.y, 3, 0, Math.PI * 2); c.fill(); }
+      lineGrips.push({ x: s.x, y: s.y, g });
+    }
+    c.restore();
+  }
+  // the selected straight detail lines (view mm), and their ends grouped where they meet
+  function lineById(id) {
+    const l = (data().detail_lines || []).find((x) => x.id === id), cv = l && l.entry && l.entry.curve;
+    return cv && cv.type === "line" ? { id, a: cv.a, b: cv.b } : null;
+  }
+  function lineGroups(sel) {
+    const groups = [];
+    for (const dl of data().detail_lines || []) {
+      if (!sel.has(dl.id) || host.held({ line: dl.id })) continue;
+      const l = lineById(dl.id);
+      if (!l) continue;
+      for (const end of ["a", "b"]) {
+        const q = l[end];
+        let g = groups.find((o) => Math.hypot(o.x - q.x, o.y - q.y) < 0.5);
+        if (!g) { g = { x: q.x, y: q.y, members: [] }; groups.push(g); }
+        g.members.push({ id: dl.id, end });
+      }
+    }
+    return groups;
+  }
+  // the snap of a grip being dragged, with its guides and name
+  function drawDragSnap() {
+    if (drag && drag.moved && drag.g.kind === "rotate") {
+      // the angle the note is turned to, by the cursor
+      const c = host.ctx(), q = host.toScreen(viewPt(drag.centre)), text = `${Math.round(drag.angle * 10) / 10}\u00b0`;
+      c.save(); c.font = "11px system-ui, sans-serif"; c.textAlign = "left"; c.textBaseline = "alphabetic";
+      const tw = c.measureText(text).width;
+      c.fillStyle = "#fffbe6"; c.strokeStyle = "#999"; c.lineWidth = 1; c.fillRect(q.x + 14, q.y - 24, tw + 8, 16); c.strokeRect(q.x + 14.5, q.y - 23.5, tw + 8, 16);
+      c.fillStyle = "#222"; c.fillText(text, q.x + 18, q.y - 12); c.restore();
+      return;
+    }
+    const h = (lineDrag && lineDrag.moved && lineDrag.snap) || (drag && drag.moved && drag.snap);
+    if (!h || !h.label) return;
+    const c = host.ctx(), s = host.toScreen(h);
+    Snap.drawGuides(c, h, host.toScreen);
+    Snap.glyph(c, h.kind, s.x, s.y);
+    c.save();
+    c.font = "11px system-ui, sans-serif"; c.textAlign = "left"; c.textBaseline = "alphabetic";
+    const tw = c.measureText(h.label).width;
+    c.fillStyle = "#fffbe6"; c.strokeStyle = "#999"; c.lineWidth = 1;
+    c.fillRect(s.x + 10, s.y + 8, tw + 8, 16); c.strokeRect(s.x + 10.5, s.y + 8.5, tw + 8, 16);
+    c.fillStyle = "#222"; c.fillText(h.label, s.x + 14, s.y + 20);
+    c.restore();
   }
   // text notes: the text in its box (annotation.js lays it out), the leaders; the selected note's box and grips
   function drawNotes(sel, hov, accent, selecting) {
     grips = [];
+    drawDragSnap();
     const list = notes();
     if (!list.length) return;
     const c = host.ctx(), b = base(), m = Ann.mapper(b), bg = host.css("--view-bg");
@@ -138,18 +221,28 @@ function makeDetails(host) {
       if (n0.id === editing) continue;
       const n = drag && drag.id === n0.id ? drag.n : n0;
       const col = sel.has(n.id) || (leaderFor && leaderFor.id === n.id) ? accent : hov.has(n.id) ? "#d4572f" : null;
-      Ann.labels(c, [n.text], b, col, { bg });
+      // the text is laid out upright and turned about its anchor
+      const rot = ((n.rotation_deg || 0) * Math.PI) / 180, anchor = m([n.text.x, n.text.y]);
+      const turned = (fn) => { c.save(); if (rot) { c.translate(anchor.x, anchor.y); c.rotate(-rot); c.translate(-anchor.x, -anchor.y); } fn(); c.restore(); };
+      turned(() => Ann.labels(c, [n.text], b, col, { bg }));
       const L = Ann.layout(n.text), ink = col || Ann.rgb(n.text.style.color), w = host.thin() ? 1 : Math.max(1, n.text.style.line_mm * b.k);
       for (const l of n.leaders) drawLeader(c, leaderPath(n, L, l).map(m), b.k, ink, w);
       if (!(sel.has(n.id) && selecting && sel.size === 1)) continue;
       // the box, the grips at its ends (its width), and on each leader its end and its elbow (or bend); a straight
-      // leader's middle grip puts an elbow in
+      // leader's middle grip puts an elbow in. Off the box's top corners, the handles that move and turn the note.
       c.save();
-      const a = m([L.x0, L.top]), z = m([L.x0 + L.w, L.top - L.h]);
-      c.setLineDash([3, 3]); c.lineWidth = 1; c.strokeStyle = accent; c.strokeRect(a.x, a.y, z.x - a.x, z.y - a.y); c.setLineDash([]);
+      const box = corners(n, L).map(m);
+      c.setLineDash([3, 3]); c.lineWidth = 1; c.strokeStyle = accent;
+      c.beginPath(); box.forEach((q, i) => (i ? c.lineTo(q.x, q.y) : c.moveTo(q.x, q.y))); c.closePath(); c.stroke(); c.setLineDash([]);
       const grip = (q, g) => { c.fillStyle = "#ffffff"; c.strokeStyle = accent; c.lineWidth = 1.5; c.beginPath(); c.arc(q.x, q.y, 4.5, 0, Math.PI * 2); c.fill(); c.stroke(); grips.push({ x: q.x, y: q.y, id: n.id, ...g }); };
-      grip({ x: a.x, y: (a.y + z.y) / 2 }, { kind: "width", edge: 0 });
-      grip({ x: z.x, y: (a.y + z.y) / 2 }, { kind: "width", edge: 1 });
+      const mid = (p, q) => ({ x: (p.x + q.x) / 2, y: (p.y + q.y) / 2 });
+      grip(mid(box[0], box[3]), { kind: "width", edge: 0 });
+      grip(mid(box[1], box[2]), { kind: "width", edge: 1 });
+      // the handles sit 14 pixels out from the top corners, along the box's diagonals
+      const out = (q, from) => { const dx = q.x - from.x, dy = q.y - from.y, l = Math.hypot(dx, dy) || 1; return { x: q.x + (dx / l) * 14, y: q.y + (dy / l) * 14 }; };
+      const mv = out(box[0], box[2]), rt = out(box[1], box[3]);
+      handle(c, mv, "move", accent); grips.push({ x: mv.x, y: mv.y, id: n.id, kind: "move" });
+      handle(c, rt, "rotate", accent); grips.push({ x: rt.x, y: rt.y, id: n.id, kind: "rotate" });
       n.leaders.forEach((l, i) => {
         const s = leaderStart(n, L, l.side);
         grip(m(l.end), { kind: "end", i });
@@ -159,12 +252,32 @@ function makeDetails(host) {
       c.restore();
     }
   }
+  // a note's handles: a cross of arrows that moves it, a turning arrow that turns it
+  function handle(c, q, kind, accent) {
+    c.save();
+    c.fillStyle = "#ffffff"; c.strokeStyle = accent; c.lineWidth = 1.5;
+    c.beginPath(); c.arc(q.x, q.y, 8, 0, Math.PI * 2); c.fill(); c.stroke();
+    c.beginPath();
+    if (kind === "move") {
+      for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+        const tx = q.x + dx * 5.5, ty = q.y + dy * 5.5;
+        c.moveTo(q.x, q.y); c.lineTo(tx, ty);
+        c.moveTo(tx - dy * 2 - dx * 2, ty - dx * 2 - dy * 2); c.lineTo(tx, ty); c.lineTo(tx + dy * 2 - dx * 2, ty + dx * 2 - dy * 2);
+      }
+    } else {
+      c.arc(q.x, q.y, 4.5, -Math.PI * 0.9, Math.PI * 0.55);
+      const ex = q.x + 4.5 * Math.cos(Math.PI * 0.55), ey = q.y + 4.5 * Math.sin(Math.PI * 0.55);
+      c.moveTo(ex - 3, ey - 1); c.lineTo(ex, ey); c.lineTo(ex + 1, ey - 3);
+    }
+    c.stroke();
+    c.restore();
+  }
   // the Text tool's picks so far, to the cursor
   function preview(hover) {
     if (!pts.length || !hover) return;
     const c = host.ctx(), arc = host.options().leader === "arc";
     let q = [...pts, hover];
-    if (arc && q.length === 2) { const a = paper(q[0]), e = paper(q[1]); q = arcThrough(e, arcBend(e, a), a).reverse().map(viewPt); }
+    if (arc && q.length === 2) { const a = paper(q[0]), e = paper(q[1]); q = arcThrough(e, arcBend(e, a, arcFlip), a).reverse().map(viewPt); }
     c.save(); c.strokeStyle = host.css("--accent"); c.lineWidth = 1.5; c.setLineDash([5, 4]);
     c.beginPath();
     q.forEach((p, i) => { const s = host.toScreen(p); i ? c.lineTo(s.x, s.y) : c.moveTo(s.x, s.y); });
@@ -188,7 +301,7 @@ function makeDetails(host) {
     for (const n of notes()) {
       if (n.id === editing) continue;
       const L = Ann.layout(n.text);
-      const box = mm([[L.x0, L.top], [L.x0 + L.w, L.top], [L.x0 + L.w, L.top - L.h], [L.x0, L.top - L.h]]);
+      const box = mm(corners(n, L));
       out.push({ id: n.id, kind: "note", ring: box, rings: [box, ...n.leaders.map((l) => band(mm(leaderPath(n, L, l)), t))], pinned: n.pinned, category: "Text Notes", display: "normal" });
     }
     return out;
@@ -196,39 +309,94 @@ function makeDetails(host) {
 
   // ---- the selected note's grips -----------------------------------------------------------------------------------
   function gripDown(sx, sy) {
+    const lg = lineGrips.find((q) => Math.hypot(q.x - sx, q.y - sy) <= 8);
+    if (lg) { lineDrag = { g: lg.g, cur: { x: lg.g.x, y: lg.g.y }, moved: false, sx, sy, snap: null }; return true; }
     const g = grips.find((q) => Math.hypot(q.x - sx, q.y - sy) <= 7);
     if (!g) return false;
     const n = notes().find((x) => x.id === g.id);
     if (!n) return false;
-    drag = { id: n.id, g, n: JSON.parse(JSON.stringify(n)), L: Ann.layout(n.text), moved: false };
+    drag = { id: n.id, g, n: JSON.parse(JSON.stringify(n)), n0: n, L: Ann.layout(n.text), moved: false, sx, sy };
+    if (g.kind === "move") drag.p0 = host.snap(sx, sy, {});
+    if (g.kind === "rotate") {
+      // it turns about the middle of its box
+      const cs = corners(n, drag.L), cx = (cs[0][0] + cs[2][0]) / 2, cy = (cs[0][1] + cs[2][1]) / 2, w = paper(host.toWorld(sx, sy));
+      drag.centre = [cx, cy]; drag.a0 = Math.atan2(w[1] - cy, w[0] - cx);
+    }
     return true;
   }
   function gripMove(sx, sy) {
+    if (lineDrag) {
+      const L = lineDrag;
+      if (!L.moved && Math.hypot(sx - L.sx, sy - L.sy) < 4) return;
+      L.moved = true;
+      // one line's end measures its angle and length from the line's other end; every end lines up with the other
+      // ends of the selected lines and with where the grip started
+      const others = [];
+      for (const m of L.g.members) { const l = lineById(m.id); if (l) others.push(m.end === "a" ? l.b : l.a); }
+      const p = host.snap(sx, sy, { last: L.g.members.length === 1 ? others[0] : null, track: [...others, { x: L.g.x, y: L.g.y }] });
+      L.cur = { x: p.x, y: p.y }; L.snap = p;
+      host.render();
+      return;
+    }
     const d = drag;
+    if (!d.moved && (d.g.kind === "move" || d.g.kind === "rotate") && Math.hypot(sx - d.sx, sy - d.sy) < 3) return;
     d.moved = true;
-    if (d.g.kind === "width") {
-      const p = paper(host.toWorld(sx, sy)), L = d.L, t = d.n.text;
+    if (d.g.kind === "move") {
+      // the text and its elbows go with the cursor; what the leaders point at stays
+      const p = host.snap(sx, sy, {}), dx = (p.x - d.p0.x) / ds(), dy = (p.y - d.p0.y) / ds(), o = d.n0;
+      d.snap = p;
+      d.n.text.x = o.text.x + dx; d.n.text.y = o.text.y + dy;
+      d.n.leaders.forEach((l, i) => { const e = o.leaders[i].elbow; if (e) l.elbow = [e[0] + dx, e[1] + dy]; });
+    } else if (d.g.kind === "rotate") {
+      // whole degrees, held at multiples of 15 within 2 degrees (Shift keeps to 15)
+      const w = paper(host.toWorld(sx, sy)), o = d.n0, [cx, cy] = d.centre;
+      let deg = (((Math.atan2(w[1] - cy, w[0] - cx) - d.a0) * 180) / Math.PI);
+      const total = (o.rotation_deg || 0) + deg, near15 = Math.round(total / 15) * 15;
+      deg = (host.shift && host.shift()) || Math.abs(total - near15) < 2 ? near15 - (o.rotation_deg || 0) : Math.round(total) - (o.rotation_deg || 0);
+      const r = (deg * Math.PI) / 180, cs = Math.cos(r), sn = Math.sin(r);
+      const spin = (q) => [cx + (q[0] - cx) * cs - (q[1] - cy) * sn, cy + (q[0] - cx) * sn + (q[1] - cy) * cs];
+      const a = spin([o.text.x, o.text.y]);
+      d.n.text.x = a[0]; d.n.text.y = a[1];
+      d.n.rotation_deg = ((((o.rotation_deg || 0) + deg) % 360) + 360) % 360;
+      d.n.leaders.forEach((l, i) => { const e = o.leaders[i].elbow; if (e) l.elbow = spin(e); });
+      d.angle = d.n.rotation_deg;
+    } else if (d.g.kind === "width") {
+      // across the box as it is turned
+      const p = turn(d.n0, paper(host.toWorld(sx, sy)), true), L = d.L, t = d.n.text;
       const e0 = d.g.edge === 0 ? Math.min(p[0], L.x0 + L.w - 2) : L.x0, e1 = d.g.edge === 1 ? Math.max(p[0], L.x0 + 2) : L.x0 + L.w;
       t.width_mm = Math.round((e1 - e0) * 10) / 10;
-      t.x = t.halign === "right" ? e1 : t.halign === "center" ? (e0 + e1) / 2 : e0;
+      // the anchor moves along the box's edge as the note is turned
+      const ax = t.halign === "right" ? e1 : t.halign === "center" ? (e0 + e1) / 2 : e0, wa = turn(d.n0, [ax, d.n0.text.y]);
+      t.x = wa[0]; t.y = wa[1];
     } else {
       // an end snaps with its angle measured from the elbow (or the text); an elbow or bend from where the leader
       // leaves the text, so that piece goes level easily
       const l = d.n.leaders[d.g.i], s = leaderStart(d.n, d.L, l.side);
       const from = d.g.kind === "end" && l.elbow && !l.arc ? l.elbow : s;
       const p = host.snap(sx, sy, { last: viewPt(from), hvDeg: LEADER_HV });
+      d.snap = p;
       if (d.g.kind === "end") l.end = paper(p); else l.elbow = paper(p);
     }
     host.render();
   }
   function gripUp() {
+    if (lineDrag) {
+      const L = lineDrag;
+      lineDrag = null;
+      if (L.moved && Math.hypot(L.cur.x - L.g.x, L.cur.y - L.g.y) > 0.01) host.cb.moveLineEnds(L.g.members.map((m) => ({ ...m, to: L.cur })));
+      else host.render();
+      return;
+    }
     const d = drag;
     drag = null;
     if (!d || !d.moved) { host.render(); return; }
     const pt = (q) => ({ x: Math.round(q[0] * ds() * 1000) / 1000, y: Math.round(q[1] * ds() * 1000) / 1000 });
+    const leaders = () => d.n.leaders.map((l) => ({ side: l.side, end: pt(l.end), elbow: l.elbow ? pt(l.elbow) : null, arc: !!l.arc }));
     const patch = d.g.kind === "width"
       ? { width_mm: d.n.text.width_mm, at: pt([d.n.text.x, d.n.text.y]) }
-      : { leaders: d.n.leaders.map((l) => ({ side: l.side, end: pt(l.end), elbow: l.elbow ? pt(l.elbow) : null, arc: !!l.arc })) };
+      : d.g.kind === "move" || d.g.kind === "rotate"
+        ? { at: pt([d.n.text.x, d.n.text.y]), rotation_deg: Math.round((d.n.rotation_deg || 0) * 1000) / 1000, leaders: leaders() }
+        : { leaders: leaders() };
     host.cb.patchNote(d.id, patch);
   }
 
@@ -242,23 +410,26 @@ function makeDetails(host) {
   function toolClick(p) {
     pts.push({ x: p.x, y: p.y });
     const o = host.options();
-    if (pts.length >= (PICKS[o.leader] || 1)) { const done = pts; pts = []; host.cb.placeNote(done, o); }
+    if (pts.length >= (PICKS[o.leader] || 1)) { const done = pts; pts = []; host.cb.placeNote(done, { ...o, arc_flip: arcFlip }); }
   }
   function leaderClick(p) { if (leaderFor) host.cb.addLeader(leaderFor.id, leaderFor.side, { x: p.x, y: p.y }, !!leaderFor.arc); }
   function promptText(tool) {
     if (tool === "noteleader") return `Click where the new ${leaderFor && leaderFor.arc ? "arc " : ""}leader points. Esc finishes.`;
     const end = "Click where the leader points.", meet = "Click where the leader meets the text, then type.";
-    const steps = { none: ["Click where the text goes, then type."], one: [end, meet], two: [end, "Click the leader's elbow.", meet], arc: [end, meet] }[host.options().leader] || ["Click where the text goes, then type."];
+    const steps = { none: ["Click where the text goes, then type."], one: [end, meet], two: [end, "Click the leader's elbow.", meet], arc: [end, `${meet} Space flips the curve.`] }[host.options().leader] || ["Click where the text goes, then type."];
     return `${steps[Math.min(pts.length, steps.length - 1)]} Esc leaves the tool.`;
   }
 
   return {
     drawItems, drawNotes, preview, elements, leaderStart, leaderPath, arcBend,
     gripDown, gripMove, gripUp,
-    get dragging() { return !!drag; },
+    get dragging() { return !!drag || !!lineDrag; },
+    cancelDrag() { if (!drag && !lineDrag) return false; drag = null; lineDrag = null; host.render(); return true; },
     toolSnap, toolClick, leaderClick, promptText,
     get picking() { return pts.length > 0; },
-    clearPicks() { pts = []; },
+    clearPicks() { pts = []; arcFlip = false; },
+    // Space while placing a curved leader: it bends the other way. False when there is no curved leader to flip.
+    flipArc() { if (host.options().leader !== "arc") return false; arcFlip = !arcFlip; host.render(); return true; },
     startLeader(id, side, arc) { leaderFor = { id, side, arc: !!arc }; },
     stopLeader() { leaderFor = null; },
     setEditing(id) { editing = id; host.render(); },

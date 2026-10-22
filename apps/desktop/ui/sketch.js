@@ -91,6 +91,8 @@ function makeSketch() {
       attrFn: o.attr || (o.kind === "roof" ? roofAttr : null),
       // fade: the rest of the view fades while sketching; ink: the colour of the curves (or a function of the curve)
       fade: o.fade !== false, ink: o.ink || MAGENTA,
+      // closed: Finish first checks the curves make closed loops (a path or an axis line is open: the host checks those)
+      closed: o.closed !== false,
     };
     S.curves = (o.curves || []).map((d) => wrap(d));
     setTool(o.tool || "line");
@@ -1188,8 +1190,11 @@ function makeSketch() {
   }
   async function finish() {
     if (!S) return false;
-    const r = await check();
-    if (!r || !r.ok) return false;
+    if (!S.curves.length) { cb.prompt("Draw something first.", true); return false; }
+    if (S.closed) {
+      const r = await check();
+      if (!r || !r.ok) return false;
+    }
     const out = { kind: S.kind, id: S.id, levelId: S.levelId, typeId: S.typeId, curves: S.curves.map((c) => c.curve), slope: S.slope, span: S.span };
     if (S.attrFn) out.edges = S.curves.map((c) => ({ curve: c.curve, ...c.attr }));
     return cb.finish(out);
