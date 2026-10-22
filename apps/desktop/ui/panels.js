@@ -129,6 +129,10 @@ async function renderProperties() {
     types = app.info.filled_region_types; current = d.type_id;
     onType = async (id) => { await run("patch_detail_region", { id: d.id, patch: { region_type: id } }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "TextNote") {
+    types = app.info.text_note_types; current = d.type_id;
+    onType = async (id) => { await run("patch_text_note", { id: d.id, patch: { text_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Grid") {
     types = app.info.grid_types; current = d.type_id;
     onType = async (id) => { await run("patch_grid", { id: d.id, patch: { grid_type: id } }); await refresh(); };
@@ -180,6 +184,12 @@ async function renderProperties() {
     onType = (id) => { app.floorTypeId = id; renderProperties(); };
     groups.push({ name: "Constraints", rows: [{ label: "Level", value: currentLevel().name, kind: "ro" }] });
     if (tool === "sketch") title = "Create Floor Boundary";
+  } else if (tool === "text") {
+    const tts = app.info.text_note_types || [];
+    if (app.textTypeId == null || !tts.some((t) => t.id === app.textTypeId)) app.textTypeId = (tts[0] || {}).id;
+    types = tts; current = app.textTypeId;
+    onType = (id) => { app.textTypeId = id; renderProperties(); };
+    title = "Text";
   } else if (tool === "sketch" && Sketch.kind === "region" && !Sketch.editingId && !app.regionMasking) {
     types = app.info.filled_region_types; current = app.regionTypeId;
     onType = (id) => { app.regionTypeId = id; renderProperties(); };

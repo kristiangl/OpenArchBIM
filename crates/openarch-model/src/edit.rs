@@ -330,7 +330,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) => details.push(id),
+                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -341,7 +341,7 @@ impl Document {
             }
         }
         if walls.is_empty() && floors.is_empty() && insts.is_empty() && grids.is_empty() && roofs.is_empty() && details.is_empty() {
-            return Err("select walls, floors, roofs, grids, doors, windows, detail lines or regions".into());
+            return Err("select walls, floors, roofs, grids, doors, windows or detail items".into());
         }
         if !opt.copy {
             let all: Vec<Id> = walls.iter().chain(&floors).chain(&insts).chain(&grids).chain(&roofs).chain(&details).copied().collect();
@@ -384,6 +384,17 @@ impl Document {
                     }
                     nr.pinned = r.pinned && !opt.copy;
                     Element::DetailRegion(nr)
+                }
+                // a text note's anchor and leaders move; the text stays upright
+                Some(Element::TextNote(t)) => {
+                    let mut nt = t.clone();
+                    nt.at = x.apply(t.at);
+                    for l in &mut nt.leaders {
+                        l.end = x.apply(l.end);
+                        l.elbow = l.elbow.map(|e| x.apply(e));
+                    }
+                    nt.pinned = t.pinned && !opt.copy;
+                    Element::TextNote(nt)
                 }
                 _ => continue,
             };

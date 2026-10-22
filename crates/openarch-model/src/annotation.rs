@@ -797,7 +797,7 @@ impl Document {
         Some(DrawnHead { family: id, paths: self.symbol_drawing(f, false).body, labels })
     }
 
-    fn text_style(&self, t: Option<&TextType>) -> TextStyle {
+    pub(crate) fn text_style(&self, t: Option<&TextType>) -> TextStyle {
         let t = t.cloned().unwrap_or_else(|| TextType::new("", 2.5, false));
         let line_mm = self.line_weights().map_or(0.18, |(_, w)| w.annotation_width(t.line_weight));
         TextStyle {

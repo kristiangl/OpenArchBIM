@@ -831,6 +831,61 @@ pub fn filled_region_type_props(d: &Document, id: Id, t: &openarch_model::annota
     })
 }
 
+/// Properties of a text note: alignment, where its leaders leave the box, Keep Readable.
+pub fn text_note_props(_d: &Document, id: Id, t: &openarch_model::detail::TextNote) -> Value {
+    let va = |v: openarch_model::annotation::VAlign| name_of(&v);
+    let vs = [("top", "Top"), ("middle", "Middle"), ("bottom", "Bottom")];
+    json!({
+        "id": id, "kind": "TextNote", "title": "Text Notes (1)", "type_label": "Text",
+        "type_id": t.text_type, "text": t.text,
+        "target": { "method": "patch_text_note", "id": id },
+        "groups": [
+            group("Graphics", vec![
+                enum_select("Leader Left Attachment", "left_attach", &va(t.left_attach), &vs),
+                enum_select("Leader Right Attachment", "right_attach", &va(t.right_attach), &vs),
+                enum_select("Horizontal Align", "halign", &name_of(&t.halign), &[("left", "Left"), ("center", "Center"), ("right", "Right")]),
+                enum_select("Vertical Align", "valign", &va(t.valign), &vs),
+                boolean("Keep Readable", "keep_readable", t.keep_readable, true),
+            ]),
+            group("Constraints", vec![boolean("Pinned", "pinned", t.pinned, true)]),
+            group("Text", vec![ro("Text", t.text.replace('\n', " / ")), ro("Leaders", t.leaders.len().to_string())]),
+        ],
+    })
+}
+
+/// Type Properties of a text type (text notes): Graphics and Text, as the Type Properties dialog lists them.
+pub fn text_type_props(d: &Document, id: Id, t: &openarch_model::annotation::TextType) -> Value {
+    let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+    let weights: Vec<(String, Value, bool)> = (1..=16u8).map(|w| (w.to_string(), json!({ "line_weight": w }), w == t.line_weight)).collect();
+    let mut fonts: Vec<&str> = vec!["Arial", "Arial Narrow", "Calibri", "Century Gothic", "Consolas", "Courier New", "Georgia", "Segoe UI", "Tahoma", "Times New Roman", "Verdana"];
+    if !fonts.contains(&t.font.as_str()) {
+        fonts.insert(0, &t.font);
+    }
+    json!({
+        "id": id, "kind": "TextNoteType", "title": t.name,
+        "siblings": d.text_note_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "groups": [
+            group("Graphics", vec![
+                json!({ "label": "Color", "value": hex(t.color), "raw": t.color, "kind": "color", "path": "color" }),
+                select("Line Weight", weights),
+                select("Background", vec![("Opaque".into(), json!({ "opaque": true }), t.opaque), ("Transparent".into(), json!({ "opaque": false }), !t.opaque)]),
+                boolean("Show Border", "show_border", t.show_border, true),
+                num("Leader/Border Offset", "border_offset_mm", t.border_offset_mm, true),
+            ]),
+            group("Text", vec![
+                select("Text Font", fonts.iter().map(|f| (f.to_string(), json!({ "font": f }), *f == t.font)).collect()),
+                num("Text Size", "size_mm", t.size_mm, true),
+                num("Tab Size", "tab_size_mm", t.tab_size_mm, true),
+                boolean("Bold", "bold", t.bold, true),
+                boolean("Italic", "italic", t.italic, true),
+                boolean("Underline", "underline", t.underline, true),
+                num("Width Factor", "width_factor", t.width_factor, true),
+            ]),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
+        ],
+    })
+}
+
 /// Properties of a permanent dimension.
 pub fn dimension_props(d: &Document, id: Id, x: &openarch_model::dimension::Dimension) -> Value {
     use openarch_model::dimension::EqDisplay;

@@ -1,12 +1,13 @@
 //! Detail items: drawn in one view only, on the view's own plane (model millimetres in a plan view). A detail line
 //! takes a line style (a subcategory of Lines in Object Styles). A filled region is closed loops of edges, each edge
-//! with its own line style, filled as its filled region type says; a masking region hides what is behind it.
-//! Line weights are model line weights, so they follow the view's scale as other lines do; patterns and dashes are
-//! paper sizes.
+//! with its own line style, filled as its filled region type says; a masking region hides what is behind it. A text
+//! note is text in a box on paper, written with a text note type, with leaders from its sides.
+//! Line weights are model line weights, so they follow the view's scale as other lines do; patterns, dashes and text
+//! are paper sizes.
 
 use serde::{Deserialize, Serialize};
 
-use crate::annotation::{edge_loops, PathFill, PathStroke, RegionEdge, RegionType, SymbolPaths, INVISIBLE_LINES};
+use crate::annotation::{edge_loops, DrawnText, HAlign, PathFill, PathStroke, RegionEdge, RegionType, SymbolPaths, TextType, VAlign, Wrap, INVISIBLE_LINES};
 use crate::curve::{self, Curve};
 use crate::doc::Document;
 use crate::element::{Element, Id};
@@ -46,6 +47,88 @@ pub struct DetailRegion {
     pub pinned: bool,
 }
 
+/// Which side of a text note a leader leaves from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LeaderSide {
+    Left,
+    Right,
+}
+
+/// A leader of a text note: from the note's side (at the height the note's attachment for that side says) to `end`,
+/// through `elbow` when it has two segments; an arc leader curves instead.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextLeader {
+    pub side: LeaderSide,
+    pub end: Point,
+    #[serde(default)]
+    pub elbow: Option<Point>,
+    #[serde(default)]
+    pub arc: bool,
+}
+
+fn top() -> VAlign {
+    VAlign::Top
+}
+
+fn bottom() -> VAlign {
+    VAlign::Bottom
+}
+
+fn yes() -> bool {
+    true
+}
+
+/// A text note in one view.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextNote {
+    pub view: Id,
+    /// The anchor, model mm: the box's left edge, middle or right edge and its top, middle or bottom, as the
+    /// alignment says.
+    pub at: Point,
+    #[serde(default)]
+    pub text: String,
+    pub text_type: Id,
+    #[serde(default)]
+    pub halign: HAlign,
+    #[serde(default = "top")]
+    pub valign: VAlign,
+    /// Width of the box on paper, mm; 0 is as wide as the text, which then does not wrap.
+    #[serde(default)]
+    pub width_mm: f64,
+    #[serde(default)]
+    pub leaders: Vec<TextLeader>,
+    /// Leader Left Attachment and Leader Right Attachment: where on its side a leader leaves the box.
+    #[serde(default = "top")]
+    pub left_attach: VAlign,
+    #[serde(default = "bottom")]
+    pub right_attach: VAlign,
+    #[serde(default = "yes")]
+    pub keep_readable: bool,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// A text note ready to draw: its text in paper mm (model mm over the view's scale) and its leaders. The canvas lays
+/// the text out and starts the leaders at the box it makes.
+#[derive(Debug, Clone, Serialize)]
+pub struct TextNoteDraw {
+    pub id: Id,
+    pub text: DrawnText,
+    pub leaders: Vec<LeaderDraw>,
+    pub left_attach: VAlign,
+    pub right_attach: VAlign,
+    pub pinned: bool,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct LeaderDraw {
+    pub side: LeaderSide,
+    pub end: [f64; 2],
+    pub elbow: Option<[f64; 2]>,
+    pub arc: bool,
+}
+
 /// One line of a detail line sketch: the element it was (none for a new line), its curve and its line style.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct DetailLineEdit {
@@ -65,6 +148,21 @@ impl Document {
         self.iter().filter_map(|(id, e)| if let Element::DetailRegion(r) = e { Some((id, r)).filter(|(_, r)| r.view == view) } else { None }).collect()
     }
 
+    pub fn text_notes(&self, view: Id) -> Vec<(Id, &TextNote)> {
+        self.iter().filter_map(|(id, e)| if let Element::TextNote(t) = e { Some((id, t)).filter(|(_, t)| t.view == view) } else { None }).collect()
+    }
+
+    pub fn text_note_types(&self) -> Vec<(Id, &TextType)> {
+        self.iter().filter_map(|(id, e)| if let Element::TextNoteType(t) = e { Some((id, t)) } else { None }).collect()
+    }
+
+    pub fn text_note_type(&self, id: Id) -> Option<&TextType> {
+        match self.get(id) {
+            Some(Element::TextNoteType(t)) => Some(t),
+            _ => None,
+        }
+    }
+
     pub fn filled_region_types(&self) -> Vec<(Id, &RegionType)> {
         self.iter().filter_map(|(id, e)| if let Element::FilledRegionType(t) = e { Some((id, t)) } else { None }).collect()
     }
@@ -81,20 +179,139 @@ impl Document {
         self.object_styles().and_then(|(_, s)| s.annotation.get(LINES)).map(|c| c.subcategories.keys().cloned().collect()).unwrap_or_default()
     }
 
-    /// The filled region types a project starts with (and an older project gets).
+    /// The filled region types and text note types a project starts with (and an older project gets).
     pub fn ensure_detail_defaults(&mut self) {
-        if !self.filled_region_types().is_empty() {
+        let regions = self.filled_region_types().is_empty();
+        let texts = self.text_note_types().is_empty();
+        if !regions && !texts {
             return;
         }
-        let _ = self.transact("Filled region types", |tx| {
-            for (name, pattern) in [("Solid Black", SOLID_FILL), ("Diagonal Up", "Diagonal up"), ("Diagonal Crosshatch", "Diagonal crosshatch"), ("Crosshatch", "Crosshatch")] {
-                let mut t = RegionType::solid(name);
-                t.foreground = Some(pattern.into());
-                tx.add(Element::FilledRegionType(t));
+        let _ = self.transact("Detail types", |tx| {
+            if regions {
+                for (name, pattern) in [("Solid Black", SOLID_FILL), ("Diagonal Up", "Diagonal up"), ("Diagonal Crosshatch", "Diagonal crosshatch"), ("Crosshatch", "Crosshatch")] {
+                    let mut t = RegionType::solid(name);
+                    t.foreground = Some(pattern.into());
+                    tx.add(Element::FilledRegionType(t));
+                }
+            }
+            if texts {
+                // text notes hide what is behind them unless their type says otherwise
+                for size in [2.5, 3.5, 5.0] {
+                    let mut t = TextType::new(&format!("{size}mm Arial"), size, false);
+                    t.opaque = true;
+                    tx.add(Element::TextNoteType(t));
+                }
             }
             Ok(())
         });
         self.clear_history();
+    }
+
+    fn check_text_note(&self, t: &TextNote) -> Result<(), String> {
+        self.check_detail_view(t.view)?;
+        if self.text_note_type(t.text_type).is_none() {
+            return Err("unknown text note type".into());
+        }
+        let ok = |p: Point| p.x.is_finite() && p.y.is_finite();
+        if !ok(t.at) || t.leaders.iter().any(|l| !ok(l.end) || l.elbow.is_some_and(|e| !ok(e))) {
+            return Err("a text note needs a place".into());
+        }
+        if !(t.width_mm.is_finite() && (0.0..500.0).contains(&t.width_mm)) {
+            return Err("a text note's width must be 0 (as wide as its text) to 500 mm".into());
+        }
+        if t.text.trim().is_empty() && t.leaders.is_empty() {
+            return Err("a text note needs some text (or a leader, for an arrow)".into());
+        }
+        Ok(())
+    }
+
+    pub fn add_text_note(&mut self, t: TextNote) -> Result<Id, String> {
+        self.check_text_note(&t)?;
+        self.transact("Text note", |tx| Ok(tx.add(Element::TextNote(t))))
+    }
+
+    pub fn patch_text_note(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let Some(Element::TextNote(old)) = self.get(id).cloned() else { return Err("not a text note".into()) };
+        let new: TextNote = crate::doc::apply_patch(&old, patch)?;
+        if new == old {
+            return Ok(());
+        }
+        if new.view != old.view {
+            return Err("a text note stays in its view".into());
+        }
+        self.check_text_note(&new)?;
+        self.transact("Change text note", |tx| tx.update(id, Element::TextNote(new)))
+    }
+
+    fn check_text_type(&self, id: Option<Id>, t: &TextType) -> Result<(), String> {
+        if t.name.trim().is_empty() {
+            return Err("a type needs a name".into());
+        }
+        if self.text_note_types().iter().any(|(i, o)| Some(*i) != id && o.name == t.name) {
+            return Err(format!("a text type named '{}' already exists", t.name));
+        }
+        if t.font.trim().is_empty() {
+            return Err("choose a font".into());
+        }
+        if !(t.size_mm.is_finite() && (0.2..=100.0).contains(&t.size_mm)) {
+            return Err("text size must be between 0.2 and 100 mm".into());
+        }
+        if !(t.width_factor.is_finite() && (0.1..=10.0).contains(&t.width_factor)) {
+            return Err("width factor must be between 0.1 and 10".into());
+        }
+        if !(1..=crate::styles::MAX_WEIGHT).contains(&t.line_weight) {
+            return Err(format!("line weight must be 1 to {}", crate::styles::MAX_WEIGHT));
+        }
+        if !(t.border_offset_mm.is_finite() && (0.0..=20.0).contains(&t.border_offset_mm)) || !(t.tab_size_mm.is_finite() && (0.5..=100.0).contains(&t.tab_size_mm)) {
+            return Err("the border offset must be 0 to 20 mm and the tab size 0.5 to 100 mm".into());
+        }
+        Ok(())
+    }
+
+    pub fn patch_text_note_type(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let Some(old) = self.text_note_type(id).cloned() else { return Err("not a text type".into()) };
+        let new: TextType = crate::doc::apply_patch(&old, patch)?;
+        if new == old {
+            return Ok(());
+        }
+        self.check_text_type(Some(id), &new)?;
+        self.transact("Change text type", |tx| tx.update(id, Element::TextNoteType(new)))
+    }
+
+    pub fn duplicate_text_note_type(&mut self, id: Id, name: &str) -> Result<Id, String> {
+        let Some(t) = self.text_note_type(id).cloned() else { return Err("not a text type".into()) };
+        let new = TextType { name: name.trim().into(), ..t };
+        self.check_text_type(None, &new)?;
+        self.transact("Duplicate text type", |tx| Ok(tx.add(Element::TextNoteType(new))))
+    }
+
+    /// A view's text notes ready to draw, in paper mm (model mm over the view `scale`).
+    pub fn text_note_draws(&self, view: Id, scale: f64) -> Vec<TextNoteDraw> {
+        let s = scale.max(1.0);
+        let paper = |p: Point| [p.x / s, p.y / s];
+        self.text_notes(view)
+            .into_iter()
+            .map(|(id, t)| TextNoteDraw {
+                id,
+                text: DrawnText {
+                    x: t.at.x / s,
+                    y: t.at.y / s,
+                    halign: t.halign,
+                    valign: t.valign,
+                    width_mm: t.width_mm,
+                    lines: t.text.split('\n').map(|l| vec![l.to_string()]).collect(),
+                    wrap: Wrap::Words,
+                    style: self.text_style(self.text_note_type(t.text_type)),
+                    label: None,
+                    text: Some(id as usize),
+                    hidden: false,
+                },
+                leaders: t.leaders.iter().map(|l| LeaderDraw { side: l.side, end: paper(l.end), elbow: l.elbow.map(paper), arc: l.arc }).collect(),
+                left_attach: t.left_attach,
+                right_attach: t.right_attach,
+                pinned: t.pinned,
+            })
+            .collect()
     }
 
     fn check_detail_view(&self, view: Id) -> Result<(), String> {
@@ -410,5 +627,34 @@ mod tests {
         assert!(l.curve.end().dist(&p(0.0, 1000.0)) < 1e-6);
         d.delete(&[v]).unwrap();
         assert!(d.get(ids[0]).is_none() && d.get(copies[0]).is_none(), "the view's detail lines go with it");
+    }
+
+    #[test]
+    fn text_notes_take_a_type_leaders_and_move_with_them() {
+        let mut d = Document::new_project();
+        let v = plan(&d);
+        let ty = d.text_note_types().into_iter().find(|(_, t)| t.name == "3.5mm Arial").unwrap().0;
+        let note = |text: &str| TextNote { view: v, at: p(1000.0, 2000.0), text: text.into(), text_type: ty, halign: HAlign::Left, valign: VAlign::Top, width_mm: 0.0, leaders: vec![], left_attach: VAlign::Top, right_attach: VAlign::Bottom, keep_readable: true, pinned: false };
+        assert!(d.add_text_note(note("  ")).unwrap_err().contains("text"), "no text and no leader");
+        let mut arrow = note("");
+        arrow.leaders.push(TextLeader { side: LeaderSide::Left, end: p(0.0, 0.0), elbow: None, arc: false });
+        d.add_text_note(arrow).unwrap();
+        let id = d.add_text_note(note("SEE DETAIL\nON A201")).unwrap();
+        d.patch_text_note(id, &serde_json::json!({ "leaders": [{ "side": "right", "end": { "x": 3000.0, "y": 0.0 }, "elbow": { "x": 2500.0, "y": 2000.0 } }] })).unwrap();
+        let draws = d.text_note_draws(v, 100.0);
+        let dr = draws.iter().find(|x| x.id == id).unwrap();
+        assert_eq!((dr.text.x, dr.text.y), (10.0, 20.0));
+        assert_eq!(dr.text.lines, vec![vec!["SEE DETAIL".to_string()], vec!["ON A201".to_string()]]);
+        assert!(dr.text.style.opaque && (dr.text.style.size_mm - 3.5).abs() < 1e-9);
+        assert_eq!(dr.leaders[0].end, [30.0, 0.0]);
+        d.transform_elements(&[id], crate::edit::Xform::Move { dx: 100.0, dy: 0.0 }, crate::edit::EditOptions::default()).unwrap();
+        let Some(Element::TextNote(t)) = d.get(id) else { panic!() };
+        assert_eq!((t.at, t.leaders[0].end, t.leaders[0].elbow), (p(1100.0, 2000.0), p(3100.0, 0.0), Some(p(2600.0, 2000.0))));
+        assert!(d.duplicate_text_note_type(ty, "2.5mm Arial").is_err());
+        let t2 = d.duplicate_text_note_type(ty, "Notes").unwrap();
+        assert!(d.patch_text_note_type(t2, &serde_json::json!({ "size_mm": 0.0 })).is_err());
+        d.patch_text_note(id, &serde_json::json!({ "text_type": t2 })).unwrap();
+        d.delete(&[v]).unwrap();
+        assert!(d.get(id).is_none(), "a view's text notes go with it");
     }
 }

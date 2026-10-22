@@ -379,6 +379,20 @@ impl Session {
                 Ok(json!({}))
             }
             "duplicate_filled_region_type" => Ok(json!({ "id": self.doc.duplicate_filled_region_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
+            // ---- text notes ----
+            "add_text_note" => {
+                let t: openarch_model::detail::TextNote = serde_json::from_value(p.get("note").cloned().ok_or("missing note")?).map_err(|e| format!("bad text note: {e}"))?;
+                Ok(json!({ "id": self.doc.add_text_note(t)? }))
+            }
+            "patch_text_note" => {
+                self.doc.patch_text_note(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "patch_text_note_type" => {
+                self.doc.patch_text_note_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "duplicate_text_note_type" => Ok(json!({ "id": self.doc.duplicate_text_note_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "patch_grid_type" => {
                 self.doc.patch_grid_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
@@ -1512,6 +1526,7 @@ impl Session {
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
             "line_styles": d.line_styles(),
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
+            "text_note_types": d.text_note_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind, "category": f.kind.category(), "in_use": d.annotation_family_in_use(*id) })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
             "model_categories": MODEL_CATEGORIES,
@@ -1982,6 +1997,7 @@ impl Session {
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
             "detail": d.detail_paths(vid, settings.scale as f64, ann_shown("Lines"), ann_shown("Detail Items")),
             "detail_lines": d.detail_lines(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+            "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, settings.scale as f64) } else { vec![] },
             "regions": d.detail_regions(vid).iter().map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
             "line_styles": d.line_styles(),
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name })).collect::<Vec<_>>(),
@@ -2069,6 +2085,7 @@ impl Session {
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
             Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
+            Element::TextNote(t) => Ok(props::text_note_props(d, id, t)),
             _ => Err("nothing to show".into()),
         }
     }
@@ -2097,6 +2114,13 @@ impl Session {
                 v["family"] = json!("Grid");
                 v["patch"] = json!("patch_grid_type");
                 v["duplicate"] = json!("duplicate_grid_type");
+                v
+            }
+            Element::TextNoteType(t) => {
+                let mut v = props::text_type_props(d, id, t);
+                v["family"] = json!("Text");
+                v["patch"] = json!("patch_text_note_type");
+                v["duplicate"] = json!("duplicate_text_note_type");
                 v
             }
             Element::FilledRegionType(t) => {
@@ -3128,7 +3152,7 @@ mod tests {
     }
 
     #[test]
-    fn detail_lines_and_regions_are_drawn_in_their_view_and_edited_through_the_api() {
+    fn detail_lines_regions_and_text_notes_are_drawn_in_their_view_and_edited_through_the_api() {
         let (mut s, _lvl, _wt, view) = setup();
         let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
         let r = call(&mut s, "set_detail_lines", json!({ "view_id": view, "lines": [{ "curve": line([0.0, 0.0], [2000.0, 0.0]), "style": "Wide Lines" }] }));
@@ -3149,9 +3173,17 @@ mod tests {
         assert_eq!(sk["edges"][0]["style"], "Thin Lines");
         let ty = call(&mut s, "describe_any_type", json!({ "id": t }));
         assert_eq!(ty["patch"], "patch_filled_region_type");
-        call(&mut s, "delete", json!({ "ids": [id, rid] }));
+        // a text note with a leader, written with a text note type
+        let tt = info["text_note_types"][0]["id"].as_u64().unwrap();
+        let nid = call(&mut s, "add_text_note", json!({ "note": { "view": view, "at": { "x": 500.0, "y": 500.0 }, "text": "NOTE", "text_type": tt, "leaders": [{ "side": "left", "end": { "x": 0.0, "y": 0.0 } }] } }))["id"].as_u64().unwrap();
         let plan = call(&mut s, "plan", json!({ "view_id": view }));
-        assert!(plan["detail"]["strokes"].as_array().unwrap().is_empty() && plan["detail"]["fills"].as_array().unwrap().is_empty());
+        assert_eq!(plan["text_notes"][0]["text"]["lines"][0][0], "NOTE");
+        assert_eq!(plan["text_notes"][0]["leaders"][0]["end"], json!([0.0, 0.0]));
+        assert_eq!(call(&mut s, "describe", json!({ "id": nid }))["kind"], "TextNote");
+        assert_eq!(call(&mut s, "describe_any_type", json!({ "id": tt }))["patch"], "patch_text_note_type");
+        call(&mut s, "delete", json!({ "ids": [id, rid, nid] }));
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert!(plan["detail"]["strokes"].as_array().unwrap().is_empty() && plan["detail"]["fills"].as_array().unwrap().is_empty() && plan["text_notes"].as_array().unwrap().is_empty());
     }
 
     #[test]

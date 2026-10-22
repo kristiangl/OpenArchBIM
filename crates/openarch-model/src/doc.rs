@@ -194,7 +194,7 @@ impl Document {
         match out {
             Ok(v) => {
                 if !changes.is_empty() {
-                    let model = changes.iter().any(|c| !matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Dimension(_) | Element::DimensionType(_) | Element::Spot(_) | Element::SpotType(_) | Element::DetailLine(_) | Element::DetailRegion(_) | Element::FilledRegionType(_))));
+                    let model = changes.iter().any(|c| !matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Dimension(_) | Element::DimensionType(_) | Element::Spot(_) | Element::SpotType(_) | Element::DetailLine(_) | Element::DetailRegion(_) | Element::FilledRegionType(_) | Element::TextNote(_) | Element::TextNoteType(_))));
                     let redo = if model && self.defer_settle == 0 && !self.settling { Some(self.redo.clone()) } else { None };
                     self.undo.push(Entry { name: name.to_string(), changes });
                     self.redo.clear();
@@ -673,8 +673,8 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) => {}
-                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, views and view templates can be deleted for now".into()),
+                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
+                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views and view templates can be deleted for now".into()),
                 None => return Err(format!("no element {id}")),
             }
         }
@@ -685,6 +685,7 @@ impl Document {
             let view = match e {
                 Element::DetailLine(l) => Some(l.view),
                 Element::DetailRegion(r) => Some(r.view),
+                Element::TextNote(t) => Some(t.view),
                 _ => None,
             };
             if view.is_some_and(|v| views.contains(&v)) && !ids.contains(&i) {

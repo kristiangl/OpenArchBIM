@@ -656,6 +656,8 @@ pub enum Element {
     DetailLine(crate::detail::DetailLine),
     DetailRegion(crate::detail::DetailRegion),
     FilledRegionType(crate::annotation::RegionType),
+    TextNote(crate::detail::TextNote),
+    TextNoteType(crate::annotation::TextType),
 }
 
 impl Element {
@@ -693,6 +695,8 @@ impl Element {
             Element::DetailLine(_) => "DetailLine",
             Element::DetailRegion(_) => "DetailRegion",
             Element::FilledRegionType(_) => "FilledRegionType",
+            Element::TextNote(_) => "TextNote",
+            Element::TextNoteType(_) => "TextNoteType",
         }
     }
 }

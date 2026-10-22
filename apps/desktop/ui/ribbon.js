@@ -52,7 +52,9 @@ const RIBBON = {
       { id: "det-comp", label: "Component", big: true }, { id: "det-insulation", label: "Insulation", big: true },
       { id: "det-revcloud", label: "Revision Cloud", big: true } ] },
     { label: "Text", items: [
-      { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true } ] },
+      { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true },
+      // shown while a text note is selected
+      { id: "text-lead-l", label: "Add Left Leader" }, { id: "text-lead-r", label: "Add Right Leader" }, { id: "text-lead-rm", label: "Remove Last Leader" } ] },
     { label: "Tag", items: [
       { id: "tag-all", label: "Tag All", big: true }, { id: "tag-cat", label: "Tag by Category", big: true },
       { id: "tag-mat", label: "Material Tag", big: true } ] },
