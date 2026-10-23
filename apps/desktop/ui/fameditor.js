@@ -456,6 +456,7 @@ const FamModel = (() => {
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
   const commands = {
+    "f-props": () => toggleProperties(),
     "f-types": () => typesDialog(),
     // Void Forms: the same five forms, made as voids
     "f-void-ext": () => setTool("void"),
@@ -3148,7 +3149,7 @@ const FamModel = (() => {
     S.msg = `Looking straight at ${p.name}.`; status();
   }
 
-  // ---------------------------------------------------------------- the contextual ribbon tab and edit mode
+  // ---------------------------------------------------------------- the panels the Modify tab adds, and edit mode
   const isPlain = (v) => /^\s*-?\d+(\.\d+)?\s*$/.test(String(v));
   function depthNow(f) { return String(Math.round((curDepth(f.id, "end") - curDepth(f.id, "start")) * 100) / 100); }
   async function setDepth(id, v) {
@@ -3184,26 +3185,28 @@ const FamModel = (() => {
     const sel = S.sel;
     if (!sel) return null;
     const auto = S.tool === "select";
-    if (sel.kind === "multi") return { auto, title: "Modify | Multi-Select", groups: [{ label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
+    if (sel.kind === "multi") return { auto, title: "Multi-Select", groups: [] };
     if (sel.kind === "form") {
       const f = formById(sel.id);
       if (!f) return null;
       const noun = NOUN(f), title = (f.void ? "Void " : "") + noun;
       const form = [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => formById(sel.id)) }];
-      if (["extrusion", "blend"].includes(f.shape.type)) form.push({ node: depthBox(f) });
-      return { auto, title: `Modify | ${title}`, groups: [
+      if (["extrusion", "blend"].includes(f.shape.type)) form.push({ big: true, node: depthBox(f) });
+      return { auto, title, groups: [
         { label: "Mode", items: [{ label: `Edit ${noun}`, ico: "Ed", big: true, onclick: () => startEdit(sel.id) }] },
         { label: "Form", items: form },
         { label: "Work Plane", items: [{ label: "Edit Work Plane", ico: "Wp", big: true, onclick: () => editWorkPlane(sel.id) }, { label: "Pick New", ico: "Pk", big: true, onclick: () => startPickPlane({ mode: "form", form: sel.id }) }] },
-        { label: "Modify", items: [{ label: "Align", ico: "Al", big: true, onclick: () => setTool("align") }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] },
       ] };
     }
-    if (sel.kind === "mline") return { auto, title: "Modify | Model Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mlineById(sel.id)) }] }, { label: "Modify", items: [{ label: "Align", ico: "Al", big: true, onclick: () => setTool("align") }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
-    if (sel.kind === "comp") return { auto, title: "Modify | Components", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => compById(sel.id)) }] }, { label: "Modify", items: [{ label: "Rotate 90", ico: "Ro", big: true, onclick: () => change((b) => { const c = compById(sel.id); c.rotation_deg = ((c.rotation_deg || 0) + 90) % 360; }) }, { label: "Mirror", ico: "Mi", big: true, onclick: () => change((b) => { const c = compById(sel.id); c.mirror = !c.mirror; }) }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
-    if (sel.kind === "mtext") return { auto, title: "Modify | Model Text", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mtextById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
-    if (sel.kind === "ctrl") return { auto, title: "Modify | Controls", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => ctrlById(sel.id)) }] }, { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
-    if (sel.kind === "conn") return { auto, title: "Modify | Connectors", groups: [{ label: "Modify", items: [{ label: "Flip", ico: "Fl", big: true, onclick: () => change((b) => { const c = connById(sel.id); c.flip = !c.flip; }) }, { label: "Delete", ico: "Dl", big: true, onclick: () => deleteSel() }] }] };
-    if (sel.kind === "sym") return { auto, title: "Modify | Symbolic Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => symById(sel.id)) }] }] };
+    if (sel.kind === "mline") return { auto, title: "Model Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mlineById(sel.id)) }] }] };
+    if (sel.kind === "comp") return { auto, title: "Components", groups: [
+      { label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => compById(sel.id)) }] },
+      { label: "Component", items: [{ label: "Rotate 90", ico: "Ro", big: true, onclick: () => change((b) => { const c = compById(sel.id); c.rotation_deg = ((c.rotation_deg || 0) + 90) % 360; }) }, { label: "Mirror", ico: "Mi", big: true, onclick: () => change((b) => { const c = compById(sel.id); c.mirror = !c.mirror; }) }] },
+    ] };
+    if (sel.kind === "mtext") return { auto, title: "Model Text", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => mtextById(sel.id)) }] }] };
+    if (sel.kind === "ctrl") return { auto, title: "Controls", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => ctrlById(sel.id)) }] }] };
+    if (sel.kind === "conn") return { auto, title: "Connectors", groups: [{ label: "Connector", items: [{ label: "Flip", ico: "Fl", big: true, onclick: () => change((b) => { const c = connById(sel.id); c.flip = !c.flip; }) }] }] };
+    if (sel.kind === "sym") return { auto, title: "Symbolic Lines", groups: [{ label: "Graphics", items: [{ label: "Visibility Settings", ico: "Vs", big: true, onclick: () => visDialog(() => symById(sel.id)) }] }] };
     if (sel.kind === "dim") {
       const d = dimById(sel.id);
       if (!d) return null;
@@ -3213,8 +3216,8 @@ const FamModel = (() => {
       if (single) {
         box.append(el("span", "", "Label"), selIn([["", "<None>"], ...lens], d.label || "", (v) => dimPatch(dimById(sel.id), { label: v, reports_to: "" })), button("Add Parameter", () => addParamToDim(dimById(sel.id), 0)));
       } else box.append(el("span", "", "Label each length in Properties"));
-      return { auto, title: "Modify | Dimensions", groups: [
-        { label: "Label Dimension", items: [{ node: box }] },
+      return { auto, title: "Dimensions", groups: [
+        { label: "Label Dimension", items: [{ big: true, node: box }] },
         { label: "Constrain", items: [
           { label: d.locked ? "Unlock" : "Lock", ico: "Lk", big: true, on: !!d.locked, onclick: () => dimPatch(dimById(sel.id), { locked: !d.locked }) },
           ...(refs.length >= 3 ? [{ label: "Equal", ico: "EQ", big: true, on: !!d.eq, onclick: () => toggleEq(sel.id) }] : []),
@@ -3228,10 +3231,11 @@ const FamModel = (() => {
     if (!f) return null;
     const canDraw = ["extrusion", "revolve"].includes(f.shape.type);
     const shape = (v, label, ico) => ({ label, ico, onclick: () => { S.sketch = v; setTool("ext"); }, on: S.tool === "ext" && S.sketch === v });
-    return { auto: true, title: `Modify | Edit ${NOUN(f)}`, groups: [
+    // the form keeps its own name on the tab while it is edited: Modify | Extrusion
+    return { auto: true, title: NOUN(f), groups: [
       { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "\u2713", big: true, onclick: finishEdit }, { label: "Cancel Edit Mode", ico: "\u2715", big: true, onclick: cancelEdit }] },
-      { label: "Modify", items: [{ label: "Select", ico: "Se", onclick: () => setTool("select"), on: S.tool === "select" }, { label: "Align", ico: "Al", onclick: () => setTool("align"), on: S.tool === "align" }, ...(canDraw ? [{ label: "Delete Loop", ico: "Dl", onclick: () => deleteLoop() }] : [])] },
       ...(canDraw ? [{ label: "Draw", items: [shape("rect", "Rectangle", "Rc"), shape("circle", "Circle", "Ci"), shape("poly", "Polygon", "Pg")] }] : []),
+      ...(canDraw ? [{ label: "Loop", items: [{ label: "Delete Loop", ico: "Dl", onclick: () => deleteLoop() }] }] : []),
     ] };
   }
   // Edit a form: its sketch opens in the sketch tools (Edit Extrusion, Edit Blend, Edit Revolve, Edit Path)
@@ -3604,11 +3608,12 @@ const FamModel = (() => {
       { label: "Boundary Line", icon: "symbolicLine", on: !sk.drawAxis, onclick: () => { sk.drawAxis = false; ctxRefresh(); status(); } },
       { label: "Axis Line", icon: "refLine", on: !!sk.drawAxis, onclick: () => { sk.drawAxis = true; if (FSk.tool !== "line") FSk.setTool("line"); S.msg = "Axis Line: click its two points."; ctxRefresh(); status(); } },
     ] : [];
-    return { auto: true, title: `Modify | ${sk ? skTitle() : FSk.title}`, groups: [
+    const trims = FSk.MODIFY.filter((x) => ["trim_corner", "trim_single", "split"].includes(x.id)).map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id }));
+    return { auto: true, title: sk ? skTitle() : FSk.title, groups: [
       { label: "Mode", items: mode },
-      { label: "Modify", items: FSk.MODIFY.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id })) },
       { label: "Draw", items: [...kinds, ...SK_DRAW.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id }))] },
       { label: "Work Plane", items: [{ label: "Set", icon: "setWp", onclick: () => commands["f-wpset"]() }, { label: "Show", icon: "showWp", on: !!S.showWp, onclick: () => commands["f-wpshow"]() }, { label: "Viewer", icon: "viewer", onclick: () => commands["f-wpviewer"]() }] },
+      ...(trims.length ? [{ label: "Trim and Split", items: trims }] : []),
     ] };
   }
   const worldRect = (x0, y0, x1, y1) => { const a = s2w(x0, y0), b = s2w(x1, y1); return { x0: Math.min(a.u, b.u), y0: Math.min(a.v, b.v), x1: Math.max(a.u, b.u), y1: Math.max(a.v, b.v) }; };

@@ -257,6 +257,7 @@ const AnnModel = (() => {
   }
   const busy = () => { if (S.mode === "region") { say("Finish or cancel the region's sketch first.", true); return true; } return false; };
   const commands = {
+    "a-props": () => toggleProperties(),
     "a-select": () => { if (S.mode === "region") { ASk.setTool("select"); return; } if (S.mode === "lines") endLines(); setTool("select"); },
     "a-line": () => { if (busy()) return; if (S.mode === "lines") ASk.setTool("line"); else startLines(null, "line"); },
     "a-region": () => { if (!busy()) startRegion(false, null); },
@@ -326,22 +327,22 @@ const AnnModel = (() => {
   }
   function contextBase() {
     const t = ASk.tool;
-    const modify = { label: "Modify", items: ASk.MODIFY.map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
+    // the sketch tools the Modify tab's own Select and Delete do not cover
+    const tools = { label: "Sketch Tools", items: ASk.MODIFY.filter((x) => x.id !== "select" && x.id !== "delete").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
     const draw = { label: "Draw", items: ASk.DRAW.filter((x) => x.id !== "pick_walls").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
     if (S.mode === "lines") {
       const a = ASk.selectedAttr();
       const node = styleSelect(a ? a.sub : S.sub, (v) => { S.sub = v; if (ASk.selectedAttr()) ASk.patchSelected({ sub: v }); ctxRefresh(); });
       node.title = "The subcategory of new lines, and of the selected lines";
-      const placing = ASk.DRAW.some((x) => x.id === t);
-      return { auto: true, title: placing ? "Modify | Place Lines" : "Modify | Lines", groups: [modify, draw, { label: "Subcategory", items: [{ node }] }] };
+      return { auto: true, title: "Lines", groups: [draw, tools, { label: "Subcategory", items: [{ big: true, node }] }] };
     }
     if (S.mode === "region") {
       const a = ASk.selectedAttr();
       const node = styleSelect(a ? a.sub : S.boundarySub, (v) => { S.boundarySub = v; if (ASk.selectedAttr()) ASk.patchSelected({ sub: v }); ctxRefresh(); });
       node.title = "The line style of new boundary lines, and of the selected ones";
-      return { auto: true, title: `Modify | ${ASk.title}`, groups: [
+      return { auto: true, title: ASk.title, groups: [
         { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => ASk.finish() }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => ASk.cancel() }] },
-        modify, draw, { label: "Line Style", items: [{ node }] },
+        draw, tools, { label: "Line Style", items: [{ big: true, node }] },
       ] };
     }
     const sel = S.sel;
@@ -350,18 +351,15 @@ const AnnModel = (() => {
     if (sel.kind === "region") {
       const r = S.fam.regions[sel.i];
       if (!r) return null;
-      return { auto, title: r.masking ? "Modify | Masking Region" : "Modify | Filled Region", groups: [
+      return { auto, title: r.masking ? "Masking Region" : "Filled Region", groups: [
         { label: "Mode", items: [{ label: "Edit Boundary", ico: "Ed", big: true, onclick: () => startRegion(r.masking, sel.i) }] },
-        { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
       ] };
     }
-    if (sel.kind === "label") return { auto, title: "Modify | Label", groups: [
+    if (sel.kind === "label") return { auto, title: "Label", groups: [
       { label: "Label", items: [{ label: "Edit Label", ico: "Ed", big: true, onclick: () => editLabel(sel.i) }] },
-      { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
     ] };
-    if (sel.kind === "text") return { auto, title: "Modify | Text", groups: [
+    if (sel.kind === "text") return { auto, title: "Text", groups: [
       { label: "Text", items: [{ label: "Edit Text", ico: "Ed", big: true, onclick: () => editText(sel.i) }] },
-      { label: "Modify", items: [{ label: "Delete", ico: "Dl", big: true, onclick: () => removeSel() }] },
     ] };
     return null;
   }

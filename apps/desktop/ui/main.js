@@ -5,6 +5,7 @@ const app = {
   tdimMemory: {}, // element id -> the dimension ends the person chose for it (kept while the project is open)
   doc: "project", // the document showing: "project", "family" (a model family in the family editor) or "annotation" (an annotation family)
   ribbonTab: { project: "Architecture", family: "Create", annotation: "Create" },
+  ctxSig: "", // what the Modify tab last drew after its own panels (the active tool, selection or sketch)
   view: { kind: "plan", viewId: null }, // plan | 3d | schedule; viewId is a stored view
   wallTypeId: null,
   locationLine: "wall_centreline", // for walls about to be drawn
@@ -41,6 +42,11 @@ async function run(method, params) {
 
 // ---- commands (ribbon buttons) -------------------------------------------------
 const COMMANDS = {
+  // the Modify tab's Select and Properties, and its two mirror choices
+  sel: () => selectTool(),
+  props: () => toggleProperties(),
+  "mi-pick": () => { Plan.setEditOptions({ mirrorMode: "pick" }); return startEditTool("mirror"); },
+  "mi-draw": () => { Plan.setEditOptions({ mirrorMode: "draw" }); return startEditTool("mirror"); },
   wall: async () => { if (await ensurePlan("A wall")) Plan.setTool("wall"); },
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
@@ -107,6 +113,11 @@ const COMMANDS = {
   "v-dup": () => duplicateView(),
   "v-floorplan": () => newPlanDialog("floor_plan"),
   "v-ceilingplan": () => newPlanDialog("ceiling_plan"),
+  "open-log": async () => {
+    if (!Backend.isDesktop) { setPrompt("The log file belongs to the desktop app. A browser keeps page errors in its console.", true); return; }
+    const dir = await run("open_log_folder");
+    if (dir) setPrompt(`Log folder: ${dir}`);
+  },
 };
 
 // New Plan (View > Plan Views): pick a view type, the levels and the scale. With "Do not duplicate existing views"
@@ -192,87 +203,167 @@ const selectedNote = () => { const s = selectedNotes(); return s.length === 1 &&
 // the one section selected in a plan, if that is the selection
 const selectedSection = () => (app.view.kind === "plan" && app.selection.length === 1 ? Plan.sections().find((s) => s.id === app.selection[0]) : null);
 
-// Context-aware ribbon buttons: shown only while the selection can use them
-function updateRibbonContext() {
-  const b = document.querySelector('#ribbon button[data-id="edit-boundary"]');
-  const w = document.querySelector('#ribbon button[data-id="edit-witness"]');
-  const sp = document.querySelector('#ribbon button[data-id="split-segment"]');
-  // Modify | Place Text and Modify | Text Notes come and go with the Text tool and the selection
-  renderFamContext();
-  if (!b && !w && !sp) return;
-  const t = b && editBoundaryTarget();
-  if (b) b.hidden = !t;
-  if (b && t) { b.lastChild.textContent = t.label; b.title = t.label; }
-  // witness lines can be added to and taken from the chain kinds only
-  const dimSel = app.view.kind === "plan" && app.selection.length === 1 && Plan.dimensions().some((d) => d.id === app.selection[0] && !d.round);
-  if (w) w.hidden = !dimSel;
-  // Split Segment works on one section that is not pinned
-  const sec = selectedSection();
-  if (sp) sp.hidden = !(sec && !sec.pinned);
-  for (const btn of [b, w, sp]) {
-    const group = btn && btn.closest(".group");
-    if (group) group.hidden = ![...group.querySelectorAll("button.cmd")].some((x) => !x.hidden);
+// A Modify button is greyed out when this document or view has nothing for it to do. The button stays in
+// place, so the tab keeps the same groups and order in every view.
+function modifyEnabled(id) {
+  if (!id || !commandFor(id)) return false;
+  if (app.doc === "family") {
+    const st = FamModel._state && FamModel._state();
+    if (!st) return false;
+    if (["f-select", "f-props", "f-load", "f-loadclose"].includes(id)) return true;
+    if (st.view !== "plan" || st.sk || st.editing) return false;
+    if (id === "f-del") return !!st.sel;
+    return true;
   }
+  if (app.doc === "annotation") {
+    const st = AnnModel._state && AnnModel._state();
+    if (!st) return false;
+    if (["a-select", "a-props", "a-load", "a-loadclose"].includes(id)) return true;
+    if (id === "a-del") return !!(st.sel || (AnnModel._sketch && AnnModel._sketch.active));
+    return false;
+  }
+  if (["sel", "props", "v-vg"].includes(id)) return true;
+  if (Sketch.active) return id === "sel" || id === "del" || !!SKETCH_MODIFY[id];
+  if (app.view.kind === "elevation") {
+    if (id === "del") return app.selection.length > 0;
+    return ["mv", "cp", "al"].includes(id);
+  }
+  if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
+  if (Plan.tool !== "select") return false;
+  if (id === "del") return app.selection.length > 0;
+  if (id === "edit-witness") return app.selection.length === 1 && Plan.dimensions().some((d) => d.id === app.selection[0] && !d.round);
+  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "pin", "unpin"].includes(id);
+}
+
+// Recompute the Modify tab's disabled buttons and the suffix on its tab name after a selection or tool changes.
+function syncModifyButtons() {
+  syncTabLabels();
+  document.querySelectorAll("#ribbon button.cmd[data-mid]").forEach((b) => {
+    const subs = b.dataset.subs ? b.dataset.subs.split("|") : null;
+    const on = subs ? subs.some((id) => modifyEnabled(id)) : modifyEnabled(b.dataset.mid);
+    b.disabled = !on;
+    b.title = b.dataset.tip + (on ? "" : b.dataset.why || " (not available here)");
+  });
+}
+
+// The tab name carries the tool while one is active: Modify | Extrusion, Modify | Place Wall, Modify | Text Notes.
+function modifyTabLabel() {
+  const c = currentContext();
+  return c && c.title ? `Modify | ${c.title}` : "Modify";
+}
+function syncTabLabels() {
+  document.querySelectorAll("#tabs button").forEach((b) => {
+    const name = b.dataset.tab;
+    const label = name === "Modify" ? modifyTabLabel() : name;
+    if (b.textContent !== label) b.textContent = label;
+  });
 }
 
 // The ribbon and its commands belong to the document showing: the project's, the family editor's, or an annotation family's
 const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : app.doc === "annotation" ? ANN_RIBBON : RIBBON);
 const commandFor = (id) => (app.doc === "family" ? FamModel.commands[id] : app.doc === "annotation" ? AnnModel.commands[id] : COMMANDS[id]);
 
+// The constant Modify tab: every document has one, and whatever the active tool, selection or sketch adds
+// is drawn after the tab's own panels on a tinted background. There are no contextual tabs.
+function currentContext() {
+  if (app.doc === "family") return FamModel.context();
+  if (app.doc === "annotation") return AnnModel.context();
+  if (Sketch.active) return sketchContext();
+  if (app.view.kind === "plan" && Plan.tool === "wall") return wallContext();
+  if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
+  // a selection that can do something of its own adds one panel after the tab's own (a floor or roof boundary,
+  // a section's split); the tab keeps the same groups before it
+  const b = editBoundaryTarget();
+  if (b) return { auto: true, key: `boundary:${b.label}`, title: b.label.replace(/^Edit /, ""), groups: [
+    { label: "Mode", items: [{ label: b.label, icon: "editBoundary", onclick: b.run }] } ] };
+  const sec = selectedSection();
+  if (sec && !sec.pinned) return { auto: true, key: `section:${sec.id}`, title: "Section", groups: [
+    { label: "Section", items: [{ label: "Split Segment", ico: "Sl", onclick: () => runCommand("split-segment") }] } ] };
+  // a selected dimension adds Edit Witness Lines, and the tab takes its name
+  if (app.view.kind === "plan" && Plan.tool === "select" && app.selection.length === 1) {
+    const dim = Plan.dimensions().find((d) => d.id === app.selection[0] && !d.round);
+    if (dim) return { auto: true, key: `dim:${dim.id}`, title: "Dimensions", groups: [
+      { label: "Witness Lines", items: [{ label: "Edit Witness Lines", icon: "editWitness", onclick: () => runCommand("edit-witness") }] } ] };
+  }
+  return textContext();
+}
+
+// A context appears, changes or goes: switch to the Modify tab, or redraw it when it is showing.
+function updateRibbonContext(activate) {
+  const c = currentContext();
+  const sig = c ? `${app.doc}:${c.key || c.title || "context"}` : "";
+  const fresh = sig !== app.ctxSig;
+  app.ctxSig = sig;
+  const showing = app.ribbonTab[app.doc];
+  if (showing === "Modify") { if (fresh || activate) drawTab("Modify"); }
+  else if (c && c.auto && (fresh || activate)) { selectTab("Modify"); return; }
+  syncModifyButtons();
+}
+// The family and annotation editors call this after a selection or a tool changes.
+const renderFamContext = (activate) => updateRibbonContext(activate);
+
 function renderTabs() {
   const tabs = $("#tabs");
   tabs.replaceChildren();
   Object.keys(ribbonSet()).forEach((name) => {
     const b = document.createElement("button");
-    b.textContent = name;
-    b.onclick = () => { app.famCtxOn = false; selectTab(name); };
+    b.dataset.tab = name;
+    b.textContent = name === "Modify" ? modifyTabLabel() : name;
+    b.onclick = () => selectTab(name);
     tabs.appendChild(b);
   });
   selectTab(app.ribbonTab[app.doc]);
-  renderFamContext();
 }
 
-// A family document's contextual tab ("Modify | Extrusion", "Modify | Place Lines" and so on): the model or annotation
-// family's context() says what the selection or the sketch offers. It appears while something is selected, comes to
-// the front when the person selects it, and goes when they let go.
-function renderFamContext(activate) {
-  const M = app.doc === "family" ? FamModel : app.doc === "annotation" ? AnnModel : { context: textContext };
-  const tabs = $("#tabs");
-  let ctx = tabs.querySelector("button.contextual.fam");
-  const c = M.context();
-  if (!c) {
-    // back to the tab the person was on, unless another contextual tab (a sketch, Place Wall) has taken over
-    if (ctx) { const was = ctx.classList.contains("active"); ctx.remove(); if ((was || app.famCtxOn) && !tabs.querySelector("button.contextual:not(.fam).active")) selectTab(app.ribbonTab[app.doc]); app.famCtxOn = false; }
-    return;
-  }
-  const fresh = !ctx;
-  if (fresh) { ctx = document.createElement("button"); ctx.className = "contextual fam"; ctx.onclick = () => renderFamContext(true); tabs.append(ctx); }
-  ctx.textContent = c.title;
-  const changed = ctx.dataset.key !== c.key || (c.auto && ctx.dataset.auto !== "1");
-  ctx.dataset.key = c.key;
-  ctx.dataset.auto = c.auto ? "1" : "";
-  if (activate === true || ((fresh || changed) && c.auto) || app.famCtxOn) drawFamContext(c, ctx);
-}
-function drawFamContext(c, ctx) {
-  app.famCtxOn = true;
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b === ctx));
-  const ribbon = $("#ribbon");
-  ribbon.replaceChildren();
-  for (const g of c.groups) {
-    const grp = el("div", { className: "group" });
-    const items = el("div", { className: "items" });
-    let stack = null;
-    for (const it of g.items) {
-      if (it.node) { stack = null; items.append(it.node); continue; }
-      // `brk` starts a new column of small buttons; `iconOnly` shows the icon with the name as its tooltip
-      const node = sketchButton(it, !it.big, it.onclick, it.on, it.iconOnly ? "icon-only" : "");
-      if (it.big) { stack = null; items.append(node); continue; }
+// One panel of a ribbon tab: base items carry a command id, context items carry their own handlers.
+// Tool panels are icon-only (the name is the tooltip), and everything a tool adds goes after the tab's own
+// panels, never before them.
+function groupNode(g, isContext, isModify) {
+  const grp = el("div", { className: "group" + (g.label === "Family Editor" ? " fam-editor" : "") });
+  const items = el("div", { className: "items" });
+  let stack = null;
+  for (const it of g.items) {
+    if (it.node) {
+      if (it.big) { stack = null; items.append(it.node); }
+      else {
+        if (!stack || stack.children.length >= 3 || it.brk) { stack = el("div", { className: "stack" }); items.append(stack); }
+        stack.append(it.node);
+      }
+      continue;
+    }
+    // `brk` starts a new column of small buttons; `iconOnly` shows the icon with the name as its tooltip
+    const extra = [it.iconOnly ? "icon-only" : "", it.cls || ""].filter(Boolean).join(" ");
+    if (isContext) {
+      // a tool's buttons need no text: the icon and its tooltip carry the name
+      const node = sketchButton(it, true, it.onclick, it.on, extra + " icon-only");
       if (!stack || stack.children.length >= 3 || it.brk) { stack = el("div", { className: "stack" }); items.append(stack); }
       stack.append(node);
+    } else {
+      if (it.big) { stack = null; items.append(cmdButton(it, false)); continue; }
+      if (!stack || stack.children.length >= 3) { stack = el("div", { className: "stack" }); items.append(stack); }
+      stack.append(cmdButton(it, true));
     }
-    grp.append(items, el("div", { className: "label", textContent: g.label }));
-    ribbon.append(grp);
   }
+  grp.append(items, el("div", { className: "label", textContent: g.label }));
+  return grp;
+}
+
+// A family document keeps its Family Editor group at the end of every tab, after whatever the tab adds.
+const docTailGroup = () => (app.doc === "family" ? FAM_EDITOR_GROUP : app.doc === "annotation" ? ANN_EDITOR_GROUP : null);
+
+// The tab's own panels, then whatever the active tool adds (tinted), then the family document's own group.
+function drawTab(name) {
+  const ribbon = $("#ribbon");
+  ribbon.replaceChildren();
+  for (const g of ribbonSet()[name] || []) ribbon.append(groupNode(g, false, name === "Modify"));
+  const c = name === "Modify" ? currentContext() : null;
+  if (c && c.groups && c.groups.length) {
+    const box = el("div", { className: "ctx" });
+    for (const g of c.groups) box.append(groupNode(g, true));
+    ribbon.append(box);
+  }
+  const tail = docTailGroup();
+  if (tail) ribbon.append(groupNode(tail, false));
 }
 
 // Switch between the project and the family open in the family editor (each keeps its own ribbon tab)
@@ -325,32 +416,50 @@ function runCommand(id, e) {
   return f ? f(e) : undefined;
 }
 
+// A ribbon item's command in the document showing: a canonical Modify item names one per document.
+const ribbonItemId = (item) => (item.ids ? item.ids[app.doc] || null : item.id);
+const commandInDoc = (doc, id) => (doc === "project" ? COMMANDS[id] : doc === "family" ? FamModel.commands[id] : AnnModel.commands[id]);
+// Whether the button is built anywhere ("not available here") or has no command yet at all ("not built yet").
+const modifyUnavailable = (item) => (item.ids && Object.entries(item.ids).some(([doc, id]) => id && commandInDoc(doc, id)) ? " (not available here)" : " (not built yet)");
+
 // A ribbon drop-down: the button opens a short list of commands under it
 function menuButton(item, small) {
   const b = document.createElement("button");
-  b.className = "cmd" + (small ? " small" : "");
-  b.title = item.label;
-  b.dataset.id = item.id;
+  b.className = "cmd" + (small ? " small" : "") + (item.iconOnly ? " icon-only" : "");
+  const subs = (item.menu || []).map(ribbonItemId);
+  const first = subs.find(Boolean) || null;
+  const canonical = item.ids !== undefined;
+  const openable = canonical ? subs.some((id) => modifyEnabled(id)) : true;
+  const why = canonical ? modifyUnavailable(item) : "";
+  b.dataset.id = first || "";
+  if (canonical) { b.dataset.mid = first || ""; b.dataset.subs = subs.map((id) => id || "").join("|"); b.dataset.tip = item.label; b.dataset.why = why; }
+  b.disabled = !openable;
+  b.title = item.label + (openable ? "" : why);
   const ico = document.createElement("span");
   ico.className = "ico";
   setIcon(ico, item);
   const lab = document.createElement("span");
   lab.textContent = item.label + " \u25BE";
   b.append(ico, lab);
+  // an icon-only menu keeps a caret on its corner, since its name is only in the tooltip
+  if (item.iconOnly) { const c = document.createElement("span"); c.className = "menu-caret"; c.textContent = "\u25BE"; b.append(c); }
   b.onclick = (e) => {
+    if (b.disabled) return;
     e.stopPropagation();
     const open = document.querySelector(".cmd-menu");
-    if (open) { const same = open.dataset.for === item.id; open.remove(); if (same) return; }
+    if (open) { const same = open.dataset.for === (b.dataset.id || item.label); open.remove(); if (same) return; }
     const m = document.createElement("div");
     m.className = "cmd-menu";
-    m.dataset.for = item.id;
-    for (const sub of item.menu) {
+    m.dataset.for = b.dataset.id || item.label;
+    item.menu.forEach((sub, i) => {
+      const id = subs[i];
       const it = document.createElement("button");
       it.textContent = sub.label;
-      it.disabled = !commandFor(sub.id);
-      it.onclick = (ev) => { ev.stopPropagation(); m.remove(); runCommand(sub.id, ev); };
+      it.disabled = canonical ? !modifyEnabled(id) : !commandFor(id);
+      if (!id) it.title = "Not available here";
+      it.onclick = (ev) => { ev.stopPropagation(); m.remove(); runCommand(id, ev); };
       m.append(it);
-    }
+    });
     const r = b.getBoundingClientRect();
     m.style.left = `${r.left}px`;
     m.style.top = `${r.bottom}px`;
@@ -364,17 +473,23 @@ function menuButton(item, small) {
 function cmdButton(item, small) {
   if (item.menu) return menuButton(item, small);
   const b = document.createElement("button");
-  b.className = "cmd" + (small ? " small" : "");
-  b.disabled = !commandFor(item.id);
-  b.title = item.label + (commandFor(item.id) ? "" : " (not built yet)");
-  b.dataset.id = item.id;
+  b.className = "cmd" + (small ? " small" : "") + (item.iconOnly ? " icon-only" : "");
+  const canonical = item.ids !== undefined;
+  const id = ribbonItemId(item);
+  const on = canonical ? modifyEnabled(id) : !!commandFor(id);
+  const why = canonical ? modifyUnavailable(item) : " (not built yet)";
+  b.disabled = !on;
+  b.title = item.label + (on ? "" : why);
+  b.dataset.id = id || "";
+  if (canonical) { b.dataset.mid = id || ""; b.dataset.tip = item.label; b.dataset.why = why; }
   const ico = document.createElement("span");
   ico.className = "ico";
   setIcon(ico, item);
   const lab = document.createElement("span");
   lab.textContent = item.label;
   b.append(ico, lab);
-  if (commandFor(item.id)) b.onclick = (e) => runCommand(item.id, e);
+  // attached even while disabled: a selection can enable the button later, and disabled blocks the click anyway
+  if (id) b.onclick = (e) => runCommand(id, e);
   return b;
 }
 
@@ -382,27 +497,10 @@ function selectTab(name) {
   const set = ribbonSet();
   if (!set[name]) name = Object.keys(set)[0];
   app.ribbonTab[app.doc] = name;
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.textContent === name));
-  const ribbon = $("#ribbon");
-  ribbon.replaceChildren();
-  for (const g of set[name]) {
-    const grp = document.createElement("div");
-    grp.className = "group" + (g.label === "Family Editor" ? " fam-editor" : "");
-    const items = document.createElement("div");
-    items.className = "items";
-    let stack = null;
-    for (const it of g.items) {
-      if (it.big) { stack = null; items.appendChild(cmdButton(it, false)); continue; }
-      if (!stack || stack.children.length >= 3) { stack = document.createElement("div"); stack.className = "stack"; items.appendChild(stack); }
-      stack.appendChild(cmdButton(it, true));
-    }
-    const lab = document.createElement("div");
-    lab.className = "label";
-    lab.textContent = g.label;
-    grp.append(items, lab);
-    ribbon.appendChild(grp);
-  }
-  if (app.doc === "family") FamModel.syncRibbon(); else if (app.doc === "annotation") AnnModel.syncRibbon(); else updateRibbonContext();
+  document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
+  drawTab(name);
+  if (app.doc === "family") FamModel.syncRibbon(); else if (app.doc === "annotation") AnnModel.syncRibbon();
+  syncModifyButtons();
 }
 
 // A ribbon wider than the window fits itself in steps (style.css #ribbon.fit-1 to fit-3) rather than scrolling: it
@@ -1185,83 +1283,50 @@ function renderOptionsBar() {
   $("#ob-sides-label").hidden = !(wo.shape === "polygon_in" || wo.shape === "polygon_out");
 }
 
-// ---- Modify | Place Wall: the draw palette ---------------------------------
+// ---- Place Wall: the draw palette, appended to the Modify tab ---------------
 const WALL_SHAPES = ["line", "rectangle", "polygon_in", "polygon_out", "circle", "arc_3pt", "arc_centre", "ellipse", "partial_ellipse", "spline"];
-let wallReturnTab = "Architecture";
-function renderWallRibbon() {
-  const tabs = $("#tabs");
-  let ctx = tabs.querySelector("button.contextual:not(.fam)");
-  const on = app.view.kind === "plan" && Plan.tool === "wall";
-  if (!on) {
-    if (ctx && ctx.dataset.kind === "wall") { ctx.remove(); selectTab(wallReturnTab); }
-    return;
-  }
-  if (Sketch.active) return;
-  if (!ctx) {
-    wallReturnTab = [...tabs.querySelectorAll("button")].find((b) => b.classList.contains("active"))?.textContent || "Architecture";
-    ctx = document.createElement("button"); ctx.className = "contextual"; ctx.dataset.kind = "wall";
-    ctx.onclick = () => renderWallRibbon();
-    tabs.append(ctx);
-  }
-  ctx.textContent = "Modify | Place Wall";
-  tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === ctx));
+function wallContext() {
+  if (app.view.kind !== "plan" || Plan.tool !== "wall" || Sketch.active) return null;
   const cur = Plan.wallOptions().shape;
-  const mk = (label, nodes) => {
-    const grp = el("div", { className: "group" });
-    const items = el("div", { className: "items" });
-    let stack = null;
-    for (const n of nodes) {
-      if (n.big) { stack = null; items.append(n.node); continue; }
-      if (!stack || stack.children.length >= 3) { stack = el("div", { className: "stack" }); items.append(stack); }
-      stack.append(n.node);
-    }
-    grp.append(items, el("div", { className: "label", textContent: label }));
-    return grp;
-  };
-  const draws = WALL_SHAPES.map((id) => ({ node: sketchButton(Sketch.TOOLS[id], true, () => { Plan.setWallOptions({ shape: id }); renderOptionsBar(); }, cur === id) }));
-  $("#ribbon").replaceChildren(
-    mk("Select", [{ big: true, node: sketchButton({ label: "Modify", ico: "Se" }, false, () => Plan.setTool("select"), false) }]),
-    mk("Draw", draws),
-  );
+  const draws = WALL_SHAPES.map((id) => ({ ...Sketch.TOOLS[id], onclick: () => { Plan.setWallOptions({ shape: id }); renderOptionsBar(); }, on: cur === id }));
+  return { auto: true, key: `wall:${cur}`, title: "Place Wall", groups: [
+    { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => Plan.setTool("select") }] },
+    { label: "Draw", items: draws },
+  ] };
 }
+const renderWallRibbon = () => updateRibbonContext();
 
-// Modify | Place Component: shown while placing a component, with Load Family and the placement choice
-let compReturnTab = "Architecture";
-function renderComponentRibbon() {
-  const tabs = $("#tabs");
-  let ctx = tabs.querySelector("button.contextual:not(.fam)");
-  const on = app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted");
-  if (!on) {
-    if (ctx && ctx.dataset.kind === "component") { ctx.remove(); selectTab(compReturnTab); }
-    return;
-  }
-  if (Sketch.active || (ctx && ctx.dataset.kind !== "component")) return;
-  if (!ctx) {
-    compReturnTab = [...tabs.querySelectorAll("button")].find((b) => b.classList.contains("active"))?.textContent || "Architecture";
-    ctx = document.createElement("button"); ctx.className = "contextual"; ctx.dataset.kind = "component";
-    ctx.onclick = () => renderComponentRibbon();
-    tabs.append(ctx);
-  }
-  ctx.textContent = "Modify | Place Component";
-  tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("active", b === ctx));
-  const mk = (label, nodes) => {
-    const grp = el("div", { className: "group" });
-    const items = el("div", { className: "items" });
-    items.append(...nodes);
-    grp.append(items, el("div", { className: "label", textContent: label }));
-    return grp;
-  };
+// ---- Place Component: Load Family and the placement choice, appended to the Modify tab ----
+function componentContext() {
+  if (app.view.kind !== "plan" || (Plan.tool !== "component" && Plan.tool !== "hosted") || Sketch.active) return null;
   const hosted = Plan.tool === "hosted";
   const face = sketchButton({ label: "Place on Face", icon: "pickFaces" }, false, () => {}, false);
   face.disabled = true; face.title = "Place on Face: not built yet";
-  $("#ribbon").replaceChildren(
-    mk("Select", [sketchButton({ label: "Modify", ico: "Se" }, false, () => Plan.setTool("select"), false)]),
-    mk("Mode", [sketchButton({ label: "Load Family", icon: "loadFamily" }, false, () => FamModel.loadFile(async () => { await refresh(); renderProperties(); }), false)]),
-    mk("Placement", hosted ? [sketchButton({ label: "Place on Wall", icon: "wall" }, false, () => {}, true)] : [sketchButton({ label: "Place on Work Plane", icon: "setWp" }, false, () => {}, true), face]),
-  );
+  const load = sketchButton({ label: "Load Family", icon: "loadFamily" }, false, () => FamModel.loadFile(async () => { await refresh(); renderProperties(); }), false);
+  return { auto: true, key: `component:${hosted}`, title: hosted ? "Place on Face" : "Place Component", groups: [
+    { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => Plan.setTool("select") }, { big: true, node: load }] },
+    { label: "Placement", items: hosted
+      ? [{ node: sketchButton({ label: "Place on Wall", icon: "wall" }, false, () => {}, true) }]
+      : [{ node: sketchButton({ label: "Place on Work Plane", icon: "setWp" }, false, () => {}, true) }, { node: face }] },
+  ] };
 }
+const renderComponentRibbon = () => updateRibbonContext();
 
 // ---- Modify tools ---------------------------------------------------------------------
+// Select leaves whatever tool is running; the family and annotation editors have their own Select commands.
+function selectTool() {
+  if (Sketch.active) { Sketch.setTool("select"); renderSketchRibbon(); return; }
+  if (app.view.kind === "plan") Plan.setTool("select");
+  else if (app.view.kind === "elevation") Elev.setTool("select");
+  else setPrompt("Click in the view to select, or pick a view in the Project Browser.");
+  updateRibbonContext();
+}
+// Properties in the Modify tab shows or hides the palette.
+function toggleProperties() {
+  const hidden = $("#workspace").classList.toggle("no-left");
+  setPrompt(hidden ? "Properties palette hidden. Properties shows it again." : "Properties palette shown.");
+}
+
 const ELEV_EDIT = new Set(["move", "copy", "align"]);
 async function startEditTool(name) {
   // Modify tools work where the person is: in an elevation Move, Copy and Align run in the view
@@ -1811,13 +1876,11 @@ document.addEventListener("keydown", (e) => {
 });
 
 // ---- Sketch mode (floors and roofs now; ceilings and openings reuse it) -----------------------------
-// The sketch lives in sketch.js. Here: the contextual ribbon tab, the options bar, the slope arrow
+// The sketch lives in sketch.js. Here: its panels on the Modify tab, the options bar, the slope arrow
 // dialog and what Finish and Cancel do to the model. claude/interaction-tools.md, item 2.
-let sketchReturnTab = "Architecture";
 async function startFloorSketch(existingId) {
   if (Sketch.active) return;
   if (!(await ensurePlan("A floor sketch"))) return;
-  sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Architecture";
   if (existingId) {
     const r = await run("floor_sketch", { id: existingId });
     if (!r) return;
@@ -1832,7 +1895,6 @@ async function startFloorSketch(existingId) {
 async function startRoofSketch(existingId) {
   if (Sketch.active) return;
   if (!(await ensurePlan("A roof sketch"))) return;
-  sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Architecture";
   if (existingId) {
     const r = await run("roof_sketch", { id: existingId });
     if (!r) return;
@@ -1857,55 +1919,42 @@ function sketchButton(item, small, onclick, on, extra = "") {
   return b;
 }
 
-function renderSketchRibbon() {
-  const tabs = $("#tabs");
-  document.querySelectorAll("#tabs button").forEach((b) => b.classList.remove("active"));
-  let ctx = tabs.querySelector("button.contextual:not(.fam)");
-  if (!ctx) { ctx = document.createElement("button"); ctx.className = "contextual"; ctx.onclick = () => renderSketchRibbon(); tabs.append(ctx); }
-  ctx.textContent = `Modify | ${Sketch.title}`;
-  ctx.classList.add("active");
-  const ribbon = $("#ribbon");
-  const group = (label, nodes) => {
-    const grp = el("div", { className: "group" });
-    const items = el("div", { className: "items" });
-    let stack = null;
-    for (const n of nodes) {
-      if (n.big) { stack = null; items.append(n.node); continue; }
-      if (!stack || stack.children.length >= 3) { stack = el("div", { className: "stack" }); items.append(stack); }
-      stack.append(n.node);
-    }
-    grp.append(items, el("div", { className: "label", textContent: label }));
-    return grp;
-  };
+// The sketch's own panels (Mode, Draw, its tools) go after the constant Modify tab's own tools.
+function sketchContext() {
+  if (!Sketch.active) return null;
   const cur = Sketch.tool;
-  const modes = [
-    { big: true, node: sketchButton({ label: "Finish Edit Mode", ico: "✓" }, false, () => Sketch.finish(), false, "finish") },
-    { big: true, node: sketchButton({ label: "Cancel Edit Mode", ico: "✕" }, false, () => Sketch.cancel(), false, "cancel") },
-    { node: sketchButton({ label: "Check Sketch", ico: "Ck" }, true, async () => { const r = await Sketch.check(); if (r && r.ok) setPrompt(`The sketch is good: ${r.loops} loop${r.loops === 1 ? "" : "s"}.`); }) },
-  ];
-  const mods = Sketch.MODIFY.map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
-  const draws = Sketch.DRAW.map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
-  const notes = Sketch.ANNOTATE.map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
+  const modes = Sketch.kind === "detail"
+    ? [{ label: "Modify", ico: "Se", big: true, onclick: () => Sketch.setTool("select"), on: cur === "select" }]
+    : [
+      { label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => Sketch.finish(), cls: "finish" },
+      { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => Sketch.cancel(), cls: "cancel" },
+      { label: "Check Sketch", ico: "Ck", onclick: async () => { const r = await Sketch.check(); if (r && r.ok) setPrompt(`The sketch is good: ${r.loops} loop${r.loops === 1 ? "" : "s"}.`); } },
+      { label: "Modify", ico: "Se", onclick: () => Sketch.setTool("select"), on: cur === "select" },
+    ];
+  const detail = Sketch.kind === "detail" || Sketch.kind === "region";
+  const draw = Sketch.DRAW.filter((t) => !detail || t.id !== "pick_walls").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
+  const trims = Sketch.MODIFY.filter((t) => t.id === "trim_single" || t.id === "split").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
+  const groups = [{ label: "Mode", items: modes }, { label: "Draw", items: draw }];
+  if (trims.length) groups.push({ label: "Trim and Split", items: trims });
   // Detail Line and the regions: no slope or span; a line style for new lines and the selected ones
-  if (Sketch.kind === "detail" || Sketch.kind === "region") {
-    const detail = Sketch.kind === "detail";
-    if (detail) ctx.textContent = Sketch.DRAW.some((t) => t.id === cur) ? "Modify | Place Detail Lines" : "Modify | Detail Lines";
-    const draw2 = Sketch.DRAW.filter((t) => t.id !== "pick_walls").map((t) => ({ node: sketchButton(t, true, () => Sketch.setTool(t.id), cur === t.id) }));
+  if (detail) {
     const a = Sketch.selectedAttr();
-    const styles = [...(app.info.line_styles || []), ...(detail ? [] : ["<Invisible lines>"])];
-    const now = a ? a.style : detail ? app.lineStyle : app.edgeStyle;
-    const s = el("select", { title: detail ? "The line style of new lines, and of the selected ones" : "The line style of new boundary lines, and of the selected ones" }, styles.map((n) => new Option(n, n, false, n === now)));
+    const styles = [...(app.info.line_styles || []), ...(Sketch.kind === "detail" ? [] : ["<Invisible lines>"])];
+    const now = a ? a.style : Sketch.kind === "detail" ? app.lineStyle : app.edgeStyle;
+    const s = el("select", { title: Sketch.kind === "detail" ? "The line style of new lines, and of the selected ones" : "The line style of new boundary lines, and of the selected ones" }, styles.map((n) => new Option(n, n, false, n === now)));
     if (a && a.style === null) s.add(new Option("<varies>", "*", false, true));
     s.onchange = () => {
       if (s.value === "*") return;
-      if (detail) app.lineStyle = s.value; else app.edgeStyle = s.value;
+      if (Sketch.kind === "detail") app.lineStyle = s.value; else app.edgeStyle = s.value;
       if (Sketch.selectedAttr()) Sketch.patchSelected({ style: s.value });
     };
-    ribbon.replaceChildren(...(detail ? [] : [group("Mode", modes)]), group("Modify", mods), group("Draw", draw2), group("Line Style", [{ big: true, node: el("div", { className: "rb-select" }, [s]) }]));
-    return;
+    groups.push({ label: "Line Style", items: [{ big: true, node: el("div", { className: "rb-select" }, [s]) }] });
+  } else if (!Sketch.isRoof) {
+    groups.push({ label: "Slope and Span", items: Sketch.ANNOTATE.map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id })) });
   }
-  ribbon.replaceChildren(group("Mode", modes), group("Modify", mods), group("Draw", draws), ...(Sketch.isRoof ? [] : [group("Slope and Span", notes)]));
+  return { auto: true, key: `sketch:${Sketch.kind}:${Sketch.tool}`, title: Sketch.title || "Sketch", groups };
 }
+const renderSketchRibbon = () => updateRibbonContext();
 
 function renderSketchBar() {
   const box = $("#ob-sketch");
@@ -1953,9 +2002,8 @@ function sketchBarKids(sk) {
 
 function renderSketchUI() {
   if (!Sketch.active) return;
-  // keep the person on whichever tab they chose; the contextual tab stays one click away
-  const ctx = $("#tabs button.contextual:not(.fam)");
-  if (!ctx || ctx.classList.contains("active")) renderSketchRibbon();
+  // the Modify tab shows the sketch's own panels while it is open
+  renderSketchRibbon();
   renderSketchBar();
   renderSketchToolbar();
   updateUndoButtons();
@@ -1978,11 +2026,9 @@ function renderSketchToolbar() {
 }
 
 function endSketchUI() {
-  const ctx = $("#tabs button.contextual:not(.fam)");
-  if (ctx) ctx.remove();
   renderSketchToolbar();
   updateUndoButtons();
-  selectTab(sketchReturnTab);
+  updateRibbonContext();
   renderOptionsBar();
 }
 
@@ -2062,7 +2108,6 @@ async function startDetailLines(selectId, tool) {
   }
   if (!(await ensureDetailView("A detail line"))) return;
   app.lineStyle ||= "Thin Lines";
-  sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Annotate";
   app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]);
   beginDetailSession(selectId, tool || "line");
   setPrompt(Sketch.promptText());
@@ -2115,7 +2160,6 @@ async function startRegionSketch(masking, editId) {
     else { setPrompt("Finish or cancel the sketch first.", true); return; }
   }
   if (!(await ensureDetailView(masking ? "A masking region" : "A region"))) return;
-  sketchReturnTab = document.querySelector("#tabs button.active")?.textContent || "Annotate";
   let curves = [];
   if (editId) {
     const r = await run("detail_region_sketch", { id: editId });
@@ -2293,11 +2337,11 @@ function textContext() {
     ...[["top", "Top"], ["middle", "Middle"], ["bottom", "Bottom"]].map(([v, l]) => ({ label: `Align ${l}`, icon: `align${l}`, on: cur.valign === v, onclick: () => set("valign", v), iconOnly: true, brk: v === "top" })),
     ...[["left", "Left"], ["center", "Center"], ["right", "Right"]].map(([v, l]) => ({ label: `Align ${l}`, icon: `align${l}`, on: cur.halign === v, onclick: () => set("halign", v), iconOnly: true, brk: v === "left" })),
   ];
-  const modify = { label: "Select", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => { V.setTool("select"); updateRibbonContext(); } }] };
+  const mode = { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => { V.setTool("select"); updateRibbonContext(); } }] };
   if (placing) {
     // the leader kinds two by two, as the Leader panel has them
     const leaders = NOTE_LEADERS.map(([v, label, icon], i) => ({ label, icon, on: o.leader === v, onclick: () => set("leader", v), iconOnly: true, brk: i % 2 === 0 }));
-    return { auto: true, key: `place:${JSON.stringify(o)}`, title: "Modify | Place Text", groups: [modify, { label: "Leader", items: [...leaders, ...attach] }, { label: "Paragraph", items: align }] };
+    return { auto: true, key: `place:${JSON.stringify(o)}`, title: "Place Text", groups: [mode, { label: "Leader", items: [...leaders, ...attach] }, { label: "Paragraph", items: align }] };
   }
   const one = sel.length === 1 && app.selection.length === 1;
   // straight leaders over arc leaders, left and right, then Remove Last Leader
@@ -2308,7 +2352,7 @@ function textContext() {
     { label: "Add Right Side Arc Leader", icon: "leaderAddArcR", onclick: () => addNoteLeader("right", true) },
     { label: "Remove Last Leader", icon: "leaderRemove", onclick: () => runCommand("text-lead-rm"), brk: true },
   ].map((x) => ({ ...x, iconOnly: true })) : [];
-  return { auto: true, key: `notes:${sel.map((n) => n.id).join(",")}:${JSON.stringify(cur)}`, title: "Modify | Text Notes", groups: [{ label: "Leader", items: [...adds, ...attach] }, { label: "Paragraph", items: align }] };
+  return { auto: true, key: `notes:${sel.map((n) => n.id).join(",")}:${JSON.stringify(cur)}`, title: "Text Notes", groups: [{ label: "Leader", items: [...adds, ...attach] }, { label: "Paragraph", items: align }] };
 }
 Plan.callbacks.editDetail = (id) => startDetailLines(id, "select");
 Plan.callbacks.editRegion = (id) => startRegionSketch(null, id);
@@ -2323,7 +2367,7 @@ async function initViewport() {
     vp.onPick((id, additive) => {
       let ids = additive ? [...app.selection] : [];
       if (id !== null) ids = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
-      app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties();
+      app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext();
     });
     pill.textContent = `GPU: ${vp.info}`;
     pill.classList.add("ok");

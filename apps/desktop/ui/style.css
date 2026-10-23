@@ -11,6 +11,7 @@
   --ico-ink: #2b2e33;
   --ico-accent: #ff6b57;
   --tree-line: #9aa3ae;
+  --ctx-bg: #e2ecf4;
 }
 @media (prefers-color-scheme: dark) {
   :root {
@@ -25,12 +26,13 @@
     --view-bg: #1f2329;
     --ico-ink: #d7dbe0;
     --tree-line: #5f6874;
+    --ctx-bg: #27343f;
   }
 }
 * { box-sizing: border-box; }
 html, body { height: 100%; margin: 0; }
 body { background: var(--bg); color: var(--text); font: 12px/1.35 system-ui, "Segoe UI", sans-serif; overflow: hidden; }
-#app { display: grid; grid-template-rows: 28px 26px 104px 1fr 22px; height: 100%; }
+#app { display: grid; grid-template-rows: 28px 26px 92px 1fr 22px; height: 100%; }
 .spacer { flex: 1; }
 button, select { font: inherit; color: inherit; }
 
@@ -46,21 +48,22 @@ button, select { font: inherit; color: inherit; }
 #tabs button.active { background: var(--panel); border-color: var(--line); font-weight: 600; }
 
 #ribbon { display: flex; background: var(--panel); border-top: 1px solid var(--line); border-bottom: 1px solid var(--line); overflow-x: auto; overflow-y: hidden; }
-.group { flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 4px 6px 0; min-width: 60px; }
-.group .items { display: flex; gap: 2px; flex: 1; align-items: stretch; }
-.group .label { text-align: center; color: var(--muted); padding: 2px 0 3px; font-size: 11px; white-space: nowrap; }
-.cmd { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; min-width: 52px; padding: 3px 4px; border: 1px solid transparent; border-radius: 3px; background: none; cursor: pointer; }
+.group { flex-shrink: 0; display: flex; flex-direction: column; border-right: 1px solid var(--line); padding: 3px 5px 0; min-width: 0; }
+.group .items { display: flex; gap: 1px; flex: 1; align-items: stretch; }
+.group .label { text-align: center; color: var(--muted); padding: 1px 0 2px; font-size: 10px; white-space: nowrap; }
+.cmd { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px; min-width: 46px; padding: 2px 4px; border: 1px solid transparent; border-radius: 3px; background: none; cursor: pointer; }
 .cmd:hover:not(:disabled) { background: var(--accent-soft); border-color: var(--accent); }
 .cmd:disabled { opacity: .55; cursor: default; }
-.cmd .ico { width: 32px; height: 32px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); display: grid; place-items: center; font-weight: 700; font-size: 11px; color: var(--accent); }
-.cmd.small { flex-direction: row; justify-content: flex-start; min-width: 0; padding: 1px 6px; gap: 6px; }
-.cmd.small .ico { width: 18px; height: 18px; font-size: 8px; }
-.cmd > span:last-child { text-align: center; max-width: 96px; }
+.cmd .ico { width: 30px; height: 30px; border-radius: 4px; background: var(--panel-2); border: 1px solid var(--line); display: grid; place-items: center; font-weight: 700; font-size: 10px; color: var(--accent); }
+.cmd.small { flex-direction: row; justify-content: flex-start; min-width: 0; min-height: 20px; padding: 0 5px; gap: 5px; }
+.cmd.small .ico { width: 16px; height: 16px; font-size: 8px; }
+.cmd > span:last-child { text-align: center; max-width: 96px; font-size: 11px; }
 .cmd.small > span:last-child { text-align: left; max-width: none; }
-.group.fam-editor { position: sticky; right: 0; margin-left: auto; background: var(--panel); border-left: 1px solid var(--line); border-right: none; }
 .stack { display: flex; flex-direction: column; justify-content: center; }
 
 #workspace { display: grid; grid-template-columns: 290px 1fr; min-height: 0; }
+#workspace.no-left { grid-template-columns: 0 1fr; }
+#workspace.no-left #left, #workspace.no-left #fam-left { display: none; }
 #left { display: grid; grid-template-rows: 1fr 1fr; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
 .panel { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--line); }
 .panel-title { padding: 4px 8px; font-weight: 600; background: var(--panel-2); border-bottom: 1px solid var(--line); }
@@ -253,8 +256,8 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 #ob-sketch { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
 #ob-sketch[hidden] { display: none; }
 #ob-sketch button { padding: 1px 8px; }
-#tabs button.contextual { background: #f1dff0; border-color: #b0309c; color: #5a1a52; }
-@media (prefers-color-scheme: dark) { #tabs button.contextual { background: #4a2a47; color: #f0d6ed; } }
+/* the active tool's own panels, after the Modify tab's own tools */
+#ribbon .ctx { flex-shrink: 0; display: flex; align-items: stretch; margin-left: 4px; padding-left: 2px; border-left: 2px solid var(--accent); background: var(--ctx-bg); }
 .cmd.on { background: var(--accent-soft); border-color: var(--accent); }
 .cmd.finish .ico { background: #d8f0dc; color: #1f7a33; border-color: #1f7a33; }
 .cmd.cancel .ico { background: #f6dcd8; color: #b03a2e; border-color: #b03a2e; }
@@ -399,8 +402,8 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 
 /* ---- icons ---- */
 .cmd .ico.svg { background: none; border-color: transparent; color: var(--ico-ink); }
-.cmd .ico svg { width: 28px; height: 28px; display: block; }
-.cmd.small .ico svg { width: 16px; height: 16px; }
+.cmd .ico svg { width: 26px; height: 26px; display: block; }
+.cmd.small .ico svg { width: 15px; height: 15px; }
 .cmd:disabled .ico.svg { filter: grayscale(1); opacity: .7; }
 .ico svg .a, .ico svg .a2, .tp-thumb svg .a, .tp-thumb svg .a2, .tp-ficon svg .a, .tp-ficon svg .a2 { stroke: var(--ico-accent); }
 .ico svg .a2, .tp-thumb svg .a2, .tp-ficon svg .a2 { stroke-width: 2; }
@@ -506,8 +509,10 @@ table.asm-layers select.prio { width: 52px; }
 .ls-modify legend { font-size: 11px; color: var(--muted); }
 
 /* ribbon buttons that show only their icon (the text tool's leader, attachment and alignment toggles) */
-#ribbon .cmd.icon-only > span:not(.ico) { display: none; }
-#ribbon .cmd.icon-only { padding: 2px 4px; }
+#ribbon .cmd.icon-only > span:not(.ico):not(.menu-caret) { display: none; }
+#ribbon .cmd.icon-only { padding: 2px 4px; position: relative; }
+#ribbon .cmd.icon-only .menu-caret { position: absolute; right: 0; bottom: -1px; font-size: 8px; line-height: 1; color: var(--muted); }
+#ribbon .cmd.small.icon-only { min-width: 22px; padding: 1px 3px; }
 
 /* the brandmark beside the name in the title bar */
 .logo { display: inline-flex; align-items: center; gap: 6px; }

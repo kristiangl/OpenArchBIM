@@ -2,6 +2,56 @@
 // `big` items get a large button, others stack as small rows (up to 3 per stack).
 // Icons come from icons.js by command id (a monogram shows where there is none yet).
 
+// ---- the Modify tab, the same in every document ---------------------------------
+// The Modify tab keeps one layout: Select, Properties, Clipboard, Geometry, Controls, Modify, View,
+// Measure and Create, in that order. Each button names the command its document runs for it; a document
+// with no command for an item still draws the button, greyed out, so the tab never moves. `iconOnly`
+// buttons keep their name in the tooltip.
+const modifyItem = (label, icon, ids = null, extra = {}) => ({ label, icon, ids, ...extra });
+const MODIFY_TAB = [
+  { label: "Select", items: [
+    modifyItem("Modify", "select", { project: "sel", family: "f-select", annotation: "a-select" }, { big: true }) ] },
+  { label: "Properties", items: [
+    modifyItem("Properties", "properties", { project: "props", family: "f-props", annotation: "a-props" }, { big: true }) ] },
+  { label: "Clipboard", items: [
+    modifyItem("Paste", "paste", null, { big: true }),
+    modifyItem("Cut", "cut", null),
+    modifyItem("Copy", "copy", { project: "cp", family: "f-cp" }),
+    modifyItem("Match Type", "matchType", null) ] },
+  { label: "Geometry", items: [
+    modifyItem("Join", "join", null), modifyItem("Unjoin", "unjoin", null),
+    modifyItem("Cut", "cut", null), modifyItem("Uncut", "uncut", null),
+    modifyItem("Wall Joins", "wallJoins", { project: "wjoin" }), modifyItem("Paint", "paint", null) ] },
+  { label: "Controls", items: [
+    modifyItem("Activate", "activate", null, { big: true }) ] },
+  { label: "Modify", items: [
+    modifyItem("Align", "align", { project: "al", family: "f-align" }, { iconOnly: true }),
+    modifyItem("Move", "move", { project: "mv", family: "f-mv" }, { iconOnly: true }),
+    modifyItem("Copy", "copy", { project: "cp", family: "f-cp" }, { iconOnly: true }),
+    modifyItem("Rotate", "rotate", { project: "ro", family: "f-ro" }, { iconOnly: true }),
+    modifyItem("Mirror", "mirror", null, { iconOnly: true, menu: [
+      modifyItem("Mirror - Pick Axis", "mirror", { project: "mi-pick", family: "f-mi-pick" }),
+      modifyItem("Mirror - Draw Axis", "mirror", { project: "mi-draw", family: "f-mi-draw" }) ] }),
+    modifyItem("Offset", "offset", { project: "of", family: "f-of" }, { iconOnly: true }),
+    modifyItem("Pin", "pin", { project: "pin" }, { iconOnly: true }),
+    modifyItem("Unpin", "unpin", { project: "unpin" }, { iconOnly: true }),
+    modifyItem("Delete", "delete", { project: "del", family: "f-del", annotation: "a-del" }, { iconOnly: true }),
+    modifyItem("Split", "split", { project: "sp" }, { iconOnly: true }),
+    modifyItem("Trim/Extend", "trim", { project: "tr" }, { iconOnly: true }),
+    modifyItem("Array", "array", { project: "ar" }, { iconOnly: true }),
+    modifyItem("Scale", "scale", { project: "sc" }, { iconOnly: true }) ] },
+  { label: "View", items: [
+    modifyItem("Show Hidden", "showHidden", null, { iconOnly: true }),
+    modifyItem("Reveal Hidden", "revealHidden", null, { iconOnly: true }),
+    modifyItem("Temporary Hide/Isolate", "tempHide", null, { iconOnly: true }) ] },
+  { label: "Measure", items: [
+    modifyItem("Measure", "measure", { project: "me" }, { big: true }) ] },
+  { label: "Create", items: [
+    modifyItem("Create Assembly", "assembly", null),
+    modifyItem("Create Group", "modelGroup", null),
+    modifyItem("Create Similar", "createSimilar", null, { big: true }) ] },
+];
+
 const RIBBON = {
   Architecture: [
     { label: "Build", items: [
@@ -94,20 +144,10 @@ const RIBBON = {
     { label: "Export", items: [
       { id: "m-sheets", label: "Sheet Exporter", big: true } ] },
   ],
-  Modify: [
-    { label: "Modify", items: [
-      { id: "mv", label: "Move", big: true }, { id: "cp", label: "Copy", big: true }, { id: "ro", label: "Rotate", big: true },
-      { id: "mi", label: "Mirror", big: true }, { id: "al", label: "Align", big: true }, { id: "of", label: "Offset", big: true },
-      { id: "tr", label: "Trim / Extend", big: true }, { id: "sp", label: "Split", big: true }, { id: "ar", label: "Array", big: true },
-      { id: "sc", label: "Scale", big: true }, { id: "pin", label: "Pin", big: true }, { id: "unpin", label: "Unpin", big: true }, { id: "del", label: "Delete", big: true } ] },
-    { label: "Measure", items: [
-      { id: "me", label: "Measure", big: true } ] },
-    { label: "Mode", items: [
-      { id: "edit-boundary", label: "Edit Boundary", big: true } ] },
-    { label: "Section", items: [
-      { id: "split-segment", label: "Split Segment", big: true } ] },
-    { label: "Geometry", items: [
-      { id: "wjoin", label: "Wall Joins", big: true }, { id: "join", label: "Join", big: true }, { id: "cut", label: "Cut", big: true } ] },
+  Modify: MODIFY_TAB,
+  Help: [
+    { label: "Logging", items: [
+      { id: "open-log", label: "Open Log Folder", big: true } ] },
   ],
 };
 
@@ -146,16 +186,11 @@ const ANN_RIBBON = {
       { id: "a-symbol", label: "Symbol", big: true } ] },
     { label: "Text", items: [{ id: "a-label", label: "Label", big: true }, { id: "a-text", label: "Text", big: true }] },
     { label: "Datum", items: [{ id: "a-refline", label: "Reference Line", big: true }] },
-    ANN_EDITOR_GROUP,
   ],
   View: [
     { label: "Graphics", items: [{ id: "a-flip", label: "Preview Flipped", big: true }, { id: "a-fit", label: "Zoom to Fit", big: true }] },
-    ANN_EDITOR_GROUP,
   ],
-  Modify: [
-    { label: "Modify", items: [{ id: "a-select", label: "Modify", big: true }, { id: "a-del", label: "Delete", big: true }] },
-    ANN_EDITOR_GROUP,
-  ],
+  Modify: MODIFY_TAB,
 };
 
 const FAM_RIBBON = {
@@ -178,38 +213,26 @@ const FAM_RIBBON = {
       { id: "f-conn-cable_tray", label: "Cable Tray Connector" }, { id: "f-conn-conduit", label: "Conduit Connector" } ] }] },
     { label: "Datum", items: [{ id: "f-refline", label: "Reference Line", big: true }, { id: "f-plane", label: "Reference Plane", big: true }] },
     { label: "Work Plane", items: [{ id: "f-wpset", label: "Set" }, { id: "f-wpshow", label: "Show" }, { id: "f-wpviewer", label: "Viewer" }] },
-    FAM_EDITOR_GROUP,
   ],
   Insert: [
     { label: "Load from Library", items: [{ id: "f-loadfam", label: "Load Family", big: true }] },
     { label: "Import", items: [{ id: "f-impcad", label: "Import CAD", big: true }, { id: "f-impimg", label: "Image", big: true }] },
-    FAM_EDITOR_GROUP,
   ],
   Annotate: [
     { label: "Dimension", items: [{ id: "f-dim", label: "Aligned", big: true }] },
     { label: "Detail", items: [
       { id: "f-sym", label: "Symbolic Line", big: true }, { id: "f-region", label: "Filled Region", big: true },
       { id: "f-mask", label: "Masking Region", big: true }, { id: "f-text", label: "Text", big: true } ] },
-    FAM_EDITOR_GROUP,
   ],
   View: [
     { label: "Create", items: [{ id: "f-3d", label: "3D View", big: true }, { id: "f-sec", label: "Section", big: true }] },
     { label: "Graphics", items: [
       { id: "f-names", label: "Plane Names", big: true }, { id: "f-dims", label: "Dimensions", big: true }, { id: "f-vg", label: "Visibility / Graphics", big: true } ] },
-    FAM_EDITOR_GROUP,
   ],
   Manage: [
     { label: "Settings", items: [
       { id: "f-sharedparams", label: "Shared Parameters", big: true }, { id: "f-styles", label: "Object Styles", big: true }, { id: "f-materials", label: "Materials", big: true } ] },
     { label: "Lookup", items: [{ id: "f-lookup", label: "Manage Lookup Tables", big: true }] },
-    FAM_EDITOR_GROUP,
   ],
-  Modify: [
-    { label: "Modify", items: [
-      { id: "f-select", label: "Select", big: true }, { id: "f-align", label: "Align", big: true }, { id: "f-of", label: "Offset", big: true },
-      { id: "f-mi-pick", label: "Mirror - Pick Axis", big: true }, { id: "f-mi-draw", label: "Mirror - Draw Axis", big: true },
-      { id: "f-mv", label: "Move", big: true }, { id: "f-cp", label: "Copy", big: true }, { id: "f-ro", label: "Rotate", big: true },
-      { id: "f-del", label: "Delete", big: true } ] },
-    FAM_EDITOR_GROUP,
-  ],
+  Modify: MODIFY_TAB,
 };

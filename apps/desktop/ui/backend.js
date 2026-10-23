@@ -16,6 +16,15 @@ const Backend = {
     return j.ok;
   },
 
+  // Desktop app: page errors and unhandled promise rejections go into the same log file as the core calls
+  // (Help > Open Log Folder). In a browser they stay in the console.
+  log(level, message) {
+    if (!this.isDesktop) return;
+    try {
+      window.__TAURI__.core.invoke("ui_log", { level, message: String(message) }).catch(() => {});
+    } catch {}
+  },
+
   // File dialogs: native in the desktop app, a plain prompt in a browser.
   async pickSavePath(current) {
     if (this.isDesktop && window.__TAURI__.dialog) {
@@ -75,3 +84,15 @@ const Backend = {
     return window.prompt("Load family (file path)");
   },
 };
+
+if (Backend.isDesktop) {
+  window.addEventListener("error", (e) => {
+    if (!e.message) return; // a failed image or script load, not an error in the page's code
+    const where = e.filename ? ` (${e.filename}:${e.lineno}:${e.colno})` : "";
+    Backend.log("error", e.message + where + (e.error && e.error.stack ? "\n" + e.error.stack : ""));
+  });
+  window.addEventListener("unhandledrejection", (e) => {
+    const r = e.reason;
+    Backend.log("unhandled rejection", r && r.stack ? r.stack : String(r));
+  });
+}
