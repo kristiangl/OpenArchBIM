@@ -6,6 +6,7 @@ const app = {
   doc: "project", // the document showing: "project", "family" (a model family in the family editor) or "annotation" (an annotation family)
   ribbonTab: { project: "Architecture", family: "Create", annotation: "Create" },
   ctxSig: "", // what the Modify tab last drew after its own panels (the active tool, selection or sketch)
+  returnTab: { project: null, family: null, annotation: null }, // the tab to go back to when the tool or selection that brought Modify forward ends
   view: { kind: "plan", viewId: null }, // plan | 3d | schedule; viewId is a stored view
   wallTypeId: null,
   locationLine: "wall_centreline", // for walls about to be drawn
@@ -211,9 +212,12 @@ function modifyEnabled(id) {
     const st = FamModel._state && FamModel._state();
     if (!st) return false;
     if (["f-select", "f-props", "f-load", "f-loadclose"].includes(id)) return true;
-    if (st.view !== "plan" || st.sk || st.editing) return false;
-    if (id === "f-del") return !!st.sel;
-    return true;
+    // with a sketch open the tab's tools work on the sketch lines
+    if (st.sk) return !!FamModel.sketchModify[id];
+    if (id === "f-del") return !!st.sel || !!st.editing;
+    if (st.editing) return id === "f-align";
+    // every 2D view takes the Modify tools (they work in the view they are picked in); the 3D view only selects
+    return st.view !== "3d";
   }
   if (app.doc === "annotation") {
     const st = AnnModel._state && AnnModel._state();
@@ -229,15 +233,14 @@ function modifyEnabled(id) {
     return ["mv", "cp", "al"].includes(id);
   }
   if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
-  if (Plan.tool !== "select") return false;
   if (id === "del") return app.selection.length > 0;
-  if (id === "edit-witness") return app.selection.length === 1 && Plan.dimensions().some((d) => d.id === app.selection[0] && !d.round);
-  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "pin", "unpin"].includes(id);
+  // a Modify tool picked while another tool runs takes over from it, as it always has
+  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "pin", "unpin", "wjoin"].includes(id);
 }
 
 // Recompute the Modify tab's disabled buttons and the suffix on its tab name after a selection or tool changes.
-function syncModifyButtons() {
-  syncTabLabels();
+function syncModifyButtons(c = currentContext()) {
+  syncTabLabels(c);
   document.querySelectorAll("#ribbon button.cmd[data-mid]").forEach((b) => {
     const subs = b.dataset.subs ? b.dataset.subs.split("|") : null;
     const on = subs ? subs.some((id) => modifyEnabled(id)) : modifyEnabled(b.dataset.mid);
@@ -247,14 +250,13 @@ function syncModifyButtons() {
 }
 
 // The tab name carries the tool while one is active: Modify | Extrusion, Modify | Place Wall, Modify | Text Notes.
-function modifyTabLabel() {
-  const c = currentContext();
+function modifyTabLabel(c = currentContext()) {
   return c && c.title ? `Modify | ${c.title}` : "Modify";
 }
-function syncTabLabels() {
+function syncTabLabels(c) {
   document.querySelectorAll("#tabs button").forEach((b) => {
     const name = b.dataset.tab;
-    const label = name === "Modify" ? modifyTabLabel() : name;
+    const label = name === "Modify" ? modifyTabLabel(c) : name;
     if (b.textContent !== label) b.textContent = label;
   });
 }
@@ -274,7 +276,7 @@ function currentContext() {
   // a selection that can do something of its own adds one panel after the tab's own (a floor or roof boundary,
   // a section's split); the tab keeps the same groups before it
   const b = editBoundaryTarget();
-  if (b) return { auto: true, key: `boundary:${b.label}`, title: b.label.replace(/^Edit /, ""), groups: [
+  if (b) return { auto: true, key: `boundary:${b.label}:${app.selection[0]}`, title: b.label.replace(/^Edit /, ""), groups: [
     { label: "Mode", items: [{ label: b.label, icon: "editBoundary", onclick: b.run }] } ] };
   const sec = selectedSection();
   if (sec && !sec.pinned) return { auto: true, key: `section:${sec.id}`, title: "Section", groups: [
@@ -288,16 +290,28 @@ function currentContext() {
   return textContext();
 }
 
-// A context appears, changes or goes: switch to the Modify tab, or redraw it when it is showing.
+// A context appears, changes or goes. One appearing brings the Modify tab forward and remembers the tab the person
+// was on; when it goes, that tab comes back (unless the person picked a tab themselves in between). While the Modify
+// tab shows, its added panels are drawn again on every call, so they follow the selection and the tool's own state
+// (a dimension's lock, Axis Line, the line style of the selected lines).
+let ribbonBusy = false;
 function updateRibbonContext(activate) {
-  const c = currentContext();
-  const sig = c ? `${app.doc}:${c.key || c.title || "context"}` : "";
-  const fresh = sig !== app.ctxSig;
-  app.ctxSig = sig;
-  const showing = app.ribbonTab[app.doc];
-  if (showing === "Modify") { if (fresh || activate) drawTab("Modify"); }
-  else if (c && c.auto && (fresh || activate)) { selectTab("Modify"); return; }
-  syncModifyButtons();
+  // drawing a tab can reach here again (a selection kept in step); one pass is enough
+  if (ribbonBusy) return;
+  ribbonBusy = true;
+  try {
+    const c = currentContext();
+    const sig = c ? `${app.doc}:${c.key || c.title || "context"}` : "";
+    const fresh = sig !== app.ctxSig;
+    app.ctxSig = sig;
+    const doc = app.doc, showing = app.ribbonTab[doc];
+    if (c && showing !== "Modify" && (activate || (c.auto && fresh))) { app.returnTab[doc] = showing; selectTab("Modify", c); return; }
+    if (!c && fresh && showing === "Modify" && app.returnTab[doc]) { const back = app.returnTab[doc]; app.returnTab[doc] = null; selectTab(back, c); return; }
+    if (showing === "Modify") drawTab("Modify", c);
+    syncModifyButtons(c);
+  } finally {
+    ribbonBusy = false;
+  }
 }
 // The family and annotation editors call this after a selection or a tool changes.
 const renderFamContext = (activate) => updateRibbonContext(activate);
@@ -309,7 +323,8 @@ function renderTabs() {
     const b = document.createElement("button");
     b.dataset.tab = name;
     b.textContent = name === "Modify" ? modifyTabLabel() : name;
-    b.onclick = () => selectTab(name);
+    // a tab picked by hand stays: nothing jumps back to an earlier one when the tool ends
+    b.onclick = () => { app.returnTab[app.doc] = null; selectTab(name); };
     tabs.appendChild(b);
   });
   selectTab(app.ribbonTab[app.doc]);
@@ -352,11 +367,11 @@ function groupNode(g, isContext, isModify) {
 const docTailGroup = () => (app.doc === "family" ? FAM_EDITOR_GROUP : app.doc === "annotation" ? ANN_EDITOR_GROUP : null);
 
 // The tab's own panels, then whatever the active tool adds (tinted), then the family document's own group.
-function drawTab(name) {
+function drawTab(name, ctx) {
   const ribbon = $("#ribbon");
   ribbon.replaceChildren();
   for (const g of ribbonSet()[name] || []) ribbon.append(groupNode(g, false, name === "Modify"));
-  const c = name === "Modify" ? currentContext() : null;
+  const c = name !== "Modify" ? null : ctx !== undefined ? ctx : currentContext();
   if (c && c.groups && c.groups.length) {
     const box = el("div", { className: "ctx" });
     for (const g of c.groups) box.append(groupNode(g, true));
@@ -364,6 +379,8 @@ function drawTab(name) {
   }
   const tail = docTailGroup();
   if (tail) ribbon.append(groupNode(tail, false));
+  // the family documents mark their running tool and toggles on the new buttons
+  if (app.doc === "family") FamModel.syncRibbon(); else if (app.doc === "annotation") AnnModel.syncRibbon();
 }
 
 // Switch between the project and the family open in the family editor (each keeps its own ribbon tab)
@@ -398,11 +415,17 @@ function renderDocTabs() {
 
 // While a sketch is open nothing else is editable: the ribbon's Modify tools act on the sketch lines instead,
 // and every other command waits for Finish or Cancel.
-const SKETCH_MODIFY = { mv: "move", cp: "copy", ro: "rotate", mi: "mirror", of: "offset", tr: "trim_corner", al: "align" };
+const SKETCH_MODIFY = { sel: "select", mv: "move", cp: "copy", ro: "rotate", mi: "mirror", "mi-pick": "mirror", "mi-draw": "mirror", of: "offset", tr: "trim_corner", al: "align" };
 function runCommand(id, e) {
   if (Sketch.active) {
-    if (SKETCH_MODIFY[id]) { Sketch.setTool(SKETCH_MODIFY[id]); renderSketchRibbon(); return; }
-    if (id === "del") { Sketch.key({ key: "Delete", preventDefault() {} }); return; }
+    if (SKETCH_MODIFY[id]) {
+      if (id === "mi-pick" || id === "mi-draw") Sketch.setOpts({ mirrorMode: id === "mi-pick" ? "pick" : "draw" });
+      Sketch.setTool(SKETCH_MODIFY[id]); renderSketchRibbon(); return;
+    }
+    // showing or hiding the Properties palette leaves the sketch as it is
+    if (id === "props") { toggleProperties(); return; }
+    // Delete takes the selected lines out at once, or with none selected waits for a click on one
+    if (id === "del") { if (Sketch.selectedCount) Sketch.key({ key: "Delete", preventDefault() {} }); else { Sketch.setTool("delete"); renderSketchRibbon(); } return; }
     // Detail Line has no Finish: another command leaves it (its lines are already in the model)
     if (Sketch.kind === "detail") {
       if (id === "det-line") { Sketch.setTool("line"); return; }
@@ -493,14 +516,14 @@ function cmdButton(item, small) {
   return b;
 }
 
-function selectTab(name) {
+function selectTab(name, ctx) {
   const set = ribbonSet();
   if (!set[name]) name = Object.keys(set)[0];
   app.ribbonTab[app.doc] = name;
   document.querySelectorAll("#tabs button").forEach((b) => b.classList.toggle("active", b.dataset.tab === name));
-  drawTab(name);
-  if (app.doc === "family") FamModel.syncRibbon(); else if (app.doc === "annotation") AnnModel.syncRibbon();
-  syncModifyButtons();
+  const c = ctx !== undefined ? ctx : currentContext();
+  drawTab(name, c);
+  syncModifyButtons(c);
 }
 
 // A ribbon wider than the window fits itself in steps (style.css #ribbon.fit-1 to fit-3) rather than scrolling: it
@@ -1221,8 +1244,8 @@ function renderOptionsBar() {
   const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && Plan.isEditTool(), sketchTool = Sketch.active;
   const levelTool = app.view.kind === "elevation" && Elev.tool === "level", elevTool = inPlan && Plan.tool === "elevation", gridTool = inPlan && Plan.tool === "grid";
   const secTool = inPlan && Plan.tool === "section";
-  renderWallRibbon();
-  renderComponentRibbon();
+  // Place Wall and Place Component add their panels to the Modify tab (one pass covers both)
+  updateRibbonContext();
   bar.hidden = !(wallTool || joinTool || editTool || sketchTool || levelTool || elevTool || gridTool || secTool);
   $("#ob-section").hidden = !secTool;
   $("#ob-grid").hidden = !gridTool;
@@ -1321,9 +1344,9 @@ function selectTool() {
   else setPrompt("Click in the view to select, or pick a view in the Project Browser.");
   updateRibbonContext();
 }
-// Properties in the Modify tab shows or hides the palette.
+// Properties in the Modify tab shows or hides the Properties palette; the Project Browser stays and takes the column.
 function toggleProperties() {
-  const hidden = $("#workspace").classList.toggle("no-left");
+  const hidden = $("#workspace").classList.toggle("no-props");
   setPrompt(hidden ? "Properties palette hidden. Properties shows it again." : "Properties palette shown.");
 }
 

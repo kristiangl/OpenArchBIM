@@ -455,6 +455,8 @@ const FamModel = (() => {
     toolbar(); status(); render(); ctxRefresh();
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
+  // the Modify tab's commands and the sketch tool each one picks while a sketch is open
+  const SK_MODIFY = { "f-select": "select", "f-align": "align", "f-mv": "move", "f-cp": "copy", "f-ro": "rotate", "f-mi-pick": "mirror", "f-mi-draw": "mirror", "f-of": "offset", "f-del": "delete" };
   const commands = {
     "f-props": () => toggleProperties(),
     "f-types": () => typesDialog(),
@@ -490,6 +492,17 @@ const FamModel = (() => {
     "f-wpviewer": () => viewerCmd(),
   };
   for (const [id, t] of Object.entries(TOOL_OF)) commands[id] = () => setTool(t);
+  // With a form's sketch open the Modify tab's tools work on the sketch lines, as the sketch's own tools
+  for (const [id, t] of Object.entries(SK_MODIFY)) {
+    const f = commands[id];
+    commands[id] = (e) => {
+      if (!skActive()) return f(e);
+      // Delete takes the selected lines out at once, or with none selected waits for a click on one
+      if (t === "delete" && FSk.selectedCount) { FSk.key({ key: "Delete", preventDefault() {} }); ctxRefresh(); return; }
+      if (id === "f-mi-pick" || id === "f-mi-draw") FSk.setOpts({ mirrorMode: id === "f-mi-pick" ? "pick" : "draw" });
+      FSk.setTool(t); ctxRefresh();
+    };
+  }
   for (const k of Object.keys(commands)) { const f = commands[k]; commands[k] = (e) => (S ? f(e) : undefined); }
 
   function syncRibbon() {
@@ -4208,7 +4221,7 @@ const FamModel = (() => {
   }
 
   return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? (skActive() ? { undo: FSk.canUndo ? 1 : 0, redo: FSk.canRedo ? 1 : 0 } : { undo: S.undo.length, redo: S.redo.length }) : null),
-    undo: () => (skActive() ? FSk.undo() : undo()), redo: () => (skActive() ? FSk.redo() : redo()), save: saveFile, closeForExit, _state: () => S,
+    undo: () => (skActive() ? FSk.undo() : undo()), redo: () => (skActive() ? FSk.redo() : redo()), save: saveFile, closeForExit, sketchModify: SK_MODIFY, _state: () => S,
     // test hooks: where a point of the open view is on the canvas, the sketch session, the 3D view
     _screenOf: (u, v) => w2s(u, v), _sketch: FSk, _vp3: () => vp3, _refresh: async () => { await preview(); props(); render(); } };
 })();

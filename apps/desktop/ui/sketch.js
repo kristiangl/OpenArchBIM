@@ -1402,6 +1402,7 @@ function makeSketch() {
     get title() { return S ? S.title : ""; },
     get editingId() { return S ? S.id : null; },
     get curveCount() { return S ? S.curves.length : 0; },
+    get selectedCount() { return S ? S.sel.size : 0; },
     get changed() { return !!(S && S.hist.length); },
     get canUndo() { return !!(S && S.hist.length); },
     get canRedo() { return !!(S && S.redo.length); },

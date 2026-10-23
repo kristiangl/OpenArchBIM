@@ -94,8 +94,6 @@ const RIBBON = {
     { label: "Dimension", items: [
       { id: "dim-aligned", label: "Aligned", big: true }, { id: "dim-linear", label: "Linear" }, { id: "dim-angular", label: "Angular" },
       { id: "dim-radial", label: "Radial" }, { id: "dim-diameter", label: "Diameter" }, { id: "dim-arc", label: "Arc Length" }, { id: "dim-elev", label: "Spot Elevation" }, { id: "dim-coord", label: "Spot Coordinate" }, { id: "dim-slope", label: "Spot Slope" } ] },
-    { label: "Modify Dimension", items: [
-      { id: "edit-witness", label: "Edit Witness Lines", big: true } ] },
     { label: "Detail", items: [
       { id: "det-line", label: "Detail Line", big: true }, { id: "det-region", label: "Region", big: true, menu: [
         { id: "det-filled", label: "Filled Region" }, { id: "det-masking", label: "Masking Region" } ] },

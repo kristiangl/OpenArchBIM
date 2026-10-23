@@ -62,8 +62,9 @@ button, select { font: inherit; color: inherit; }
 .stack { display: flex; flex-direction: column; justify-content: center; }
 
 #workspace { display: grid; grid-template-columns: 290px 1fr; min-height: 0; }
-#workspace.no-left { grid-template-columns: 0 1fr; }
-#workspace.no-left #left, #workspace.no-left #fam-left { display: none; }
+/* Properties on the Modify tab hides the Properties palette; the Project Browser keeps the column */
+#workspace.no-props #properties, #workspace.no-props #fam-properties { display: none; }
+#workspace.no-props #left, #workspace.no-props #fam-left { grid-template-rows: 1fr; }
 #left { display: grid; grid-template-rows: 1fr 1fr; min-height: 0; border-right: 1px solid var(--line); background: var(--panel); }
 .panel { display: flex; flex-direction: column; min-height: 0; border-bottom: 1px solid var(--line); }
 .panel-title { padding: 4px 8px; font-weight: 600; background: var(--panel-2); border-bottom: 1px solid var(--line); }
