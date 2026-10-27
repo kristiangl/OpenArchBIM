@@ -48,6 +48,7 @@ const COMMANDS = {
   props: () => toggleProperties(),
   "mi-pick": () => { Plan.setEditOptions({ mirrorMode: "pick" }); return startEditTool("mirror"); },
   "mi-draw": () => { Plan.setEditOptions({ mirrorMode: "draw" }); return startEditTool("mirror"); },
+
   wall: async () => { if (await ensurePlan("A wall")) Plan.setTool("wall"); },
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
@@ -237,7 +238,7 @@ function modifyEnabled(id) {
     return ["mv", "cp", "al"].includes(id);
   }
   // the 3D view moves, copies and turns the selection on the level plane
-  if (app.view.kind === "3d" && ["mv", "cp", "ro"].includes(id)) return app.selection.length > 0;
+  if (app.view.kind === "3d" && ["mv", "cp", "ro", "mi", "mi-draw"].includes(id)) return app.selection.length > 0;
   if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
   if (id === "del") return app.selection.length > 0;
   // a Modify tool picked while another tool runs takes over from it, as it always has
@@ -847,6 +848,13 @@ async function refreshView(force) {
       app.sceneRevision = scene.revision;
       app.sceneStyle = scene.visual_style || "shaded";
       app.vp.setMeshes(scene.meshes, app.selection);
+      // the corners of the model, for the 3D Modify tools to snap to (one per mm, a few thousand at most)
+      const seen = new Set(), pts = [];
+      for (const m of scene.meshes) for (let i = 0; i + 2 < m.verts.length && pts.length < 60000; i += 6) {
+        const k = `${Math.round(m.verts[i] * 1000)},${Math.round(m.verts[i + 1] * 1000)},${Math.round(m.verts[i + 2] * 1000)}`;
+        if (!seen.has(k)) { seen.add(k); pts.push(m.verts[i], m.verts[i + 1], m.verts[i + 2]); }
+      }
+      app.scenePts = pts;
       if (force) app.vp.fit();
     }
     app.vp.setStyle(app.sceneStyle || "shaded");
@@ -1389,7 +1397,7 @@ const ELEV_EDIT = new Set(["move", "copy", "align"]);
 // Move, Copy and Rotate in the 3D view. Points are picked where the line of sight meets the plane of the current
 // level; the selection moves in plan (heights stay). Move and Copy: a base point, then where it goes. Rotate: the
 // centre, a point that gives the start direction, then the end direction. Esc cancels.
-let ed3 = null; // { tool, pts: [[x, y] mm], z: metres }
+let ed3 = null; // { tool, pts: [[x, y] mm], z: metres, hover: { x, y, snap } }
 function start3DEdit(name) {
   if (!app.selection.length) { setPrompt(`Select what to ${name}, then pick ${EDIT_PROMPT[name]}.`, true); return; }
   ed3 = { tool: name, pts: [], z: (currentLevel().elevation_mm || 0) / 1000 };
@@ -1399,20 +1407,69 @@ function start3DEdit(name) {
 function ed3Prompt() {
   if (!ed3) return "";
   const n = ed3.pts.length, name = EDIT_PROMPT[ed3.tool];
+  if (ed3.tool === "mirror") return n ? `${name}: click the second point of the mirror axis.` : `${name}: click the first point of the mirror axis (a copy is mirrored; the original stays). Esc cancels.`;
   if (ed3.tool === "rotate") return [`${name}: click the centre of rotation (on the level plane). Esc cancels.`, `${name}: click to set the start direction.`, `${name}: click to set the end direction.`][n];
   return n ? `${name}: click where the base point goes.` : `${name}: click the base point (on the level plane). Esc cancels.`;
 }
-function end3DEdit(msg) { ed3 = null; $("#viewport").style.cursor = ""; if (msg) setPrompt(msg); }
+function end3DEdit(msg) { ed3 = null; $("#viewport").style.cursor = ""; draw3DEdit(); if (msg) setPrompt(msg); }
+// The point a 3D pick lands on: a corner of the model within 10 pixels (its plan position), else the level plane.
+function point3D(sx, sy) {
+  const vp = app.vp, P = app.scenePts || [];
+  let best = null, bd = 10;
+  for (let i = 0; i + 2 < P.length; i += 3) {
+    const q = vp.project([P[i], P[i + 1], P[i + 2]]), d = Math.hypot(q.x - sx, q.y - sy);
+    if (d < bd) { bd = d; best = [P[i], P[i + 1], P[i + 2]]; }
+  }
+  if (best) return { x: Math.round(best[0] * 1000), y: Math.round(best[1] * 1000), snap: true, z: best[2] };
+  const g = vp.groundAt(sx, sy, ed3.z);
+  return g ? { x: Math.round(g[0] * 1000), y: Math.round(g[1] * 1000), snap: false, z: ed3.z } : null;
+}
+// the rubber band from the last point to the cursor on the level plane, the snap mark, and the distance or angle
+function draw3DEdit() {
+  const cv = $("#viewport"), ov = $("#vp-over");
+  ov.classList.toggle("on", !!ed3);
+  if (!ed3 || !app.vp) return;
+  ov.width = cv.clientWidth; ov.height = cv.clientHeight;
+  const c = ov.getContext("2d"), acc = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#1d6fb8";
+  const S = (p) => app.vp.project([p[0] / 1000, p[1] / 1000, ed3.z]);
+  c.clearRect(0, 0, ov.width, ov.height);
+  const h = ed3.hover, P = ed3.pts;
+  c.strokeStyle = acc; c.fillStyle = acc; c.lineWidth = 1.5;
+  for (const p of P) { const s = S(p); c.beginPath(); c.arc(s.x, s.y, 3.5, 0, Math.PI * 2); c.fill(); }
+  if (h) {
+    const s = h.snap ? app.vp.project([h.x / 1000, h.y / 1000, h.z]) : S([h.x, h.y]);
+    if (h.snap) c.strokeRect(s.x - 5, s.y - 5, 10, 10); else { c.beginPath(); c.moveTo(s.x - 6, s.y); c.lineTo(s.x + 6, s.y); c.moveTo(s.x, s.y - 6); c.lineTo(s.x, s.y + 6); c.stroke(); }
+    const from = ed3.tool === "rotate" && P.length ? P[0] : P[P.length - 1];
+    if (from) {
+      const a = S(from), b = S([h.x, h.y]);
+      c.setLineDash([6, 4]); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); c.setLineDash([]);
+      let txt = `${Math.round(Math.hypot(h.x - from[0], h.y - from[1]))}`;
+      if (ed3.tool === "rotate" && P.length === 2) {
+        const a0 = Math.atan2(P[1][1] - P[0][1], P[1][0] - P[0][0]), a1 = Math.atan2(h.y - P[0][1], h.x - P[0][0]);
+        txt = `${Math.round(((a1 - a0) * 180) / Math.PI * 10) / 10}\u00B0`;
+      }
+      c.font = "12px system-ui, sans-serif"; c.fillStyle = "#fffbe6"; const tw = c.measureText(txt).width;
+      c.fillRect(b.x + 10, b.y + 8, tw + 8, 17); c.fillStyle = "#222"; c.fillText(txt, b.x + 14, b.y + 21);
+    }
+  }
+}
 async function click3DEdit(sx, sy) {
-  const g = app.vp && app.vp.groundAt(sx, sy, ed3.z);
+  const g = point3D(sx, sy);
   if (!g) { setPrompt("Click on the model or the ground in front of the camera.", true); return; }
-  ed3.pts.push([Math.round(g[0] * 1000), Math.round(g[1] * 1000)]);
+  ed3.pts.push([g.x, g.y]);
+  draw3DEdit();
   const P = ed3.pts, ids = [...app.selection];
-  if (ed3.tool !== "rotate" && P.length === 2) {
+  if ((ed3.tool === "move" || ed3.tool === "copy") && P.length === 2) {
     const r = await run("transform", { kind: "move", ids, dx: P[1][0] - P[0][0], dy: P[1][1] - P[0][1], copy: ed3.tool === "copy", disjoin: false });
     const done = ed3.tool;
     end3DEdit();
     if (r) { await refresh(); if (done === "copy" && r.ids) { app.selection = r.ids; app.vp?.setSelection(r.ids); renderProperties(); } setPrompt(`${EDIT_PROMPT[done]} done.`); }
+    return;
+  }
+  if (ed3.tool === "mirror" && P.length === 2) {
+    const r = await run("transform", { kind: "mirror", ids, a: P[0], b: P[1], copy: true, disjoin: false });
+    end3DEdit();
+    if (r) { await refresh(); if (r.ids) { app.selection = r.ids; app.vp?.setSelection(r.ids); renderProperties(); } setPrompt("Mirrored."); }
     return;
   }
   if (ed3.tool === "rotate" && P.length === 3) {
@@ -1425,13 +1482,15 @@ async function click3DEdit(sx, sy) {
   }
   setPrompt(ed3Prompt());
 }
+// the rubber band follows the pointer while a 3D Modify tool picks points
+$("#viewport").addEventListener("pointermove", (e) => { if (!ed3 || e.buttons) return; ed3.hover = point3D(e.offsetX, e.offsetY); draw3DEdit(); });
 // Esc leaves a 3D Modify tool before anything else sees the key
 document.addEventListener("keydown", (e) => { if (ed3 && e.key === "Escape") { e.stopPropagation(); end3DEdit("Cancelled."); } }, true);
 
 async function startEditTool(name) {
   if (app.view.kind === "3d") {
-    if (["move", "copy", "rotate"].includes(name)) start3DEdit(name);
-    else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views; Move, Copy and Rotate work here.`, true);
+    if (["move", "copy", "rotate", "mirror"].includes(name)) start3DEdit(name);
+    else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views; Move, Copy, Rotate and Mirror work here.`, true);
     return;
   }
   // Modify tools work where the person is: in an elevation Move, Copy and Align run in the view

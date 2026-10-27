@@ -576,3 +576,7 @@ td.has-gp { display: flex; gap: 4px; align-items: center; }
 td.has-gp > :first-child { flex: 1; min-width: 0; }
 button.gp-assoc { padding: 0 5px; min-width: 22px; line-height: 18px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel-2); cursor: pointer; }
 button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent); }
+
+/* drawn over the 3D view while a Modify tool picks points: the rubber band, the snap, the distance */
+#vp-over { position: absolute; inset: 0; pointer-events: none; display: none; }
+#vp-over.on { display: block; }
