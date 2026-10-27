@@ -266,7 +266,7 @@ const ICON_ALIAS = {
   "v-draft": "drafting", "v-legend": "legend", "v-sched": "schedule", "v-sheet": "sheet", "v-dup": "dupView", "v-vg": "visibility",
   "v-filters": "filters", "v-template": "template",
   // manage
-  "m-materials": "materials", "m-units": "units", "m-params": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases",
+  "m-materials": "materials", "m-units": "units", "m-params": "params", "m-globals": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases",
   "m-revisions": "revisions", "m-snaps": "snaps", "m-linestyles": "lineStyles", "m-lineweights": "lineWeights", "m-linepatterns": "linePatterns", "m-fillpatterns": "fillPatterns",
   "m-tempdim": "tempDim", "m-annfam": "annFamily", "m-families": "families", "m-sheets": "exportSheets",
   // help

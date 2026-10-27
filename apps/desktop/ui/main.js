@@ -110,6 +110,7 @@ const COMMANDS = {
   },
   "m-materials": () => openMaterials(),
   "m-linestyles": () => openLineStyles(),
+  "m-globals": () => openGlobalParams(),
   "m-lineweights": () => openLineWeights(),
   "m-linepatterns": () => openPatterns("line"),
   "m-fillpatterns": () => openPatterns("fill"),
@@ -289,9 +290,18 @@ function currentContext() {
   if (DV && DV.tool === "select" && app.selection.length === 1) {
     const dim = DV.dimensions().find((d) => d.id === app.selection[0] && !d.round);
     if (dim) return { auto: true, key: `dim:${dim.id}`, title: "Dimensions", groups: [
+      { label: "Label Dimension", items: [{ label: dim.segments.some((s) => s.param != null) ? "Change Label" : "Label", icon: "label", big: true, onclick: () => labelDimension(dim) }] },
       { label: "Witness Lines", items: [{ label: "Edit Witness Lines", icon: "editWitness", onclick: () => runCommand("edit-witness") }] } ] };
   }
   return textContext();
+}
+
+// Label Dimension: one segment takes a global parameter here; a chain is labelled segment by segment in Properties
+async function labelDimension(dim) {
+  if (dim.segments.length > 1) { setPrompt("Label each segment in Properties (Label, segment 1, 2 ...).", false); return; }
+  const g = await pickGlobal("Label with Global Parameter", "length", dim.segments[0].param ?? null, true);
+  if (g === undefined) return;
+  if (await run("label_dimension", { id: dim.id, segment: 0, param: g })) { await refresh(); renderProperties(); }
 }
 
 // A context appears, changes or goes. One appearing brings the Modify tab forward and remembers the tab the person

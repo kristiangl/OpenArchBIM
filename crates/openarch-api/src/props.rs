@@ -383,6 +383,23 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
     })
 }
 
+/// A family parameter row a global parameter can set: it names the global when one does (and then cannot be typed
+/// into), and says it can take one when it could (no formula, not reporting).
+fn with_global(d: &Document, mut row: Value, owner: Id, p: &ParamDef, editable_here: bool) -> Value {
+    let held = match d.get(owner) {
+        Some(openarch_model::element::Element::FamilyType(t)) => t.globals.get(&p.name).copied(),
+        Some(openarch_model::element::Element::FamilyInstance(i)) => i.globals.get(&p.name).copied(),
+        _ => None,
+    };
+    if let Some(gid) = held {
+        row["kind"] = json!("ro");
+        row["global"] = json!({ "id": gid, "name": d.global_param(gid).map(|g| g.name.clone()).unwrap_or_default(), "param": p.name, "owner": owner, "kind": p.param_kind });
+    } else if editable_here && !p.reporting && p.formula.is_none() {
+        row["associate"] = json!({ "param": p.name, "owner": owner, "kind": p.param_kind });
+    }
+    row
+}
+
 fn param_row(d: &Document, i: &FamilyInstance, p: &ParamDef, ro_only: bool) -> Value {
     let v = d.instance_param(i, &p.name).unwrap_or_else(|| p.default.clone());
     let editable = p.instance && !p.reporting && !ro_only;
@@ -429,7 +446,7 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
     }
     // instance parameters edit; type parameters show their value for context
     for p in fam.params.iter().filter(|p| p.instance) {
-        add(if p.group.is_empty() { "Other" } else { &p.group }, param_row(d, i, p, false));
+        add(if p.group.is_empty() { "Other" } else { &p.group }, with_global(d, param_row(d, i, p, false), id, p, true));
     }
     for p in fam.params.iter().filter(|p| !p.instance && p.group != "Identity Data") {
         add(if p.group.is_empty() { "Other" } else { &p.group }, param_row(d, i, p, true));
@@ -470,6 +487,7 @@ pub fn type_props(d: &Document, id: Id, t: &FamilyType) -> Res {
             ParamValue::Number(n) => num(&p.name, &path, n, true),
             ParamValue::Text(s) => text(&p.name, &path, &s),
         };
+        let row = with_global(d, row, id, p, true);
         let g = if p.group.is_empty() { "Other".to_string() } else { p.group.clone() };
         match groups.iter_mut().find(|(n, _)| *n == g) {
             Some((_, rows)) => rows.push(row),
@@ -928,9 +946,34 @@ pub fn dimension_props(d: &Document, id: Id, x: &openarch_model::dimension::Dime
                 }
                 rows.into_iter().chain(warning.map(|w| ro("Warning", w))).collect()
             }),
-            group("Identity Data", vec![text("Label", "label", x.label.as_deref().unwrap_or(""))]),
+            group("Label", if x.kind.is_chain() { label_rows(d, x) } else { vec![ro("Label", "Angular, radial, diameter and arc length dimensions take no label yet")] }),
         ],
     })
+}
+
+/// One Label row per segment: the global length parameters a segment can take (a reporting one only on a dimension of
+/// one segment), and whether the type shows the value after the name.
+fn label_rows(d: &Document, x: &openarch_model::dimension::Dimension) -> Vec<Value> {
+    let one = x.segments.len() == 1;
+    let globals: Vec<(Id, &openarch_model::globalparam::GlobalParam)> = d.global_params().into_iter().filter(|(_, g)| openarch_model::globalparam::labels_lengths(g.kind) && (one || !g.reporting)).collect();
+    let mut rows: Vec<Value> = x
+        .segments
+        .iter()
+        .enumerate()
+        .map(|(k, s)| {
+            let mut opts: Vec<(String, Value, bool)> = vec![("<None>".to_string(), json!({ "labels": [{ "index": k, "param": null }] }), s.param.is_none())];
+            for (gid, g) in &globals {
+                let name = if g.reporting { format!("{} (reporting)", g.name) } else { g.name.clone() };
+                opts.push((name, json!({ "labels": [{ "index": k, "param": gid }] }), s.param == Some(*gid)));
+            }
+            let mut row = select(if one { "Label".to_string() } else { format!("Label, segment {}", k + 1) }.as_str(), opts);
+            row["add_global"] = json!({ "index": k });
+            row
+        })
+        .collect();
+    let show = d.dimension_type(x.dim_type).is_none_or(|t| t.show_label_value);
+    rows.push(boolean("Show Value With Label (type)", "show_label_value", show, true));
+    rows
 }
 
 /// Properties of a spot elevation, coordinate or slope.

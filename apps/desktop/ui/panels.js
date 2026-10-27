@@ -72,6 +72,9 @@ function rowCells(r, target) {
     val.textContent = r.value;
     val.classList.add("ro");
   }
+  // a global parameter can set this value, or label this dimension segment
+  const gb = typeof globalRowButton === "function" ? globalRowButton(r, target) : null;
+  if (gb) { val.classList.add("has-gp"); val.append(gb); }
   return [label, val];
 }
 

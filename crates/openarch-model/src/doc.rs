@@ -233,11 +233,12 @@ impl Document {
     }
 
     fn settle(&mut self, from: usize) -> Result<(), String> {
-        if self.settling || !self.has_dimension_constraints() {
+        if self.settling || !(self.has_dimension_constraints() || self.has_global_links()) {
             return Ok(());
         }
         self.settling = true;
-        let r = self.solve_dimension_constraints();
+        // the locks and labels hold, then reporting parameters read what their dimensions measure
+        let r = self.solve_dimension_constraints().and_then(|_| self.read_reporting());
         self.settling = false;
         match r {
             Ok(()) => {

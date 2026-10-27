@@ -131,7 +131,7 @@ const RIBBON = {
   Manage: [
     { label: "Settings", items: [
       { id: "m-materials", label: "Materials", big: true }, { id: "m-units", label: "Project Units", big: true },
-      { id: "m-params", label: "Project Parameters", big: true }, { id: "m-shared", label: "Shared Parameters", big: true },
+      { id: "m-params", label: "Project Parameters", big: true }, { id: "m-globals", label: "Global Parameters", big: true }, { id: "m-shared", label: "Shared Parameters", big: true },
       { id: "m-styles", label: "Object Styles", big: true }, { id: "m-phases", label: "Phasing", big: true },
       { id: "m-revisions", label: "Revisions", big: true }, { id: "m-snaps", label: "Snaps", big: true } ] },
     { label: "Additional Settings", items: [

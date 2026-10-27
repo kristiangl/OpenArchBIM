@@ -422,7 +422,7 @@ impl Document {
         if self.family_types().iter().any(|(_, t)| t.family == family && t.name == row.name) {
             return Err(format!("the family already has a type named '{}'", row.name));
         }
-        self.transact("Add type from catalogue", |tx| Ok(tx.add(Element::FamilyType(FamilyType { family, name: row.name, values: row.values }))))
+        self.transact("Add type from catalogue", |tx| Ok(tx.add(Element::FamilyType(FamilyType { family, name: row.name, values: row.values, globals: Default::default() }))))
     }
 
     /// How a door's frame suits the wall it sits in, or `None` if it does. A metal
@@ -734,7 +734,7 @@ impl crate::doc::Tx<'_> {
             }
             let fid = self.add(Element::Family(sf.family));
             for (name, values) in sf.types {
-                self.add(Element::FamilyType(FamilyType { family: fid, name, values }));
+                self.add(Element::FamilyType(FamilyType { family: fid, name, values, globals: Default::default() }));
             }
         }
     }

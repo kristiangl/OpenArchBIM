@@ -21,6 +21,7 @@ pub mod famview;
 pub mod family;
 pub mod frame;
 pub mod geom;
+pub mod globalparam;
 pub mod grid;
 pub mod hosting;
 pub mod join;

@@ -572,10 +572,12 @@ impl Session {
                 Ok(json!({ "id": self.doc.add_catalog_type(id_of(p, "family_id")?, name)? }))
             }
             "patch_instance" => {
+                refuse_global_held(&self.doc, id_of(p, "id")?, p.get("patch"))?;
                 self.doc.patch_instance(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
             "patch_family_type" => {
+                refuse_global_held(&self.doc, id_of(p, "id")?, p.get("patch"))?;
                 self.doc.patch_family_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
@@ -1284,6 +1286,63 @@ impl Session {
                 v["type"] = dimension_type_json(&ty);
                 Ok(json!({ "dimension": v }))
             }
+            "global_params" => {
+                let d = &self.doc;
+                let list: Vec<Value> = d
+                    .global_params()
+                    .into_iter()
+                    .map(|(id, g)| {
+                        json!({
+                            "id": id, "name": g.name, "kind": g.kind, "value": g.value, "formula": g.formula, "reporting": g.reporting, "group": g.group,
+                            "error": d.global_formula_error(id), "labels": d.labelled_by(id), "associated": d.associated_with(id).len(),
+                        })
+                    })
+                    .collect();
+                Ok(json!({ "params": list }))
+            }
+            "add_global_param" => {
+                use openarch_model::family::{ParamKind, ParamValue};
+                let kind: ParamKind = serde_json::from_value(p.get("kind").cloned().unwrap_or(json!("length"))).map_err(|_| "unknown kind".to_string())?;
+                let value = match p.get("value") {
+                    Some(Value::Bool(b)) => ParamValue::Bool(*b),
+                    Some(Value::String(t)) => ParamValue::Text(t.clone()),
+                    Some(v) if v.is_number() => ParamValue::Number(v.as_f64().unwrap_or(0.0)),
+                    _ => match kind {
+                        ParamKind::YesNo => ParamValue::Bool(false),
+                        ParamKind::Text | ParamKind::Material => ParamValue::Text(String::new()),
+                        ParamKind::Length => ParamValue::Number(1000.0),
+                        _ => ParamValue::Number(0.0),
+                    },
+                };
+                let g = openarch_model::globalparam::GlobalParam {
+                    name: p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?.to_string(),
+                    kind,
+                    value,
+                    formula: p.get("formula").and_then(|v| v.as_str()).map(str::trim).filter(|s| !s.is_empty()).map(String::from),
+                    reporting: p.get("reporting").and_then(|v| v.as_bool()).unwrap_or(false),
+                    group: p.get("group").and_then(|v| v.as_str()).unwrap_or("Dimensions").to_string(),
+                };
+                let id = self.doc.add_global_param(g)?;
+                Ok(json!({ "id": id }))
+            }
+            "patch_global_param" => {
+                self.doc.patch_global_param(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "delete_global_param" => {
+                self.doc.delete_global_param(id_of(p, "id")?)?;
+                Ok(json!({}))
+            }
+            "label_dimension" => {
+                let seg = p.get("segment").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                self.doc.label_dimension(id_of(p, "id")?, seg, p.get("param").and_then(|v| v.as_u64()))?;
+                Ok(json!({}))
+            }
+            "associate_global" => {
+                let name = p.get("param").and_then(|v| v.as_str()).ok_or("missing param")?;
+                self.doc.associate_global(id_of(p, "id")?, name, p.get("global").and_then(|v| v.as_u64()))?;
+                Ok(json!({}))
+            }
             "add_dimension" => {
                 let kind: DimKind = serde_json::from_value(p.get("kind").cloned().unwrap_or(json!("aligned"))).map_err(|_| "unknown dimension kind".to_string())?;
                 let refs: Vec<DimRef> = serde_json::from_value(p.get("refs").cloned().ok_or("missing refs")?).map_err(|e| format!("bad refs: {e}"))?;
@@ -1292,7 +1351,24 @@ impl Session {
                 Ok(json!({ "id": id }))
             }
             "patch_dimension" => {
-                self.doc.patch_dimension(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                // labels and the type's label display go to their own commands; the rest is the dimension's own
+                let id = id_of(p, "id")?;
+                let mut patch = p.get("patch").ok_or("missing patch")?.clone();
+                if let Some(obj) = patch.as_object_mut() {
+                    if let Some(ls) = obj.remove("labels") {
+                        for l in ls.as_array().cloned().unwrap_or_default() {
+                            let k = l.get("index").and_then(|v| v.as_u64()).unwrap_or(0) as usize;
+                            self.doc.label_dimension(id, k, l.get("param").and_then(|v| v.as_u64()))?;
+                        }
+                    }
+                    if let Some(b) = obj.remove("show_label_value").and_then(|v| v.as_bool()) {
+                        let tid = self.doc.dimension(id).ok_or("not a dimension")?.dim_type;
+                        self.doc.set_dimension_type_label_value(tid, b)?;
+                    }
+                }
+                if patch.as_object().is_some_and(|o| !o.is_empty()) {
+                    self.doc.patch_dimension(id, &patch)?;
+                }
                 Ok(json!({}))
             }
             "set_dimension_value" => {
@@ -2602,6 +2678,17 @@ fn dimension_type_json(ty: &openarch_model::dimension::DimensionType) -> Value {
     })
 }
 
+/// A value a global parameter sets cannot be typed into on the type or instance.
+fn refuse_global_held(d: &Document, id: Id, patch: Option<&Value>) -> Result<(), String> {
+    let held = d.global_held(id);
+    if let Some(vals) = patch.and_then(|p| p.get("values")).and_then(|v| v.as_object()) {
+        if let Some(name) = vals.keys().find(|k| held.contains(*k)) {
+            return Err(format!("{name} takes its value from a global parameter; change the global, or let go of it first"));
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2966,6 +3053,106 @@ mod tests {
         // moving the wall across the view carries the spot with it
         call(&mut s, "transform", json!({"ids": [w], "kind": "move", "dx": 200.0, "dy": 0.0}));
         assert!((read(&mut s)["target"][0].as_f64().unwrap() - (u + 200.0)).abs() < 0.5);
+    }
+
+    #[test]
+    fn global_parameters_drive_and_report_dimensions_and_set_family_values() {
+        let (mut s, lvl, wt, view) = setup();
+        let mut walls = vec![];
+        for x in [0, 3000, 6000] {
+            walls.push(call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [x, 0], "end": [x, 5000], "height": 2700.0}))["id"].as_u64().unwrap());
+        }
+        let r = |w: u64| json!({"spec": {"kind": "wall", "id": w, "offset": 0.0}, "pick": [0, 2500]});
+        let seg = |s: &mut Session, d: u64, k: usize| -> Value {
+            let plan = call(s, "plan", json!({"view_id": view}));
+            plan["dimensions"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(d)).unwrap()["segments"][k].clone()
+        };
+        let globals = |s: &mut Session| call(s, "global_params", json!({}))["params"].as_array().unwrap().clone();
+        let value = |s: &mut Session, id: u64| globals(s).iter().find(|g| g["id"].as_u64() == Some(id)).unwrap()["value"].as_f64().unwrap();
+
+        // driving: the dimension takes the value at once, the text shows the name and the value
+        let cw = call(&mut s, "add_global_param", json!({"name": "Corridor Width", "kind": "length", "value": 1800}))["id"].as_u64().unwrap();
+        assert!(s.handle("add_global_param", &json!({"name": "corridor width", "kind": "length"})).is_err(), "names are unique");
+        let d1 = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "aligned", "refs": [r(walls[0]), r(walls[1])], "line_point": [1500, 6000]}))["id"].as_u64().unwrap();
+        call(&mut s, "label_dimension", json!({"id": d1, "segment": 0, "param": cw}));
+        let s0 = seg(&mut s, d1, 0);
+        assert!((s0["value_mm"].as_f64().unwrap() - 1800.0).abs() < 0.5 && s0["text"] == "Corridor Width = 1800" && s0["param"].as_u64() == Some(cw), "{s0}");
+        // the type can hide the value
+        // changing the parameter moves the geometry; typing into the labelled segment changes the parameter
+        call(&mut s, "patch_global_param", json!({"id": cw, "patch": {"value": 2000}}));
+        assert!((seg(&mut s, d1, 0)["value_mm"].as_f64().unwrap() - 2000.0).abs() < 0.5);
+        call(&mut s, "set_dimension_value", json!({"id": d1, "segment": 0, "value": 2200}));
+        assert!((value(&mut s, cw) - 2200.0).abs() < 0.5 && (seg(&mut s, d1, 0)["value_mm"].as_f64().unwrap() - 2200.0).abs() < 0.5);
+        // the label holds like a lock: moving one wall takes the other with it
+        call(&mut s, "transform", json!({"kind": "move", "ids": [walls[0]], "dx": -500, "dy": 0}));
+        assert!((seg(&mut s, d1, 0)["value_mm"].as_f64().unwrap() - 2200.0).abs() < 0.5);
+        // undo takes the parameter change back with the geometry
+        call(&mut s, "undo", json!({}));
+        call(&mut s, "undo", json!({}));
+        assert!((value(&mut s, cw) - 2000.0).abs() < 0.5 && (seg(&mut s, d1, 0)["value_mm"].as_f64().unwrap() - 2000.0).abs() < 0.5);
+
+        // formulas: a chain over other globals; a cycle and a reporting input are refused
+        let bw = call(&mut s, "add_global_param", json!({"name": "Building Width", "kind": "length", "value": 12000}))["id"].as_u64().unwrap();
+        let half = call(&mut s, "add_global_param", json!({"name": "Half", "kind": "length", "formula": "[Building Width] / 2"}))["id"].as_u64().unwrap();
+        assert!((value(&mut s, half) - 6000.0).abs() < 1e-6);
+        call(&mut s, "patch_global_param", json!({"id": bw, "patch": {"value": 10000}}));
+        assert!((value(&mut s, half) - 5000.0).abs() < 1e-6);
+        assert!(s.handle("patch_global_param", &json!({"id": bw, "patch": {"formula": "Half * 2"}})).is_err(), "a cycle is refused");
+        assert!(s.handle("patch_global_param", &json!({"id": half, "patch": {"value": 3}})).is_err(), "a formula's value cannot be typed");
+
+        // multi-segment: the same parameter on both segments makes them equal
+        let d2 = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "aligned", "refs": [r(walls[0]), r(walls[1]), r(walls[2])], "line_point": [1500, 7000]}))["id"].as_u64().unwrap();
+        let bay = call(&mut s, "add_global_param", json!({"name": "Bay", "kind": "length", "value": 2500}))["id"].as_u64().unwrap();
+        // the first wall pair is held by Corridor Width, so put the bay on the second and check it took
+        call(&mut s, "label_dimension", json!({"id": d2, "segment": 1, "param": bay}));
+        assert!((seg(&mut s, d2, 1)["value_mm"].as_f64().unwrap() - 2500.0).abs() < 0.5);
+        assert!(s.handle("label_dimension", &json!({"id": d2, "segment": 0, "param": bay})).is_err(), "Corridor Width and Bay disagree on the first bay");
+
+        // reporting: reads the one segment it labels, follows the geometry, cannot be typed, cannot be in a formula
+        let span = call(&mut s, "add_global_param", json!({"name": "Span", "kind": "length", "reporting": true}))["id"].as_u64().unwrap();
+        assert!(s.handle("label_dimension", &json!({"id": d2, "segment": 0, "param": span})).is_err(), "reporting needs a single segment");
+        let d3 = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "aligned", "refs": [r(walls[1]), r(walls[2])], "line_point": [4500, 8000]}))["id"].as_u64().unwrap();
+        call(&mut s, "label_dimension", json!({"id": d3, "segment": 0, "param": span}));
+        assert!((value(&mut s, span) - 2500.0).abs() < 0.5);
+        call(&mut s, "patch_global_param", json!({"id": bay, "patch": {"value": 2700}}));
+        assert!((value(&mut s, span) - 2700.0).abs() < 0.5, "the reporting parameter followed");
+        assert!(s.handle("patch_global_param", &json!({"id": span, "patch": {"value": 10}})).is_err());
+        assert!(s.handle("patch_global_param", &json!({"id": half, "patch": {"formula": "Span / 2"}})).is_err());
+        // unlabel: the reporting value stays
+        call(&mut s, "label_dimension", json!({"id": d3, "segment": 0, "param": null}));
+        assert!((value(&mut s, span) - 2700.0).abs() < 0.5);
+
+        // switching a parameter's mode lets go of its labels
+        call(&mut s, "patch_global_param", json!({"id": bay, "patch": {"reporting": true}}));
+        assert!(seg(&mut s, d2, 1)["param"].is_null());
+        // deleting a global lets go of its labels and leaves the geometry
+        call(&mut s, "delete_global_param", json!({"id": cw}));
+        let left = seg(&mut s, d1, 0);
+        assert!(left["param"].is_null() && (left["value_mm"].as_f64().unwrap() - 2000.0).abs() < 0.5);
+
+        // Properties: a label picked there, and the type showing the name alone
+        let gap = call(&mut s, "add_global_param", json!({"name": "Gap", "kind": "length", "value": 2600}))["id"].as_u64().unwrap();
+        let props = call(&mut s, "describe", json!({"id": d3}));
+        assert!(props.to_string().contains("Label"), "{props}");
+        call(&mut s, "patch_dimension", json!({"id": d3, "patch": {"labels": [{"index": 0, "param": gap}]}}));
+        assert_eq!(seg(&mut s, d3, 0)["text"], "Gap = 2600");
+        call(&mut s, "patch_dimension", json!({"id": d3, "patch": {"show_label_value": false}}));
+        assert_eq!(seg(&mut s, d3, 0)["text"], "Gap");
+        // a family type's parameter takes a global's value, follows it, and cannot be typed while it does
+        let info = call(&mut s, "doc_info", json!({}));
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let sdw = call(&mut s, "add_global_param", json!({"name": "Standard Door Width", "kind": "length", "value": 900}))["id"].as_u64().unwrap();
+        let props = call(&mut s, "describe_type", json!({"id": door}));
+        assert!(props.to_string().contains("\"associate\""), "type rows offer the association");
+        call(&mut s, "associate_global", json!({"id": door, "param": "Width", "global": sdw}));
+        let width = |s: &mut Session| call(s, "describe_type", json!({"id": door}))["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).find(|r| r["label"] == "Width").unwrap();
+        let w = width(&mut s);
+        assert!(w["raw"].as_f64() == Some(900.0) && w["global"]["name"] == "Standard Door Width" && w["kind"] == "ro", "{w}");
+        call(&mut s, "patch_global_param", json!({"id": sdw, "patch": {"value": 1000}}));
+        assert_eq!(width(&mut s)["raw"].as_f64(), Some(1000.0));
+        assert!(s.handle("patch_family_type", &json!({"id": door, "patch": {"values": {"Width": 700.0}}})).is_err());
+        call(&mut s, "associate_global", json!({"id": door, "param": "Width", "global": null}));
+        call(&mut s, "patch_family_type", json!({"id": door, "patch": {"values": {"Width": 700.0}}}));
     }
 
     #[test]

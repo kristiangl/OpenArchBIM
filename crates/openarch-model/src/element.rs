@@ -658,6 +658,7 @@ pub enum Element {
     FilledRegionType(crate::annotation::RegionType),
     TextNote(crate::detail::TextNote),
     TextNoteType(crate::annotation::TextType),
+    GlobalParam(crate::globalparam::GlobalParam),
 }
 
 impl Element {
@@ -697,6 +698,7 @@ impl Element {
             Element::FilledRegionType(_) => "FilledRegionType",
             Element::TextNote(_) => "TextNote",
             Element::TextNoteType(_) => "TextNoteType",
+            Element::GlobalParam(_) => "GlobalParam",
         }
     }
 }

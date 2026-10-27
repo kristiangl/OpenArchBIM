@@ -368,6 +368,9 @@ pub struct FamilyType {
     /// Type parameter values that differ from the family's defaults.
     #[serde(default)]
     pub values: BTreeMap<String, ParamValue>,
+    /// Parameters whose value a global parameter sets (name to global).
+    #[serde(default)]
+    pub globals: BTreeMap<String, Id>,
 }
 
 /// Where a hosted instance sits on its host wall.
@@ -408,6 +411,9 @@ pub struct FamilyInstance {
     /// Instance parameter values that differ from the type's / family's.
     #[serde(default)]
     pub values: BTreeMap<String, ParamValue>,
+    /// Instance parameters whose value a global parameter sets (name to global).
+    #[serde(default)]
+    pub globals: BTreeMap<String, Id>,
     #[serde(default)]
     pub mark: String,
     /// Pinned instances refuse move, delete and flip until unpinned.
@@ -436,6 +442,7 @@ impl FamilyInstance {
             flip_facing: false,
             flip_hand: false,
             values: BTreeMap::new(),
+            globals: BTreeMap::new(),
             mark: String::new(),
             pinned: false,
             comments: String::new(),

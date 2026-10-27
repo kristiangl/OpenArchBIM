@@ -134,7 +134,7 @@ impl Document {
         }
         let mut types: Vec<&crate::family::FamilyType> = self.family_types().into_iter().filter(|(_, t)| t.family == fid).map(|(_, t)| t).collect();
         types.sort_by(|a, b| a.name.cmp(&b.name));
-        let mut t = types.iter().find(|t| t.name == type_name).or_else(|| types.first()).map(|t| (*t).clone()).unwrap_or(crate::family::FamilyType { family: fid, name: String::new(), values: Default::default() });
+        let mut t = types.iter().find(|t| t.name == type_name).or_else(|| types.first()).map(|t| (*t).clone()).unwrap_or(crate::family::FamilyType { family: fid, name: String::new(), values: Default::default(), globals: Default::default() });
         for (k, v) in values {
             let pv = match v {
                 Value::Num(x) => ParamValue::Number(*x),
@@ -205,7 +205,7 @@ impl Document {
         }
         self.transact("Add family", |tx| {
             let fid = tx.add(Element::Family(family));
-            let ids = types.into_iter().map(|(name, values)| tx.add(Element::FamilyType(crate::family::FamilyType { family: fid, name, values }))).collect();
+            let ids = types.into_iter().map(|(name, values)| tx.add(Element::FamilyType(crate::family::FamilyType { family: fid, name, values, globals: Default::default() }))).collect();
             Ok((fid, ids))
         })
     }
@@ -852,7 +852,7 @@ impl Document {
         let fam = self.family(family).ok_or("no such family")?;
         let mut t = match type_id {
             Some(t) => self.family_type(t).ok_or("no such type")?.clone(),
-            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default() }),
+            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default(), globals: Default::default() }),
         };
         for (k, v) in overrides {
             t.values.insert(k.clone(), v.clone());
@@ -878,7 +878,7 @@ impl Document {
         let fam = self.family(family).ok_or("no such family")?;
         let base = match type_id {
             Some(t) => self.family_type(t).ok_or("no such type")?.clone(),
-            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default() }),
+            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default(), globals: Default::default() }),
         };
         let mut t = base;
         for (k, v) in overrides {
@@ -908,7 +908,7 @@ impl Document {
         self.family(family).ok_or("no such family")?;
         let mut t = match type_id {
             Some(t) => self.family_type(t).ok_or("no such type")?.clone(),
-            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default() }),
+            None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default(), globals: Default::default() }),
         };
         for (k, v) in overrides {
             t.values.insert(k.clone(), v.clone());
@@ -1044,11 +1044,11 @@ impl Document {
                 (ImportMode::Overwrite, Some(ft)) => keep(&ft.values),
                 _ => keep(&t.values),
             };
-            updates.push((tid, Element::FamilyType(crate::family::FamilyType { family: existing, name: t.name.clone(), values })));
+            updates.push((tid, Element::FamilyType(crate::family::FamilyType { family: existing, name: t.name.clone(), values, globals: t.globals.clone() })));
         }
         for ft in &types {
             if !self.family_types().iter().any(|(_, t)| t.family == existing && t.name == ft.name) {
-                adds.push(crate::family::FamilyType { family: existing, name: ft.name.clone(), values: keep(&ft.values) });
+                adds.push(crate::family::FamilyType { family: existing, name: ft.name.clone(), values: keep(&ft.values), globals: Default::default() });
             }
         }
         for (iid, i) in self.instances() {

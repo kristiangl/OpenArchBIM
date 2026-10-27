@@ -561,3 +561,18 @@ table.asm-layers select.prio { width: 52px; }
 #fam-wrap.v3d #fam-3d { display: block; }
 #fam-wrap.v3d #fam-canvas { pointer-events: none; }
 #app.ann #fam-3d { display: none !important; }
+
+/* global parameters: the dialog, and the button beside a Properties value a global can set */
+table.gp input.gp-name { width: 150px; }
+table.gp input.gp-formula { width: 190px; }
+table.gp input.gp-value { width: 90px; }
+table.gp input.gp-group-in { width: 100px; }
+table.gp tr.gp-group td { background: var(--panel-2); font-weight: 600; }
+table.gp tr.gp-bad td { color: #c0392b; }
+.gp-fixed { color: var(--muted); }
+.gp-add { display: flex; gap: 6px; align-items: center; margin-top: 8px; }
+select.gp-pick { width: 100%; min-width: 280px; }
+td.has-gp { display: flex; gap: 4px; align-items: center; }
+td.has-gp > :first-child { flex: 1; min-width: 0; }
+button.gp-assoc { padding: 0 5px; min-width: 22px; line-height: 18px; border: 1px solid var(--line); border-radius: 3px; background: var(--panel-2); cursor: pointer; }
+button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent); }

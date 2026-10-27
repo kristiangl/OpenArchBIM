@@ -178,6 +178,9 @@ pub struct DimensionType {
     /// What leads the text of radial, diameter and arc length dimensions.
     #[serde(default)]
     pub symbols: RoundSymbols,
+    /// A labelled dimension shows its value after the parameter's name ("Corridor Width = 1800").
+    #[serde(default = "yes")]
+    pub show_label_value: bool,
 }
 
 /// The symbols written before the value of the round dimensions (Radius, Diameter and Arc Length Symbol).
@@ -241,6 +244,7 @@ impl DimensionType {
             alt: None,
             angle_decimals: d_angle_decimals(),
             symbols: RoundSymbols::default(),
+            show_label_value: true,
         }
     }
 }
@@ -277,6 +281,9 @@ pub struct SegmentFmt {
     /// Which end stays still when the value is typed: 0 the first reference, 1 the second.
     #[serde(default)]
     pub anchor: u8,
+    /// The global parameter that labels this segment. A driving one sets and holds its length; a reporting one reads it.
+    #[serde(default)]
+    pub param: Option<Id>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -328,7 +335,7 @@ fn plus_plus() -> [i8; 2] {
 
 impl Dimension {
     fn constrained(&self) -> bool {
-        self.equality || self.segments.iter().any(|s| s.locked)
+        self.equality || self.segments.iter().any(|s| s.locked || s.param.is_some())
     }
 
     fn sync_segments(&mut self) {
@@ -516,6 +523,8 @@ pub struct DrawSeg {
     pub replaced: bool,
     /// Which way is outwards from the dimension line at the text (round dimensions); zero for a chain.
     pub out: [f64; 2],
+    /// The global parameter labelling the segment.
+    pub param: Option<Id>,
 }
 
 /// The part of a round dimension that is not a witness line: its arc or straight line and the ends.
@@ -844,7 +853,11 @@ impl Document {
             }
             let value = (m.pos[i + 1] - m.pos[i]).abs();
             let (a, b) = (at(m.pos[i]), at(m.pos[i + 1]));
-            let mut text = if let Some(w) = &s.value_text {
+            let label = s.param.and_then(|g| self.global_param(g));
+            let mut text = if let Some(g) = label {
+                // a labelled segment shows its parameter's name, and its value when the type says so
+                if ty.show_label_value { format!("{} = {}", g.name, format_length(value, &ty.format)) } else { g.name.clone() }
+            } else if let Some(w) = &s.value_text {
                 w.clone()
             } else if d.equality && d.eq_display == EqDisplay::Eq {
                 "EQ".to_string()
@@ -886,9 +899,20 @@ impl Document {
                 anchor: s.anchor,
                 replaced: s.value_text.is_some(),
                 out: [0.0, 0.0],
+                param: s.param,
             });
         }
         out
+    }
+
+    /// Whether a dimension type's labelled dimensions show their value after the parameter's name.
+    pub fn set_dimension_type_label_value(&mut self, tid: Id, show: bool) -> Result<(), String> {
+        let mut t = self.dimension_type(tid).cloned().ok_or("not a dimension type")?;
+        if t.show_label_value == show {
+            return Ok(());
+        }
+        t.show_label_value = show;
+        self.transact("Change dimension type", |tx| tx.update(tid, Element::DimensionType(t)))
     }
 
     pub fn add_dimension_type(&mut self, t: DimensionType) -> Result<Id, String> {
@@ -1117,6 +1141,21 @@ impl Document {
     /// Type a value into a segment: the end that is not the anchor moves (with the element it
     /// belongs to and whatever is joined or hosted on it) until the segment measures `value`.
     pub fn set_dimension_value(&mut self, id: Id, segment: usize, value: f64) -> Result<(), String> {
+        // typing into a segment a driving parameter labels changes the parameter, and with it every dimension it labels
+        let held = self.dimension(id).and_then(|d| d.segments.get(segment)).and_then(|s| s.param).and_then(|g| self.global_param(g).map(|x| (g, x.reporting, x.name.clone())));
+        if let Some((g, reporting, name)) = held {
+            if !reporting {
+                if !value.is_finite() || value <= 0.0 {
+                    return Err("a dimension must be greater than zero".into());
+                }
+                return self.patch_global_param(g, &serde_json::json!({ "value": value })).map_err(|e| format!("{name}: {e}"));
+            }
+        }
+        self.set_dimension_value_raw(id, segment, value)
+    }
+
+    /// Move the geometry so a segment measures `value`, lifting the segment's own lock or label while it moves.
+    pub(crate) fn set_dimension_value_raw(&mut self, id: Id, segment: usize, value: f64) -> Result<(), String> {
         if !value.is_finite() || value <= 0.0 {
             return Err("a dimension must be greater than zero".into());
         }
@@ -1144,14 +1183,16 @@ impl Document {
             // the typed value replaces the old distance, so the segment's own lock is lifted while it moves
             let mut unlocked = d.clone();
             unlocked.segments[segment].locked = false;
-            let was_locked = d.segments[segment].locked;
+            unlocked.segments[segment].param = None;
+            let was_locked = d.segments[segment].locked || d.segments[segment].param.is_some();
             if was_locked {
                 doc.transact("Change dimension", |tx| tx.update(id, Element::Dimension(unlocked.clone())))?;
             }
             doc.move_dim_ref(d.view, &spec, vec)?;
             if was_locked {
                 let Some(Element::Dimension(mut now)) = doc.get(id).cloned() else { return Ok(()) };
-                now.segments[segment].locked = true;
+                now.segments[segment].locked = d.segments[segment].locked;
+                now.segments[segment].param = d.segments[segment].param;
                 if let Ok(m2) = doc.measure(&now) {
                     now.solved = m2.pos;
                 }
@@ -1228,7 +1269,9 @@ impl Document {
                 loop {
                     let mut grew = false;
                     for (i, seg) in d.segments.iter().enumerate() {
-                        if !seg.locked || i + 1 >= n {
+                        // a driving parameter's label holds its length as a lock does
+                        let held = seg.locked || seg.param.is_some_and(|g| self.global_param(g).is_some_and(|x| !x.reporting));
+                        if !held || i + 1 >= n {
                             continue;
                         }
                         let s = d.solved[i + 1] - d.solved[i];
@@ -1720,6 +1763,7 @@ impl Document {
             anchor: 0,
             replaced: seg.value_text.is_some(),
             out: pt(sh.out),
+            param: None,
         });
         out.round = Some(RoundDraw {
             centre: pt(sh.centre),
