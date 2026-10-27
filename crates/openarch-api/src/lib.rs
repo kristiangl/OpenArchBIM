@@ -572,6 +572,11 @@ impl Session {
                 let id = self.doc.place_on_wall_flipped(id_of(p, "type_id")?, id_of(p, "host_id")?, point_of(p.get("point").ok_or("missing point")?)?, flag("flip_hand"), flag("flip_facing"))?;
                 Ok(json!({ "id": id, "warning": self.doc.frame_fit(id) }))
             }
+            "place_in_elevation" => {
+                // a door or window from a click in an elevation or section: { view_id, type_id, u, z, flip_hand? }
+                let id = self.doc.place_in_elevation(id_of(p, "view_id")?, id_of(p, "type_id")?, num_of(p, "u")?, num_of(p, "z")?, p.get("flip_hand").and_then(|v| v.as_bool()).unwrap_or(false))?;
+                Ok(json!({ "id": id, "warning": self.doc.frame_fit(id) }))
+            }
             "add_catalog_type" => {
                 let name = p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
                 Ok(json!({ "id": self.doc.add_catalog_type(id_of(p, "family_id")?, name)? }))
@@ -3245,6 +3250,30 @@ mod tests {
         call(&mut s, "patch_dimension_type", json!({"id": dup, "patch": {"text_size_mm": 5.0}}));
         call(&mut s, "patch_dimension", json!({"id": d, "patch": {"dim_type": dup}}));
         assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["dimensions"][0]["type"]["text_size_mm"].as_f64(), Some(5.0));
+    }
+
+    #[test]
+    fn doors_and_windows_are_placed_from_a_section() {
+        let (mut s, lvl, wt, _) = setup();
+        let mut walls = vec![];
+        for (a, b) in [([0, 0], [8000, 0]), ([8000, 0], [8000, 6000]), ([8000, 6000], [0, 6000]), ([0, 6000], [0, 0])] {
+            walls.push(call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": a, "end": b, "height": 2700.0}))["id"].as_u64().unwrap());
+        }
+        let sv = call(&mut s, "add_section", json!({"level_id": lvl, "start": [-1000, 3000], "end": [9000, 3000]}))["view_id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        let typ = |cat: &str| info["family_types"].as_array().unwrap().iter().find(|t| t["category"] == cat).unwrap()["id"].as_u64().unwrap();
+        let frame = call(&mut s, "elevation", json!({"view_id": sv}))["frame"].clone();
+        // the back wall is seen across the view: a window at 1200 high, 3000 along the section line
+        let w = call(&mut s, "place_in_elevation", json!({"view_id": sv, "type_id": typ("Windows"), "u": 4000, "z": 1200}))["id"].as_u64().unwrap();
+        let sill = call(&mut s, "elevation", json!({"view_id": sv}))["refs"].as_array().unwrap().iter().find(|r| r["id"].as_u64() == Some(w) && r["key"] == "sill").map(|r| r["pos"].as_f64().unwrap());
+        let host = call(&mut s, "describe", json!({"id": w}));
+        assert!(host.to_string().contains(&format!("({})", walls[2])) || host.to_string().contains(&walls[2].to_string()), "hosted in the back wall: {host}");
+        let z = sill.expect("the window's sill is a line in the section");
+        assert!((z - 1200.0).abs() < 0.5, "sill at {z}");
+        // a door stays on the floor; a click above the walls finds nothing
+        call(&mut s, "place_in_elevation", json!({"view_id": sv, "type_id": typ("Doors"), "u": 6500, "z": 900}));
+        assert!(s.handle("place_in_elevation", &json!({"view_id": sv, "type_id": typ("Doors"), "u": 4000, "z": 5000})).is_err());
+        let _ = frame;
     }
 
     #[test]

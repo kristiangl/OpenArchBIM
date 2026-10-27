@@ -10,7 +10,7 @@ const Elev = (() => {
     select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
     addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
-    dimCall: () => null, dimRefresh: () => {}, dimText: () => {},
+    dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {},
   };
   let data = null;
   let cam = { u: 0, z: 1500, s: 0.1 }; // centre (mm along the view's right axis, mm of height) and pixels per mm
@@ -1007,6 +1007,7 @@ const Elev = (() => {
         return;
       }
       if (tool === "dimension") { down = null; EDims.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
+      if (tool === "door" || tool === "window") { const w = toWorld(e.offsetX, e.offsetY); down = null; cb.place(tool, Math.round(w.u), Math.round(w.z)); return; }
       if (tool === "spot") { down = null; ESpots.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
       if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
       else if (isEdit()) editClick(e);
@@ -1056,7 +1057,7 @@ const Elev = (() => {
     if (t !== "spot") ESpots.stop();
     tool = t; typed = ""; candTab = 0; hover = null; band = null;
     ed = isEdit() ? newEd() : null;
-    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch", "dimension", "spot"].includes(t) || isEdit() ? "crosshair" : "default";
+    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window"].includes(t) || isEdit() ? "crosshair" : "default";
     cb.prompt(promptText());
     if (typeof cb.tool === "function") cb.tool(t);
     render();
@@ -1064,6 +1065,7 @@ const Elev = (() => {
   function promptText() {
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return EDims.prompt();
+    if (tool === "door" || tool === "window") return `${tool === "door" ? "Door" : "Window"}: click on a wall seen in this view.${tool === "window" ? " The sill goes at the height clicked." : ""} Esc to finish.`;
     if (tool === "spot") return ESpots.prompt();
     if (tool === "text" || tool === "noteleader") return Det.promptText(tool);
     if (tool === "level") return typed ? `Elevation ${typed}. Press Enter to place the level, Esc to clear.` : "Level: click at the height of the new level, or type its elevation and press Enter. Esc to finish.";
@@ -1256,6 +1258,7 @@ const Elev = (() => {
     startWitness(id) { setTool("dimension"); EDims.startWitness(id); cb.prompt(promptText()); },
     dimTool: () => EDims,
     spots: () => (data && data.spots) || [],
+    startPlace(kind) { setTool(kind); },
     startSpot(kind) { setTool("spot"); ESpots.start(kind); cb.prompt(promptText()); },
     spotTool: () => ESpots,
     detailLines: () => (data && data.detail_lines) || [],
@@ -1304,7 +1307,7 @@ const Elev = (() => {
           return true;
         }
       }
-      if (tool === "grid" && e.key === "Escape") { setTool("select"); return true; }
+      if ((tool === "grid" || tool === "door" || tool === "window") && e.key === "Escape") { setTool("select"); return true; }
       if (e.key === "Escape" && tool === "select") { if (sel.size) { sel = new Set(); cb.select([]); render(); } return true; }
       return false;
     },

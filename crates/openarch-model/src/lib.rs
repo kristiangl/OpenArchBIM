@@ -11,6 +11,7 @@ pub mod dimround;
 pub mod doc;
 pub mod edit;
 pub mod element;
+pub mod elevplace;
 pub mod famedit;
 pub mod famgeom;
 pub mod famnest;

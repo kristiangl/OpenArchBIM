@@ -1255,6 +1255,8 @@ function syncPlacement(tool) {
 }
 
 async function startPlacement(tool) {
+  // doors and windows go into the walls an elevation or section shows, too
+  if (app.view.kind === "elevation" && (tool === "door" || tool === "window")) { Elev.startPlace(tool); syncPlacement(tool); return; }
   if (!(await ensurePlan(tool === "door" ? "A door" : "A window"))) return;
   Plan.setTool(tool);
   syncPlacement(tool);
@@ -1661,6 +1663,10 @@ Elev.callbacks.moveBy = async (ids, du, dz, copy) => {
   if (!out.length) return;
   if (copy || ids.length === 1 || !model.length) { app.selection = out; Elev.setSelection(out); app.vp?.setSelection(out); }
   renderProperties();
+};
+Elev.callbacks.place = async (tool, u, z) => {
+  const r = await run("place_in_elevation", { view_id: app.view.viewId, type_id: placeTypeId(tool), u, z, flip_hand: [false, true, true, false][app.placeFlip || 0] });
+  if (r) { noteTypeUsed(placeTypeId(tool)); await refresh(); setPrompt(r.warning ? `Placed a ${tool}. ${r.warning}` : `Placed a ${tool}. Click another wall or press Esc.`); }
 };
 Elev.callbacks.leaveDetail = () => leaveDetailLines();
 Elev.callbacks.editDetail = (id) => startDetailLines(id, "select");
