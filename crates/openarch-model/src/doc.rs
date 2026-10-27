@@ -238,7 +238,7 @@ impl Document {
         }
         self.settling = true;
         // the locks and labels hold, then reporting parameters read what their dimensions measure
-        let r = self.solve_dimension_constraints().and_then(|_| self.read_reporting());
+        let r = self.solve_dimension_constraints().and_then(|_| self.check_round_holds()).and_then(|_| self.read_reporting());
         self.settling = false;
         match r {
             Ok(()) => {

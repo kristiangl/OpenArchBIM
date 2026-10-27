@@ -46,10 +46,19 @@ pub struct Labelled {
     pub segment: usize,
 }
 
-/// Which kinds label which: lengths label linear (aligned and linear) dimensions. Angles label angular ones once those
-/// are constraints.
+/// Which kinds label which: lengths label aligned, linear, radial and diameter dimensions; angles label angular ones.
 pub fn labels_lengths(kind: ParamKind) -> bool {
     kind == ParamKind::Length
+}
+
+/// Whether a parameter of `kind` can label a dimension of `dk`.
+pub fn labels_kind(kind: ParamKind, dk: crate::dimension::DimKind) -> bool {
+    use crate::dimension::DimKind as K;
+    match dk {
+        K::Aligned | K::Linear | K::Radial | K::Diameter => kind == ParamKind::Length,
+        K::Angular => kind == ParamKind::Angle,
+        K::ArcLength => false,
+    }
 }
 
 fn to_eval(v: &ParamValue) -> openarch_params::Value {
@@ -330,16 +339,17 @@ impl Document {
             return self.transact("Unlabel dimension", |tx| tx.update(did, Element::Dimension(nd)));
         };
         let g = self.global_param(gid).cloned().ok_or("not a global parameter")?;
-        if !dm.kind.is_chain() {
-            return Err("only aligned and linear dimensions take a length label for now".into());
+        if dm.kind == crate::dimension::DimKind::ArcLength {
+            return Err("an arc length dimension takes no label yet".into());
         }
-        if !labels_lengths(g.kind) {
-            return Err(format!("{} is not a length, so it cannot label a linear dimension", g.name));
+        if !labels_kind(g.kind, dm.kind) {
+            return Err(if dm.kind == crate::dimension::DimKind::Angular { format!("{} is not an angle, so it cannot label an angular dimension", g.name) } else { format!("{} is not a length, so it cannot label this dimension", g.name) });
         }
         if seg.value_text.is_some() {
             return Err("this segment shows words in place of its value; clear them first".into());
         }
-        let measured = self.measure(&dm)?;
+        // the dimension has to measure something now to take a label
+        self.segment_value(&dm, segment)?;
         if g.reporting {
             if dm.segments.len() != 1 {
                 return Err("a reporting parameter labels a dimension with one segment only".into());
@@ -351,7 +361,6 @@ impl Document {
                 return Err(format!("{} already reports another dimension", g.name));
             }
         }
-        let _ = measured;
         self.grouped("Label dimension", |d| {
             let mut nd = dm.clone();
             nd.segments[segment].param = Some(gid);
@@ -361,7 +370,7 @@ impl Document {
                 d.read_reporting()?;
             } else {
                 // the geometry takes the parameter's value at once
-                let v = g.value.as_f64().ok_or("the parameter has no length")?;
+                let v = g.value.as_f64().ok_or("the parameter has no value")?;
                 d.drive_segment(did, segment, v)?;
             }
             Ok(())
@@ -371,14 +380,13 @@ impl Document {
     /// Set a dimension segment to `value`, lifting its own hold while it moves.
     fn drive_segment(&mut self, did: Id, segment: usize, value: f64) -> Result<(), String> {
         let Some(Element::Dimension(dm)) = self.get(did).cloned() else { return Ok(()) };
-        let m = self.measure(&dm)?;
-        if segment + 1 >= m.pos.len() || ((m.pos[segment + 1] - m.pos[segment]).abs() - value).abs() < 1e-3 {
+        if (self.segment_value(&dm, segment)? - value).abs() < 1e-3 {
             return Ok(());
         }
         if value <= 0.0 {
             return Err("a labelled dimension must be greater than zero".into());
         }
-        self.set_dimension_value_raw(did, segment, value)
+        self.set_segment_value_raw(did, segment, value)
     }
 
     /// Push every driving parameter out: formulas worked out, labelled dimensions set, associated family values
@@ -393,7 +401,7 @@ impl Document {
         }
         for (id, g) in self.global_params().into_iter().map(|(i, g)| (i, g.clone())).collect::<Vec<_>>() {
             if !g.reporting {
-                if let Some(v) = g.value.as_f64().filter(|_| labels_lengths(g.kind)) {
+                if let Some(v) = g.value.as_f64().filter(|_| matches!(g.kind, ParamKind::Length | ParamKind::Angle)) {
                     for l in self.labelled_by(id) {
                         self.drive_segment(l.dimension, l.segment, v).map_err(|e| format!("{} cannot be {}: {e}", g.name, crate::famgeom::fmt_num(v)))?;
                     }
@@ -415,11 +423,7 @@ impl Document {
             }
             let Some(l) = self.labelled_by(id).into_iter().next() else { continue };
             let Some(dm) = self.dimension(l.dimension) else { continue };
-            let Ok(m) = self.measure(dm) else { continue };
-            if l.segment + 1 >= m.pos.len() {
-                continue;
-            }
-            let v = (m.pos[l.segment + 1] - m.pos[l.segment]).abs();
+            let Ok(v) = self.segment_value(dm, l.segment) else { continue };
             if g.value.as_f64().is_none_or(|old| (old - v).abs() > 1e-6) {
                 writes.push((id, GlobalParam { value: ParamValue::Number((v * 1000.0).round() / 1000.0), ..g.clone() }));
             }

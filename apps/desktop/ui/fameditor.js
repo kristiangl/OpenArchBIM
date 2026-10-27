@@ -2015,15 +2015,13 @@ const FamModel = (() => {
       else if (d.eq) text(`${Math.abs(ps[n] - ps[0]).toFixed(0)}`, s[0], s[n], 1, 0);
       if (ghost) return;
       // the padlock, and the EQ switch for a chain of three or more
-      const end = (horizontal ? hi : hi) + 12;
+      const end = (horizontal ? hi : hi) + 16;
       const px = horizontal ? end : lineAt, py = horizontal ? lineAt : end;
-      ctx.lineWidth = 1.5; ctx.strokeStyle = d.locked ? accent : "#999";
-      ctx.beginPath(); ctx.rect(px - 4, py - 1, 8, 7); if (d.locked) ctx.fill(); else ctx.stroke();
-      ctx.beginPath(); ctx.arc(px, py - 1, 3, Math.PI, d.locked ? 0 : Math.PI * 1.7); ctx.stroke();
-      S.dimHits.push({ id: d.id, kind: "lock", x: px - 6, y: py - 6, w: 12, h: 14 });
+      padlock(ctx, px, py, d.locked);
+      S.dimHits.push({ id: d.id, kind: "lock", x: px - PADLOCK_HIT, y: py - PADLOCK_HIT, w: 2 * PADLOCK_HIT, h: 2 * PADLOCK_HIT });
       if (refs.length >= 3 && (selected || d.eq)) {
         ctx.fillStyle = d.eq ? accent : "#999"; ctx.textAlign = "left"; ctx.textBaseline = "middle";
-        const ex = horizontal ? px + 10 : px + 8, ey = horizontal ? py : py + 12;
+        const ex = horizontal ? px + 14 : px + 8, ey = horizontal ? py : py + 16;
         ctx.fillText("EQ", ex, ey);
         S.dimHits.push({ id: d.id, kind: "eq", x: ex - 2, y: ey - 7, w: 20, h: 14 });
       }
@@ -2368,11 +2366,9 @@ const FamModel = (() => {
   const coordOf = (c) => (c.plane ? { plane: c.plane, off: 0 } : { off: c.off });
   const mouse = (e) => { const r = S.canvas.getBoundingClientRect(); return { x: ((e.clientX - r.left) * S.canvas.width) / r.width, y: ((e.clientY - r.top) * S.canvas.height) / r.height }; };
 
-  function padlock(ctx, px, py, locked, col) {
-    ctx.lineWidth = 1.5; ctx.strokeStyle = col; ctx.fillStyle = col;
-    ctx.beginPath(); ctx.rect(px - 4, py - 1, 8, 7); if (locked) ctx.fill(); else ctx.stroke();
-    ctx.beginPath(); ctx.arc(px, py - 1, 3, Math.PI, locked ? 0 : Math.PI * 1.7); ctx.stroke();
-  }
+  // the shared padlock; `col` was the old ink and is no longer used
+  const padlock = (ctx, px, py, locked) => drawPadlock(ctx, px, py, locked, getComputedStyle(document.documentElement).getPropertyValue("--accent").trim());
+
   // The straight edges of the selected form or symbolic line that run along a reference plane, with whether each is
   // locked to it. A closed padlock is a lock; an open one marks an edge that sits on the plane but is free of it.
   function edgeLocks() {
@@ -2406,14 +2402,14 @@ const FamModel = (() => {
       const m = w2s((e.a.u + e.b.u) / 2, (e.a.v + e.b.v) / 2);
       const px = e.key === "u" ? m.x + 14 : m.x, py = e.key === "u" ? m.y : m.y - 14;
       padlock(S.ctx, px, py, e.locked, e.locked ? accent : "#999");
-      S.lockHits.push({ ...e, x: px - 7, y: py - 7, w: 14, h: 15 });
+      S.lockHits.push({ ...e, x: px - PADLOCK_HIT, y: py - PADLOCK_HIT, w: 2 * PADLOCK_HIT, h: 2 * PADLOCK_HIT });
     }
     // faces seen edge-on across the work plane: the start and end, and the outermost faces of the profile
     for (const g of faceLocks()) {
       const m = w2s(g.mid.u, g.mid.v);
       const px = g.key === "u" ? m.x + 14 * flipOf() * -g.dir : m.x + 16, py = g.key === "u" ? m.y + 16 : m.y + 14 * g.dir;
       padlock(S.ctx, px, py, g.on, g.on ? accent : "#999");
-      S.lockHits.push({ ...g, face: true, x: px - 7, y: py - 7, w: 14, h: 15 });
+      S.lockHits.push({ ...g, face: true, x: px - PADLOCK_HIT, y: py - PADLOCK_HIT, w: 2 * PADLOCK_HIT, h: 2 * PADLOCK_HIT });
     }
   }
 
@@ -2715,6 +2711,14 @@ const FamModel = (() => {
     if (e.button === 1 || e.button === 2) { S.drag = { pan: true, x: m.x, y: m.y, ox: cam().ox, oy: cam().oy, button: e.button }; return; }
     if (await skDown(e, m)) return;
     const t = S.tool;
+    // a padlock that shows takes a click whatever tool is on (the Select tool handles its own below)
+    if (t !== "select") {
+      const inBox = (q) => m.x >= q.x && m.x <= q.x + q.w && m.y >= q.y && m.y <= q.y + q.h;
+      const dl = (S.dimHits || []).find((q) => q.kind === "lock" && inBox(q)), d = dl && dimById(dl.id);
+      if (d) { await dimPatch(d, { locked: !d.locked }); render(); return; }
+      const lk = t !== "align" && (S.lockHits || []).find(inBox);
+      if (lk) { await toggleEdgeLock(lk); render(); return; }
+    }
     if (t === "select") {
       const lk = (S.lockHits || []).find((q) => m.x >= q.x && m.x <= q.x + q.w && m.y >= q.y && m.y <= q.y + q.h);
       if (lk) { await toggleEdgeLock(lk); return; }
@@ -3425,7 +3429,7 @@ const FamModel = (() => {
         const m = w2s((l.a.x + l.b.x) / 2, (l.a.y + l.b.y) / 2);
         const px = l.coord === "u" ? m.x + 14 : m.x, py = l.coord === "u" ? m.y : m.y - 14;
         padlock(S.ctx, px, py, l.on, l.on ? accent : "#888");
-        S.skLockHits.push({ ...l, x: px - 7, y: py - 7, w: 14, h: 15 });
+        S.skLockHits.push({ ...l, x: px - PADLOCK_HIT, y: py - PADLOCK_HIT, w: 2 * PADLOCK_HIT, h: 2 * PADLOCK_HIT });
       }
     }
   }

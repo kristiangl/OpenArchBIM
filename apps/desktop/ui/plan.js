@@ -671,13 +671,8 @@ const Plan = (() => {
     ctx.save(); ctx.strokeStyle = "#3aa7d8"; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
   }
-  function padlock(x, y, locked) {
-    ctx.save();
-    ctx.strokeStyle = "#1d6fb8"; ctx.fillStyle = locked ? "#bfe3f6" : css("--view-bg"); ctx.lineWidth = 1.3;
-    ctx.beginPath(); ctx.arc(x, y - 3, 3.2, Math.PI, locked ? 0 : Math.PI * 1.75); ctx.stroke();
-    ctx.fillRect(x - 5, y - 2, 10, 8); ctx.strokeRect(x - 5, y - 2, 10, 8);
-    ctx.restore();
-  }
+  const padlock = (x, y, locked) => drawPadlock(ctx, x, y, locked, css("--accent"));
+
   function drawGridAlign() {
     if (ggrip && ggrip.moved && gridAlignHint) alignLine(gridAlignHint.e, gridAlignHint.u, [[hover.x, hover.y]]);
     else if (tool === "grid" && gridAlignHint && hover) alignLine(gridAlignHint.e, gridAlignHint.u, [[hover.x, hover.y]]);
@@ -1940,13 +1935,14 @@ const Plan = (() => {
     canvas.setPointerCapture(e.pointerId);
     if (e.button === 1 || e.button === 2) { pan = { x: e.clientX, y: e.clientY, moved: false, button: e.button }; return; }
     down = { x: e.offsetX, y: e.offsetY };
+    if (e.button === 0 && Dims.lockDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Dims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Spots.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Sections.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0) {
-      const gp = gpins.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 9);
+      const gp = gpins.find((q) => padlockHit(e.offsetX, e.offsetY, q.x, q.y));
       if (gp) { down = null; cb.toggleGridLock(gp); return; }
       const gb = gboxes.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (gb) { down = null; const b = gb.g.bubbles.slice(); b[gb.end] = !b[gb.end]; cb.patchGrid(gb.id, { bubbles: b }); return; }

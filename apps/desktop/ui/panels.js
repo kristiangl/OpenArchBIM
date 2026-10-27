@@ -151,6 +151,10 @@ async function renderProperties() {
     types = familyTypes(d.category); current = d.type_id;
     onType = async (id) => { await run("patch_instance", { id: d.id, patch: { type_id: id } }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "Dimension") {
+    types = app.info.dimension_types || []; current = d.type_id;
+    onType = async (id) => { await run("patch_dimension", { id: d.id, patch: { dim_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d) {
     title = d.title;
   } else if (app.selection.length > 1) {

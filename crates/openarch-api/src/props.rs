@@ -946,7 +946,55 @@ pub fn dimension_props(d: &Document, id: Id, x: &openarch_model::dimension::Dime
                 }
                 rows.into_iter().chain(warning.map(|w| ro("Warning", w))).collect()
             }),
-            group("Label", if x.kind.is_chain() { label_rows(d, x) } else { vec![ro("Label", "Angular, radial, diameter and arc length dimensions take no label yet")] }),
+            group("Label", if x.kind != openarch_model::dimension::DimKind::ArcLength { label_rows(d, x) } else { vec![ro("Label", "Arc length dimensions take no label yet")] }),
+        ],
+    })
+}
+
+/// Type Properties of a dimension type (Edit Type).
+pub fn dimension_type_props(d: &Document, id: Id, t: &openarch_model::dimension::DimensionType) -> Value {
+    use openarch_model::dimension::{AltPlacement, LengthUnit, TickStyle};
+    let unit_name = |u: LengthUnit| match u { LengthUnit::Millimetres => "millimetres", LengthUnit::Centimetres => "centimetres", LengthUnit::Metres => "metres", LengthUnit::FeetInches => "feet_inches" };
+    let units = |path: &str, cur: LengthUnit| select("Units", [("Millimetres", LengthUnit::Millimetres), ("Centimetres", LengthUnit::Centimetres), ("Metres", LengthUnit::Metres), ("Feet and inches", LengthUnit::FeetInches)].iter().map(|(l, u)| (l.to_string(), nest(path, json!(unit_name(*u))), *u == cur)).collect());
+    let tick = |s: TickStyle| match s { TickStyle::Tick => "tick", TickStyle::Arrow => "arrow", TickStyle::Dot => "dot", TickStyle::None => "none" };
+    let mut format = vec![
+        units("format.unit", t.format.unit),
+        num("Decimal Places", "format.decimals", t.format.decimals as f64, true),
+        boolean("Suppress Trailing Zeros", "format.suppress_trailing_zeros", t.format.suppress_trailing_zeros, true),
+        boolean("Unit Symbol", "format.symbol", t.format.symbol, true),
+        num("Angle Decimal Places", "angle_decimals", t.angle_decimals as f64, true),
+    ];
+    let alt_now = t.alt.map(|a| a.placement);
+    let alt_fmt = t.alt.map(|a| a.format).unwrap_or(openarch_model::dimension::LengthFormat { unit: LengthUnit::FeetInches, ..Default::default() });
+    let alt_opt = |p: AltPlacement| json!({ "alt": { "format": alt_fmt, "placement": if p == AltPlacement::Below { "below" } else { "right" } } });
+    format.push(select("Alternate Units", vec![("None".into(), json!({ "alt": null }), alt_now.is_none()), ("Right".into(), alt_opt(AltPlacement::Right), alt_now == Some(AltPlacement::Right)), ("Below".into(), alt_opt(AltPlacement::Below), alt_now == Some(AltPlacement::Below))]));
+    if t.alt.is_some() {
+        let mut u = units("alt.format.unit", alt_fmt.unit);
+        u["label"] = json!("Alternate Units Format");
+        format.push(u);
+        format.push(num("Alternate Decimal Places", "alt.format.decimals", alt_fmt.decimals as f64, true));
+    }
+    json!({
+        "id": id, "kind": "DimensionType", "title": t.name,
+        "siblings": d.dimension_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "groups": [
+            group("Graphics", vec![
+                select("Tick Mark", [("Diagonal tick", TickStyle::Tick), ("Arrow", TickStyle::Arrow), ("Dot", TickStyle::Dot), ("None", TickStyle::None)].iter().map(|(l, s)| (l.to_string(), json!({ "tick": tick(*s) }), *s == t.tick)).collect()),
+                num("Tick Mark Size", "tick_size_mm", t.tick_size_mm, true),
+                num("Witness Line Gap to Element", "witness_gap_mm", t.witness_gap_mm, true),
+                num("Witness Line Extension", "witness_extension_mm", t.witness_extension_mm, true),
+            ]),
+            group("Text", vec![
+                num("Text Size", "text_size_mm", t.text_size_mm, true),
+                num("Text Offset", "text_offset_mm", t.text_offset_mm, true),
+                boolean("Text Background (opaque)", "text_background", t.text_background, true),
+                boolean("Show Value With Label", "show_label_value", t.show_label_value, true),
+                text("Radius Symbol", "symbols.radius", &t.symbols.radius),
+                text("Diameter Symbol", "symbols.diameter", &t.symbols.diameter),
+                text("Arc Length Symbol", "symbols.arc_length", &t.symbols.arc_length),
+            ]),
+            group("Units Format", format),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
         ],
     })
 }
@@ -955,8 +1003,8 @@ pub fn dimension_props(d: &Document, id: Id, x: &openarch_model::dimension::Dime
 /// one segment), and whether the type shows the value after the name.
 fn label_rows(d: &Document, x: &openarch_model::dimension::Dimension) -> Vec<Value> {
     let one = x.segments.len() == 1;
-    let globals: Vec<(Id, &openarch_model::globalparam::GlobalParam)> = d.global_params().into_iter().filter(|(_, g)| openarch_model::globalparam::labels_lengths(g.kind) && (one || !g.reporting)).collect();
-    let mut rows: Vec<Value> = x
+    let globals: Vec<(Id, &openarch_model::globalparam::GlobalParam)> = d.global_params().into_iter().filter(|(_, g)| openarch_model::globalparam::labels_kind(g.kind, x.kind) && (one || !g.reporting)).collect();
+    let rows: Vec<Value> = x
         .segments
         .iter()
         .enumerate()
@@ -971,8 +1019,6 @@ fn label_rows(d: &Document, x: &openarch_model::dimension::Dimension) -> Vec<Val
             row
         })
         .collect();
-    let show = d.dimension_type(x.dim_type).is_none_or(|t| t.show_label_value);
-    rows.push(boolean("Show Value With Label (type)", "show_label_value", show, true));
     rows
 }
 

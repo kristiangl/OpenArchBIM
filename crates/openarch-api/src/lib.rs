@@ -421,6 +421,11 @@ impl Session {
                 self.doc.patch_text_note_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
+            "patch_dimension_type" => {
+                self.doc.patch_dimension_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "duplicate_dimension_type" => Ok(json!({ "id": self.doc.duplicate_dimension_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "duplicate_text_note_type" => Ok(json!({ "id": self.doc.duplicate_text_note_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "patch_grid_type" => {
                 self.doc.patch_grid_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
@@ -1704,6 +1709,7 @@ impl Session {
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
             "line_styles": d.line_styles(),
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
+            "dimension_types": d.dimension_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "text_note_types": d.text_note_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "style": d.text_style(Some(t)) })).collect::<Vec<_>>(),
             "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind, "category": f.kind.category(), "in_use": d.annotation_family_in_use(*id) })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
@@ -2290,6 +2296,13 @@ impl Session {
                 v["family"] = json!("Grid");
                 v["patch"] = json!("patch_grid_type");
                 v["duplicate"] = json!("duplicate_grid_type");
+                v
+            }
+            Element::DimensionType(t) => {
+                let mut v = props::dimension_type_props(d, id, t);
+                v["family"] = json!("Linear Dimension Style");
+                v["patch"] = json!("patch_dimension_type");
+                v["duplicate"] = json!("duplicate_dimension_type");
                 v
             }
             Element::TextNoteType(t) => {
@@ -3153,6 +3166,85 @@ mod tests {
         assert!(s.handle("patch_family_type", &json!({"id": door, "patch": {"values": {"Width": 700.0}}})).is_err());
         call(&mut s, "associate_global", json!({"id": door, "param": "Width", "global": null}));
         call(&mut s, "patch_family_type", json!({"id": door, "patch": {"values": {"Width": 700.0}}}));
+    }
+
+    #[test]
+    fn round_dimensions_take_typed_values_locks_and_labels() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let lvl = info["levels"][0]["id"].as_u64().unwrap();
+        let wt = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Brick Veneer").unwrap()["id"].as_u64().unwrap();
+        let view = info["views"][0]["id"].as_u64().unwrap();
+        let text = |s: &mut Session, d: u64| -> (String, f64) {
+            let plan = call(s, "plan", json!({"view_id": view}));
+            let x = plan["dimensions"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(d)).unwrap()["segments"][0].clone();
+            (x["text"].as_str().unwrap().to_string(), x["value_mm"].as_f64().unwrap())
+        };
+        // a radius typed in changes the curved wall about its centre
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "curve": {"type": "arc", "start": {"x": 4000, "y": 0}, "end": {"x": 0, "y": 4000}, "centre": {"x": 0, "y": 0}, "ccw": true}, "height_mm": 2700}))["id"].as_u64().unwrap();
+        let arc = json!([{"spec": {"kind": "wall", "id": w, "offset": 0.0}, "pick": [2828, 2828]}]);
+        let r = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "radial", "refs": arc, "line_point": [1414, 1414]}))["id"].as_u64().unwrap();
+        call(&mut s, "set_dimension_value", json!({"id": r, "segment": 0, "value": 5000}));
+        assert!((text(&mut s, r).1 - 5000.0).abs() < 0.5, "{:?}", text(&mut s, r));
+        let dia = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "diameter", "refs": arc, "line_point": [-1000, 3000]}))["id"].as_u64().unwrap();
+        call(&mut s, "set_dimension_value", json!({"id": dia, "segment": 0, "value": 9000}));
+        assert!((text(&mut s, r).1 - 4500.0).abs() < 0.5);
+        // a locked radius refuses an edit that would change it, and takes a typed value
+        call(&mut s, "patch_dimension", json!({"id": r, "patch": {"segments": [{"index": 0, "locked": true}]}}));
+        assert!(s.handle("set_dimension_value", &json!({"id": dia, "segment": 0, "value": 7000})).is_err(), "the locked radius holds");
+        call(&mut s, "set_dimension_value", json!({"id": r, "segment": 0, "value": 4200}));
+        assert!((text(&mut s, dia).1 - 8400.0).abs() < 0.5);
+        // an angle typed in turns the second line about the apex
+        let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [10000, 0], "end": [16000, 0], "height": 2700.0}))["id"].as_u64().unwrap();
+        let b = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [10000, 0], "end": [10000, 6000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let line = |w: u64, p: [f64; 2]| json!({"spec": {"kind": "wall", "id": w, "offset": 0.0}, "pick": p});
+        let ang = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "angular", "refs": [line(a, [13000.0, 0.0]), line(b, [10000.0, 3000.0])], "line_point": [1500, 1500]}))["id"].as_u64().unwrap();
+        assert!((text(&mut s, ang).1 - 90.0).abs() < 0.01);
+        call(&mut s, "set_dimension_value", json!({"id": ang, "segment": 0, "value": 60}));
+        assert!((text(&mut s, ang).1 - 60.0).abs() < 0.01, "{:?}", text(&mut s, ang));
+        // an angle parameter labels it; a length does not
+        let g = call(&mut s, "add_global_param", json!({"name": "Splay", "kind": "angle", "value": 45}))["id"].as_u64().unwrap();
+        let len = call(&mut s, "add_global_param", json!({"name": "Long", "kind": "length", "value": 4000}))["id"].as_u64().unwrap();
+        assert!(s.handle("label_dimension", &json!({"id": ang, "segment": 0, "param": len})).is_err());
+        call(&mut s, "label_dimension", json!({"id": ang, "segment": 0, "param": g}));
+        let (t, v) = text(&mut s, ang);
+        assert!((v - 45.0).abs() < 0.01 && t.starts_with("Splay = 45"), "{t} {v}");
+        // the label holds the angle: turning the first wall on its own is refused
+        assert!(s.handle("transform", &json!({"kind": "rotate", "ids": [a], "cx": 10000, "cy": 0, "angle_deg": 10})).is_err());
+        // a length parameter on the radius drives the wall
+        call(&mut s, "patch_dimension", json!({"id": r, "patch": {"segments": [{"index": 0, "locked": false}]}}));
+        call(&mut s, "label_dimension", json!({"id": r, "segment": 0, "param": len}));
+        assert!((text(&mut s, dia).1 - 8000.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn dimension_types_are_edited_duplicated_and_drawn() {
+        let (mut s, lvl, wt, view) = setup();
+        let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 5000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let b = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [3000, 0], "end": [3000, 5000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let r = |w: u64| json!({"spec": {"kind": "wall", "id": w, "offset": 0.0}, "pick": [0, 2500]});
+        let d = call(&mut s, "add_dimension", json!({"view_id": view, "kind": "aligned", "refs": [r(a), r(b)], "line_point": [1500, 6000]}))["id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        let tid = info["dimension_types"][0]["id"].as_u64().unwrap();
+        let props = call(&mut s, "describe_any_type", json!({"id": tid}));
+        assert_eq!(props["patch"], "patch_dimension_type");
+        assert!(props.to_string().contains("Tick Mark") && props.to_string().contains("Alternate Units"), "{props}");
+        // units and a second set of units show in the text
+        call(&mut s, "patch_dimension_type", json!({"id": tid, "patch": {"format": {"unit": "metres", "decimals": 3, "suppress_trailing_zeros": false}}}));
+        let txt = |s: &mut Session| call(s, "plan", json!({"view_id": view}))["dimensions"][0]["segments"][0]["text"].as_str().unwrap().to_string();
+        assert_eq!(txt(&mut s), "3.000");
+        call(&mut s, "patch_dimension_type", json!({"id": tid, "patch": {"alt": {"format": {"unit": "millimetres"}, "placement": "right"}}}));
+        assert_eq!(txt(&mut s), "3.000 [3000]");
+        call(&mut s, "patch_dimension_type", json!({"id": tid, "patch": {"alt": null, "tick": "arrow", "text_size_mm": 3.5}}));
+        let plan = call(&mut s, "plan", json!({"view_id": view}));
+        assert!(plan["dimensions"][0]["type"]["tick"] == "arrow" && plan["dimensions"][0]["type"]["text_size_mm"].as_f64() == Some(3.5), "{}", plan["dimensions"][0]["type"]);
+        assert!(s.handle("patch_dimension_type", &json!({"id": tid, "patch": {"text_size_mm": 0}})).is_err());
+        // a duplicate is its own type, chosen for the dimension
+        let dup = call(&mut s, "duplicate_dimension_type", json!({"id": tid, "name": "Linear - 5 mm"}))["id"].as_u64().unwrap();
+        assert!(s.handle("duplicate_dimension_type", &json!({"id": tid, "name": "linear - 5 mm"})).is_err(), "names are unique");
+        call(&mut s, "patch_dimension_type", json!({"id": dup, "patch": {"text_size_mm": 5.0}}));
+        call(&mut s, "patch_dimension", json!({"id": d, "patch": {"dim_type": dup}}));
+        assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["dimensions"][0]["type"]["text_size_mm"].as_f64(), Some(5.0));
     }
 
     #[test]

@@ -7,6 +7,7 @@ pub mod datum;
 pub mod detail;
 pub mod dimelev;
 pub mod dimension;
+pub mod dimround;
 pub mod doc;
 pub mod edit;
 pub mod element;

@@ -121,13 +121,8 @@ const Elev = (() => {
     ctx.save(); ctx.strokeStyle = "#3aa7d8"; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
     ctx.beginPath(); ctx.moveTo(a.x, a.y - 40); ctx.lineTo(b.x, b.y + 40); ctx.stroke(); ctx.restore();
   }
-  function padlock(x, y, locked) {
-    ctx.save();
-    ctx.strokeStyle = "#1d6fb8"; ctx.fillStyle = locked ? "#bfe3f6" : css("--view-bg"); ctx.lineWidth = 1.3;
-    ctx.beginPath(); ctx.arc(x, y - 3, 3.2, Math.PI, locked ? 0 : Math.PI * 1.75); ctx.stroke();
-    ctx.fillRect(x - 5, y - 2, 10, 8); ctx.strokeRect(x - 5, y - 2, 10, 8);
-    ctx.restore();
-  }
+  const padlock = (x, y, locked) => drawPadlock(ctx, x, y, locked, css("--accent"));
+
   // padlocks for the selected levels: closed where the end is locked in line with another, open where the next
   // level up or down happens to line up
   function drawLevelPins() {
@@ -835,6 +830,7 @@ const Elev = (() => {
     down = { x: e.offsetX, y: e.offsetY };
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
+    if (data && e.button === 0 && EDims.lockDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data && e.button === 0 && EDims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data && e.button === 0 && ESpots.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data) {
@@ -843,7 +839,7 @@ const Elev = (() => {
       if (at.some((i) => sel.has(i)) && [...sel].every((i) => dids.has(i))) down.drag = { ids: [...sel], p0: snap(e.offsetX, e.offsetY) };
       const cg = cropBoxes.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (cg) { cropDrag = { side: cg.side, v: 0, moved: false }; down = null; return; }
-      const pin = levelPins.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 9);
+      const pin = levelPins.find((q) => padlockHit(e.offsetX, e.offsetY, q.x, q.y));
       if (pin) { down = null; cb.toggleLevelLock(pin); return; }
       const tg = dimGrips.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 7);
       if (tg) { down = null; tgrip = { dim: tg.dim, role: tg.role, x: e.offsetX, y: e.offsetY, px: e.offsetX, py: e.offsetY, cand: null, grip: tg }; return; }

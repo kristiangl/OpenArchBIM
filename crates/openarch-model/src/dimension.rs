@@ -905,6 +905,47 @@ impl Document {
         out
     }
 
+    /// Change a dimension type (Edit Type): any of its fields, `alt` null to drop the second units.
+    pub fn patch_dimension_type(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let old = self.dimension_type(id).cloned().ok_or("not a dimension type")?;
+        let new: DimensionType = crate::doc::apply_patch(&old, patch)?;
+        if new == old {
+            return Ok(());
+        }
+        self.check_dimension_type(Some(id), &new)?;
+        self.transact("Change dimension type", |tx| tx.update(id, Element::DimensionType(new)))
+    }
+
+    pub fn duplicate_dimension_type(&mut self, id: Id, name: &str) -> Result<Id, String> {
+        let t = self.dimension_type(id).cloned().ok_or("not a dimension type")?;
+        let new = DimensionType { name: name.trim().to_string(), ..t };
+        self.check_dimension_type(None, &new)?;
+        self.transact("Duplicate dimension type", |tx| Ok(tx.add(Element::DimensionType(new))))
+    }
+
+    fn check_dimension_type(&self, me: Option<Id>, t: &DimensionType) -> Result<(), String> {
+        if t.name.trim().is_empty() {
+            return Err("a dimension type needs a name".into());
+        }
+        if self.dimension_types().iter().any(|(i, o)| Some(*i) != me && o.name.eq_ignore_ascii_case(t.name.trim())) {
+            return Err(format!("there is already a dimension type called {}", t.name.trim()));
+        }
+        for (what, v) in [("Text Size", t.text_size_mm), ("Tick Mark Size", t.tick_size_mm)] {
+            if !(v > 0.0 && v <= 50.0) {
+                return Err(format!("{what} must be more than 0 and at most 50 mm"));
+            }
+        }
+        for (what, v) in [("Witness Line Gap", t.witness_gap_mm), ("Witness Line Extension", t.witness_extension_mm), ("Text Offset", t.text_offset_mm)] {
+            if !(0.0..=50.0).contains(&v) {
+                return Err(format!("{what} must be from 0 to 50 mm"));
+            }
+        }
+        if t.format.decimals > 6 || t.angle_decimals > 6 {
+            return Err("at most 6 decimal places".into());
+        }
+        Ok(())
+    }
+
     /// Whether a dimension type's labelled dimensions show their value after the parameter's name.
     pub fn set_dimension_type_label_value(&mut self, tid: Id, show: bool) -> Result<(), String> {
         let mut t = self.dimension_type(tid).cloned().ok_or("not a dimension type")?;
@@ -1056,9 +1097,6 @@ impl Document {
                 let i = s.get("index").and_then(|v| v.as_u64()).ok_or("a segment needs an index")? as usize;
                 let seg = d.segments.get_mut(i).ok_or("no such segment")?;
                 if let Some(v) = s.get("locked").and_then(|v| v.as_bool()) {
-                    if v && !old.kind.is_chain() {
-                        return Err("angles, radii and arc lengths cannot be locked yet".into());
-                    }
                     seg.locked = v;
                 }
                 for (key, slot) in [("prefix", &mut seg.prefix), ("suffix", &mut seg.suffix), ("above", &mut seg.above), ("below", &mut seg.below)] {
@@ -1088,8 +1126,12 @@ impl Document {
         if d == old {
             return Ok(());
         }
-        // a lock or equality starts from how the elements stand now
-        if d.constrained() && !old.constrained() || (d.constrained() && d.solved.len() != d.refs.len()) {
+        // a lock or equality starts from how the elements stand now (a round dimension holds its one value)
+        if !d.kind.is_chain() {
+            if d.constrained() {
+                d.solved = vec![self.round_value(&d)?];
+            }
+        } else if d.constrained() && !old.constrained() || (d.constrained() && d.solved.len() != d.refs.len()) {
             if let Ok(m) = self.measure(&d) {
                 d.solved = m.pos;
             }
@@ -1161,7 +1203,7 @@ impl Document {
         }
         let Some(Element::Dimension(d)) = self.get(id).cloned() else { return Err("not a dimension".into()) };
         if !d.kind.is_chain() {
-            return Err("this kind of dimension cannot be typed into; move the elements instead".into());
+            return self.set_round_value_raw(id, value);
         }
         let seg = d.segments.get(segment).ok_or("no such segment")?.clone();
         if seg.value_text.is_some() {
@@ -1526,15 +1568,15 @@ fn sgn(v: f64) -> f64 {
 }
 
 /// What a round dimension measures, worked out from the model as it stands.
-struct RoundShape {
-    centre: Point,
+pub(crate) struct RoundShape {
+    pub(crate) centre: Point,
     /// Radius of the circle measured (for an angular dimension, of its arc).
     radius: f64,
     /// Millimetres, or degrees for an angular dimension.
-    value: f64,
+    pub(crate) value: f64,
     angular: bool,
     /// The dimension arc: radius, start angle, signed sweep.
-    arc: Option<(f64, f64, f64)>,
+    pub(crate) arc: Option<(f64, f64, f64)>,
     line: Option<(Point, Point)>,
     ends: Vec<(Point, Point)>,
     /// One per reference: where its witness line starts and where it meets the dimension.
@@ -1604,7 +1646,7 @@ impl Document {
         Ok(())
     }
 
-    fn round_shape(&self, d: &Dimension) -> Result<RoundShape, String> {
+    pub(crate) fn round_shape(&self, d: &Dimension) -> Result<RoundShape, String> {
         let lp = Point::new(d.line_point[0], d.line_point[1]);
         let len = lp.x.hypot(lp.y);
         let tau = std::f64::consts::TAU;
@@ -1728,9 +1770,15 @@ impl Document {
             };
             format!("{}{}", symbol, format_length(sh.value, &ty.format))
         };
-        let mut text = seg.value_text.clone().unwrap_or(number);
+        let label = seg.param.and_then(|g| self.global_param(g));
+        let mut text = match label {
+            // a labelled radius, diameter or angle shows its parameter's name, and its value when the type says so
+            Some(g) if ty.show_label_value => format!("{} = {number}", g.name),
+            Some(g) => g.name.clone(),
+            None => seg.value_text.clone().unwrap_or(number),
+        };
         let mut alt_text = None;
-        if seg.value_text.is_none() && !sh.angular {
+        if seg.value_text.is_none() && label.is_none() && !sh.angular {
             if let Some(alt) = &ty.alt {
                 let a = format_length(sh.value, &alt.format);
                 match alt.placement {
@@ -1763,7 +1811,7 @@ impl Document {
             anchor: 0,
             replaced: seg.value_text.is_some(),
             out: pt(sh.out),
-            param: None,
+            param: seg.param,
         });
         out.round = Some(RoundDraw {
             centre: pt(sh.centre),
@@ -2067,9 +2115,10 @@ mod tests {
         assert!(d.dimension(rad).is_none() && d.dimension(dia).is_none());
         d.undo();
         assert!(d.dimension(rad).is_some());
-        // read only: nothing to type into or lock
-        assert!(d.set_dimension_value(rad, 0, 4000.0).is_err());
-        assert!(d.patch_dimension(rad, &serde_json::json!({ "segments": [{ "index": 0, "locked": true }] })).is_err());
+        // a typed radius changes the wall; a locked one holds against another change
+        d.set_dimension_value(rad, 0, 4000.0).unwrap();
+        d.patch_dimension(rad, &serde_json::json!({ "segments": [{ "index": 0, "locked": true }] })).unwrap();
+        assert!(d.set_dimension_value(dia, 0, 9000.0).is_err());
     }
 
     #[test]

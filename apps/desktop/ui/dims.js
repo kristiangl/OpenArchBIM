@@ -5,6 +5,28 @@
 // references, draws what the model returns and turns clicks on a selected dimension into commands.
 // Sizes in the dimension type are paper millimetres, so they are scaled by the view scale and the zoom.
 
+// One padlock for every view (dimensions, grid and level ends, family edges): on a light disc so it reads over
+// linework; locked is a closed shackle over a filled body in the accent colour, free is a raised, open shackle over a
+// hollow grey body. Anything that draws one takes clicks within PADLOCK_HIT pixels of its centre.
+const PADLOCK_HIT = 11;
+function drawPadlock(ctx, x, y, locked, accent) {
+  const ink = locked ? accent || "#1d6fb8" : "#6b7178";
+  ctx.save();
+  ctx.setLineDash([]);
+  ctx.fillStyle = "rgba(255,255,255,0.94)"; ctx.strokeStyle = locked ? ink : "#9aa0a6"; ctx.lineWidth = 1;
+  ctx.beginPath(); ctx.arc(x, y, 9.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+  ctx.strokeStyle = ink; ctx.lineWidth = 1.7; ctx.lineCap = "round";
+  ctx.beginPath();
+  if (locked) { ctx.moveTo(x - 3, y - 0.5); ctx.lineTo(x - 3, y - 3); ctx.arc(x, y - 3, 3, Math.PI, 0); ctx.lineTo(x + 3, y - 0.5); }
+  else { ctx.moveTo(x + 3, y - 0.5); ctx.lineTo(x + 3, y - 5); ctx.arc(x, y - 5, 3, 0, Math.PI, true); ctx.lineTo(x - 3, y - 4); }
+  ctx.stroke();
+  ctx.lineWidth = 1.2;
+  ctx.beginPath(); ctx.rect(x - 4.5, y - 0.5, 9, 6.5);
+  if (locked) { ctx.fillStyle = ink; ctx.fill(); } else { ctx.fillStyle = "#ffffff"; ctx.fill(); ctx.stroke(); }
+  ctx.restore();
+}
+const padlockHit = (x, y, px, py) => Math.hypot(x - px, y - py) <= PADLOCK_HIT;
+
 function makeDims() {
   let H = null; // host: set by the view
   let kind = null; // placing tool: "aligned" | "linear" | "angular" | "radial" | "diameter" | "arclength"
@@ -262,15 +284,7 @@ function makeDims() {
     return { ...d, refs: d.refs.map((r) => ({ ...r, at: sh(r.at) })), segments: d.segments.map((s) => ({ ...s, a: sh(s.a), b: sh(s.b), text_pos: sh(s.text_pos) })), mid: sh(d.mid) };
   }
 
-  function glyphLock(ctx, x, y, closed, col) {
-    ctx.save();
-    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = 1.3;
-    ctx.beginPath();
-    if (closed) ctx.arc(x, y - 2, 3, Math.PI, 0); else ctx.arc(x + 1.5, y - 2.5, 3, Math.PI * 1.1, Math.PI * 1.9);
-    ctx.stroke();
-    ctx.fillRect(x - 4, y - 1, 8, 6);
-    ctx.restore();
-  }
+  const glyphLock = (ctx, x, y, closed) => drawPadlock(ctx, x, y, closed, H.css("--accent"));
 
   function tick(ctx, ty, k, p, e, n, col, side) {
     const sz = ty.tick_size_mm * k;
@@ -414,10 +428,11 @@ function makeDims() {
     // text, padlocks, anchors and the Equality toggle
     for (const s of d.segments) {
       const f = paintSegText(d, s, o, k, col);
+      // every padlock that shows takes a click, selected or not (a locked segment always shows its padlock)
       if (o.live && (o.selected || s.locked)) {
-        const lx = f.c.x + f.e.x * (f.w / 2 + 11), ly = f.c.y + f.e.y * (f.w / 2 + 11);
-        glyphLock(ctx, lx, ly, s.locked, o.selected ? col : "#555");
-        if (o.selected) boxes.push({ type: "lock", id: d.id, seg: s.index, x: lx, y: ly, r: 8, locked: s.locked });
+        const lx = f.c.x + f.e.x * (f.w / 2 + 15), ly = f.c.y + f.e.y * (f.w / 2 + 15);
+        glyphLock(ctx, lx, ly, s.locked);
+        boxes.push({ type: "lock", id: d.id, seg: s.index, x: lx, y: ly, r: PADLOCK_HIT, locked: s.locked });
       }
       if (o.live && o.selected) {
         // a small triangle at the end that stays put when a value is typed; click it to swap ends
@@ -574,7 +589,16 @@ function makeDims() {
   // ---- editing a selected dimension --------------------------------------------------------------
   const selectedDim = () => { const s = H.selection(); return s.length === 1 ? H.dims().find((d) => d.id === s[0]) : null; };
 
+  // a padlock under the pointer, on any dimension showing one, in any tool: it toggles at once
+  function lockDown(sx, sy) {
+    if (input) return false;
+    const b = boxes.find((q) => q.type === "lock" && Math.hypot(sx - q.x, sy - q.y) <= q.r);
+    if (!b) return false;
+    patch(b.id, { segments: [{ index: b.seg, locked: !b.locked }] });
+    return true;
+  }
   function down(sx, sy) {
+    if (lockDown(sx, sy)) return true;
     if (active() || input) return false;
     const d = selectedDim();
     if (!d) return false;
@@ -633,7 +657,7 @@ function makeDims() {
         clearTimeout(lastText.timer); lastText = null;
         closeInput();
         H.openText(d, d.segments[g.seg]);
-      } else if (d.round) {
+      } else if (d.round && d.kind === "arc_length") {
         lastText = { id: d.id, seg: g.seg, at: now, timer: setTimeout(() => { lastText = null; }, 450) };
       } else {
         lastText = { id: d.id, seg: g.seg, at: now, timer: setTimeout(() => { lastText = null; const dd = H.dims().find((x) => x.id === g.id); if (dd) openValue(g.box, dd); }, 330) };
@@ -670,7 +694,8 @@ function makeDims() {
     inp.onkeydown = async (e) => {
       e.stopPropagation();
       if (e.key === "Enter") {
-        const v = parseLengthMM(inp.value);
+        // an angle is typed in degrees; everything else is a length
+        const v = d.kind === "angular" ? parseFloat(inp.value) : parseLengthMM(inp.value);
         closeInput();
         if (!isNaN(v) && v > 0 && Math.abs(v - s.value_mm) > 0.001) { await H.call("set_dimension_value", { id: d.id, segment: b.seg, value: r3(v) }); await H.refresh(); }
       } else if (e.key === "Escape") closeInput();
@@ -681,7 +706,7 @@ function makeDims() {
 
   return {
     attach, active, start, startWitness, stop, cancel, prompt, key, move, click, draw, drawTool, hitRings,
-    down, dragMove, up, dblclick, closeInput,
+    down, lockDown, dragMove, up, dblclick, closeInput,
     get kind() { return kind; },
     get witness() { return wit; },
     get dragging() { return !!drag; },
