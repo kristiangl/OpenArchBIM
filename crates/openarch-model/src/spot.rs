@@ -419,6 +419,9 @@ impl Document {
     /// The faces of floors, roofs and walls that lie under a point in a plan view, highest first.
     /// Only elements on the view's level are looked at.
     pub fn surfaces_at(&self, view: Id, p: Point) -> Vec<SurfaceHit> {
+        if self.is_elevation_like(view) {
+            return self.elevation_spot_hits(view, p, 150.0);
+        }
         let Some(v) = self.view(view) else { return vec![] };
         let on_level = |l: Id| v.level.map_or(true, |vl| vl == l);
         let mut out: Vec<SurfaceHit> = vec![];
@@ -528,6 +531,10 @@ impl Document {
 
     /// A face of one element at a point.
     fn hit_for(&self, view: Id, host: Id, surface: SpotSurface, p: Point) -> Option<SurfaceHit> {
+        if self.is_elevation_like(view) {
+            // the line it stands on, wherever it has moved to
+            return self.elevation_spot_hit(view, host, surface);
+        }
         self.surfaces_at(view, p).into_iter().find(|h| h.host == host && h.surface == surface)
     }
 
@@ -642,7 +649,11 @@ impl Document {
     /// Draw a spot that may not be in the document yet.
     pub fn draw_spot(&self, id: Id, s: &Spot) -> SpotDraw {
         let t = self.spot_type(s.spot_type).cloned().unwrap_or_else(|| SpotType::new("Spot", s.kind));
-        let tp = s.target;
+        let mut tp = s.target;
+        // in an elevation or section the point rides up and down with the line it stands on
+        if let Some(h) = s.host.filter(|_| self.is_elevation_like(s.view)).and_then(|h| self.elevation_spot_hit(s.view, h, s.surface)) {
+            tp.y = h.z;
+        }
         let bend = s.bend.map(|b| [tp.x + b[0], tp.y + b[1]]);
         let shoulder = [tp.x + s.shoulder[0], tp.y + s.shoulder[1]];
         let from = bend.unwrap_or(pt(tp));
@@ -699,7 +710,12 @@ impl Document {
     fn new_spot(&self, view: Id, kind: SpotKind, target: Point, host: Option<Id>, surface: SpotSurface, shoulder: [f64; 2], leader: bool, tid: Id) -> Result<Spot, String> {
         match self.view(view) {
             Some(v) if matches!(v.view_kind, ViewKind::FloorPlan | ViewKind::CeilingPlan | ViewKind::StructuralPlan | ViewKind::AreaPlan) => {}
-            Some(_) => return Err("spot annotations can only be placed in plan views for now".into()),
+            Some(_) if self.is_elevation_like(view) => {
+                if kind != SpotKind::Elevation {
+                    return Err("spot coordinates and spot slopes are placed in plan views".into());
+                }
+            }
+            Some(_) => return Err("spot annotations are placed in plan, elevation and section views".into()),
             None => return Err("no such view".into()),
         }
         if kind != SpotKind::Coordinate && host.is_none() {
@@ -795,7 +811,15 @@ impl Document {
     pub(crate) fn follow_spots(&mut self, spots: &[Id], x: Xform) -> Result<(), String> {
         for id in spots {
             let Some(Element::Spot(mut s)) = self.get(*id).cloned() else { continue };
-            s.target = x.apply(s.target);
+            match self.elevation_frame(s.view) {
+                // in an elevation or section only the part of the move across the view counts (the height comes from the line)
+                Some(f) => {
+                    let (o, r) = (Point::new(f.origin[0], f.origin[1]), Point::new(f.right[0], f.right[1]));
+                    let at = x.apply(Point::new(o.x + r.x * s.target.x, o.y + r.y * s.target.x));
+                    s.target.x = (at.x - o.x) * r.x + (at.y - o.y) * r.y;
+                }
+                None => s.target = x.apply(s.target),
+            }
             self.transact("Move spot", |tx| tx.update(*id, Element::Spot(s)))?;
         }
         Ok(())

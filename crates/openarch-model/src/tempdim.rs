@@ -65,6 +65,9 @@ pub enum RefSpec {
     Grid { id: Id },
     /// A level (its height, seen in elevations).
     Level { id: Id },
+    /// A line seen in an elevation or section view, named the way the view names it (`ElevRef::key`: "top",
+    /// "sill", "end:min", "w:-45.0" ...), so it follows its element.
+    Elev { id: Id, key: String },
 }
 
 impl RefSpec {
@@ -74,6 +77,7 @@ impl RefSpec {
             (RefSpec::Opening { id: a, at: x }, RefSpec::Opening { id: b, at: y }) => a == b && (x - y).abs() < 0.01,
             (RefSpec::WallEnd { id: a, end: x }, RefSpec::WallEnd { id: b, end: y }) => a == b && x == y,
             (RefSpec::Grid { id: a }, RefSpec::Grid { id: b }) | (RefSpec::Level { id: a }, RefSpec::Level { id: b }) => a == b,
+            (RefSpec::Elev { id: a, key: x }, RefSpec::Elev { id: b, key: y }) => a == b && x == y,
             _ => false,
         }
     }
@@ -81,7 +85,7 @@ impl RefSpec {
     /// The element the line belongs to.
     pub fn element(&self) -> Id {
         match self {
-            RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Grid { id } | RefSpec::Level { id } => *id,
+            RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Grid { id } | RefSpec::Level { id } | RefSpec::Elev { id, .. } => *id,
         }
     }
 }

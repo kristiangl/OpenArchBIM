@@ -1,10 +1,11 @@
-// Spot elevations, spot coordinates and spot slopes in plan views.
+// Spot elevations, spot coordinates and spot slopes. Each view makes its own (`makeSpots`): the plan's is `Spots`; an
+// elevation or section has one for spot elevations, standing on the lines it names (tops, bottoms, sills, heads, levels).
 // The model owns the values (crates/openarch-model/src/spot.rs): it finds the faces under a point, measures them and
 // draws the text. This file picks the face, places the spot, draws what the model returns and moves its grips.
 // Sizes in the spot type are paper millimetres, so they are scaled by the view scale and the zoom.
 
-const Spots = (() => {
-  let H = null; // host: set by plan.js
+function makeSpots() {
+  let H = null; // host: set by the view
   let kind = null; // placing tool: "elevation" | "coordinate" | "slope"
   let stage = 0; // 0: pick the point, 1: place the text
   let tgt = null; // the point once picked: { p: {x,y}, host, surface, label }
@@ -31,6 +32,8 @@ const Spots = (() => {
   function prompt() {
     if (!kind) return "";
     if (stage === 1) return `${NAMES[kind]}: click where the text goes. Esc goes back.`;
+    // an elevation or section measures the lines it shows
+    if (H.elevation) return `${NAMES[kind]}: click a level, or the top, bottom, sill or head of something. Tab changes the line, L turns the leader ${leader ? "off" : "on"}.`;
     const what = kind === "coordinate" ? "a point (a floor, roof or wall face to follow it, or any empty spot)" : kind === "slope" ? "a floor or roof face" : "a floor, roof or wall face";
     return `${NAMES[kind]}: click ${what}. Tab changes the face, L turns the leader ${leader ? "off" : "on"}.`;
   }
@@ -58,7 +61,8 @@ const Spots = (() => {
       const p = cur;
       if (!p || stage !== 0) break;
       try {
-        const r = await Backend.call("spot_surfaces", { view_id: H.viewId(), point: [r3(p.x), r3(p.y)] });
+        // the tolerance only matters in an elevation or section, where the lines have no inside to click in
+        const r = await Backend.call("spot_surfaces", { view_id: H.viewId(), point: [r3(p.x), r3(p.y)], tol: 8 / H.scale() });
         let next = r.surfaces || [];
         if (kind === "slope") next = next.filter((h) => Math.abs(h.normal[2]) > 0.01);
         const sig = (l) => l.map((h) => `${h.host}:${h.surface}`).join();
@@ -381,4 +385,5 @@ const Spots = (() => {
     error: () => ghostErr,
     surfaceName: (s) => SURFACE[s],
   };
-})();
+}
+const Spots = makeSpots();

@@ -10,10 +10,11 @@ const Elev = (() => {
     select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
     addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
+    dimCall: () => null, dimRefresh: () => {}, dimText: () => {},
   };
   let data = null;
   let cam = { u: 0, z: 1500, s: 0.1 }; // centre (mm along the view's right axis, mm of height) and pixels per mm
-  let tool = "select"; // select | level | grid | move | copy | align | text | noteleader | sketch
+  let tool = "select"; // select | level | grid | move | copy | align | text | noteleader | sketch | dimension | spot
   let sel = new Set();
   let hoverIds = null;
   let hoverLevel = null;
@@ -196,10 +197,21 @@ const Elev = (() => {
   // everything under the cursor that a click could pick, nearest first: elements drawn there, then a level (a grid crosses
   // it), then a grid. Tab steps through them.
   function candIds(sx, sy) {
-    const out = [...detailAt(sx, sy), ...itemsAt(sx, sy)], lid = levelAt(sx, sy), gid = gridAt(sx, sy);
+    const out = [...spotsAt(sx, sy), ...dimsAt(sx, sy), ...detailAt(sx, sy), ...itemsAt(sx, sy)], lid = levelAt(sx, sy), gid = gridAt(sx, sy);
     if (lid !== null) out.push(lid);
     if (gid !== null) out.push(gid);
     return out;
+  }
+  // permanent dimensions under the cursor: their line, witness lines and texts
+  function dimsAt(sx, sy) {
+    if (!data || !(data.dimensions || []).length) return [];
+    const p = W(sx, sy);
+    return data.dimensions.filter((d) => EDims.hitRings(d).rings.some((r) => inRing(p, r))).map((d) => d.id);
+  }
+  function spotsAt(sx, sy) {
+    if (!data || !(data.spots || []).length) return [];
+    const p = W(sx, sy);
+    return data.spots.filter((x) => ESpots.hitRings(x).rings.some((r) => inRing(p, r))).map((x) => x.id);
   }
   const hoverPick = (sx, sy) => { const c = candIds(sx, sy); return c.length ? c[tabIdx % c.length] : null; };
 
@@ -763,6 +775,10 @@ const Elev = (() => {
     if (tool === "text") Det.preview(hover);
     if (detDrag) drawGhost(detDrag.d.x, detDrag.d.y);
     drawEdit();
+    EDims.draw(data.dimensions || [], sel, hoverIds);
+    if (tool === "dimension") EDims.drawTool();
+    ESpots.draw(data.spots || [], sel, hoverIds);
+    if (tool === "spot") ESpots.drawTool();
     drawDims();
     if (tool === "sketch") Sketch.draw(ctx);
     if (band) {
@@ -819,6 +835,8 @@ const Elev = (() => {
     down = { x: e.offsetX, y: e.offsetY };
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
+    if (tool === "select" && data && e.button === 0 && EDims.down(e.offsetX, e.offsetY)) { down = null; return; }
+    if (tool === "select" && data && e.button === 0 && ESpots.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data) {
       // pressing on a selected detail line, region or text note and moving carries the selected ones
       const dids = new Set(Det.elements().map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
@@ -854,6 +872,10 @@ const Elev = (() => {
     }
     if (!data) return;
     if (Det.dragging) { Det.gripMove(e.offsetX, e.offsetY); return; }
+    if (EDims.dragging) { EDims.dragMove(e.offsetX, e.offsetY); return; }
+    if (ESpots.dragging) { ESpots.dragMove(e.offsetX, e.offsetY); return; }
+    if (tool === "spot") { ESpots.move(e.offsetX, e.offsetY); return; }
+    if (tool === "dimension") { const p = toWorld(e.offsetX, e.offsetY); cb.cursor(`${Math.round(p.u)}, ${fmtElev(p.z - datum())}`); EDims.move(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging && tool === "sketch") { hover = snap(e.offsetX, e.offsetY); Sketch.gripMove(e.offsetX, e.offsetY, hover); return; }
     const moved = down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) > 5;
     if (moved && down.drag && !detDrag) detDrag = { ids: down.drag.ids, p0: down.drag.p0, d: { x: 0, y: 0 } };
@@ -911,6 +933,8 @@ const Elev = (() => {
   });
   canvas.addEventListener("pointerup", (e) => {
     if (Det.dragging) { down = null; Det.gripUp(); return; }
+    if (EDims.dragging) { down = null; EDims.up(e.offsetX, e.offsetY); return; }
+    if (ESpots.dragging) { down = null; ESpots.up(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging && tool === "sketch") { down = null; Sketch.gripUp(); return; }
     if (detDrag) {
       const d = detDrag; detDrag = null; down = null; hover = null;
@@ -957,6 +981,8 @@ const Elev = (() => {
       const wasClick = !pan.moved && pan.button === 2;
       pan = null;
       if (wasClick && tool === "sketch") { Sketch.rightClick(); return; }
+      if (wasClick && tool === "dimension") { if (!EDims.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
+      if (wasClick && tool === "spot") { if (!ESpots.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
       if (wasClick && tool !== "select") setTool("select");
       return;
     }
@@ -984,6 +1010,8 @@ const Elev = (() => {
         cb.prompt(promptText()); render();
         return;
       }
+      if (tool === "dimension") { down = null; EDims.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
+      if (tool === "spot") { down = null; ESpots.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
       if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
       else if (isEdit()) editClick(e);
       else if (tool === "level") {
@@ -997,6 +1025,8 @@ const Elev = (() => {
   canvas.addEventListener("dblclick", (e) => {
     if (tool === "sketch") { Sketch.dblclick(); return; }
     if (tool !== "select" || !data) return;
+    if (EDims.dblclick(e.offsetX, e.offsetY)) return; // a dimension's text dialog is open
+    if (ESpots.dblclick(e.offsetX, e.offsetY)) return; // a bend came out of a spot's leader
     // a text note opens its text; a detail line, Detail Line with it selected; a region, Edit Boundary
     const did = detailAt(e.offsetX, e.offsetY)[0];
     if (did !== undefined) {
@@ -1026,15 +1056,19 @@ const Elev = (() => {
   function setTool(t) {
     if (t !== "text") Det.clearPicks();
     if (t !== "noteleader") Det.stopLeader();
+    if (t !== "dimension") EDims.stop();
+    if (t !== "spot") ESpots.stop();
     tool = t; typed = ""; candTab = 0; hover = null; band = null;
     ed = isEdit() ? newEd() : null;
-    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch"].includes(t) || isEdit() ? "crosshair" : "default";
+    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch", "dimension", "spot"].includes(t) || isEdit() ? "crosshair" : "default";
     cb.prompt(promptText());
     if (typeof cb.tool === "function") cb.tool(t);
     render();
   }
   function promptText() {
     if (tool === "sketch") return Sketch.promptText();
+    if (tool === "dimension") return EDims.prompt();
+    if (tool === "spot") return ESpots.prompt();
     if (tool === "text" || tool === "noteleader") return Det.promptText(tool);
     if (tool === "level") return typed ? `Elevation ${typed}. Press Enter to place the level, Esc to clear.` : "Level: click at the height of the new level, or type its elevation and press Enter. Esc to finish.";
     if (tool === "grid") return "Grid: click where the grid line goes. It runs away from the view. Esc to finish.";
@@ -1134,6 +1168,43 @@ const Elev = (() => {
     cycleSnap: (d) => { snapCycle += d; if (mouse) { hover = snap(mouse.x, mouse.y); Sketch.move(hover, mouse.x, mouse.y); } render(); },
   };
 
+  // Aligned and Linear dimensions in this view, measured across it and up
+  const EDims = makeDims();
+  EDims.attach({
+    ctx: () => ctx, toScreen: P, toWorld: W, label: elevHost.label, css, render: () => render(),
+    scale: () => cam.s,
+    paperPx: () => ((data && data.scale) || 100) * cam.s,
+    thin: () => Plan.thinLines,
+    dims: () => (data && data.dimensions) || [],
+    selection: () => [...sel],
+    select: (ids) => { sel = new Set(ids); cb.select([...sel]); render(); },
+    viewId: () => data && data.view_id,
+    settings: () => cb.tempSettings(),
+    prompt: (t) => cb.prompt(t),
+    call: (m, p) => cb.dimCall(m, p),
+    refresh: () => cb.dimRefresh(),
+    openText: (d, s2) => cb.dimText(d, s2),
+    setTool: (t) => setTool(t),
+    canvasRect: () => canvas.getBoundingClientRect(),
+  });
+
+  // spot elevations on the lines this view names
+  const ESpots = makeSpots();
+  ESpots.attach({
+    elevation: true,
+    ctx: () => ctx, toScreen: P, toWorld: W, label: elevHost.label, css, render: () => render(),
+    scale: () => cam.s,
+    paperPx: () => ((data && data.scale) || 100) * cam.s,
+    thin: () => Plan.thinLines,
+    spots: () => (data && data.spots) || [],
+    selection: () => [...sel],
+    viewId: () => data && data.view_id,
+    prompt: (t) => cb.prompt(t),
+    call: (m, p) => cb.dimCall(m, p),
+    refresh: () => cb.dimRefresh(),
+    setTool: (t) => setTool(t),
+  });
+
   function fit() {
     if (!data) return;
     const f = data.frame, h = f.z_max - f.z_min;
@@ -1151,7 +1222,7 @@ const Elev = (() => {
     setTool,
     setData(d, refit) {
       data = d;
-      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id)]);
+      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || [])].map((x) => x.id)]);
       sel = new Set([...sel].filter((i) => ids.has(i)));
       index();
       buildSnap();
@@ -1184,6 +1255,13 @@ const Elev = (() => {
     screenOf: (x, y) => toScreen(x, y),
     canvasRect: () => canvas.getBoundingClientRect(),
     textNotes: () => (data && data.text_notes) || [],
+    dimensions: () => (data && data.dimensions) || [],
+    startDim(kind) { setTool("dimension"); EDims.start(kind); cb.prompt(promptText()); },
+    startWitness(id) { setTool("dimension"); EDims.startWitness(id); cb.prompt(promptText()); },
+    dimTool: () => EDims,
+    spots: () => (data && data.spots) || [],
+    startSpot(kind) { setTool("spot"); ESpots.start(kind); cb.prompt(promptText()); },
+    spotTool: () => ESpots,
     detailLines: () => (data && data.detail_lines) || [],
     regions: () => (data && data.regions) || [],
     setEditingNote(id) { Det.setEditing(id); },
@@ -1194,6 +1272,8 @@ const Elev = (() => {
       // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
+      if (tool === "dimension" && EDims.key(e)) return true;
+      if (tool === "spot" && ESpots.key(e)) return true;
       if (tool === "text" && e.key === " " && Det.flipArc()) return true;
       if (tool === "text" && e.key === "Escape") { if (Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); } else setTool("select"); return true; }
       if (tool === "noteleader" && e.key === "Escape") { setTool("select"); return true; }

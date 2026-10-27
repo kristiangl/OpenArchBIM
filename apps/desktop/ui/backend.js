@@ -95,4 +95,23 @@ if (Backend.isDesktop) {
     const r = e.reason;
     Backend.log("unhandled rejection", r && r.stack ? r.stack : String(r));
   });
+  // A heartbeat the desktop shell watches: when the page's script stops (a loop that never ends) the beats stop and the
+  // shell writes that to the log. Each beat also asks for one animation frame; a frame that has not come by the next
+  // beat, with the window showing, means drawing has stopped while the script still runs (the GPU or the compositor).
+  let frameDue = 0, framesStuck = false;
+  setInterval(() => {
+    const now = Date.now();
+    if (frameDue && document.visibilityState === "visible" && now - frameDue > 4000 && !framesStuck) {
+      framesStuck = true;
+      Backend.log("warn", `no frame drawn for ${Math.round((now - frameDue) / 1000)} s while the page script runs`);
+    }
+    if (!frameDue) {
+      frameDue = now;
+      requestAnimationFrame(() => {
+        if (framesStuck) Backend.log("warn", `frames drawn again after ${Math.round((Date.now() - frameDue) / 1000)} s`);
+        frameDue = 0; framesStuck = false;
+      });
+    }
+    try { window.__TAURI__.core.invoke("ui_alive").catch(() => {}); } catch {}
+  }, 2000);
 }

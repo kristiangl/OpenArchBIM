@@ -104,7 +104,10 @@ const COMMANDS = {
   "dim-elev": () => startSpotTool("elevation"),
   "dim-coord": () => startSpotTool("coordinate"),
   "dim-slope": () => startSpotTool("slope"),
-  "edit-witness": () => { const id = app.selection.length === 1 && app.selection[0]; if (id && Plan.dimensions().some((d) => d.id === id)) Plan.startWitness(id); },
+  "edit-witness": () => {
+    const id = app.selection.length === 1 && app.selection[0], V = app.view.kind === "elevation" ? Elev : Plan;
+    if (id && V.dimensions().some((d) => d.id === id)) V.startWitness(id);
+  },
   "m-materials": () => openMaterials(),
   "m-linestyles": () => openLineStyles(),
   "m-lineweights": () => openLineWeights(),
@@ -282,8 +285,9 @@ function currentContext() {
   if (sec && !sec.pinned) return { auto: true, key: `section:${sec.id}`, title: "Section", groups: [
     { label: "Section", items: [{ label: "Split Segment", ico: "Sl", onclick: () => runCommand("split-segment") }] } ] };
   // a selected dimension adds Edit Witness Lines, and the tab takes its name
-  if (app.view.kind === "plan" && Plan.tool === "select" && app.selection.length === 1) {
-    const dim = Plan.dimensions().find((d) => d.id === app.selection[0] && !d.round);
+  const DV = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
+  if (DV && DV.tool === "select" && app.selection.length === 1) {
+    const dim = DV.dimensions().find((d) => d.id === app.selection[0] && !d.round);
     if (dim) return { auto: true, key: `dim:${dim.id}`, title: "Dimensions", groups: [
       { label: "Witness Lines", items: [{ label: "Edit Witness Lines", icon: "editWitness", onclick: () => runCommand("edit-witness") }] } ] };
   }
@@ -349,8 +353,10 @@ function groupNode(g, isContext, isModify) {
     // `brk` starts a new column of small buttons; `iconOnly` shows the icon with the name as its tooltip
     const extra = [it.iconOnly ? "icon-only" : "", it.cls || ""].filter(Boolean).join(" ");
     if (isContext) {
-      // a tool's buttons need no text: the icon and its tooltip carry the name
-      const node = sketchButton(it, true, it.onclick, it.on, extra + " icon-only");
+      // a tool's buttons need no text: the icon and its tooltip carry the name. Big ones (Finish, Cancel, a mode) keep
+      // their large icon; the rest stack three to a column.
+      const node = sketchButton(it, !it.big, it.onclick, it.on, extra + " icon-only");
+      if (it.big) { stack = null; items.append(node); continue; }
       if (!stack || stack.children.length >= 3 || it.brk) { stack = el("div", { className: "stack" }); items.append(stack); }
       stack.append(node);
     } else {
@@ -1012,10 +1018,22 @@ Plan.callbacks.tempPin = (key, role, spec) => {
 // ---- permanent dimensions ---------------------------------------------------------------
 // The tools and drawing are in dims.js; the model does the measuring and keeps the constraints.
 async function startDimTool(kind) {
+  // elevations and sections take the chain kinds, measured across the view and up
+  if (app.view.kind === "elevation") {
+    if (kind === "aligned" || kind === "linear") { Elev.startDim(kind); return; }
+    setPrompt("Radial, diameter, angular and arc length dimensions are placed in plan views.", true);
+    return;
+  }
   if (!(await ensurePlan("A dimension"))) return;
   Plan.startDim(kind);
 }
 async function startSpotTool(kind) {
+  // an elevation or section takes spot elevations on the lines it names
+  if (app.view.kind === "elevation") {
+    if (kind === "elevation") { Elev.startSpot(kind); return; }
+    setPrompt("Spot coordinates and spot slopes are placed in plan views.", true);
+    return;
+  }
   if (!(await ensurePlan("A spot dimension"))) return;
   Plan.startSpot(kind);
 }
@@ -1055,6 +1073,9 @@ function openDimText(d, seg) {
   });
 }
 Plan.callbacks.dimText = openDimText;
+Elev.callbacks.dimCall = (method, params) => run(method, params);
+Elev.callbacks.dimRefresh = async () => { await refresh(); renderProperties(); };
+Elev.callbacks.dimText = openDimText;
 Plan.callbacks.placeDims = async (wallId, point) => {
   try {
     const r = await Backend.call("temp_dimensions", { type_id: placeTypeId(Plan.tool), host_id: wallId, point: [point.x, point.y], settings: tdimSettings() });

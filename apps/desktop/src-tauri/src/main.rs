@@ -23,12 +23,16 @@ type Answer = Result<serde_json::Value, String>;
 
 /// A core call that runs longer than this is written to the log while it is still going.
 const SLOW_CALL: Duration = Duration::from_secs(5);
+/// The page beats every 2 s; this long without a beat is written down as a stuck page.
+const PAGE_SILENT: Duration = Duration::from_secs(8);
 /// The log is moved aside once at start-up past this size, so the file cannot grow without end.
 const LOG_LIMIT: u64 = 8 * 1024 * 1024;
 
 struct Log {
     dir: PathBuf,
     file: Mutex<Option<File>>,
+    /// The page's last heartbeat (`ui_alive`), and whether its silence has been written down.
+    alive: Mutex<(Option<Instant>, bool)>,
 }
 
 impl Log {
@@ -41,7 +45,7 @@ impl Log {
             let _ = std::fs::rename(&path, old);
         }
         let file = OpenOptions::new().create(true).append(true).open(&path).ok();
-        let log = Log { dir, file: Mutex::new(file) };
+        let log = Log { dir, file: Mutex::new(file), alive: Mutex::new((None, false)) };
         log.line(&format!("OpenArch BIM {} opened the log, times are UTC", env!("CARGO_PKG_VERSION")));
         log
     }
@@ -140,6 +144,22 @@ fn watch_slow_calls(app: tauri::AppHandle) {
         for line in slow {
             app.state::<Log>().line(&line);
         }
+        // the page beats every 2 s; silence for longer means its script has stopped (the window cannot redraw either)
+        let log = app.state::<Log>();
+        let silent = match log.alive.lock() {
+            Ok(mut a) => match a.0 {
+                Some(t) if !a.1 && t.elapsed() >= PAGE_SILENT => {
+                    a.1 = true;
+                    Some(t.elapsed().as_secs_f64())
+                }
+                _ => None,
+            },
+            Err(_) => None,
+        };
+        if let Some(secs) = silent {
+            let last = app.state::<Core>().running.lock().ok().and_then(|r| r.values().map(|c| c.method.clone()).next());
+            log.line(&format!("the page has not answered for {secs:.0} s (its script is stuck){}", last.map(|m| format!("; core call still running: {m}")).unwrap_or_default()));
+        }
     });
 }
 
@@ -200,6 +220,22 @@ fn ui_log(log: tauri::State<Log>, level: String, message: String) {
     log.line(&format!("page {level}: {}", text.replace('\n', " | ")));
 }
 
+/// The page's heartbeat. After a silence it also notes that the page came back.
+#[tauri::command]
+fn ui_alive(log: tauri::State<Log>) {
+    let was = log.alive.lock().ok().map(|mut a| {
+        let first = a.0.is_none();
+        let back = a.1.then(|| a.0.map(|t| t.elapsed().as_secs_f64()).unwrap_or(0.0));
+        *a = (Some(Instant::now()), false);
+        (first, back)
+    });
+    match was {
+        Some((true, _)) => log.line("the page is running (it checks in every 2 s)"),
+        Some((_, Some(secs))) => log.line(&format!("the page answered again after {secs:.0} s")),
+        _ => {}
+    }
+}
+
 /// Shows the folder that holds the log, so a frozen session's log can be sent on.
 #[tauri::command]
 fn open_log_folder(log: tauri::State<Log>) -> Result<String, String> {
@@ -254,7 +290,7 @@ fn main() {
                 let _ = window.emit("close-requested", ());
             }
         })
-        .invoke_handler(tauri::generate_handler![rpc_send, rpc_wait, close_ack, quit, ui_log, open_log_folder])
+        .invoke_handler(tauri::generate_handler![rpc_send, rpc_wait, close_ack, quit, ui_log, ui_alive, open_log_folder])
         .run(tauri::generate_context!())
         .expect("error while running OpenArch BIM");
 }

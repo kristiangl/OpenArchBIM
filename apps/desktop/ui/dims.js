@@ -1,11 +1,12 @@
-// Permanent dimensions in plan views: the Aligned, Linear, Angular, Radial, Diameter and Arc Length tools,
-// drawing, and editing a selected dimension.
+// Permanent dimensions: the Aligned, Linear, Angular, Radial, Diameter and Arc Length tools, drawing, and editing a
+// selected dimension. Each view that shows dimensions makes its own (`makeDims`): the plan's is `Dims`; an elevation
+// or section has one working in its frame (across the view and up), with only the chain kinds.
 // The model owns the geometry and the constraints (crates/openarch-model/src/dimension.rs); this file picks
 // references, draws what the model returns and turns clicks on a selected dimension into commands.
 // Sizes in the dimension type are paper millimetres, so they are scaled by the view scale and the zoom.
 
-const Dims = (() => {
-  let H = null; // host: set by plan.js
+function makeDims() {
+  let H = null; // host: set by the view
   let kind = null; // placing tool: "aligned" | "linear" | "angular" | "radial" | "diameter" | "arclength"
   let wit = null; // Edit Witness Lines: { id }
   let refs = []; // picked so far: { spec, pick, label, a, b }
@@ -690,4 +691,5 @@ const Dims = (() => {
     picks: () => refs.map((r) => ({ label: r.label })),
     candidates: () => visibleCands().map((c) => c.label),
   };
-})();
+}
+const Dims = makeDims();

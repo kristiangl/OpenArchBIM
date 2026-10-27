@@ -278,6 +278,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const adapter = await navigator.gpu.requestAdapter();
     if (!adapter) throw new Error("no GPU adapter found");
     const device = await adapter.requestDevice();
+    // a lost device stops every 3D view drawing: the desktop log keeps why, for a frozen window's report
+    device.lost.then((info) => Backend.log("gpu", `WebGPU device lost (${info.reason || "unknown"}): ${info.message || ""}`));
+    device.addEventListener("uncapturederror", (e) => Backend.log("gpu", `WebGPU error: ${e.error && e.error.message}`));
     // only now take the canvas, so a failed WebGPU start leaves it free for WebGL2
     const ctx = canvas.getContext("webgpu");
     const format = navigator.gpu.getPreferredCanvasFormat();
@@ -405,6 +408,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
   function webgl2Backend(canvas) {
     const gl = canvas.getContext("webgl2", { antialias: true, depth: true, alpha: false, preserveDrawingBuffer: false });
     if (!gl) throw new Error("neither WebGPU nor WebGL2 is available in this webview");
+    canvas.addEventListener("webglcontextlost", () => Backend.log("gpu", "WebGL2 context lost"));
     const compile = (type, src) => {
       const s = gl.createShader(type);
       gl.shaderSource(s, src); gl.compileShader(s);

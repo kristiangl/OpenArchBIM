@@ -703,7 +703,28 @@ impl Document {
                 let (a, b) = g.line()?;
                 Some(RefGeom::Line(a, b))
             }
-            RefSpec::Level { .. } => None,
+            RefSpec::Level { .. } | RefSpec::Elev { .. } => None,
+        }
+    }
+
+    /// The references of a dimension in `view` as lines: in the plan, or in an elevation or section view's own frame.
+    fn ref_geoms(&self, view: Id, refs: &[DimRef]) -> Result<Vec<RefGeom>, String> {
+        let elev = self.elevation_dim_lines(view);
+        refs.iter()
+            .map(|r| match &elev {
+                Some(e) => e.geom(self, &r.spec),
+                None => self.ref_geom(&r.spec),
+            })
+            .map(|g| g.ok_or_else(|| "a measured element is gone or cannot be dimensioned".to_string()))
+            .collect()
+    }
+
+    /// Move what a reference belongs to by `v`, in the frame of the dimension's view.
+    pub(crate) fn move_dim_ref(&mut self, view: Id, spec: &RefSpec, v: Point) -> Result<(), String> {
+        if self.is_elevation_like(view) {
+            self.move_elev_ref(view, spec, v)
+        } else {
+            self.move_ref_element(spec, v)
         }
     }
 
@@ -712,10 +733,7 @@ impl Document {
         if !d.kind.is_chain() {
             return Err("this kind of dimension is not measured yet".into());
         }
-        let mut geoms = vec![];
-        for r in &d.refs {
-            geoms.push(self.ref_geom(&r.spec).ok_or("a measured element is gone or cannot be dimensioned")?);
-        }
+        let geoms = self.ref_geoms(d.view, &d.refs)?;
         if geoms.iter().any(|g| matches!(g, RefGeom::Arc(_))) {
             return Err("a curved reference cannot be measured by this kind of dimension".into());
         }
@@ -890,7 +908,12 @@ impl Document {
     fn new_dimension(&self, view: Id, kind: DimKind, refs: Vec<DimRef>, line_point: Point, axis: Option<[f64; 2]>, tid: Id) -> Result<Dimension, String> {
         match self.view(view) {
             Some(v) if matches!(v.view_kind, ViewKind::FloorPlan | ViewKind::CeilingPlan | ViewKind::StructuralPlan | ViewKind::AreaPlan) => {}
-            Some(_) => return Err("dimensions can only be placed in plan views for now".into()),
+            Some(_) if self.is_elevation_like(view) => {
+                if !kind.is_chain() {
+                    return Err("radial, diameter, angular and arc length dimensions are placed in plan views".into());
+                }
+            }
+            Some(_) => return Err("dimensions are placed in plan, elevation and section views".into()),
             None => return Err("no such view".into()),
         }
         if kind.is_chain() {
@@ -1125,7 +1148,7 @@ impl Document {
             if was_locked {
                 doc.transact("Change dimension", |tx| tx.update(id, Element::Dimension(unlocked.clone())))?;
             }
-            doc.move_ref_element(&spec, vec)?;
+            doc.move_dim_ref(d.view, &spec, vec)?;
             if was_locked {
                 let Some(Element::Dimension(mut now)) = doc.get(id).cloned() else { return Ok(()) };
                 now.segments[segment].locked = true;
@@ -1158,7 +1181,7 @@ impl Document {
                 let list: Vec<(Id, Wall)> = plan.into_iter().collect();
                 self.apply_wall_ends(&list, "Move wall end")
             }
-            RefSpec::Level { .. } => Err("levels are moved in elevation views".into()),
+            RefSpec::Level { .. } | RefSpec::Elev { .. } => Err("that line is moved in an elevation or section view".into()),
         }
     }
 
@@ -1244,7 +1267,7 @@ impl Document {
                     }
                     Some((spec, delta)) => {
                         let v = Point::new(m.u.x * delta, m.u.y * delta);
-                        self.move_ref_element(spec, v).map_err(|e| format!("a locked or equal dimension needs to move another element, but {e}"))?;
+                        self.move_dim_ref(d.view, spec, v).map_err(|e| format!("a locked or equal dimension needs to move another element, but {e}"))?;
                         moved_something = true;
                         break;
                     }
@@ -1304,6 +1327,9 @@ impl Document {
 
     /// The same, for a tool that needs straight lines (`DimWant::Line`) or curved ones (`DimWant::Arc`).
     pub fn dim_candidates_for(&self, view: Id, point: Point, tol: f64, s: TempDimSettings, want: DimWant) -> Vec<DimCandidate> {
+        if self.is_elevation_like(view) {
+            return if want == DimWant::Line { self.elevation_dim_candidates(view, point, tol) } else { vec![] };
+        }
         let Some(v) = self.view(view) else { return vec![] };
         let mut out: Vec<DimCandidate> = vec![];
         let want_open = match s.opening_ref {

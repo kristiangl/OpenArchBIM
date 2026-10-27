@@ -5,6 +5,7 @@ pub mod annotation;
 pub mod curve;
 pub mod datum;
 pub mod detail;
+pub mod dimelev;
 pub mod dimension;
 pub mod doc;
 pub mod edit;

@@ -955,9 +955,41 @@ impl Document {
         Some(ElevFrame { origin: [m.position.x, m.position.y], look: [look.x, look.y], right: [right.x, right.y], left_mm: l, right_mm: r, depth_mm: depth, z_min: z0 - 1500.0, z_max: z1 + 1500.0 })
     }
 
+    /// The plan footprint of each wall that is not hidden, as pieces (one per joined polygon, one per run of a curved
+    /// wall).
+    pub(crate) fn wall_footprint_pieces(&self, hidden: &dyn Fn(Id) -> bool) -> std::collections::BTreeMap<Id, Vec<Vec<Point>>> {
+        let mut wall_pieces: std::collections::BTreeMap<Id, Vec<Vec<Point>>> = Default::default();
+        let polys = self.wall_polygons();
+        for (id, e) in self.iter() {
+            let Element::Wall(w) = e else { continue };
+            if hidden(id) {
+                continue;
+            }
+            let pieces: Vec<Vec<Point>> = if w.curve.is_none() {
+                polys.get(&id).cloned().into_iter().collect()
+            } else {
+                let path = w.path();
+                let (el, er) = self.wall_extents(w);
+                (1..path.pts.len())
+                    .filter_map(|i| {
+                        let (a, b) = (path.pts[i - 1], path.pts[i]);
+                        let l = a.dist(&b);
+                        if l < 1e-6 {
+                            return None;
+                        }
+                        let n = Point::new(-(b.y - a.y) / l, (b.x - a.x) / l);
+                        Some(vec![Point::new(a.x + n.x * el, a.y + n.y * el), Point::new(b.x + n.x * el, b.y + n.y * el), Point::new(b.x - n.x * er, b.y - n.y * er), Point::new(a.x - n.x * er, a.y - n.y * er)])
+                    })
+                    .collect()
+            };
+            wall_pieces.insert(id, pieces);
+        }
+        wall_pieces
+    }
+
     /// The lines temporary dimensions in an elevation can use (see `ElevRef`): the boundaries of walls seen end on,
     /// the ends and top and bottom of every wall, the edges, sills and heads of openings and the edges of floors.
-    fn elevation_refs(
+    pub(crate) fn elevation_refs(
         &self,
         frame: &ElevFrame,
         wall_pieces: &std::collections::BTreeMap<Id, Vec<Vec<Point>>>,
@@ -1130,7 +1162,8 @@ impl Document {
             }
             grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], pinned: g.pinned });
         }
-        let refs = if section.is_some() { vec![] } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };
+        // a section is drawn run by run, so its reference lines are worked out across the whole view
+        let refs = if section.is_some() { self.elevation_dim_lines(view).map(|e| e.refs).unwrap_or_default() } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };
         Ok(ElevationData { view_id: view, name: v.name.clone(), frame, scale: v.settings.scale as f64, levels, grids, items, refs, visual_style: settings.visual_style, folds })
     }
 
@@ -1149,32 +1182,7 @@ impl Document {
         let visible = |dmin: f64, dmax: f64| dmax > near && dmin < far;
         let hidden = |id: Id| v.hidden_elements.contains(&id);
         // walls: one rectangle per footprint piece
-        let mut wall_pieces: std::collections::BTreeMap<Id, Vec<Vec<Point>>> = Default::default();
-        let polys = self.wall_polygons();
-        for (id, e) in self.iter() {
-            let Element::Wall(w) = e else { continue };
-            if hidden(id) {
-                continue;
-            }
-            let pieces: Vec<Vec<Point>> = if w.curve.is_none() {
-                polys.get(&id).cloned().into_iter().collect()
-            } else {
-                let path = w.path();
-                let (el, er) = self.wall_extents(w);
-                (1..path.pts.len())
-                    .filter_map(|i| {
-                        let (a, b) = (path.pts[i - 1], path.pts[i]);
-                        let l = a.dist(&b);
-                        if l < 1e-6 {
-                            return None;
-                        }
-                        let n = Point::new(-(b.y - a.y) / l, (b.x - a.x) / l);
-                        Some(vec![Point::new(a.x + n.x * el, a.y + n.y * el), Point::new(b.x + n.x * el, b.y + n.y * el), Point::new(b.x - n.x * er, b.y - n.y * er), Point::new(a.x - n.x * er, a.y - n.y * er)])
-                    })
-                    .collect()
-            };
-            wall_pieces.insert(id, pieces);
-        }
+        let wall_pieces = self.wall_footprint_pieces(&hidden);
         // Walls are drawn layer by layer from the joined plan layers, so a layer that runs round a corner
         // is one continuous face. A wall running along the line of sight is filled without an outline.
         struct LayerItem {

@@ -1323,7 +1323,12 @@ impl Session {
             }
             // ---- spot elevations, coordinates and slopes ----
             "spot_surfaces" => {
-                let hits = self.doc.surfaces_at(id_of(p, "view_id")?, point_of(p.get("point").ok_or("missing point")?)?);
+                // an elevation or section takes a pick tolerance (mm), as its lines have no inside to click in
+                let (vid, pt) = (id_of(p, "view_id")?, point_of(p.get("point").ok_or("missing point")?)?);
+                let hits = match p.get("tol").and_then(|v| v.as_f64()) {
+                    Some(tol) if self.doc.is_elevation_like(vid) => self.doc.elevation_spot_hits(vid, pt, tol),
+                    _ => self.doc.surfaces_at(vid, pt),
+                };
                 Ok(json!({ "surfaces": hits }))
             }
             "add_spot" => {
@@ -1554,6 +1559,41 @@ impl Session {
         if let Some(o) = v.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
         }
+        // permanent dimensions, measured in the view's own frame
+        let hidden_here = d.view(vid).map(|x| x.hidden_elements.clone()).unwrap_or_default();
+        let overrides = d.view(vid).map(|x| x.element_overrides.clone()).unwrap_or_default();
+        v["dimensions"] = Value::Array(
+            d.dimensions_in(vid)
+                .into_iter()
+                .filter(|(id, _)| !hidden_here.contains(id))
+                .filter_map(|(id, dm)| {
+                    let style = style_for(d, &settings, "Dimensions", None, overrides.get(&id), "normal", &Hint::default())?;
+                    let draw = d.dimension_draw(id)?;
+                    let ty = d.dimension_type(dm.dim_type).cloned().unwrap_or_else(openarch_model::dimension::DimensionType::standard);
+                    let mut j = serde_json::to_value(&draw).ok()?;
+                    j["style"] = style;
+                    j["type"] = dimension_type_json(&ty);
+                    Some(j)
+                })
+                .collect(),
+        );
+        // spot elevations, standing on the lines the view names
+        v["spots"] = Value::Array(
+            d.spots_in(vid)
+                .into_iter()
+                .filter(|(id, _)| !hidden_here.contains(id))
+                .filter_map(|(id, sp)| {
+                    let style = style_for(d, &settings, "Spot Elevations", None, overrides.get(&id), "normal", &Hint::default())?;
+                    let draw = d.spot_draw(id)?;
+                    let ty = d.spot_type(sp.spot_type).cloned().unwrap_or_else(|| openarch_model::spot::SpotType::new("Spot", sp.kind));
+                    let mut j = serde_json::to_value(&draw).ok()?;
+                    j["style"] = style;
+                    j["type"] = spot_type_json(&ty);
+                    j["category"] = json!("Spot Elevations");
+                    Some(j)
+                })
+                .collect(),
+        );
         let Some(view) = d.view(vid).filter(|x| x.section.is_some()) else { return Ok(v) };
         let mut items: Vec<Value> = vec![];
         for (it, mut j) in data.items.iter().zip(v["items"].as_array().cloned().unwrap_or_default()) {
@@ -2859,6 +2899,73 @@ mod tests {
         assert!(s.handle("add_dimension", &json!({"view_id": view, "kind": "angular", "refs": refs, "line_point": [0, 0]})).is_err(), "one curved reference is not an angle");
         call(&mut s, "delete", json!({"ids": [w]}));
         assert!(call(&mut s, "plan", json!({"view_id": view}))["dimensions"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
+    fn dimensions_in_a_section_measure_levels_walls_and_tops_and_move_them() {
+        let (mut s, lvl, wt, _) = setup();
+        for (a, b) in [([0, 0], [8000, 0]), ([8000, 0], [8000, 6000]), ([8000, 6000], [0, 6000]), ([0, 6000], [0, 0])] {
+            call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": a, "end": b, "height": 2700.0}));
+        }
+        let sv = call(&mut s, "add_section", json!({"level_id": lvl, "start": [-1000, 3000], "end": [9000, 3000]}))["view_id"].as_u64().unwrap();
+        let data = call(&mut s, "elevation", json!({"view_id": sv}));
+        // a section now offers reference lines: the faces of the two walls it cuts, and their tops
+        let refs = data["refs"].as_array().unwrap().clone();
+        let faces: Vec<&Value> = refs.iter().filter(|r| r["vertical"] == true && r["key"].as_str().unwrap().starts_with("w:")).collect();
+        assert!(faces.len() >= 4, "{refs:?}");
+        let (left, right) = (faces.iter().min_by(|a, b| a["pos"].as_f64().unwrap().total_cmp(&b["pos"].as_f64().unwrap())).unwrap(), faces.iter().max_by(|a, b| a["pos"].as_f64().unwrap().total_cmp(&b["pos"].as_f64().unwrap())).unwrap());
+        let er = |r: &Value| json!({"spec": {"kind": "elev", "id": r["id"], "key": r["key"]}});
+        let d = call(&mut s, "add_dimension", json!({"view_id": sv, "kind": "aligned", "refs": [er(left), er(right)], "line_point": [4000, 3500]}))["id"].as_u64().unwrap();
+        let dims = call(&mut s, "elevation", json!({"view_id": sv}))["dimensions"].clone();
+        let width = dims[0]["segments"][0]["value_mm"].as_f64().unwrap();
+        assert!((width - (right["pos"].as_f64().unwrap() - left["pos"].as_f64().unwrap())).abs() < 0.5 && width > 7000.0, "{dims}");
+        // round kinds stay in plans
+        assert!(s.handle("add_dimension", &json!({"view_id": sv, "kind": "radial", "refs": [er(left)], "line_point": [0, 0]})).is_err());
+        // a level to the top of a wall: typing the value changes the wall's height only
+        let wall = left["id"].as_u64().unwrap();
+        let top = refs.iter().find(|r| r["id"].as_u64() == Some(wall) && r["key"] == "top").unwrap();
+        let t = call(&mut s, "add_dimension", json!({"view_id": sv, "kind": "aligned", "refs": [{"spec": {"kind": "level", "id": lvl}}, er(top)], "line_point": [-500, 1000]}))["id"].as_u64().unwrap();
+        call(&mut s, "set_dimension_value", json!({"id": t, "segment": 0, "value": 3000}));
+        let w = call(&mut s, "describe", json!({"id": wall}));
+        let z = call(&mut s, "elevation", json!({"view_id": sv}))["refs"].as_array().unwrap().iter().find(|r| r["id"].as_u64() == Some(wall) && r["key"] == "top").unwrap()["pos"].as_f64().unwrap();
+        let base = call(&mut s, "elevation", json!({"view_id": sv}))["refs"].as_array().unwrap().iter().find(|r| r["id"].as_u64() == Some(wall) && r["key"] == "bottom").unwrap()["pos"].as_f64().unwrap();
+        assert!((z - base - 3000.0).abs() < 0.5, "top {z} base {base} {w}");
+        // locked: the width between the two cut walls holds, so moving the right wall drags the left one along
+        call(&mut s, "patch_dimension", json!({"id": d, "patch": {"segments": [{"index": 0, "locked": true}]}}));
+        let pos = |s: &mut Session, r: &Value| call(s, "elevation", json!({"view_id": sv}))["refs"].as_array().unwrap().iter().find(|x| x["id"] == r["id"] && x["key"] == r["key"]).unwrap()["pos"].as_f64().unwrap();
+        let l0 = pos(&mut s, left);
+        call(&mut s, "transform", json!({"kind": "move", "ids": [right["id"]], "dx": 300, "dy": 0}));
+        let l1 = pos(&mut s, left);
+        assert!(((l1 - l0).abs() - 300.0).abs() < 0.5, "the left wall followed: {l0} -> {l1}");
+        let held = call(&mut s, "elevation", json!({"view_id": sv}))["dimensions"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(d)).unwrap()["segments"][0]["value_mm"].as_f64().unwrap();
+        assert!((held - width).abs() < 0.5);
+        // undo takes the move and what the lock did back together
+        call(&mut s, "undo", json!({}));
+        assert!((pos(&mut s, left) - l0).abs() < 0.5);
+        let _ = d;
+    }
+
+    #[test]
+    fn spot_elevations_in_a_section_stand_on_lines_and_follow_them() {
+        let (mut s, lvl, wt, _) = setup();
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 6000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let sv = call(&mut s, "add_section", json!({"level_id": lvl, "start": [-1000, 3000], "end": [3000, 3000]}))["view_id"].as_u64().unwrap();
+        let u = call(&mut s, "elevation", json!({"view_id": sv}))["refs"].as_array().unwrap().iter().find(|r| r["id"].as_u64() == Some(w) && r["key"] == "top").unwrap()["lo"].as_f64().unwrap() + 50.0;
+        let hits = call(&mut s, "spot_surfaces", json!({"view_id": sv, "point": [u, 2690], "tol": 40}));
+        let top = hits["surfaces"].as_array().unwrap().iter().find(|h| h["host"].as_u64() == Some(w)).cloned().expect("the wall top is under the cursor");
+        assert_eq!(top["surface"], "top");
+        assert!(s.handle("add_spot", &json!({"view_id": sv, "kind": "slope", "target": [u, 2700], "host": w, "surface": "top", "shoulder": [500, 400]})).is_err(), "slopes stay in plans");
+        let sp = call(&mut s, "add_spot", json!({"view_id": sv, "kind": "elevation", "target": [u, 2690], "host": w, "surface": "top", "shoulder": [500, 400]}))["id"].as_u64().unwrap();
+        let read = |s: &mut Session| { let e = call(s, "elevation", json!({"view_id": sv})); let x = e["spots"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(sp)).unwrap().clone(); x };
+        let first = read(&mut s);
+        assert_eq!(first["value"].as_f64(), Some(2700.0), "{first}");
+        assert_eq!(first["target"][1].as_f64(), Some(2700.0), "the point sits on the line");
+        call(&mut s, "patch_wall", json!({"id": w, "patch": {"height_mm": 3100.0}}));
+        let later = read(&mut s);
+        assert!(later["value"].as_f64() == Some(3100.0) && later["target"][1].as_f64() == Some(3100.0), "{later}");
+        // moving the wall across the view carries the spot with it
+        call(&mut s, "transform", json!({"ids": [w], "kind": "move", "dx": 200.0, "dy": 0.0}));
+        assert!((read(&mut s)["target"][0].as_f64().unwrap() - (u + 200.0)).abs() < 0.5);
     }
 
     #[test]
