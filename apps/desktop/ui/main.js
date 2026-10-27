@@ -236,6 +236,8 @@ function modifyEnabled(id) {
     if (id === "del") return app.selection.length > 0;
     return ["mv", "cp", "al"].includes(id);
   }
+  // the 3D view moves, copies and turns the selection on the level plane
+  if (app.view.kind === "3d" && ["mv", "cp", "ro"].includes(id)) return app.selection.length > 0;
   if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
   if (id === "del") return app.selection.length > 0;
   // a Modify tool picked while another tool runs takes over from it, as it always has
@@ -1384,7 +1386,54 @@ function toggleProperties() {
 }
 
 const ELEV_EDIT = new Set(["move", "copy", "align"]);
+// Move, Copy and Rotate in the 3D view. Points are picked where the line of sight meets the plane of the current
+// level; the selection moves in plan (heights stay). Move and Copy: a base point, then where it goes. Rotate: the
+// centre, a point that gives the start direction, then the end direction. Esc cancels.
+let ed3 = null; // { tool, pts: [[x, y] mm], z: metres }
+function start3DEdit(name) {
+  if (!app.selection.length) { setPrompt(`Select what to ${name}, then pick ${EDIT_PROMPT[name]}.`, true); return; }
+  ed3 = { tool: name, pts: [], z: (currentLevel().elevation_mm || 0) / 1000 };
+  $("#viewport").style.cursor = "crosshair";
+  setPrompt(ed3Prompt());
+}
+function ed3Prompt() {
+  if (!ed3) return "";
+  const n = ed3.pts.length, name = EDIT_PROMPT[ed3.tool];
+  if (ed3.tool === "rotate") return [`${name}: click the centre of rotation (on the level plane). Esc cancels.`, `${name}: click to set the start direction.`, `${name}: click to set the end direction.`][n];
+  return n ? `${name}: click where the base point goes.` : `${name}: click the base point (on the level plane). Esc cancels.`;
+}
+function end3DEdit(msg) { ed3 = null; $("#viewport").style.cursor = ""; if (msg) setPrompt(msg); }
+async function click3DEdit(sx, sy) {
+  const g = app.vp && app.vp.groundAt(sx, sy, ed3.z);
+  if (!g) { setPrompt("Click on the model or the ground in front of the camera.", true); return; }
+  ed3.pts.push([Math.round(g[0] * 1000), Math.round(g[1] * 1000)]);
+  const P = ed3.pts, ids = [...app.selection];
+  if (ed3.tool !== "rotate" && P.length === 2) {
+    const r = await run("transform", { kind: "move", ids, dx: P[1][0] - P[0][0], dy: P[1][1] - P[0][1], copy: ed3.tool === "copy", disjoin: false });
+    const done = ed3.tool;
+    end3DEdit();
+    if (r) { await refresh(); if (done === "copy" && r.ids) { app.selection = r.ids; app.vp?.setSelection(r.ids); renderProperties(); } setPrompt(`${EDIT_PROMPT[done]} done.`); }
+    return;
+  }
+  if (ed3.tool === "rotate" && P.length === 3) {
+    const a0 = Math.atan2(P[1][1] - P[0][1], P[1][0] - P[0][0]), a1 = Math.atan2(P[2][1] - P[0][1], P[2][0] - P[0][0]);
+    const deg = Math.round(((a1 - a0) * 180) / Math.PI * 100) / 100;
+    const r = await run("transform", { kind: "rotate", ids, cx: P[0][0], cy: P[0][1], angle_deg: deg, copy: false, disjoin: false });
+    end3DEdit();
+    if (r) { await refresh(); setPrompt(`Rotated ${deg}\u00B0.`); }
+    return;
+  }
+  setPrompt(ed3Prompt());
+}
+// Esc leaves a 3D Modify tool before anything else sees the key
+document.addEventListener("keydown", (e) => { if (ed3 && e.key === "Escape") { e.stopPropagation(); end3DEdit("Cancelled."); } }, true);
+
 async function startEditTool(name) {
+  if (app.view.kind === "3d") {
+    if (["move", "copy", "rotate"].includes(name)) start3DEdit(name);
+    else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views; Move, Copy and Rotate work here.`, true);
+    return;
+  }
   // Modify tools work where the person is: in an elevation Move, Copy and Align run in the view
   if (app.view.kind === "elevation") {
     if (ELEV_EDIT.has(name)) { Elev.setSelection(app.selection); Elev.setTool(name); }
@@ -1668,6 +1717,8 @@ Elev.callbacks.place = async (tool, u, z) => {
   const r = await run("place_in_elevation", { view_id: app.view.viewId, type_id: placeTypeId(tool), u, z, flip_hand: [false, true, true, false][app.placeFlip || 0] });
   if (r) { noteTypeUsed(placeTypeId(tool)); await refresh(); setPrompt(r.warning ? `Placed a ${tool}. ${r.warning}` : `Placed a ${tool}. Click another wall or press Esc.`); }
 };
+// the width and height of the door or window about to be placed, for the elevation's preview
+Elev.callbacks.placeSize = (tool) => { const t = app.info.family_types.find((x) => x.id === placeTypeId(tool)); return t ? { w: t.width || 900, h: t.height || 2100 } : null; };
 Elev.callbacks.leaveDetail = () => leaveDetailLines();
 Elev.callbacks.editDetail = (id) => startDetailLines(id, "select");
 Elev.callbacks.editRegion = (id) => startRegionSketch(null, id);
@@ -2424,6 +2475,7 @@ async function initViewport() {
     const vp = await Viewport.init($("#viewport"), (fps, ms) => { $("#fps").textContent = app.vp && app.vp.backend === "WebGL2" ? `${fps.toFixed(0)} fps (WebGL2)` : `${fps.toFixed(0)} fps, GPU ${ms.toFixed(1)} ms/frame`; });
     app.vp = window.__vp = vp;
     // clicking in the 3D view selects like the plan does: Shift or Ctrl adds, empty space clears
+    vp.onClick((x, y) => { if (!ed3) return false; click3DEdit(x, y); return true; });
     vp.onPick((id, additive) => {
       let ids = additive ? [...app.selection] : [];
       if (id !== null) ids = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];

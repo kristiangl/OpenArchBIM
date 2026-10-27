@@ -10,7 +10,7 @@ const Elev = (() => {
     select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
     addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
-    dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {},
+    dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
   };
   let data = null;
   let cam = { u: 0, z: 1500, s: 0.1 }; // centre (mm along the view's right axis, mm of height) and pixels per mm
@@ -772,6 +772,7 @@ const Elev = (() => {
     drawEdit();
     EDims.draw(data.dimensions || [], sel, hoverIds);
     if (tool === "dimension") EDims.drawTool();
+    if ((tool === "door" || tool === "window") && mouse) drawOpeningGhost(accent);
     ESpots.draw(data.spots || [], sel, hoverIds);
     if (tool === "spot") ESpots.drawTool();
     drawDims();
@@ -793,6 +794,20 @@ const Elev = (() => {
       ctx.fillStyle = "#222"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.fillText(hover.label, s2.x + 14, s2.y + 20);
     }
     label(data.name, 10, 14, css("--muted"), "left", true);
+  }
+
+  // The opening about to be placed: its width centred on the cursor; a window's sill at the cursor, a door standing on
+  // the level line below it. The model decides the wall and the exact place when clicked.
+  function drawOpeningGhost(accent) {
+    const size = cb.placeSize(tool);
+    if (!size) return;
+    const p = toWorld(mouse.x, mouse.y);
+    const below = data.levels.map((l) => l.z).filter((z) => z <= p.z + 1).sort((a, b) => b - a)[0];
+    const z0 = tool === "door" ? (below ?? p.z) : Math.round(p.z / 10) * 10;
+    const a = toScreen(p.u - size.w / 2, z0 + size.h), c = toScreen(p.u + size.w / 2, z0);
+    ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.4; ctx.setLineDash([6, 4]);
+    ctx.strokeRect(a.x, a.y, c.x - a.x, c.y - a.y); ctx.restore();
+    if (tool === "window") label(`Sill ${fmtElev(z0 - datum())}`, c.x + 6, c.y - 4, accent);
   }
 
   // ---- inline editing of a level's name or elevation -------------------------------------
@@ -872,6 +887,7 @@ const Elev = (() => {
     if (ESpots.dragging) { ESpots.dragMove(e.offsetX, e.offsetY); return; }
     if (tool === "spot") { ESpots.move(e.offsetX, e.offsetY); return; }
     if (tool === "dimension") { const p = toWorld(e.offsetX, e.offsetY); cb.cursor(`${Math.round(p.u)}, ${fmtElev(p.z - datum())}`); EDims.move(e.offsetX, e.offsetY); return; }
+    if (tool === "door" || tool === "window") { const p = toWorld(e.offsetX, e.offsetY); cb.cursor(`${Math.round(p.u)}, ${fmtElev(p.z - datum())}`); render(); return; }
     if (Sketch.gripDragging && tool === "sketch") { hover = snap(e.offsetX, e.offsetY); Sketch.gripMove(e.offsetX, e.offsetY, hover); return; }
     const moved = down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) > 5;
     if (moved && down.drag && !detDrag) detDrag = { ids: down.drag.ids, p0: down.drag.p0, d: { x: 0, y: 0 } };

@@ -624,13 +624,14 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     // orbit / pan / zoom
     let drag = null;
     canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-    let pickHandler = null;
+    let pickHandler = null, clickHook = null;
     canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, button: e.button, pan: e.button !== 0 || e.shiftKey }; });
     canvas.addEventListener("pointerup", (e) => {
       // a left click that did not move is a pick; clicking empty space clears the selection
-      if (drag && drag.button === 0 && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4 && pickHandler) {
-        const r = canvas.getBoundingClientRect();
-        pickHandler(pick(e.clientX - r.left, e.clientY - r.top), e.shiftKey || e.ctrlKey || e.metaKey);
+      if (drag && drag.button === 0 && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) {
+        const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+        // a tool that wants the click (picking a point) takes it instead of the selection
+        if (!(clickHook && clickHook(x, y)) && pickHandler) pickHandler(pick(x, y), e.shiftKey || e.ctrlKey || e.metaKey);
       }
       drag = null;
     });
@@ -702,8 +703,23 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       pick,
       /** Called with (elementId | null, additive) when the user clicks in the view. */
       onPick(fn) { pickHandler = fn; },
+      /** Called with the canvas pixel of a click before the pick; returning true keeps the selection as it is. */
+      onClick(fn) { clickHook = fn; },
       /** Called after each frame is drawn (to draw over the view in step with the camera). */
       onRender(fn) { afterRender = fn; },
+      /** Where the line of sight through a canvas pixel meets the horizontal plane at height `z` (metres), or null. */
+      groundAt(sx, sy, z) {
+        const eye = eyePos(), t = cam.target, w = canvas.clientWidth, h = canvas.clientHeight;
+        const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]], len = (a) => Math.hypot(a[0], a[1], a[2]);
+        const nrm = (a) => { const l = len(a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+        const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        const f = nrm(sub(t, eye)), r = nrm(cross(f, [0, 0, 1])), u = cross(r, f);
+        const k = Math.tan(0.9 / 2), nx = (sx / w) * 2 - 1, ny = 1 - (sy / h) * 2;
+        const d = [0, 1, 2].map((i) => f[i] + r[i] * nx * k * (w / h) + u[i] * ny * k);
+        if (Math.abs(d[2]) < 1e-9) return null;
+        const s = (z - eye[2]) / d[2];
+        return s > 0 ? [eye[0] + d[0] * s, eye[1] + d[1] * s] : null;
+      },
       /** Canvas pixel of a world point, for tests. */
       project(p) {
         const eye = eyePos(), vp = mat.mul(mat.perspective(0.9, canvas.clientWidth / canvas.clientHeight, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));
