@@ -1167,7 +1167,12 @@ pub fn group_props(d: &Document, id: Id, g: &openarch_model::group::GroupInstanc
     let detail = d.group_type(g.group_type).is_some_and(|t| t.kind == openarch_model::group::GroupKind::Detail);
     let constraints = if detail {
         let view = g.frame.view.and_then(|v| d.view(v)).map(|v| v.name.clone()).unwrap_or_default();
-        vec![ro("Owner View", view), boolean("Pinned", "pinned", g.pinned, true)]
+        let mut c = vec![ro("Owner View", view)];
+        if let Some(t) = d.group_type(g.group_type).and_then(|t| t.attached_to).and_then(|t| d.group_type(t)) {
+            c.push(ro("Attached to", t.name.clone()));
+        }
+        c.push(boolean("Pinned", "pinned", g.pinned, true));
+        c
     } else {
         let level = d.level(g.frame.level).map(|l| l.name.clone()).unwrap_or_default();
         vec![ro("Reference Level", level), ro("Origin Level Offset", "0"), boolean("Pinned", "pinned", g.pinned, true)]

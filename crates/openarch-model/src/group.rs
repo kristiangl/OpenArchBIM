@@ -1,6 +1,8 @@
 //! Groups: a set of elements defined once (the group type) and placed many times (group
 //! instances). A model group holds walls, floors, roofs, doors, windows and components; a
 //! detail group holds one view's detail lines, regions and text notes and is placed in a view.
+//! An attached detail group belongs to a model group type: its dimensions and spot annotations
+//! measure members of that model group, and each model instance shows it, or not, view by view.
 //!
 //! Members are ordinary elements in the document, so joins, hosting, drawing and
 //! quantities work on them unchanged. The instance records which element plays
@@ -17,8 +19,11 @@ use serde::{Deserialize, Serialize};
 use crate::doc::Document;
 use crate::edit::{EditOptions, Xform};
 use crate::element::*;
+use crate::dimension::Dimension;
 use crate::family::HostRef;
 use crate::geom::Point;
+use crate::tempdim::RefSpec;
+use crate::view::ViewKind;
 
 /// Where an instance sits: its origin, turn about Z, whether it is mirrored, and its reference
 /// level (a model group) or the view it is drawn in (a detail group, whose `level` is 0).
@@ -98,6 +103,11 @@ pub struct GroupType {
     pub name: String,
     #[serde(default)]
     pub kind: GroupKind,
+    /// An attached detail group: the model group type it annotates, and the kind of view it is drawn in.
+    #[serde(default)]
+    pub attached_to: Option<Id>,
+    #[serde(default)]
+    pub view_kind: Option<ViewKind>,
     /// The frame `members` were captured in.
     pub frame: GroupFrame,
     pub members: Vec<GroupMember>,
@@ -114,6 +124,9 @@ pub struct GroupInstance {
     pub excluded: BTreeSet<Id>,
     #[serde(default)]
     pub pinned: bool,
+    /// An attached detail group: the model group instance it is shown for.
+    #[serde(default)]
+    pub parent: Option<Id>,
 }
 
 impl GroupInstance {
@@ -131,20 +144,27 @@ fn detail_item(e: &Element) -> bool {
     matches!(e, Element::DetailLine(_) | Element::DetailRegion(_) | Element::TextNote(_))
 }
 
-/// What may go in a group of this kind.
-fn fits_kind(kind: GroupKind, e: &Element) -> bool {
+/// Dimensions and spot annotations: they measure elements, so they only go in an attached detail group.
+fn annotation(e: &Element) -> bool {
+    matches!(e, Element::Dimension(_) | Element::Spot(_))
+}
+
+/// What may go in a group of this kind (`attached`: an attached detail group).
+fn fits_kind(kind: GroupKind, attached: bool, e: &Element) -> bool {
     match kind {
         GroupKind::Model => groupable(e),
-        GroupKind::Detail => detail_item(e),
+        GroupKind::Detail => detail_item(e) || (attached && annotation(e)),
     }
 }
 
-/// The view a detail item is drawn in.
+/// The view a detail item, dimension or spot is drawn in.
 fn detail_view(e: &Element) -> Option<Id> {
     match e {
         Element::DetailLine(l) => Some(l.view),
         Element::DetailRegion(r) => Some(r.view),
         Element::TextNote(t) => Some(t.view),
+        Element::Dimension(d) => Some(d.view),
+        Element::Spot(s) => Some(s.view),
         _ => None,
     }
 }
@@ -154,7 +174,78 @@ fn set_detail_view(e: &mut Element, view: Id) {
         Element::DetailLine(l) => l.view = view,
         Element::DetailRegion(r) => r.view = view,
         Element::TextNote(t) => t.view = view,
+        Element::Dimension(d) => d.view = view,
+        Element::Spot(s) => s.view = view,
         _ => {}
+    }
+}
+
+/// Give a dimension's or spot's measured elements through `f` (key to element, or element to key).
+/// False when one cannot be given: it measures something outside the group, or a level or grid.
+fn map_measured(e: &mut Element, f: &dyn Fn(Id) -> Option<Id>) -> bool {
+    match e {
+        Element::Dimension(d) => {
+            for r in &mut d.refs {
+                let id = match &mut r.spec {
+                    RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Elev { id, .. } => id,
+                    RefSpec::Grid { .. } | RefSpec::Level { .. } => return false,
+                };
+                match f(*id) {
+                    Some(n) => *id = n,
+                    None => return false,
+                }
+            }
+            true
+        }
+        Element::Spot(s) => match s.host {
+            Some(h) => match f(h) {
+                Some(n) => {
+                    s.host = Some(n);
+                    true
+                }
+                None => false,
+            },
+            None => true,
+        },
+        _ => true,
+    }
+}
+
+/// Carry a dimension or spot (in a plan) through a Move, Rotate or Mirror. A mirror reverses which side of a
+/// wall is its left, so a wall reference's offset changes sign.
+fn xform_annotation(e: &mut Element, x: Xform) {
+    let ap = |p: [f64; 2]| {
+        let q = x.apply(Point::new(p[0], p[1]));
+        [q.x, q.y]
+    };
+    let o = x.apply(Point::new(0.0, 0.0));
+    let av = |v: [f64; 2]| {
+        let q = x.apply(Point::new(v[0], v[1]));
+        [q.x - o.x, q.y - o.y]
+    };
+    let mirror = matches!(x, Xform::Mirror { .. });
+    match e {
+        Element::Dimension(d) => {
+            d.line_point = ap(d.line_point);
+            d.dir = av(d.dir);
+            for r in &mut d.refs {
+                r.pick = r.pick.map(ap);
+                if let (true, RefSpec::Wall { offset, .. }) = (mirror, &mut r.spec) {
+                    *offset = -*offset;
+                }
+            }
+        }
+        Element::Spot(s) => s.target = x.apply(s.target),
+        _ => {}
+    }
+}
+
+fn view_kind_label(k: ViewKind) -> &'static str {
+    match k {
+        ViewKind::CeilingPlan => "Ceiling Plan",
+        ViewKind::StructuralPlan => "Structural Plan",
+        ViewKind::AreaPlan => "Area Plan",
+        _ => "Floor Plan",
     }
 }
 
@@ -184,6 +275,8 @@ fn set_pinned(e: &mut Element, pinned: bool) {
         Element::DetailLine(l) => l.pinned = pinned,
         Element::DetailRegion(r) => r.pinned = pinned,
         Element::TextNote(t) => t.pinned = pinned,
+        Element::Dimension(d) => d.pinned = pinned,
+        Element::Spot(s) => s.pinned = pinned,
         _ => {}
     }
 }
@@ -319,7 +412,11 @@ impl Document {
     /// Copy a type's members into the document at `to`, leaving out the keys in `skip`. A hosted
     /// member whose wall is left out is left out too, unless `existing` gives the wall's element.
     /// Returns key to new element id.
-    fn paste_members(&mut self, ty: &GroupType, to: &GroupFrame, skip: &BTreeSet<Id>, existing: &BTreeMap<Id, Id>, notes: &mut Vec<String>) -> Result<BTreeMap<Id, Id>, String> {
+    /// `parent`: the model instance an attached detail group is shown for; its dimensions and spots measure
+    /// that instance's members, and one whose element is excluded there is left out.
+    fn paste_members(&mut self, ty: &GroupType, to: &GroupFrame, skip: &BTreeSet<Id>, existing: &BTreeMap<Id, Id>, parent: Option<Id>, notes: &mut Vec<String>) -> Result<BTreeMap<Id, Id>, String> {
+        let parent_members: BTreeMap<Id, Id> = parent.and_then(|p| self.group_instance(p)).map(|g| g.live(self).into_iter().collect()).unwrap_or_default();
+        let moves = ty.frame.steps_to(to);
         let steps = match ty.kind {
             GroupKind::Detail => 0,
             GroupKind::Model => match (self.level_index(ty.frame.level), self.level_index(to.level)) {
@@ -329,8 +426,23 @@ impl Document {
         };
         let mut plain = vec![];
         let mut hosted = vec![];
+        let mut measuring = vec![];
         for m in &ty.members {
             if skip.contains(&m.key) {
+                continue;
+            }
+            if annotation(&m.element) {
+                let mut e = fresh(&m.element);
+                if !map_measured(&mut e, &|k| parent_members.get(&k).copied()) {
+                    continue;
+                }
+                for x in &moves {
+                    xform_annotation(&mut e, *x);
+                }
+                if let Some(v) = to.view {
+                    set_detail_view(&mut e, v);
+                }
+                measuring.push((m.key, e));
                 continue;
             }
             let mut e = fresh(&m.element);
@@ -360,11 +472,38 @@ impl Document {
         })?;
         let ids: Vec<Id> = map.values().copied().collect();
         if !ids.is_empty() {
-            for x in ty.frame.steps_to(to) {
-                self.transform_elements_inner(&ids, x, EditOptions { copy: false, disjoin: true })?;
+            for x in &moves {
+                self.transform_elements_inner(&ids, *x, EditOptions { copy: false, disjoin: true })?;
             }
         }
+        // dimensions and spots were carried to their place already; a dimension starts from what it measures there
+        if !measuring.is_empty() {
+            let mut map = map;
+            let added = self.transact("Place group", |tx| {
+                let mut out = vec![];
+                for (k, mut e) in measuring {
+                    if let Element::Dimension(d) = &mut e {
+                        tx.doc_ref().refresh_solved(d);
+                    }
+                    out.push((k, tx.add(e)));
+                }
+                Ok(out)
+            })?;
+            map.extend(added);
+            return Ok(map);
+        }
         Ok(map)
+    }
+
+    /// Where a dimension's references stand now, as the constraint solver starts from.
+    pub(crate) fn refresh_solved(&self, d: &mut Dimension) {
+        if d.kind.is_chain() {
+            if let Ok(m) = self.measure(d) {
+                d.solved = m.pos;
+            }
+        } else if let Ok(v) = self.round_value(d) {
+            d.solved = vec![v];
+        }
     }
 
     /// Make a group from the selected elements (Create Group): a model group from model elements, or
@@ -378,7 +517,7 @@ impl Document {
         let mut datums = 0;
         for &id in ids {
             match self.get(id) {
-                Some(e) if groupable(e) || detail_item(e) => {
+                Some(e) if groupable(e) || detail_item(e) || annotation(e) => {
                     if self.group_of(id).is_some() {
                         return Err("an element in the selection is already in a group".into());
                     }
@@ -399,8 +538,35 @@ impl Document {
             notes.push(format!("{left_out} item(s) that cannot go in a group were left out"));
         }
         let kind = if model.is_empty() { GroupKind::Detail } else { GroupKind::Model };
+        // with model elements, the view's items make an attached detail group (in a plan); alone, a detail group
+        // takes no dimensions or spots, since what they measure is not in it
+        let mut attach: Vec<Id> = vec![];
+        let mut attach_view = None;
         if kind == GroupKind::Model && !detail.is_empty() {
-            notes.push("detail items were left out: groups holding both model and detail items come next".to_string());
+            let views: BTreeSet<Id> = detail.iter().filter_map(|i| self.get(*i).and_then(detail_view)).collect();
+            if views.len() > 1 {
+                return Err("the detail items, dimensions and spots of a group must all be in one view".into());
+            }
+            let v = views.into_iter().next().unwrap();
+            if !self.view(v).is_some_and(|x| x.view_kind.is_plan()) {
+                notes.push("the view's items were left out: attached detail groups are made in plan views for now".to_string());
+            } else {
+                let members: BTreeSet<Id> = model.iter().copied().collect();
+                for &i in &detail {
+                    let mut e = self.get(i).unwrap().clone();
+                    if !map_measured(&mut e, &|id| members.contains(&id).then_some(id)) {
+                        return Err("a dimension or spot in the selection measures something outside the group: leave it out, or select what it measures too".into());
+                    }
+                }
+                attach = std::mem::take(&mut detail);
+                attach_view = Some(v);
+            }
+        } else if kind == GroupKind::Detail {
+            let before = detail.len();
+            detail.retain(|i| !self.get(*i).is_some_and(annotation));
+            if detail.len() < before {
+                notes.push("dimensions and spots go in a group only with what they measure, so they were left out".to_string());
+            }
         }
         let members = if kind == GroupKind::Model { model } else { detail };
         if members.is_empty() {
@@ -444,13 +610,34 @@ impl Document {
             (_, None) => self.lowest_member_level(&members).ok_or("the group's members have no level")?,
         };
         let frame = GroupFrame { origin, angle_deg: 0.0, mirrored: false, level, view };
-        let mut inst = GroupInstance { group_type: 0, frame, members: members.iter().map(|&i| (i, i)).collect(), excluded: BTreeSet::new(), pinned: false };
-        let ty = GroupType { name, kind, frame, members: self.capture(&inst) };
-        let id = self.transact("Create group", |tx| {
+        let mut inst = GroupInstance { group_type: 0, frame, members: members.iter().map(|&i| (i, i)).collect(), excluded: BTreeSet::new(), pinned: false, parent: None };
+        let ty = GroupType { name: name.clone(), kind, attached_to: None, view_kind: None, frame, members: self.capture(&inst)? };
+        self.grouped("Create group", |d| {
+            let id = d.transact("Create group", |tx| {
+                inst.group_type = tx.add(Element::GroupType(ty));
+                Ok(tx.add(Element::GroupInstance(inst.clone())))
+            })?;
+            if let Some(v) = attach_view {
+                d.attach_new(id, inst.group_type, &name, v, &attach)?;
+            }
+            Ok((id, notes))
+        })
+    }
+
+    /// Make the attached detail group of a new model group from the items it was created with, in view `v`.
+    fn attach_new(&mut self, parent: Id, parent_type: Id, parent_name: &str, v: Id, items: &[Id]) -> Result<Id, String> {
+        let vk = self.view(v).map(|x| x.view_kind).unwrap_or_default();
+        let base = format!("{parent_name} - {}", view_kind_label(vk));
+        let names: BTreeSet<String> = self.group_types().iter().map(|(_, t)| t.name.clone()).collect();
+        let name = if names.contains(&base) { (2..).map(|n| format!("{base} {n}")).find(|n| !names.contains(n)).unwrap() } else { base };
+        let pf = self.group_instance(parent).unwrap().frame;
+        let frame = GroupFrame { level: 0, view: Some(v), ..pf };
+        let mut inst = GroupInstance { group_type: 0, frame, members: items.iter().map(|&i| (i, i)).collect(), excluded: BTreeSet::new(), pinned: false, parent: Some(parent) };
+        let ty = GroupType { name, kind: GroupKind::Detail, attached_to: Some(parent_type), view_kind: Some(vk), frame, members: self.capture(&inst)? };
+        self.transact("Create group", |tx| {
             inst.group_type = tx.add(Element::GroupType(ty));
             Ok(tx.add(Element::GroupInstance(inst)))
-        })?;
-        Ok((id, notes))
+        })
     }
 
     fn lowest_member_level(&self, members: &[Id]) -> Option<Id> {
@@ -472,9 +659,11 @@ impl Document {
         (1..).map(|n| format!("{} {n}", kind.label())).find(|n| !names.contains(n)).unwrap()
     }
 
-    /// The members of an instance as they stand now, with hosts given by key.
-    fn capture(&self, inst: &GroupInstance) -> Vec<GroupMember> {
+    /// The members of an instance as they stand now, with hosts (and an attached group's measured elements)
+    /// given by key.
+    fn capture(&self, inst: &GroupInstance) -> Result<Vec<GroupMember>, String> {
         let key_of: BTreeMap<Id, Id> = inst.members.iter().map(|(k, id)| (*id, *k)).collect();
+        let parent_key: BTreeMap<Id, Id> = inst.parent.and_then(|p| self.group_instance(p)).map(|g| g.members.iter().map(|(k, id)| (*id, *k)).collect()).unwrap_or_default();
         let mut out = vec![];
         for (k, id) in &inst.members {
             let Some(e) = self.get(*id) else { continue };
@@ -486,15 +675,21 @@ impl Document {
                     i.host = Some(HostRef { wall: wk, u_mm: h.u_mm });
                 }
             }
+            if annotation(&e) && !map_measured(&mut e, &|id| parent_key.get(&id).copied()) {
+                return Err("a dimension or spot in the group measures something outside its model group".into());
+            }
             out.push(GroupMember { key: *k, element: e });
         }
-        out
+        Ok(out)
     }
 
     /// Place an instance of a group type with its origin at `at`, turned by `angle_deg`: a model group
     /// on the level `target`, a detail group in the view `target`.
     pub fn place_group(&mut self, group_type: Id, at: Point, target: Id, angle_deg: f64) -> Result<(Id, Vec<String>), String> {
         let ty = self.group_type(group_type).cloned().ok_or("not a group type")?;
+        if ty.attached_to.is_some() {
+            return Err("an attached detail group is shown through its model group (Attached Detail Groups)".into());
+        }
         let frame = match ty.kind {
             GroupKind::Model => {
                 if self.level(target).is_none() {
@@ -511,13 +706,13 @@ impl Document {
                 GroupFrame { origin: at, angle_deg, mirrored: false, level: 0, view: Some(target) }
             }
         };
-        self.grouped("Place group", |d| d.place_frame(group_type, &ty, frame, BTreeSet::new()))
+        self.grouped("Place group", |d| d.place_frame(group_type, &ty, frame, BTreeSet::new(), None))
     }
 
-    fn place_frame(&mut self, group_type: Id, ty: &GroupType, frame: GroupFrame, excluded: BTreeSet<Id>) -> Result<(Id, Vec<String>), String> {
+    fn place_frame(&mut self, group_type: Id, ty: &GroupType, frame: GroupFrame, excluded: BTreeSet<Id>, parent: Option<Id>) -> Result<(Id, Vec<String>), String> {
         let mut notes = vec![];
-        let members = self.paste_members(ty, &frame, &excluded, &BTreeMap::new(), &mut notes)?;
-        let inst = GroupInstance { group_type, frame, members, excluded, pinned: false };
+        let members = self.paste_members(ty, &frame, &excluded, &BTreeMap::new(), parent, &mut notes)?;
+        let inst = GroupInstance { group_type, frame, members, excluded, pinned: false, parent };
         let id = self.transact("Place group", |tx| Ok(tx.add(Element::GroupInstance(inst))))?;
         Ok((id, notes))
     }
@@ -526,7 +721,16 @@ impl Document {
     /// the instance's frame follows; a copy places a new instance of the type. Members of a selected
     /// group that are also selected on their own move once, with their group.
     pub(crate) fn transform_with_groups(&mut self, ids: &[Id], x: Xform, opt: EditOptions) -> Result<Vec<Id>, String> {
-        let groups: Vec<Id> = ids.iter().copied().filter(|i| self.group_instance(*i).is_some()).collect();
+        let mut groups: Vec<Id> = ids.iter().copied().filter(|i| self.group_instance(*i).is_some()).collect();
+        // an attached detail group goes where its model group goes, never on its own
+        for g in groups.clone() {
+            if let Some(p) = self.group_instance(g).unwrap().parent {
+                if !groups.contains(&p) {
+                    return Err("an attached detail group moves with its model group: select the model group".into());
+                }
+                groups.retain(|x| *x != g);
+            }
+        }
         let inside: BTreeSet<Id> = groups.iter().flat_map(|g| self.group_instance(*g).unwrap().members.values().copied().collect::<Vec<_>>()).collect();
         let rest: Vec<Id> = ids.iter().copied().filter(|i| !groups.contains(i) && !inside.contains(i)).collect();
         if !opt.copy {
@@ -551,15 +755,22 @@ impl Document {
             for g in groups {
                 let inst = d.group_instance(g).cloned().unwrap();
                 let frame = inst.frame.transformed(x);
+                let attached = d.attached_of(g);
                 if opt.copy {
                     let ty = d.group_type(inst.group_type).cloned().ok_or("the group's type is missing")?;
-                    out.push(d.place_frame(inst.group_type, &ty, frame, inst.excluded.clone())?.0);
-                } else {
-                    let ids: Vec<Id> = inst.live(d).into_iter().map(|(_, id)| id).collect();
-                    if !ids.is_empty() {
-                        d.transform_elements_inner(&ids, x, opt)?;
+                    let made = d.place_frame(inst.group_type, &ty, frame, inst.excluded.clone(), None)?.0;
+                    // the copy shows the same attached detail groups, in the same views
+                    for a in attached {
+                        let ai = d.group_instance(a).cloned().unwrap();
+                        let aty = d.group_type(ai.group_type).cloned().ok_or("the group's type is missing")?;
+                        d.place_frame(ai.group_type, &aty, ai.frame.transformed(x), ai.excluded.clone(), Some(made))?;
                     }
-                    d.transact(name, |tx| tx.update(g, Element::GroupInstance(GroupInstance { frame, ..inst })))?;
+                    out.push(made);
+                } else {
+                    d.move_instance(g, x, opt)?;
+                    for a in attached {
+                        d.move_instance(a, x, opt)?;
+                    }
                     out.push(g);
                 }
             }
@@ -567,8 +778,81 @@ impl Document {
         })
     }
 
-    /// Ungroup: the members stay where they are as ordinary elements. The type stays.
+    /// The attached detail groups shown for a model group instance.
+    pub fn attached_of(&self, parent: Id) -> Vec<Id> {
+        self.group_instances().into_iter().filter(|(_, g)| g.parent == Some(parent)).map(|(i, _)| i).collect()
+    }
+
+    /// Carry one instance's members through `x` and turn its frame with them.
+    fn move_instance(&mut self, g: Id, x: Xform, opt: EditOptions) -> Result<(), String> {
+        let inst = self.group_instance(g).cloned().unwrap();
+        let live: Vec<Id> = inst.live(self).into_iter().map(|(_, id)| id).collect();
+        let (measuring, rest): (Vec<Id>, Vec<Id>) = live.into_iter().partition(|i| self.get(*i).is_some_and(annotation));
+        if !rest.is_empty() {
+            self.transform_elements_inner(&rest, x, opt)?;
+        }
+        let frame = inst.frame.transformed(x);
+        let name = "Move group";
+        self.transact(name, |tx| {
+            for id in measuring {
+                let mut e = tx.doc_ref().get(id).cloned().unwrap();
+                xform_annotation(&mut e, x);
+                if let Element::Dimension(d) = &mut e {
+                    tx.doc_ref().refresh_solved(d);
+                }
+                tx.update(id, e)?;
+            }
+            tx.update(g, Element::GroupInstance(GroupInstance { frame, ..inst }))
+        })
+    }
+
+    /// Show or hide an attached detail group of a model group instance in a plan view (Attached Detail Groups).
+    pub fn show_attached(&mut self, parent: Id, view: Id, group_type: Id, show: bool) -> Result<Option<Id>, String> {
+        let p = self.group_instance(parent).cloned().ok_or("not a group")?;
+        let ty = self.group_type(group_type).cloned().ok_or("not a group type")?;
+        if ty.attached_to != Some(p.group_type) {
+            return Err("that detail group is not attached to this model group".into());
+        }
+        let vk = self.view(view).map(|v| v.view_kind).ok_or("no such view")?;
+        if Some(vk) != ty.view_kind {
+            return Err(format!("{} is shown in {} views", ty.name, view_kind_label(ty.view_kind.unwrap_or_default()).to_lowercase()));
+        }
+        let shown: Vec<Id> = self.attached_of(parent).into_iter().filter(|a| self.group_instance(*a).is_some_and(|g| g.group_type == group_type && g.frame.view == Some(view))).collect();
+        if show {
+            if let Some(a) = shown.first() {
+                return Ok(Some(*a));
+            }
+            let frame = GroupFrame { level: 0, view: Some(view), ..p.frame };
+            self.grouped("Attached detail groups", |d| Ok(Some(d.place_frame(group_type, &ty, frame, BTreeSet::new(), Some(parent))?.0)))
+        } else {
+            if !shown.is_empty() {
+                self.grouped("Attached detail groups", |d| d.delete_groups(&shown))?;
+            }
+            Ok(None)
+        }
+    }
+
+    /// The attached detail group types a model group instance could show in a view, and whether each shows.
+    pub fn attached_choices(&self, parent: Id, view: Id) -> Result<Vec<(Id, String, bool)>, String> {
+        let p = self.group_instance(parent).ok_or("not a group")?;
+        let vk = self.view(view).map(|v| v.view_kind).ok_or("no such view")?;
+        let shown = self.attached_of(parent);
+        Ok(self
+            .group_types()
+            .into_iter()
+            .filter(|(_, t)| t.attached_to == Some(p.group_type) && t.view_kind == Some(vk))
+            .map(|(id, t)| (id, t.name.clone(), shown.iter().any(|a| self.group_instance(*a).is_some_and(|g| g.group_type == id && g.frame.view == Some(view)))))
+            .collect())
+    }
+
+    /// Ungroup: the members stay where they are as ordinary elements, and so do those of the attached detail
+    /// groups shown for it. The type stays.
     pub fn ungroup(&mut self, ids: &[Id]) -> Result<Vec<Id>, String> {
+        let mut all: Vec<Id> = ids.to_vec();
+        for &g in ids {
+            all.extend(self.attached_of(g).into_iter().filter(|a| !ids.contains(a)));
+        }
+        let ids = &all[..];
         let mut freed = vec![];
         for &g in ids {
             let inst = self.group_instance(g).ok_or("not a group")?;
@@ -583,8 +867,13 @@ impl Document {
         Ok(freed)
     }
 
-    /// Delete group instances and their members.
+    /// Delete group instances and their members, with the attached detail groups shown for them.
     pub(crate) fn delete_groups(&mut self, ids: &[Id]) -> Result<(), String> {
+        let mut all: Vec<Id> = ids.to_vec();
+        for &g in ids {
+            all.extend(self.attached_of(g).into_iter().filter(|a| !ids.contains(a)));
+        }
+        let ids = &all[..];
         let mut members = vec![];
         for &g in ids {
             let inst = self.group_instance(g).ok_or("not a group")?;
@@ -599,6 +888,8 @@ impl Document {
             }
             Ok(())
         })?;
+        // dimensions and spots first: deleting a wall they measure would take them with it
+        members.sort_by_key(|m| !self.get(*m).is_some_and(annotation));
         if !members.is_empty() {
             self.delete(&members)?;
         }
@@ -653,7 +944,7 @@ impl Document {
                     continue;
                 }
                 let mut notes = vec![];
-                let made = d.paste_members(&ty, &inst.frame, &skip, &live, &mut notes)?;
+                let made = d.paste_members(&ty, &inst.frame, &skip, &live, inst.parent, &mut notes)?;
                 back.extend(made.values().copied());
                 inst.members = live.into_iter().chain(made).collect();
                 inst.excluded.clear();
@@ -683,17 +974,23 @@ impl Document {
     pub fn add_to_group(&mut self, group: Id, ids: &[Id]) -> Result<(), String> {
         let mut inst = self.group_instance(group).cloned().ok_or("not a group")?;
         let kind = self.group_type(inst.group_type).map(|t| t.kind).unwrap_or_default();
+        let attached = inst.parent.is_some();
+        let parent_members: BTreeSet<Id> = inst.parent.and_then(|p| self.group_instance(p)).map(|g| g.members.values().copied().collect()).unwrap_or_default();
         for &id in ids {
             let e = self.get(id).ok_or_else(|| format!("no element {id}"))?;
             if matches!(e, Element::Level(_) | Element::Grid(_)) {
                 return Err("levels and grids are never grouped".into());
             }
-            if !fits_kind(kind, e) {
+            if !fits_kind(kind, attached, e) {
                 return Err(match kind {
                     GroupKind::Model => "only walls, floors, roofs, doors, windows and components go in a model group",
+                    GroupKind::Detail if annotation(e) => "dimensions and spots go only in an attached detail group, with what they measure",
                     GroupKind::Detail => "only detail lines, regions and text notes go in a detail group",
                 }
                 .into());
+            }
+            if annotation(e) && !map_measured(&mut e.clone(), &|id| parent_members.contains(&id).then_some(id)) {
+                return Err("that dimension or spot measures something outside the model group".into());
             }
             if kind == GroupKind::Detail && detail_view(e) != inst.frame.view {
                 return Err("a detail group takes detail items from its own view".into());
@@ -740,7 +1037,7 @@ impl Document {
         }
         let tid = inst.group_type;
         let mut ty = self.group_type(tid).cloned().ok_or("the group's type is missing")?;
-        ty.members = self.capture(&inst);
+        ty.members = self.capture(&inst)?;
         ty.frame = inst.frame;
         let keys: BTreeSet<Id> = ty.members.iter().map(|m| m.key).collect();
         let mut notes = vec![];
@@ -773,7 +1070,7 @@ impl Document {
         // an existing member whose element has gone stays out
         let mut skip = inst.excluded.clone();
         skip.extend(inst.members.iter().filter(|(_, id)| self.get(**id).is_none()).map(|(k, _)| *k));
-        let made = self.paste_members(ty, &inst.frame, &skip, &BTreeMap::new(), notes)?;
+        let made = self.paste_members(ty, &inst.frame, &skip, &BTreeMap::new(), inst.parent, notes)?;
         // each new copy takes over the element it replaces, so ids hold
         let mut final_id: BTreeMap<Id, Id> = BTreeMap::new(); // temporary id to the id it ends up with
         let mut swaps: Vec<(Id, Id)> = vec![]; // (old, temporary)

@@ -26,17 +26,17 @@ function nextGroupName(kind) {
   for (let n = 1; ; n++) if (!names.has(`${base} ${n}`)) return `${base} ${n}`;
 }
 
-// the current view's detail lines, regions and text notes
+// the current view's detail lines, regions, text notes, dimensions and spots
 function viewDetailIds() {
   const d = app.view.kind === "plan" ? Plan.viewData() : app.view.kind === "elevation" ? Elev.data : null;
-  return new Set(d ? [...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id) : []);
+  return new Set(d ? [...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || [])].map((x) => x.id) : []);
 }
 
 // Create Group (GP): name it, and the selection becomes its first instance
 function createGroup() {
   const ids = app.selection.filter((id) => !groupById(id));
   if (!ids.length) { setPrompt("Select the elements to group first.", true); return; }
-  // detail items alone make a detail group; with model elements they are left out (attached detail groups come next)
+  // the view's items alone make a detail group; with model elements, a model group and its attached detail group
   const det = viewDetailIds(), kind = ids.every((i) => det.has(i)) ? "detail" : "model";
   openModal(kind === "detail" ? "Create Detail Group" : "Create Model Group", (body, foot, close) => {
     const inp = el("input", { type: "text", id: "group-name", value: nextGroupName(kind), style: "width:100%" });
@@ -48,7 +48,9 @@ function createGroup() {
       close();
       await refresh();
       await selectOnly([r.id]);
-      setPrompt(r.notes.length ? `Created ${inp.value.trim()}. ${r.notes.map((n) => n[0].toUpperCase() + n.slice(1)).join(". ")}.` : `Created ${inp.value.trim()}.`);
+      const att = (app.info.groups || []).find((g) => g.parent === r.id);
+      const made = `Created ${inp.value.trim()}${att ? ` and its attached detail group ${att.name}` : ""}.`;
+      setPrompt(r.notes.length ? `${made} ${r.notes.map((n) => n[0].toUpperCase() + n.slice(1)).join(". ")}.` : made);
     };
     inp.onkeydown = (e) => { if (e.key === "Enter") ok(); };
     foot.append(button("OK", ok, true), button("Cancel", close));
@@ -169,7 +171,7 @@ function groupContext() {
     return { auto: true, key: `groupedit:${ge.id}:${ge.mode}`, title: "Edit Group", groups: [{ label: `Edit Group${g ? ": " + g.name : ""}`, items: [
       { label: "Add", icon: "groupAdd", onclick: () => setGroupMode("add"), on: ge.mode === "add" },
       { label: "Remove", icon: "groupRemove", onclick: () => setGroupMode("remove"), on: ge.mode === "remove" },
-      greyButton("Attach", "modelGroup", "Attach: attached detail groups come later"),
+      greyButton("Attach", "modelGroup", "Attach: not yet. Select the attached detail group and use Edit Group on it"),
       { label: "Finish", ico: "✓", big: true, onclick: () => finishGroupEdit(), cls: "finish" },
       { label: "Cancel", ico: "✕", big: true, onclick: () => cancelGroupEdit(), cls: "cancel" },
     ] }] };
@@ -181,7 +183,9 @@ function groupContext() {
       { label: "Edit Group", icon: "editGroup", big: true, onclick: () => (gs.length === 1 ? startGroupEdit(gs[0].id) : setPrompt("Select one group to edit.", true)) },
       { label: "Ungroup", icon: "ungroup", onclick: async () => { const r = await run("ungroup", { ids }); if (r) { await refresh(); await selectOnly(r.ids); setPrompt("Ungrouped. The group stays in the project and can be placed again."); } } },
       { label: "Restore All Excluded", icon: "restoreExcluded", onclick: async () => { const r = await run("restore_excluded", { ids }); if (r) { await refresh(); setPrompt(r.ids.length ? `Restored ${r.ids.length} member${r.ids.length === 1 ? "" : "s"}.` : "Nothing is excluded."); } } },
-      greyButton("Attached Detail Groups", "modelGroup", "Attached Detail Groups: come later"),
+      gs.length === 1 && gs[0].kind !== "detail" && app.view.kind === "plan"
+        ? { label: "Attached Detail Groups", icon: "detailGroup", onclick: () => attachedDialog(gs[0]) }
+        : greyButton("Attached Detail Groups", "detailGroup", "Attached Detail Groups: select one model group in a plan view"),
     ] }] };
   }
   const ms = selectedMembers();
@@ -191,4 +195,29 @@ function groupContext() {
     ] }] };
   }
   return null;
+}
+
+// Attached Detail Groups: tick the attached detail groups this model group shows in the open plan view
+async function attachedDialog(g) {
+  const view = app.view.viewId;
+  const choices = await run("attached_choices", { id: g.id, view_id: view });
+  if (!choices) return;
+  if (!choices.length) { setPrompt(`${g.name} has no attached detail groups for this kind of view. Create Group with its elements and the view's dimensions or notes makes one.`, true); return; }
+  openModal("Attached Detail Group Placement", (body, foot, close) => {
+    body.append(el("div", { className: "modal-msg", textContent: `Attached detail groups of ${g.name} shown in this view:` }));
+    const boxes = choices.map((c) => {
+      const cb = el("input", { type: "checkbox", checked: c.shown });
+      cb.dataset.type = c.type_id;
+      body.append(el("label", { className: "attached-choice", style: "display:block;margin:4px 0" }, [cb, ` ${c.name}`]));
+      return [c, cb];
+    });
+    const ok = async () => {
+      close();
+      for (const [c, cb] of boxes) if (cb.checked !== c.shown) await run("show_attached", { id: g.id, view_id: view, type_id: c.type_id, show: cb.checked });
+      await refresh();
+      await selectOnly([g.id]);
+      setPrompt("Attached detail groups updated.");
+    };
+    foot.append(button("OK", ok, true), button("Cancel", close));
+  });
 }

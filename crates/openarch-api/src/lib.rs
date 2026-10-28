@@ -1102,6 +1102,15 @@ impl Session {
                 Ok(json!({}))
             }
             "finish_group" => Ok(json!({ "notes": self.doc.finish_group_edit(id_of(p, "id")?)? })),
+            // Attached Detail Groups: which attached detail groups a model group instance shows in a plan view
+            "attached_choices" => {
+                let c = self.doc.attached_choices(id_of(p, "id")?, id_of(p, "view_id")?)?;
+                Ok(json!(c.into_iter().map(|(id, name, shown)| json!({ "type_id": id, "name": name, "shown": shown })).collect::<Vec<_>>()))
+            }
+            "show_attached" => {
+                let show = p.get("show").and_then(|v| v.as_bool()).unwrap_or(true);
+                Ok(json!({ "id": self.doc.show_attached(id_of(p, "id")?, id_of(p, "view_id")?, id_of(p, "type_id")?, show)? }))
+            }
             "rename_group_type" => {
                 self.doc.rename_group_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)?;
                 Ok(json!({}))
@@ -1765,9 +1774,9 @@ impl Session {
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template,
                 "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
-            "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "kind": t.kind, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),
+            "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "kind": t.kind, "attached_to": t.attached_to, "view_kind": t.view_kind, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),
             "groups": d.group_instances().iter().map(|(id, g)| json!({
-                "id": id, "type_id": g.group_type, "name": d.group_type(g.group_type).map(|t| t.name.clone()), "kind": d.group_type(g.group_type).map(|t| t.kind), "view_id": g.frame.view,
+                "id": id, "type_id": g.group_type, "name": d.group_type(g.group_type).map(|t| t.name.clone()), "kind": d.group_type(g.group_type).map(|t| t.kind), "view_id": g.frame.view, "parent": g.parent,
                 "origin": g.frame.origin, "angle_deg": g.frame.angle_deg, "mirrored": g.frame.mirrored, "level_id": g.frame.level, "pinned": g.pinned,
                 "members": g.live(d).into_iter().map(|(_, m)| m).collect::<Vec<_>>(),
                 "excluded": d.group_type(g.group_type).map_or(0, |t| t.members.len()).saturating_sub(g.live(d).len()),
@@ -4044,6 +4053,73 @@ mod tests {
         call(&mut s, "delete", json!({ "ids": [ev] }));
         assert!(groups(&mut s).iter().all(|x| x["id"] != ge));
         assert_eq!(groups(&mut s).len(), 2);
+    }
+
+    #[test]
+    fn attached_detail_groups_follow_their_model_group() {
+        let (mut s, lvl, wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let plan_of = |l: u64| info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == l).unwrap()["id"].as_u64().unwrap();
+        let (l2, fp) = (info["levels"][1]["id"].as_u64().unwrap(), plan_of(lvl));
+        let fp2 = plan_of(info["levels"][1]["id"].as_u64().unwrap());
+        let tt = info["text_note_types"][0]["id"].as_u64().unwrap();
+        let wall = |s: &mut Session, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let a = wall(&mut s, [0, 0], [0, 3000]);
+        let b = wall(&mut s, [4000, 0], [4000, 3000]);
+        let out_w = wall(&mut s, [8000, 0], [8000, 3000]);
+        let r = |w: u64, off: f64| json!({"spec": {"kind": "wall", "id": w, "offset": off}, "pick": [0, 1500]});
+        let dim = call(&mut s, "add_dimension", json!({"view_id": fp, "kind": "aligned", "refs": [r(a, 100.0), r(b, 0.0)], "line_point": [2000, 3500]}))["id"].as_u64().unwrap();
+        let note = call(&mut s, "add_text_note", json!({ "note": { "view": fp, "at": { "x": 1000.0, "y": 1500.0 }, "text": "BED 1", "text_type": tt } }))["id"].as_u64().unwrap();
+        let groups = |s: &mut Session| call(s, "doc_info", json!({}))["groups"].as_array().unwrap().clone();
+        let dims = |s: &mut Session, v: u64| call(s, "plan", json!({ "view_id": v }))["dimensions"].as_array().unwrap().iter().map(|d| (d["segments"][0]["value_mm"].as_f64().unwrap().round() as i64)).collect::<Vec<_>>();
+        let before = dims(&mut s, fp)[0];
+
+        // a dimension measuring a wall outside the selection is refused
+        let bad = call(&mut s, "add_dimension", json!({"view_id": fp, "kind": "aligned", "refs": [r(b, 0.0), r(out_w, 0.0)], "line_point": [6000, 3500]}))["id"].as_u64().unwrap();
+        assert!(s.handle("create_group", &json!({ "ids": [a, b, dim, bad] })).unwrap_err().contains("outside the group"));
+        call(&mut s, "delete", json!({ "ids": [bad] }));
+
+        // walls with the dimension and a note: a model group and its attached detail group
+        let g = call(&mut s, "create_group", json!({ "ids": [a, b, dim, note], "name": "Unit A" }))["id"].as_u64().unwrap();
+        let gs = groups(&mut s);
+        assert_eq!(gs.len(), 2);
+        let att = gs.iter().find(|x| x["parent"] == g).unwrap().clone();
+        assert_eq!(att["name"], "Unit A - Floor Plan");
+        assert_eq!(att["members"].as_array().unwrap().len(), 2);
+        let types = call(&mut s, "doc_info", json!({}))["group_types"].clone();
+        let at = types.as_array().unwrap().iter().find(|t| t["name"] == "Unit A - Floor Plan").unwrap().clone();
+        assert_eq!(at["view_kind"], "floor_plan");
+        // it moves only with its model group
+        assert!(s.handle("transform", &json!({ "ids": [att["id"]], "kind": "move", "dx": 100, "dy": 0 })).unwrap_err().contains("model group"));
+        call(&mut s, "transform", json!({ "ids": [g], "kind": "rotate", "cx": 0, "cy": 0, "angle_deg": 90 }));
+        assert_eq!(dims(&mut s, fp), vec![before]);
+        call(&mut s, "undo", json!({}));
+
+        // a mirrored copy carries the attached group, measuring the copy's walls the same
+        let g2 = call(&mut s, "transform", json!({ "ids": [g], "kind": "mirror", "a": [0, -1000], "b": [1000, -1000], "copy": true }))["ids"][0].as_u64().unwrap();
+        assert_eq!(dims(&mut s, fp), vec![before, before]);
+        assert_eq!(groups(&mut s).iter().filter(|x| x["parent"] == g2).count(), 1);
+
+        // placed on Level 2 it shows nothing until asked; then the dimension appears there
+        let t = gs.iter().find(|x| x["id"] == g).unwrap()["type_id"].as_u64().unwrap();
+        let g3 = call(&mut s, "place_group", json!({ "type_id": t, "at": [12000, 1500], "level_id": l2 }))["id"].as_u64().unwrap();
+        assert!(dims(&mut s, fp2).is_empty());
+        let ch = call(&mut s, "attached_choices", json!({ "id": g3, "view_id": fp2 }));
+        assert_eq!((ch[0]["name"].as_str().unwrap(), ch[0]["shown"].as_bool().unwrap()), ("Unit A - Floor Plan", false));
+        call(&mut s, "show_attached", json!({ "id": g3, "view_id": fp2, "type_id": at["id"], "show": true }));
+        assert_eq!(dims(&mut s, fp2), vec![before]);
+        assert!(call(&mut s, "attached_choices", json!({ "id": g3, "view_id": fp2 }))[0]["shown"].as_bool().unwrap());
+        assert!(s.handle("place_group", &json!({ "type_id": at["id"], "at": [0, 0], "view_id": fp })).is_err());
+        // hidden again, then deleting the model group takes its attached group with it
+        call(&mut s, "show_attached", json!({ "id": g3, "view_id": fp2, "type_id": at["id"], "show": false }));
+        assert!(dims(&mut s, fp2).is_empty());
+        call(&mut s, "delete", json!({ "ids": [g2] }));
+        assert_eq!(dims(&mut s, fp), vec![before]);
+        assert!(groups(&mut s).iter().all(|x| x["parent"] != g2));
+        // ungrouping the model group frees the attached items too
+        call(&mut s, "ungroup", json!({ "ids": [g] }));
+        assert!(groups(&mut s).iter().all(|x| x["parent"] != g));
+        assert_eq!(dims(&mut s, fp), vec![before]);
     }
 
     #[test]
