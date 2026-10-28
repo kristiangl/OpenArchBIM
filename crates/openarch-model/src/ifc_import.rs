@@ -853,11 +853,11 @@ impl Document {
                 name = format!("{} ({k})", name.trim_end_matches(&format!(" ({})", k - 1)));
                 k += 1;
             }
-            let reuse = template.iter().find(|(lid, tz)| (tz - z).abs() <= 1.0 && !used.contains(lid)).map(|(lid, _)| *lid);
-            let lid = match reuse {
-                Some(lid) => {
-                    d.patch_level(lid, &serde_json::json!({ "name": name }))?;
-                    lid
+            // the lowest storeys take the template's levels (moved to their heights), the rest are new levels
+            let lid = match template.get(level_of.len()) {
+                Some((lid, _)) => {
+                    d.patch_level(*lid, &serde_json::json!({ "name": name, "elevation_mm": z }))?;
+                    *lid
                 }
                 None => {
                     let datum = d.level_datum_z(&Level::new("", 0.0));
@@ -867,16 +867,14 @@ impl Document {
             used.insert(lid);
             level_of.insert(*sid, lid);
         }
-        // the template's levels no storey took: gone, or named again when the file has no storeys at all
+        // the template's levels no storey took: gone where nothing stands on them, else named again
         for (i, (lid, _)) in template.iter().enumerate() {
             if used.contains(lid) {
                 continue;
             }
-            if used.is_empty() && i == 0 {
-                d.patch_level(*lid, &serde_json::json!({ "name": "Level 1" }))?;
+            if used.is_empty() || d.delete_level(*lid).is_err() {
+                d.patch_level(*lid, &serde_json::json!({ "name": format!("Level {}", i + 1) }))?;
                 used.insert(*lid);
-            } else {
-                d.delete_level(*lid)?;
             }
         }
         // rename the template's views to their levels' new names
@@ -1105,22 +1103,21 @@ impl Document {
             };
             let mid = (s0 + s1) / 2.0;
             let at = Point::new(a.x + u.x * mid, a.y + u.y * mid);
-            let iid = match d.place_on_wall(tid, host, at) {
+            // a window's sill, and a door's when it stands above its wall's level, from the bottom of its opening
+            let wall_level = match d.get(host) {
+                Some(Element::Wall(w)) => w.base_level,
+                _ => continue,
+            };
+            let sill = mm(z0 - elevation(wall_level)).max(0.0);
+            let flip = enumeration(o.args.get(11)).is_some_and(|op| op.contains("RIGHT"));
+            let iid = match d.place_on_wall_at(tid, host, at, flip, false, (!is_door || sill > 1.0).then_some(sill)) {
                 Ok(i) => i,
                 Err(why) => {
                     out.skipped.push(format!("{}: {why}", who(id)));
                     continue;
                 }
             };
-            // a window's sill (and a door's, when it is raised) from the bottom of its opening
             if let Some(Element::FamilyInstance(mut i)) = d.get(iid).cloned() {
-                let sill = mm(z0 - elevation(i.level));
-                if !is_door || sill.abs() > 1.0 {
-                    i.values.insert("Sill Height".into(), ParamValue::Number(sill.max(0.0)));
-                }
-                if enumeration(o.args.get(11)).is_some_and(|op| op.contains("RIGHT")) {
-                    i.flip_hand = true;
-                }
                 let g = guid_of(id);
                 if valid_guid(&g) {
                     i.ifc.guid = g;
@@ -1185,6 +1182,36 @@ fn opening_type(d: &mut Document, cat: FamilyCategory, width: f64, height: f64, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A look inside a real file: `IFC_FILE=... IFC_ID=... cargo test -p openarch-model ifc_probe -- --ignored --nocapture`.
+    #[test]
+    #[ignore]
+    fn ifc_probe() {
+        let path = std::env::var("IFC_FILE").unwrap();
+        let id: u64 = std::env::var("IFC_ID").unwrap().parse().unwrap();
+        let bytes = std::fs::read(path).unwrap();
+        let file = step::parse(&bytes).unwrap();
+        let (mmu, rad) = units(&file).unwrap();
+        let mut ids: Vec<u64> = file.entities.keys().copied().collect();
+        ids.sort_unstable();
+        let l = Links::read(&file, &ids);
+        let r = Reader { f: &file, mm: mmu, rad, shift: Point::new(0.0, 0.0) };
+        let e = r.get(id).unwrap();
+        let zs = |x: &Entity| span(r.body(x).iter().flatten().map(|p| p[2]));
+        println!("{} {:?} body z {:?} frame o {:?}", e.name, text(e.args.get(2)), zs(e), r.frame(e).o);
+        if let Some(op) = l.fills.get(&id) {
+            let o = r.get(*op).unwrap();
+            println!("opening #{op} z {:?}", zs(o));
+            if let Some(h) = l.host.get(op) {
+                let w = r.get(*h).unwrap();
+                println!("wall #{h} {:?} z {:?} storey {:?}", text(w.args.get(2)), zs(w), l.within.get(h));
+            }
+        }
+        println!("door storey {:?}", l.within.get(&id));
+        for (sid, s) in file.entities.iter().filter(|(_, x)| x.name == "IFCBUILDINGSTOREY") {
+            println!("storey #{sid} {:?} z {}", text(s.args.get(2)), r.frame(s).o[2]);
+        }
+    }
 
     #[test]
     fn our_own_export_comes_back() {

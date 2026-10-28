@@ -458,6 +458,11 @@ impl Document {
 
     /// Place with the swing flipped from what the click side gives (Spacebar while placing).
     pub fn place_on_wall_flipped(&mut self, type_id: Id, wall: Id, point: Point, flip_hand: bool, flip_facing: bool) -> Result<Id, String> {
+        self.place_on_wall_at(type_id, wall, point, flip_hand, flip_facing, None)
+    }
+
+    /// Place on a wall with the sill at `sill` above the wall's base level (an import knows where the opening is).
+    pub fn place_on_wall_at(&mut self, type_id: Id, wall: Id, point: Point, flip_hand: bool, flip_facing: bool, sill: Option<f64>) -> Result<Id, String> {
         let ft = self.family_type(type_id).ok_or("unknown family type")?.clone();
         let fam = self.family(ft.family).ok_or("type has no family")?;
         if fam.host != HostKind::Wall {
@@ -470,6 +475,9 @@ impl Document {
         // windows take their type's default sill; doors keep the family default
         if let Some(s) = self.type_param(&ft, "Default Sill Height") {
             inst.values.insert("Sill Height".into(), s);
+        }
+        if let Some(s) = sill {
+            inst.values.insert("Sill Height".into(), ParamValue::Number(s));
         }
         // built-in doors take the frame that suits the wall
         if fam.param("Frame Type").is_some() && fam.param("Jamb Depth").is_some() {
