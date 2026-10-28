@@ -515,7 +515,9 @@ impl Document {
             let (name, tag) = (s(&name), if i.mark.is_empty() { "$".into() } else { s(&i.mark) });
             let desc = if i.comments.is_empty() { "$".into() } else { s(&i.comments) };
             let g = own_guid(id, &i.ifc);
-            let size = openings.get(&id).map(|(_, wd, h)| (real(*h), real(*wd)));
+            // the door's or window's own size where its type has one (the opening is the rough size, frame and all)
+            let own = self.instance_family(i).and_then(|(_, t)| Some((self.type_param(t, "Height")?.as_f64()?, self.type_param(t, "Width")?.as_f64()?)));
+            let size = openings.get(&id).map(|(_, wd, h)| own.map_or((real(*h), real(*wd)), |(oh, ow)| (real(oh), real(ow))));
             let (h, wd) = size.clone().unwrap_or(("$".into(), "$".into()));
             let ent = match cat {
                 FamilyCategory::Doors => w.add(format!("IFCDOOR({g},$,{name},{desc},{name},#{at},#{shape},{tag},{h},{wd},.DOOR.,.NOTDEFINED.,$)")),

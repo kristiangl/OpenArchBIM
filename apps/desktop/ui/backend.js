@@ -36,7 +36,7 @@ const Backend = {
   async pickOpenPath() {
     if (this.isDesktop && window.__TAURI__.dialog) {
       // .ironbark is the old extension (before the rename); those files still open
-      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM project", extensions: ["oab", "ironbark"] }] });
+      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM project or IFC file", extensions: ["oab", "ironbark", "ifc"] }, { name: "IFC file", extensions: ["ifc"] }] });
     }
     return window.prompt("Open (file path)");
   },

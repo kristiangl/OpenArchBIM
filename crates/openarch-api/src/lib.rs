@@ -1730,6 +1730,20 @@ impl Session {
                 self.saved_revision = self.doc.revision();
                 Ok(json!({ "path": path.to_string_lossy() }))
             }
+            // Open IFC: a new, unsaved project from an IFC file; what came in and what was left out
+            "open_ifc" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                let (doc, report) = Document::from_ifc(&bytes)?;
+                self.doc = doc;
+                self.path = None;
+                // unsaved until it is saved as a project
+                self.saved_revision = u64::MAX;
+                Ok(json!({
+                    "schema": report.schema, "project": report.project, "counts": report.counts, "skipped": report.skipped,
+                    "moved": report.moved.map(|m| [m.x, m.y]),
+                }))
+            }
             "open" => {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
                 let doc = Document::open(&path)?;

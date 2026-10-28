@@ -2124,7 +2124,31 @@ if (Backend.isDesktop && window.__TAURI__.event) {
 async function openProject() {
   const path = await Backend.pickOpenPath();
   if (!path) return;
+  if (/\.ifc$/i.test(path)) { await openIfc(path); return; }
   if (await run("open", { path })) { app.selection = []; app.tdimMemory = {}; Plan.setSelection([]); await refresh(true); setPrompt(`Opened ${path}`); }
+}
+
+// Open IFC: the file becomes a new, unsaved project; a report says what came in and what was left out
+async function openIfc(path) {
+  if (app.info.dirty && !confirm("Discard unsaved changes?")) return;
+  setPrompt(`Reading ${path}...`);
+  const r = await run("open_ifc", { path });
+  if (!r) return;
+  app.selection = []; app.tdimMemory = {}; Plan.setSelection([]);
+  await refresh(true);
+  const c = r.counts, n = (k, one) => `${c[k] || 0} ${one}${c[k] === 1 ? "" : "s"}`;
+  const brought = `${n("levels", "level")}, ${n("walls", "wall")}, ${n("floors", "floor")}, ${n("doors", "door")}, ${n("windows", "window")}`;
+  setPrompt(`Opened ${r.project} (${r.schema}): ${brought}.${r.skipped.length ? ` ${r.skipped.length} left out.` : ""} Save it as a project to keep it.`);
+  openModal("IFC Import", (body, foot, close) => {
+    body.append(el("div", { id: "ifc-report", textContent: `${r.project}, ${r.schema}: ${brought} came in.${r.moved ? ` The model was moved ${Math.round(r.moved[0] / 1000)} m east and ${Math.round(r.moved[1] / 1000)} m north back to the origin.` : ""}` }));
+    if (r.skipped.length) {
+      body.append(el("div", { textContent: "Left out:", style: "margin-top:8px" }));
+      const ul = el("ul", { style: "max-height:240px;overflow:auto;margin:4px 0;padding-left:18px" });
+      for (const s of r.skipped.slice(0, 200)) ul.append(el("li", { textContent: s }));
+      body.append(ul);
+    }
+    foot.append(button("OK", close, true));
+  });
 }
 
 async function newProject(confirmed) {

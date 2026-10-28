@@ -12,6 +12,11 @@ its licence notice are listed here.
   writer (string escaping, reals, GlobalId compression, entity numbering), the spatial tree, swept bodies, the
   opening and fill relations, the material layer sets and the file header. It was rewritten to work with OpenArch's
   model.
+- Ported: the STEP file reader (`crates/core/src/step.rs`) into `crates/openarch-model/src/step.rs`, nearly as it is.
+- Ported: parts of the IFC import (`crates/core/src/import.rs`) into `crates/openarch-model/src/ifc_import.rs`. This
+  covers the geometry reader (placements, profiles, curves, extrusions, B-reps, face sets, mapped items), the units,
+  the relations between elements, the outline of a slab's top, the shift for models far from the origin and the
+  joining of walls that nearly meet. The mapping onto OpenArch's levels, walls, floors, doors and windows is new.
 
 ```
 MIT License
