@@ -5,7 +5,7 @@
 const Plan = (() => {
   const canvas = document.getElementById("plan");
   const ctx = canvas.getContext("2d");
-  const cb = { addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
+  const cb = { addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, array() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
 
   let cam = { x: 3000, y: 2000, s: 0.1 }; // centre in mm, pixels per mm
   let data = { walls: [], floors: [], roofs: [], inserts: [], view: {}, crop: {} };
@@ -1479,6 +1479,8 @@ const Plan = (() => {
     const T = tool;
     if (T === "move" || T === "copy") return st === "a" ? `Click the start point to ${T}. Hold Shift (or turn on Constrain) to keep to one direction.` : "Click the end point, or type a distance and press Enter.";
     if (T === "rotate") return eo.centrePlace ? "Click to place the centre of rotation." : st === "a" ? "Click to set the start ray, or type an angle and press Enter." : "Click to set the end ray, or type an angle and press Enter. Shift snaps to 15 degrees.";
+    if (T === "array" && eo.arrayKind === "radial") return eo.centrePlace ? "Click to place the centre of the array." : st === "a" ? "Click to set the start ray (drag the centre to move it), or type an angle and press Enter." : `Click to set the ${eo.arrayMoveTo === "last" ? "last member's" : "second member's"} angle, or type it and press Enter. Shift snaps to 15 degrees.`;
+    if (T === "array") return st === "a" ? "Click the start point of the array. Hold Shift (or turn on Constrain) to keep to one direction." : `Click where the ${eo.arrayMoveTo === "last" ? "last member goes (the rest spaced evenly between)" : "second member goes (the spacing)"}, or type a distance and press Enter.`;
     if (T === "mirror") return eo.mirrorMode === "pick" ? "Pick the line to mirror about (a wall face, centreline or edge). Tab cycles lines." : st === "a" ? "Click the first point of the mirror axis." : "Click the second point of the mirror axis.";
     if (T === "offset") return st === "a" ? (eo.offsetMode === "numerical" ? "Move the cursor to the side to offset to, then click the wall. Tab picks the whole chain. Ctrl copies." : "Click the wall to offset. Tab picks the whole chain.") : "Move to set the distance and click, or type it and press Enter.";
     if (T === "trim") return eo.trimMode === "corner" ? (st === "a" ? "Click the first wall on the part to keep." : "Click the second wall on the part to keep.") : st === "a" ? "Click the wall to trim or extend to." : "Click the wall to trim or extend, on the part to keep.";
@@ -1544,9 +1546,12 @@ const Plan = (() => {
   // ---- modify tools: Move, Copy, Rotate, Mirror, Offset, Trim/Extend, Align -------------
   // The model does the work (one command, one undo step). This part gathers the picks, shows a
   // preview and sends the command through cb.edit, cb.offset, cb.trim and cb.align.
-  const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align"];
-  const NEEDS_SELECTION = new Set(["move", "copy", "rotate", "mirror"]);
-  let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "" };
+  const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align", "array"];
+  const NEEDS_SELECTION = new Set(["move", "copy", "rotate", "mirror", "array"]);
+  let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "",
+    arrayKind: "linear", arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false };
+  let cdrag = false; // the centre of rotation (Rotate, a radial Array) being dragged
+  const radialTool = () => tool === "rotate" || (tool === "array" && eo.arrayKind === "radial");
   let ed = null; // { stage, p0, centre, typed, ... }
   let edHover = null; // what the cursor would pick: { kind:"edge", a, b } or { kind:"wall", id, side }
   const isEditTool = (t = tool) => EDIT_TOOLS.includes(t);
@@ -1616,7 +1621,7 @@ const Plan = (() => {
   // the translation a Move or Copy would make for a cursor position
   function moveDelta(p) {
     let v = { x: p.x - ed.p0.x, y: p.y - ed.p0.y };
-    if (eo.constrain || shift) {
+    if ((tool === "array" ? eo.arrayConstrain : eo.constrain) || shift) {
       const only = [...sel];
       const w = only.length === 1 ? data.walls.find((x) => x.id === only[0]) : null;
       const ax = w ? wallDir(w) : { x: 1, y: 0 }, ay = { x: -ax.y, y: ax.x };
@@ -1635,6 +1640,25 @@ const Plan = (() => {
     a = ((a + 540) % 360) - 180;
     return shift ? Math.round(a / 15) * 15 : Math.round(a * 100) / 100;
   }
+  // The array a cursor position would make: the step from one member to the next, as a point mapping per member.
+  function arrayStep(p) {
+    const n = Math.max(2, eo.arrayCount | 0), k = eo.arrayMoveTo === "last" ? 1 / (n - 1) : 1;
+    if (eo.arrayKind === "radial") {
+      const full = eo.arrayMoveTo === "last" && Math.abs(Math.abs(rotateAngle(p)) - 360) < 1e-6;
+      const a = rotateAngle(p), step = full ? a / n : a * k, c = centreOfRotation();
+      return { n, angle: a, map: (i) => { const r = (step * i * Math.PI) / 180, cs = Math.cos(r), sn = Math.sin(r); return (q) => ({ x: c.x + (q.x - c.x) * cs - (q.y - c.y) * sn, y: c.y + (q.x - c.x) * sn + (q.y - c.y) * cs }); } };
+    }
+    const v = moveDelta(p);
+    return { n, v, map: (i) => (q) => ({ x: q.x + v.x * k * i, y: q.y + v.y * k * i }) };
+  }
+  function sendArray(p) {
+    const ids = [...sel], s = arrayStep(p), r = (x) => Math.round(x * 1000) / 1000;
+    if (eo.arrayKind === "radial") {
+      const c = centreOfRotation();
+      cb.array({ kind: "radial", ids, cx: r(c.x), cy: r(c.y), angle_deg: Math.round(s.angle * 100) / 100, count: s.n, move_to: eo.arrayMoveTo });
+    } else cb.array({ kind: "linear", ids, dx: r(s.v.x), dy: r(s.v.y), count: s.n, move_to: eo.arrayMoveTo });
+  }
+
   function offsetTarget() { return ed.target ? data.walls.find((w) => w.id === ed.target) : null; }
 
   function finishEdit(keepTool) {
@@ -1664,6 +1688,14 @@ const Plan = (() => {
       else {
         const c = centreOfRotation();
         cb.edit({ kind: "rotate", ids, cx: c.x, cy: c.y, angle_deg: rotateAngle(p), copy: eo.copy, disjoin: eo.disjoin });
+        finishEdit(false);
+      }
+    } else if (tool === "array") {
+      if (eo.arrayKind === "radial" && eo.centrePlace) { ed.centre = p; eo.centrePlace = false; cb.options(); }
+      else if (ed.stage === "a") { ed.p0 = p; ed.stage = "b"; }
+      else {
+        if (eo.arrayKind === "linear" && dist(ed.p0, p) < 1 && isNaN(parseFloat(ed.typed))) return true;
+        sendArray(p);
         finishEdit(false);
       }
     } else if (tool === "mirror") {
@@ -1758,6 +1790,14 @@ const Plan = (() => {
     ctx.beginPath(); ctx.moveTo(sa.x, sa.y); ctx.lineTo(sb.x, sb.y); ctx.stroke(); ctx.restore();
   }
 
+  // the centre of rotation: a circle with a cross, which can be dragged
+  function drawCentre() {
+    const sc = toScreen(centreOfRotation());
+    ctx.save(); ctx.strokeStyle = css("--accent"); ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(sc.x, sc.y, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(sc.x - 10, sc.y); ctx.lineTo(sc.x + 10, sc.y); ctx.moveTo(sc.x, sc.y - 10); ctx.lineTo(sc.x, sc.y + 10); ctx.stroke(); ctx.restore();
+  }
+
   function drawEdit() {
     if (dragging) {
       const d = dragging.d;
@@ -1777,11 +1817,22 @@ const Plan = (() => {
         ctx.save(); ctx.strokeStyle = accent; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(s0.x, s0.y); ctx.lineTo(s1.x, s1.y); ctx.stroke(); ctx.restore();
         label(`${Math.round(Math.hypot(d.x, d.y))}`, { x: (s0.x + s1.x) / 2, y: (s0.y + s1.y) / 2 - 12 }, accent);
       }
+    } else if (tool === "array") {
+      if (eo.arrayKind === "radial") drawCentre();
+      if (ed.stage === "b" && hover) {
+        const s = arrayStep(hover);
+        for (let i = 1; i < s.n; i++) ghost(s.map(i), ids);
+        const s0 = toScreen(ed.p0), s1 = toScreen(hover);
+        ctx.save(); ctx.strokeStyle = accent; ctx.setLineDash([3, 3]); ctx.beginPath();
+        if (eo.arrayKind === "radial") { const sc = toScreen(centreOfRotation()); ctx.moveTo(sc.x, sc.y); ctx.lineTo(s0.x, s0.y); ctx.moveTo(sc.x, sc.y); ctx.lineTo(s1.x, s1.y); }
+        else { const e = toScreen({ x: ed.p0.x + s.v.x, y: ed.p0.y + s.v.y }); ctx.moveTo(s0.x, s0.y); ctx.lineTo(e.x, e.y); }
+        ctx.stroke(); ctx.restore();
+        const txt = eo.arrayKind === "radial" ? `${s.angle.toFixed(1)}°` : `${Math.round(Math.hypot(s.v.x, s.v.y))}`;
+        label(`${txt}   Number: ${s.n}`, { x: s1.x, y: s1.y - 22 }, accent);
+      }
     } else if (tool === "rotate") {
       const c = centreOfRotation(), sc = toScreen(c);
-      ctx.save(); ctx.strokeStyle = accent; ctx.fillStyle = "#fff"; ctx.lineWidth = 1.5;
-      ctx.beginPath(); ctx.arc(sc.x, sc.y, 6, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
-      ctx.beginPath(); ctx.moveTo(sc.x - 10, sc.y); ctx.lineTo(sc.x + 10, sc.y); ctx.moveTo(sc.x, sc.y - 10); ctx.lineTo(sc.x, sc.y + 10); ctx.stroke(); ctx.restore();
+      drawCentre();
       if (ed.stage === "b" && hover) {
         const a = rotateAngle(hover) * Math.PI / 180, cs = Math.cos(a), sn = Math.sin(a);
         ghost((q) => ({ x: c.x + (q.x - c.x) * cs - (q.y - c.y) * sn, y: c.y + (q.x - c.x) * sn + (q.y - c.y) * cs }), ids);
@@ -1832,7 +1883,9 @@ const Plan = (() => {
         finishEdit(false);
         return true;
       }
-      if ((tool === "move" || tool === "copy" || tool === "rotate" || tool === "offset") && ed.stage === "b") { editClick(lastMouse.x, lastMouse.y, { ctrlKey: false }); return true; }
+      // a radial array takes a typed angle straight away (from the start ray at zero)
+      if (tool === "array" && eo.arrayKind === "radial" && ed.stage === "a") { ed.p0 = hover; sendArray(hover); finishEdit(false); return true; }
+      if ((tool === "move" || tool === "copy" || tool === "rotate" || tool === "offset" || tool === "array") && ed.stage === "b") { editClick(lastMouse.x, lastMouse.y, { ctrlKey: false }); return true; }
     }
     return false;
   }
@@ -1941,6 +1994,11 @@ const Plan = (() => {
     if (tool === "select" && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Sections.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
+    // the centre of rotation can be dragged to a new place
+    if (e.button === 0 && ed && ed.stage !== "pick" && radialTool() && !eo.centrePlace) {
+      const sc = toScreen(centreOfRotation());
+      if (Math.hypot(e.offsetX - sc.x, e.offsetY - sc.y) <= 9) { cdrag = true; down = null; return; }
+    }
     if (tool === "select" && e.button === 0) {
       const gp = gpins.find((q) => padlockHit(e.offsetX, e.offsetY, q.x, q.y));
       if (gp) { down = null; cb.toggleGridLock(gp); return; }
@@ -1998,6 +2056,7 @@ const Plan = (() => {
       render();
       return;
     }
+    if (cdrag) { const p = snap(e.offsetX, e.offsetY); hover = p; ed.centre = { x: p.x, y: p.y }; cb.cursor(p); render(); return; }
     if (ggrip) {
       if (Math.hypot(e.offsetX - ggrip.px, e.offsetY - ggrip.py) > 3) ggrip.moved = true;
       if (ggrip.moved) {
@@ -2107,6 +2166,7 @@ const Plan = (() => {
     if (Det.dragging) { down = null; Det.gripUp(); return; }
     if (Sections.dragging) { down = null; Sections.up(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging) { down = null; Sketch.gripUp(); return; }
+    if (cdrag) { cdrag = false; down = null; Snap.clearOverride(); render(); return; }
     if (tdimOpen) { const t = tdimOpen; tdimOpen = null; openTdimInput(t); return; }
     if (gridOpen) { const b = gridOpen; gridOpen = null; openGridName(b); return; }
     if (ggrip) {
@@ -2361,6 +2421,16 @@ const Plan = (() => {
     setEditOptions(o) { eo = { ...eo, ...o }; if (ed) cb.prompt(promptText()); render(); },
     editCentre() { return centreOfRotation(); },
     resetEditCentre() { if (ed) ed.centre = null; render(); },
+    /** A radial array by a typed angle, from the options in the ribbon. */
+    arrayByAngle(v) {
+      if (!ed || tool !== "array" || ed.stage === "pick" || !sel.size) return false;
+      const c = centreOfRotation();
+      ed.p0 = ed.p0 || { x: c.x + 1000, y: c.y };
+      ed.typed = String(v);
+      sendArray(ed.p0);
+      finishEdit(false);
+      return true;
+    },
     setSelectOptions(o) { selOpts = { ...selOpts, ...o }; if (lastMouse && tool === "select") { const c = candidates(lastMouse.x, lastMouse.y); selHover = c.length ? c[0] : null; } render(); },
     selectOptions: () => ({ ...selOpts }),
     // category counts of the current selection, for the Filter dialog

@@ -88,6 +88,7 @@ const COMMANDS = {
   of: () => startEditTool("offset"),
   tr: () => startEditTool("trim"),
   al: () => startEditTool("align"),
+  ar: () => startEditTool("array"),
   pin: () => pinSelection(true),
   unpin: () => pinSelection(false),
   "v-vg": () => openVG(),
@@ -235,14 +236,14 @@ function modifyEnabled(id) {
   if (Sketch.active) return id === "sel" || id === "del" || !!SKETCH_MODIFY[id];
   if (app.view.kind === "elevation") {
     if (id === "del") return app.selection.length > 0;
-    return ["mv", "cp", "al"].includes(id);
+    return ["mv", "cp", "al", "ar"].includes(id);
   }
   // the 3D view moves, copies and turns the selection on the level plane
-  if (app.view.kind === "3d" && ["mv", "cp", "ro", "mi", "mi-draw"].includes(id)) return app.selection.length > 0;
+  if (app.view.kind === "3d" && ["mv", "cp", "ro", "mi", "mi-draw", "ar"].includes(id)) return app.selection.length > 0;
   if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
   if (id === "del") return app.selection.length > 0;
   // a Modify tool picked while another tool runs takes over from it, as it always has
-  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "pin", "unpin", "wjoin"].includes(id);
+  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "ar", "pin", "unpin", "wjoin"].includes(id);
 }
 
 // Recompute the Modify tab's disabled buttons and the suffix on its tab name after a selection or tool changes.
@@ -280,6 +281,8 @@ function currentContext() {
   if (Sketch.active) return sketchContext();
   if (app.view.kind === "plan" && Plan.tool === "wall") return wallContext();
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
+  const ac = arrayContext();
+  if (ac) return ac;
   // a selection that can do something of its own adds one panel after the tab's own (a floor or roof boundary,
   // a section's split); the tab keeps the same groups before it
   const b = editBoundaryTarget();
@@ -1343,6 +1346,66 @@ function renderOptionsBar() {
   $("#ob-sides-label").hidden = !(wo.shape === "polygon_in" || wo.shape === "polygon_out");
 }
 
+// ---- Array: its options, appended to the Modify tab (Modify | Array) ---------------
+// Linear or Radial, Group and Associate (needs groups, so it is off and greyed out for now), Number, Move To, and
+// Constrain for a linear array or the angle and centre for a radial one.
+function arrayContext() {
+  const kindOfView = app.view.kind;
+  const on = (kindOfView === "plan" && Plan.tool === "array" && !Sketch.active) || (kindOfView === "elevation" && Elev.tool === "array") || (kindOfView === "3d" && ed3 && ed3.tool === "array");
+  if (!on) return null;
+  // an elevation repeats along the view only (nothing turns about a level line)
+  const o = Plan.editOptions(), radial = o.arrayKind === "radial" && kindOfView !== "elevation";
+  const set = (patch) => { Plan.setEditOptions(patch); try { localStorage.setItem("openarch.edit", JSON.stringify(Plan.editOptions())); } catch {} updateRibbonContext(); };
+  const kind = (k, label, icon) => {
+    const b = sketchButton({ label, icon }, true, () => { set({ arrayKind: k }); if (ed3 && ed3.tool === "array") { ed3.pts = []; setPrompt(ed3Prompt()); draw3DEdit(); } }, (k === "radial") === radial);
+    if (k === "radial" && kindOfView === "elevation") { b.disabled = true; b.title = "Radial: works in plan and 3D views"; }
+    return b;
+  };
+  const ga = sketchButton({ label: "Group and Associate", icon: "groupAssociate" }, false, () => {}, false);
+  ga.disabled = true; ga.title = "Group and Associate: waits for groups. Arrays are made as separate copies for now.";
+  const field = (label, input, title) => { const f = el("label", { className: "rb-field", title }, [el("span", { textContent: label }), input]); return f; };
+  const num = el("input", { type: "number", min: radial ? "3" : "2", max: "200", step: "1", value: o.arrayCount, id: "rb-array-number" });
+  num.onchange = () => { const v = Math.round(parseFloat(num.value)); const min = radial ? 3 : 2; if (v >= min && v <= 200) set({ arrayCount: v }); else { setPrompt(`The number must be from ${min} to 200.`, true); num.value = o.arrayCount; } };
+  const to = el("select", { id: "rb-array-moveto" }, [new Option("2nd", "second", false, o.arrayMoveTo === "second"), new Option("Last", "last", false, o.arrayMoveTo === "last")]);
+  to.onchange = () => set({ arrayMoveTo: to.value });
+  const items = [
+    { node: kind("linear", "Linear", "arrayLinear") }, { node: kind("radial", "Radial", "arrayRadial") },
+    { big: true, node: ga },
+    { node: field("Number", num, "How many members, the original included"), brk: true }, { node: field("Move To", to, "2nd: the second member is placed and the rest follow at that spacing. Last: the last member is placed and the rest are spaced evenly between.") },
+  ];
+  if (radial && kindOfView === "3d") {
+    // in 3D the centre is the first click
+  } else if (radial) {
+    const ang = el("input", { type: "number", step: "any", value: o.angle, id: "rb-array-angle", title: "Type an angle and press Enter to make the array now" });
+    ang.onkeydown = (e) => { if (e.key !== "Enter") return; const v = parseFloat(ang.value); if (!isNaN(v)) { Plan.setEditOptions({ angle: ang.value }); Plan.arrayByAngle(v); } };
+    items.push({ node: field("Angle", ang), brk: true },
+      { node: sketchButton({ label: "Place Centre", icon: "rotate" }, true, () => set({ centrePlace: true }), o.centrePlace) },
+      { node: sketchButton({ label: "Default Centre", icon: "rotate" }, true, () => Plan.resetEditCentre(), false) });
+  } else {
+    items.push({ big: true, node: sketchButton({ label: "Constrain", icon: "constrain" }, false, () => set({ arrayConstrain: !o.arrayConstrain }), o.arrayConstrain) });
+  }
+  return { auto: true, key: `array:${o.arrayKind}`, title: "Array", groups: [{ label: "Array", items }] };
+}
+Elev.callbacks.arrayOptions = () => Plan.editOptions();
+// an elevation's array: model elements across the view and up (levels up only), the view's own lines in its plane
+Elev.callbacks.array = async (ids, du, dz) => {
+  const f = Elev.data.frame, d = Elev.data, o = Plan.editOptions();
+  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id));
+  const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i));
+  const count = Math.max(2, o.arrayCount | 0), base = { kind: "linear", count, move_to: o.arrayMoveTo };
+  let ok = false;
+  if (model.length) ok = !!(await run("array", { ...base, ids: model, dx: f.right[0] * du, dy: f.right[1] * du, dz })) || ok;
+  if (det.length) ok = !!(await run("array", { ...base, ids: det, dx: du, dy: dz })) || ok;
+  await refresh();
+  if (ok) setPrompt(`Arrayed: ${count} members.`);
+};
+Plan.callbacks.array = async (p) => {
+  const r = await run("array", p);
+  if (!r) return; // run() has already put the reason in the status bar
+  await refresh();
+  setPrompt(`Arrayed: ${p.count} members.`);
+};
+
 // ---- Place Wall: the draw palette, appended to the Modify tab ---------------
 const WALL_SHAPES = ["line", "rectangle", "polygon_in", "polygon_out", "circle", "arc_3pt", "arc_centre", "ellipse", "partial_ellipse", "spline"];
 function wallContext() {
@@ -1387,7 +1450,7 @@ function toggleProperties() {
   setPrompt(hidden ? "Properties palette hidden. Properties shows it again." : "Properties palette shown.");
 }
 
-const ELEV_EDIT = new Set(["move", "copy", "align"]);
+const ELEV_EDIT = new Set(["move", "copy", "align", "array"]);
 // Move, Copy and Rotate in the 3D view. Points are picked where the line of sight meets the plane of the current
 // level; the selection moves in plan (heights stay). Move and Copy: a base point, then where it goes. Rotate: the
 // centre, a point that gives the start direction, then the end direction. Esc cancels.
@@ -1402,10 +1465,17 @@ function ed3Prompt() {
   if (!ed3) return "";
   const n = ed3.pts.length, name = EDIT_PROMPT[ed3.tool];
   if (ed3.tool === "mirror") return n ? `${name}: click the second point of the mirror axis.` : `${name}: click the first point of the mirror axis (a copy is mirrored; the original stays). Esc cancels.`;
+  if (ed3.tool === "array") {
+    const o = Plan.editOptions(), last = o.arrayMoveTo === "last";
+    if (o.arrayKind === "radial") return [`${name}: click the centre of the array (on the level plane). Esc cancels.`, `${name}: click to set the start direction.`, `${name}: click to set the ${last ? "last" : "second"} member's direction.`][n];
+    return n ? `${name}: click where the ${last ? "last member goes (the rest spaced evenly between)" : "second member goes (the spacing)"}.` : `${name}: click the start point (on the level plane). Esc cancels.`;
+  }
   if (ed3.tool === "rotate") return [`${name}: click the centre of rotation (on the level plane). Esc cancels.`, `${name}: click to set the start direction.`, `${name}: click to set the end direction.`][n];
   return n ? `${name}: click where the base point goes.` : `${name}: click the base point (on the level plane). Esc cancels.`;
 }
-function end3DEdit(msg) { ed3 = null; $("#viewport").style.cursor = ""; draw3DEdit(); if (msg) setPrompt(msg); }
+function end3DEdit(msg) { const was = ed3 && ed3.tool; ed3 = null; $("#viewport").style.cursor = ""; draw3DEdit(); if (msg) setPrompt(msg); if (was === "array") updateRibbonContext(); }
+// a radial array in 3D picks its points as Rotate does
+const ed3Turns = () => ed3 && (ed3.tool === "rotate" || (ed3.tool === "array" && Plan.editOptions().arrayKind === "radial"));
 // What the 3D Modify tools snap to: the corners of the model (app.scenePts) and its edges (app.sceneEdges, both ends
 // of each, x y z in metres). An edge is where two faces meet at an angle or where a face ends; the diagonals that
 // split a flat face into triangles are left out. Points are counted once per mm.
@@ -1503,12 +1573,12 @@ function draw3DEdit() {
     else if (h.snap === "near") { c.moveTo(s.x - 5, s.y - 5); c.lineTo(s.x + 5, s.y + 5); c.moveTo(s.x + 5, s.y - 5); c.lineTo(s.x - 5, s.y + 5); }
     else { c.moveTo(s.x - 6, s.y); c.lineTo(s.x + 6, s.y); c.moveTo(s.x, s.y - 6); c.lineTo(s.x, s.y + 6); }
     c.stroke();
-    const from = ed3.tool === "rotate" && P.length ? P[0] : P[P.length - 1];
+    const from = ed3Turns() && P.length ? P[0] : P[P.length - 1];
     if (from) {
       const a = S(from), b = S([h.x, h.y]);
       c.setLineDash([6, 4]); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); c.setLineDash([]);
       let txt = `${Math.round(Math.hypot(h.x - from[0], h.y - from[1]))}`;
-      if (ed3.tool === "rotate" && P.length === 2) {
+      if (ed3Turns() && P.length === 2) {
         const a0 = Math.atan2(P[1][1] - P[0][1], P[1][0] - P[0][0]), a1 = Math.atan2(h.y - P[0][1], h.x - P[0][0]);
         txt = `${Math.round(((a1 - a0) * 180) / Math.PI * 10) / 10}\u00B0`;
       }
@@ -1528,6 +1598,18 @@ async function click3DEdit(sx, sy) {
     const done = ed3.tool;
     end3DEdit();
     if (r) { await refresh(); if (done === "copy" && r.ids) { app.selection = r.ids; app.vp?.setSelection(r.ids); renderProperties(); } setPrompt(`${EDIT_PROMPT[done]} done.`); }
+    return;
+  }
+  if (ed3.tool === "array" && P.length === (ed3Turns() ? 3 : 2)) {
+    const o = Plan.editOptions(), count = Math.max(ed3Turns() ? 3 : 2, o.arrayCount | 0);
+    let p;
+    if (ed3Turns()) {
+      const a0 = Math.atan2(P[1][1] - P[0][1], P[1][0] - P[0][0]), a1 = Math.atan2(P[2][1] - P[0][1], P[2][0] - P[0][0]);
+      p = { kind: "radial", ids, cx: P[0][0], cy: P[0][1], angle_deg: Math.round(((a1 - a0) * 180) / Math.PI * 100) / 100, count, move_to: o.arrayMoveTo };
+    } else p = { kind: "linear", ids, dx: P[1][0] - P[0][0], dy: P[1][1] - P[0][1], count, move_to: o.arrayMoveTo };
+    const r = await run("array", p);
+    end3DEdit();
+    if (r) { await refresh(); setPrompt(`Arrayed: ${count} members.`); }
     return;
   }
   if (ed3.tool === "mirror" && P.length === 2) {
@@ -1553,8 +1635,8 @@ document.addEventListener("keydown", (e) => { if (ed3 && e.key === "Escape") { e
 
 async function startEditTool(name) {
   if (app.view.kind === "3d") {
-    if (["move", "copy", "rotate", "mirror"].includes(name)) start3DEdit(name);
-    else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views; Move, Copy, Rotate and Mirror work here.`, true);
+    if (["move", "copy", "rotate", "mirror", "array"].includes(name)) { start3DEdit(name); updateRibbonContext(); }
+    else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views; Move, Copy, Rotate, Mirror and Array work here.`, true);
     return;
   }
   // Modify tools work where the person is: in an elevation Move, Copy and Align run in the view
@@ -1568,7 +1650,7 @@ async function startEditTool(name) {
   Plan.setTool(name);
 }
 
-const EDIT_PROMPT = { move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align" };
+const EDIT_PROMPT = { move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array" };
 
 function renderEditBar() {
   const box = $("#ob-edit");
@@ -1593,6 +1675,7 @@ function renderEditBar() {
     kids.push(check("Disjoin", "disjoin"), check("Copy", "copy"), el("label", {}, ["Angle ", ang]),
       el("button", { textContent: "Place centre", onclick: () => set({ centrePlace: true }) }), el("button", { textContent: "Default centre", onclick: () => { Plan.resetEditCentre(); } }));
   }
+  if (t === "array") kids.push(el("span", { textContent: " Number, Move To and the rest are in the ribbon (Modify | Array)." }));
   if (t === "mirror") kids.push(...radios("mirrorMode", [["pick", "Pick axis"], ["draw", "Draw axis"]]), check("Copy", "mirrorCopy"));
   if (t === "offset") {
     const d = el("input", { type: "number", step: "any", min: "1", value: o.offsetDist, style: "width:80px", onchange: () => set({ offsetDist: parseFloat(d.value) || 0 }) });

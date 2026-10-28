@@ -580,3 +580,8 @@ button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent)
 /* drawn over the 3D view while a Modify tool picks points: the rubber band, the snap, the distance */
 #vp-over { position: absolute; inset: 0; pointer-events: none; display: none; }
 #vp-over.on { display: block; }
+
+/* a labelled field inside a ribbon panel (Array: Number, Move To, Angle) */
+#ribbon .rb-field { display: flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 5px; font-size: 12px; white-space: nowrap; }
+#ribbon .rb-field > span { min-width: 52px; }
+#ribbon .rb-field input, #ribbon .rb-field select { width: 72px; font: inherit; padding: 1px 3px; }

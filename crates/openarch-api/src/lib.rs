@@ -1074,6 +1074,18 @@ impl Session {
                 self.doc.set_wall_type(id_of(p, "id")?, id_of(p, "type_id")?)?;
                 Ok(json!({}))
             }
+            "array" => {
+                // { ids, kind: linear (dx, dy, dz?) | radial (cx, cy, angle_deg), count, move_to: second | last }
+                let ids = ids_of(p, "ids")?;
+                let kind = match p.get("kind").and_then(|v| v.as_str()) {
+                    Some("linear") => openarch_model::array::ArrayKind::Linear { dx: num_of(p, "dx")?, dy: num_of(p, "dy")?, dz: num_of(p, "dz").unwrap_or(0.0) },
+                    Some("radial") => openarch_model::array::ArrayKind::Radial { cx: num_of(p, "cx")?, cy: num_of(p, "cy")?, angle_deg: num_of(p, "angle_deg")? },
+                    _ => return Err("kind must be linear or radial".into()),
+                };
+                let count = p.get("count").and_then(|v| v.as_u64()).ok_or("missing count")? as usize;
+                let to_last = p.get("move_to").and_then(|v| v.as_str()) == Some("last");
+                Ok(json!({ "ids": self.doc.array_elements(&ids, kind, count, to_last)? }))
+            }
             "transform" => {
                 // Move, Copy, Rotate and Mirror: { ids, kind, copy, disjoin, dx, dy | cx, cy, angle_deg | a, b }
                 let ids: Vec<Id> = p.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_u64()).collect()).unwrap_or_default();
@@ -3767,6 +3779,65 @@ mod tests {
         // pinned elements refuse, and an element with no height to change says so
         call(&mut s, "pin", json!({ "ids": [w] }));
         assert!(s.handle("move_vertical", &json!({ "ids": [w], "dz": 100 })).unwrap_err().contains("pinned"));
+    }
+
+    #[test]
+    fn arrays_repeat_the_selection_linear_and_radial() {
+        let (mut s, lvl, wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan").unwrap()["id"].clone();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 1000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let starts = |s: &mut Session| {
+            let mut v: Vec<(i64, i64)> = call(s, "plan", json!({ "view_id": fp }))["walls"].as_array().unwrap().iter().map(|w| (w["start"][0].as_f64().unwrap().round() as i64, w["start"][1].as_f64().unwrap().round() as i64)).collect();
+            v.sort();
+            v
+        };
+        // Move To 2nd: the vector is the spacing
+        let out = call(&mut s, "array", json!({ "ids": [w], "kind": "linear", "dx": 1500, "dy": 0, "count": 4, "move_to": "second" }));
+        assert_eq!(out["ids"].as_array().unwrap().len(), 3);
+        assert_eq!(starts(&mut s), vec![(0, 0), (1500, 0), (3000, 0), (4500, 0)]);
+        // one undo step takes the whole array away
+        call(&mut s, "undo", json!({}));
+        assert_eq!(starts(&mut s).len(), 1);
+        // Move To Last: the vector reaches the last member
+        call(&mut s, "array", json!({ "ids": [w], "kind": "linear", "dx": 3000, "dy": 0, "count": 4, "move_to": "last" }));
+        assert_eq!(starts(&mut s), vec![(0, 0), (1000, 0), (2000, 0), (3000, 0)]);
+        call(&mut s, "undo", json!({}));
+        // radial, a full circle to the last member: four walls a quarter turn apart, none on the original
+        call(&mut s, "array", json!({ "ids": [w], "kind": "radial", "cx": 0, "cy": -2000, "angle_deg": 360, "count": 4, "move_to": "last" }));
+        assert_eq!(starts(&mut s), vec![(-2000, -2000), (0, -4000), (0, 0), (2000, -2000)]);
+        call(&mut s, "undo", json!({}));
+        // radial Move To 2nd: the angle is the step
+        call(&mut s, "array", json!({ "ids": [w], "kind": "radial", "cx": 0, "cy": -2000, "angle_deg": 90, "count": 3, "move_to": "second" }));
+        assert_eq!(starts(&mut s), vec![(-2000, -2000), (0, -4000), (0, 0)]);
+        call(&mut s, "undo", json!({}));
+        // refused: too few or too many, a zero vector or angle, pinned elements
+        let err = |s: &mut Session, a: Value| s.handle("array", &a).unwrap_err();
+        assert!(err(&mut s, json!({ "ids": [w], "kind": "linear", "dx": 100, "dy": 0, "count": 1 })).contains("from 2 to 200"));
+        assert!(err(&mut s, json!({ "ids": [w], "kind": "radial", "cx": 0, "cy": 0, "angle_deg": 90, "count": 2 })).contains("from 3 to 200"));
+        assert!(err(&mut s, json!({ "ids": [w], "kind": "linear", "dx": 100, "dy": 0, "count": 201 })).contains("200"));
+        assert!(err(&mut s, json!({ "ids": [w], "kind": "linear", "dx": 0, "dy": 0, "count": 3 })).contains("two different points"));
+        assert!(err(&mut s, json!({ "ids": [w], "kind": "radial", "cx": 0, "cy": 0, "angle_deg": 0, "count": 3 })).contains("zero"));
+        assert_eq!(starts(&mut s).len(), 1);
+        call(&mut s, "pin", json!({ "ids": [w] }));
+        assert!(err(&mut s, json!({ "ids": [w], "kind": "linear", "dx": 100, "dy": 0, "count": 3 })).contains("pinned"));
+        call(&mut s, "pin", json!({ "ids": [w], "pinned": false }));
+        // a window arrayed past the end of its wall gives the hosting error, and nothing is made
+        let long = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [4000, 5000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let i = call(&mut s, "place_instance", json!({ "type_id": win, "host_id": long, "point": [1000, 5000] }))["id"].as_u64().unwrap();
+        let n = |s: &mut Session| call(s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().len();
+        let before = n(&mut s);
+        assert!(s.handle("array", &json!({ "ids": [i], "kind": "linear", "dx": 1500, "dy": 0, "count": 4 })).is_err());
+        assert_eq!(n(&mut s), before);
+        call(&mut s, "array", json!({ "ids": [i], "kind": "linear", "dx": 1400, "dy": 0, "count": 2 }));
+        assert_eq!(n(&mut s), before + 1);
+        // levels array up in an elevation, and refuse a sideways array
+        let lv = |s: &mut Session| call(s, "doc_info", json!({}))["levels"].as_array().unwrap().len();
+        let l0 = lv(&mut s);
+        call(&mut s, "array", json!({ "ids": [lvl], "kind": "linear", "dx": 0, "dy": 0, "dz": 6000, "count": 3, "move_to": "last" }));
+        assert_eq!(lv(&mut s), l0 + 2);
+        assert!(s.handle("array", &json!({ "ids": [lvl], "kind": "linear", "dx": 500, "dy": 0, "count": 3 })).unwrap_err().contains("up or down"));
     }
 
     #[test]

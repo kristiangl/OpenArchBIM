@@ -11,6 +11,7 @@ const Elev = (() => {
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
     addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
     dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
+    arrayOptions: () => ({ arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false }), array: () => {},
   };
   let data = null;
   let cam = { u: 0, z: 1500, s: 0.1 }; // centre (mm along the view's right axis, mm of height) and pixels per mm
@@ -39,7 +40,7 @@ const Elev = (() => {
   let snapCycle = 0; // Tab steps through the snap points in reach
   let band = null; // a window or crossing box in the sketch's Select tool
   let detDrag = null; // selected detail items carried by a drag: { ids, p0, d }
-  const EDIT = ["move", "copy", "align"];
+  const EDIT = ["move", "copy", "align", "array"];
   const isEdit = () => EDIT.includes(tool);
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -634,7 +635,12 @@ const Elev = (() => {
     const p = snapPt(mouse.x, mouse.y);
     const s = toScreen(p.u, p.z);
     if (p.snap) { ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); ctx.restore(); }
-    if (ed.stage === "b" && ed.base) {
+    if (ed.stage === "b" && ed.base && tool === "array") {
+      const s = arrayStep(p), a = toScreen(ed.base.u, ed.base.z), b = toScreen(ed.base.u + s.du, ed.base.z + s.dz);
+      for (let i = 1; i < s.n; i++) drawGhost(s.su * i, s.sz * i);
+      ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
+      label(`${Math.round(Math.hypot(s.du, s.dz))}   Number: ${s.n}`, b.x + 12, b.y - 12, accent, "left", true);
+    } else if (ed.stage === "b" && ed.base) {
       let { u, z } = p;
       if (mouse.shift) { if (Math.abs(u - ed.base.u) > Math.abs(z - ed.base.z)) z = ed.base.z; else u = ed.base.u; }
       drawGhost(u - ed.base.u, z - ed.base.z);
@@ -643,9 +649,19 @@ const Elev = (() => {
       label(`${Math.round(u - ed.base.u)}, ${Math.round(z - ed.base.z)}`, b.x + 12, b.y - 12, accent, "left", true);
     }
   }
+  // An array from the start point to a cursor position: the vector picked (du, dz), level or plumb with Shift or
+  // Constrain, and the step from one member to the next (su, sz) by Move To.
+  function arrayStep(p) {
+    const o = cb.arrayOptions(), n = Math.max(2, o.arrayCount | 0);
+    let { u, z } = p;
+    if (mouse.shift || o.arrayConstrain) { if (Math.abs(u - ed.base.u) > Math.abs(z - ed.base.z)) z = ed.base.z; else u = ed.base.u; }
+    const du = u - ed.base.u, dz = z - ed.base.z, k = o.arrayMoveTo === "last" ? 1 / (n - 1) : 1;
+    return { n, du, dz, su: du * k, sz: dz * k, last: o.arrayMoveTo === "last" };
+  }
   function editPrompt() {
-    const name = tool === "move" ? "Move" : tool === "copy" ? "Copy" : "Align";
+    const name = tool === "move" ? "Move" : tool === "copy" ? "Copy" : tool === "array" ? "Array" : "Align";
     if (!ed) return name;
+    if (tool === "array" && ed.stage === "b") return `Array: click where the ${cb.arrayOptions().arrayMoveTo === "last" ? "last member goes (the rest spaced evenly between)" : "second member goes (the spacing)"}. Shift keeps it level or plumb.`;
     if (tool === "align") return ed.stage === "ref" ? "Align: click the line to align to. Tab cycles overlapping lines." : "Align: click the line of the element to move.";
     if (ed.stage === "pick") return `${name}: select the elements to ${tool}, then click to start.`;
     if (ed.stage === "a") return `${name}: click the start point.`;
@@ -672,6 +688,14 @@ const Elev = (() => {
     if (ed.stage === "pick") { pick(e); if (sel.size) { ed = { stage: "a", base: null }; cb.prompt(editPrompt()); render(); } return; }
     const p = snapPt(e.offsetX, e.offsetY);
     if (ed.stage === "a") { ed = { stage: "b", base: p }; cb.prompt(editPrompt()); render(); return; }
+    if (tool === "array") {
+      const s = arrayStep({ u: p.u, z: p.z });
+      if (Math.abs(s.du) + Math.abs(s.dz) < 1e-6) return;
+      cb.array([...sel], s.du, s.dz);
+      setTool("select");
+      render();
+      return;
+    }
     let { u, z } = p;
     if (e.shiftKey) { if (Math.abs(u - ed.base.u) > Math.abs(z - ed.base.z)) z = ed.base.z; else u = ed.base.u; }
     const du = u - ed.base.u, dz = z - ed.base.z;

@@ -2,6 +2,7 @@
 //! geometry and the project file.
 
 pub mod annotation;
+pub mod array;
 pub mod curve;
 pub mod datum;
 pub mod detail;
