@@ -48,7 +48,7 @@ const MODIFY_TAB = [
     modifyItem("Measure", "measure", { project: "me" }, { big: true }) ] },
   { label: "Create", items: [
     modifyItem("Create Assembly", "assembly", null),
-    modifyItem("Create Group", "modelGroup", null),
+    modifyItem("Create Group", "modelGroup", { project: "gp" }),
     modifyItem("Create Similar", "createSimilar", null, { big: true }) ] },
 ];
 

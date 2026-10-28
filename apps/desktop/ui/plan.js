@@ -5,7 +5,7 @@
 const Plan = (() => {
   const canvas = document.getElementById("plan");
   const ctx = canvas.getContext("2d");
-  const cb = { addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, array() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
+  const cb = { editGroup() {}, groupPick() {}, placeGroup() {}, addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, array() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
 
   let cam = { x: 3000, y: 2000, s: 0.1 }; // centre in mm, pixels per mm
   let data = { walls: [], floors: [], roofs: [], inserts: [], view: {}, crop: {} };
@@ -22,6 +22,10 @@ const Plan = (() => {
   let dragging = null; // Drag Elements on Selection: { ids, p0, d }
   let band = null; // rubber band in screen pixels: { x0, y0, x1, y1 }
   let selHover = null; // ids under the cursor in the Select tool (the Tab choice)
+  let modelGroups = []; // model group instances (doc_info): { id, name, members, origin, ... }
+  let memberOf = new Map(); // member element id to its group
+  let groupEdit = null; // the group open in Edit Group: { id, mode: null | "add" | "remove" }
+  let groupPlace = null; // Place Model Group: { typeId, name }
   let tabIdx = 0;
   let joinHover = null; // { id, end, p:{x,y} } wall end under the cursor while the Wall Joins tool is active
   let joinSel = []; // the wall ends whose joins are being edited, the last one is the primary
@@ -255,6 +259,74 @@ const Plan = (() => {
     }
     return out;
   }
+  // a selection with groups in it, as the elements drawn for it
+  function expandIds(ids) {
+    const out = new Set(ids);
+    for (const g of modelGroups) if (out.has(g.id)) g.members.forEach((m) => out.add(m));
+    return out;
+  }
+  // what a pick may take while a group is open in Edit Group: its members, or with Add what is in no group
+  function editPickable(id) { return groupEdit.mode === "add" ? !memberOf.has(id) : memberOf.get(id) === groupEdit.id; }
+  // a click on a member picks its group; Tab reaches the member on its own
+  function groupify(c) {
+    if (groupEdit) return c.filter((ids) => ids.every(editPickable));
+    if (!memberOf.size) return c;
+    const out = [], tail = [], seen = new Set();
+    for (const ids of c) {
+      if (ids.length > 1) { const free = ids.filter((i) => !memberOf.has(i)); if (free.length > 1) out.push(free); continue; }
+      const g = memberOf.get(ids[0]);
+      if (g == null) { out.push(ids); continue; }
+      if (!seen.has(g)) { seen.add(g); out.push([g]); }
+      tail.push(ids);
+    }
+    return [...out, ...tail];
+  }
+  // a window takes a group when it holds every member drawn here, a crossing box when it touches one
+  function groupBand(ids, window) {
+    if (groupEdit) return ids.filter(editPickable);
+    if (!memberOf.size) return ids;
+    const drawn = new Set(elements().map((e) => e.id)), got = new Set(ids);
+    const out = ids.filter((i) => !memberOf.has(i));
+    for (const g of modelGroups) {
+      const here = g.members.filter((m) => drawn.has(m));
+      if (here.length && (window ? here.every((m) => got.has(m)) : here.some((m) => got.has(m)))) out.push(g.id);
+    }
+    return out;
+  }
+  // the members of a selected or hovered group light up, with the group's origin; in Edit Group the rest fades back
+  function drawGroups() {
+    const els = elements(), accent = css("--accent");
+    const ringsOf = (e) => e.kind === "wall" ? (data.walls.find((w) => w.id === e.id).pieces || [e.ring]) : e.rings && e.rings.length ? e.rings : [e.ring];
+    const paint = (ids, stroke, fill, width) => {
+      ctx.strokeStyle = stroke; ctx.lineWidth = width;
+      for (const e of els) {
+        if (!ids.has(e.id)) continue;
+        for (const q of ringsOf(e)) { polyPath(q); if (fill) { ctx.fillStyle = fill; ctx.fill(); } ctx.stroke(); }
+        if (e.parts) strokeParts(e.parts);
+      }
+    };
+    ctx.save();
+    if (groupEdit) {
+      ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "rgba(255,255,255,0.62)"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
+      const g = modelGroups.find((x) => x.id === groupEdit.id);
+      paint(new Set(g ? g.members : []), "#202428", null, 1.4);
+      paint(new Set([...sel].filter((i) => memberOf.get(i) === groupEdit.id || !memberOf.has(i))), accent, "rgba(46,111,158,0.45)", 2.5);
+    }
+    const hov = tool === "select" && selHover && !band ? selHover : [];
+    for (const g of modelGroups) {
+      const on = sel.has(g.id), over = !on && hov.includes(g.id);
+      if (!on && !over) continue;
+      paint(new Set(g.members), on ? accent : "#d4572f", on ? "rgba(46,111,158,0.35)" : null, on ? 2.5 : 2);
+      if (on) {
+        // the group's origin: a small square with a cross
+        const o = toScreen(g.origin);
+        ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.fillStyle = "#fff";
+        ctx.fillRect(o.x - 5, o.y - 5, 10, 10); ctx.strokeRect(o.x - 5, o.y - 5, 10, 10);
+        ctx.beginPath(); ctx.moveTo(o.x - 9, o.y); ctx.lineTo(o.x + 9, o.y); ctx.moveTo(o.x, o.y - 9); ctx.lineTo(o.x, o.y + 9); ctx.stroke();
+      }
+    }
+    ctx.restore();
+  }
   // detail items a sketch is holding: the view's detail lines while Detail Line is on, a region's edges in Edit Boundary
   function heldBySketch(x) {
     if (!Sketch.active) return false;
@@ -282,7 +354,8 @@ const Plan = (() => {
 
   // what a click here can pick, best first: each choice is a list of ids. Tab steps through them
   // (overlapping elements, then the run of connected walls).
-  function candidates(sx, sy) {
+  function candidates(sx, sy) { return groupify(rawCandidates(sx, sy)); }
+  function rawCandidates(sx, sy) {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, detail: 0, grid: 0, insert: 0, region: 1, wall: 1, roof: 2, floor: 3 };
@@ -334,7 +407,7 @@ const Plan = (() => {
     const r = worldRect(b), window = b.x1 >= b.x0;
     const inR = (q) => q[0] >= r.x0 && q[0] <= r.x1 && q[1] >= r.y0 && q[1] <= r.y1;
     const rc = [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
-    return elements().filter((e) => {
+    const picked = elements().filter((e) => {
       if (!selectable(e)) return false;
       // a door counts its open leaves and swing arcs as part of itself
       const extra = e.parts ? [...e.parts.polys, ...e.parts.arcs.map((x) => x.pts)] : [];
@@ -347,6 +420,7 @@ const Plan = (() => {
       };
       return touches(e.ring, true) || (e.parts ? e.parts.polys.some((q) => touches(q, true)) || e.parts.arcs.some((x) => touches(x.pts, false)) : false);
     }).map((e) => e.id);
+    return groupBand(picked, window);
   }
 
   // ---- drawing --------------------------------------------------------------
@@ -1248,6 +1322,7 @@ const Plan = (() => {
       ctx.lineWidth = 1.5;
       for (const [a, b] of rf.ridges) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
     }
+    drawGroups();
     const hov = new Set(tool === "select" && selHover ? selHover : []);
     Det.drawItems(sel, hov, accent, tool === "select");
     Det.drawNotes(sel, hov, accent, tool === "select");
@@ -1361,6 +1436,14 @@ const Plan = (() => {
       }
     }
 
+    // Place Model Group: an instance of the type drawn here, unmirrored, follows the cursor by its origin
+    if (tool === "groupplace" && groupPlace && hover) {
+      const g = modelGroups.find((x) => x.type_id === groupPlace.typeId && !x.mirrored && x.members.some((m) => elements().some((e) => e.id === m)));
+      if (g) {
+        const a = (-g.angle_deg * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a);
+        ghost((q) => ({ x: hover.x + (q.x - g.origin.x) * c - (q.y - g.origin.y) * sn, y: hover.y + (q.x - g.origin.x) * sn + (q.y - g.origin.y) * c }), new Set([g.id]));
+      }
+    }
     // door / window placement preview
     if (tool === "component" && comp && hover) {
       // the component's plan follows the cursor, turned by Space
@@ -1469,6 +1552,7 @@ const Plan = (() => {
     if (ed) return editPrompt();
     if (tool === "joins") return "Click a wall end to edit its join. Use Next / Previous to step through the configurations. Esc to stop.";
     if (hostedTool(tool)) return `Click on a wall to place the ${place.label}. ${tool === "hosted" ? "It faces the side of the wall you click." : "The swing follows the side of the wall you click."} Esc to stop.`;
+    if (tool === "groupplace") return groupPlace ? `Click to place ${groupPlace.name} by its origin. Esc to stop.` : "Pick a group to place.";
     if (tool === "component") return comp ? "Click to place the component. Space turns it 90 degrees. Esc to stop." : "Pick a component in the type selector.";
     return "Click to select. Shift adds to the selection. Delete removes. Wall: WA, Door: DR, Window: WN";
   }
@@ -1562,7 +1646,8 @@ const Plan = (() => {
 
   function selBounds() {
     // walls count by their location line, so the default centre of rotation is not pulled by mitred corners
-    const pts = elements().filter((e) => sel.has(e.id)).flatMap((e) => { const w = e.kind === "wall" ? data.walls.find((x) => x.id === e.id) : null; return w ? [w.start, w.end] : e.ring; });
+    const all = expandIds(sel);
+    const pts = elements().filter((e) => all.has(e.id)).flatMap((e) => { const w = e.kind === "wall" ? data.walls.find((x) => x.id === e.id) : null; return w ? [w.start, w.end] : e.ring; });
     if (!pts.length) return null;
     const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
     return { x0: Math.min(...xs), x1: Math.max(...xs), y0: Math.min(...ys), y1: Math.max(...ys) };
@@ -1770,6 +1855,7 @@ const Plan = (() => {
 
   // outlines of the selection (or of walls) pushed through a point mapping, drawn as a dashed preview
   function ghost(map, ids) {
+    ids = expandIds(ids);
     ctx.save();
     ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.6; ctx.setLineDash([6, 4]);
     ctx.fillStyle = "rgba(46,111,158,0.12)";
@@ -1894,6 +1980,8 @@ const Plan = (() => {
     const c = candidates(sx, sy);
     const ids = c.length ? c[tabIdx % c.length] : null;
     tabIdx = 0;
+    // Edit Group's Add and Remove take what is clicked instead of selecting it
+    if (groupEdit && groupEdit.mode) { if (ids) cb.groupPick(ids); selHover = null; render(); return; }
     // Ctrl adds to the selection and Shift removes from it
     if (!ids) { if (!ev.ctrlKey && !ev.shiftKey) sel = new Set(); }
     else if (ev.shiftKey) ids.forEach((i) => sel.delete(i));
@@ -1920,6 +2008,11 @@ const Plan = (() => {
       Snap.clearOverride(); snapCycle = 0;
       if (tool === "noteleader") Det.leaderClick(p); else Det.toolClick(p);
       cb.prompt(promptText()); render();
+      return;
+    }
+    if (tool === "groupplace") {
+      const p = hover || toWorld(sx, sy);
+      if (groupPlace) cb.placeGroup(groupPlace.typeId, { x: p.x, y: p.y });
       return;
     }
     if (tool === "component") {
@@ -2251,6 +2344,9 @@ const Plan = (() => {
     else if (tool === "select") {
       // double-clicking a section opens the view it makes
       const c = candidates(e.offsetX, e.offsetY), sec = c.length ? (data.sections || []).find((s) => c[0].includes(s.id)) : null;
+      // double-clicking a group opens it in Edit Group
+      const grp = c.length && c[0].length === 1 ? modelGroups.find((g) => g.id === c[0][0]) : null;
+      if (grp) { cb.editGroup(grp.id); return; }
       if (sec && sec.view_id) { cb.openView(sec.view_id); return; }
       const id = hit(e.offsetX, e.offsetY); const f = id && data.floors.find((x) => x.id === id); if (f) cb.editFloor(f.id); else { const rf = id && (data.roofs || []).find((x) => x.id === id); if (rf) cb.editRoof(rf.id); }
       // a detail line opens Detail Line with it selected; a region, Edit Boundary; a text note, its text
@@ -2376,7 +2472,16 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : [])].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+    setGroups(list, edit) {
+      modelGroups = list || [];
+      memberOf = new Map();
+      for (const g of modelGroups) for (const m of g.members) memberOf.set(m, g.id);
+      groupEdit = edit || null;
+      render();
+    },
+    groupOf: (id) => memberOf.get(id),
+    placeGroupType(t) { groupPlace = t; setTool("groupplace"); },
     setSelection(ids) { sel = new Set(ids); render(); },
     gridOptions: () => ({ shape: gridShape, offset: gridOffset }),
     setGridOptions(o) { if (o.shape) { gridShape = o.shape; draw = null; gridHover = null; } if (o.offset !== undefined) gridOffset = Math.max(0, o.offset); cb.prompt(promptText()); render(); },

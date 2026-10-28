@@ -619,6 +619,7 @@ impl Document {
             Some(Element::Section(s)) => s.pinned,
             Some(Element::Level(l)) => l.pinned,
             Some(Element::Grid(g)) => g.pinned,
+            Some(Element::GroupInstance(g)) => g.pinned,
             _ => false,
         }
     }
@@ -639,7 +640,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -651,6 +652,7 @@ impl Document {
                 Element::Section(s) => s.pinned = pinned,
                 Element::Level(l) => l.pinned = pinned,
                 Element::Grid(g) => g.pinned = pinned,
+                Element::GroupInstance(g) => g.pinned = pinned,
                 _ => {}
             }
             if self.get(id) != Some(&e) {

@@ -659,6 +659,8 @@ pub enum Element {
     TextNote(crate::detail::TextNote),
     TextNoteType(crate::annotation::TextType),
     GlobalParam(crate::globalparam::GlobalParam),
+    GroupType(crate::group::GroupType),
+    GroupInstance(crate::group::GroupInstance),
 }
 
 impl Element {
@@ -699,6 +701,8 @@ impl Element {
             Element::TextNote(_) => "TextNote",
             Element::TextNoteType(_) => "TextNoteType",
             Element::GlobalParam(_) => "GlobalParam",
+            Element::GroupType(_) => "GroupType",
+            Element::GroupInstance(_) => "GroupInstance",
         }
     }
 }

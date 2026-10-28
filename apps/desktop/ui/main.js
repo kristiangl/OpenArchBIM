@@ -21,6 +21,7 @@ const app = {
   wallTop: "auto", // "auto" (the next building storey up), "unconnected", or a level id
   secRef: { on: false, view: null }, // the Section tool's Reference Other View and the view it points at
   selection: [],
+  groupEdit: null, // the group open in Edit Group: { id, mode, mark } (groups.js)
   vp: null, // 3D viewport, once WebGPU is up
   sceneRevision: -1,
 };
@@ -89,6 +90,8 @@ const COMMANDS = {
   tr: () => startEditTool("trim"),
   al: () => startEditTool("align"),
   ar: () => startEditTool("array"),
+  gp: () => createGroup(),
+  "model-group": () => placeGroupCommand(),
   pin: () => pinSelection(true),
   unpin: () => pinSelection(false),
   "v-vg": () => openVG(),
@@ -234,6 +237,7 @@ function modifyEnabled(id) {
   }
   if (["sel", "props", "v-vg"].includes(id)) return true;
   if (Sketch.active) return id === "sel" || id === "del" || !!SKETCH_MODIFY[id];
+  if (id === "gp") return app.selection.length > 0 && !app.groupEdit && (app.view.kind === "plan" || app.view.kind === "3d");
   if (app.view.kind === "elevation") {
     if (id === "del") return app.selection.length > 0;
     return ["mv", "cp", "al", "ar"].includes(id);
@@ -283,6 +287,8 @@ function currentContext() {
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
   const ac = arrayContext();
   if (ac) return ac;
+  const gc = groupContext();
+  if (gc) return gc;
   // a selection that can do something of its own adds one panel after the tab's own (a floor or roof boundary,
   // a section's split); the tab keeps the same groups before it
   const b = editBoundaryTarget();
@@ -907,6 +913,7 @@ async function refresh(force = false) {
   const info = await run("doc_info", {});
   if (!info) return;
   app.info = info;
+  syncGroups();
   const pick = (cur, cat, label) => (cur && info.family_types.some((t) => t.id === cur) ? cur : (info.family_types.find((t) => t.label === label) || info.family_types.find((t) => t.category === cat) || {}).id || null);
   app.doorTypeId = pick(app.doorTypeId, "Doors", "Single-Flush: 820 x 2040");
   app.windowTypeId = pick(app.windowTypeId, "Windows", "Fixed: 1200 x 1200");
@@ -1362,7 +1369,7 @@ function arrayContext() {
     return b;
   };
   const ga = sketchButton({ label: "Group and Associate", icon: "groupAssociate" }, false, () => {}, false);
-  ga.disabled = true; ga.title = "Group and Associate: waits for groups. Arrays are made as separate copies for now.";
+  ga.disabled = true; ga.title = "Group and Associate: comes after detail groups. Arrays are made as separate copies for now.";
   const field = (label, input, title) => { const f = el("label", { className: "rb-field", title }, [el("span", { textContent: label }), input]); return f; };
   const num = el("input", { type: "number", min: radial ? "3" : "2", max: "200", step: "1", value: o.arrayCount, id: "rb-array-number" });
   num.onchange = () => { const v = Math.round(parseFloat(num.value)); const min = radial ? 3 : 2; if (v >= min && v <= 200) set({ arrayCount: v }); else { setPrompt(`The number must be from ${min} to 200.`, true); num.value = o.arrayCount; } };
@@ -2002,6 +2009,7 @@ Plan.callbacks.markerSlot = async (id, slot, on) => {
 async function deleteSelection() {
   if (!app.selection.length) return;
   const ids = app.selection;
+  if (await excludeSelected()) return;
   // keep the selection when the delete is refused (pinned elements, for one)
   if (!(await run("delete", { ids }))) return;
   app.selection = [];

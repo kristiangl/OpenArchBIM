@@ -1074,6 +1074,44 @@ impl Session {
                 self.doc.set_wall_type(id_of(p, "id")?, id_of(p, "type_id")?)?;
                 Ok(json!({}))
             }
+            // ---- model groups (openarch_model::group) ----
+            "create_group" => {
+                let level = p.get("level_id").and_then(|v| v.as_u64());
+                let (id, notes) = self.doc.create_group(&ids_of(p, "ids")?, p.get("name").and_then(|v| v.as_str()), level)?;
+                Ok(json!({ "id": id, "notes": notes }))
+            }
+            "place_group" => {
+                let (id, notes) = self.doc.place_group(id_of(p, "type_id")?, point_of(p.get("at").ok_or("missing at")?)?, id_of(p, "level_id")?, num_of(p, "angle_deg").unwrap_or(0.0))?;
+                Ok(json!({ "id": id, "notes": notes }))
+            }
+            "ungroup" => Ok(json!({ "ids": self.doc.ungroup(&ids_of(p, "ids")?)? })),
+            "exclude_members" => {
+                self.doc.exclude_members(&ids_of(p, "ids")?)?;
+                Ok(json!({}))
+            }
+            "restore_excluded" => Ok(json!({ "ids": self.doc.restore_excluded(&ids_of(p, "ids")?)? })),
+            // Edit Group runs between edit_begin and edit_commit (Finish) or edit_cancel (Cancel)
+            "add_to_group" => {
+                self.doc.add_to_group(id_of(p, "id")?, &ids_of(p, "ids")?)?;
+                Ok(json!({}))
+            }
+            "remove_from_group" => {
+                self.doc.remove_from_group(id_of(p, "id")?, &ids_of(p, "ids")?)?;
+                Ok(json!({}))
+            }
+            "finish_group" => Ok(json!({ "notes": self.doc.finish_group_edit(id_of(p, "id")?)? })),
+            "rename_group_type" => {
+                self.doc.rename_group_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)?;
+                Ok(json!({}))
+            }
+            "patch_group" => {
+                let id = id_of(p, "id")?;
+                let patch = p.get("patch").ok_or("missing patch")?;
+                if let Some(b) = patch.get("pinned").and_then(|v| v.as_bool()) {
+                    self.doc.set_pinned(&[id], b)?;
+                }
+                Ok(json!({}))
+            }
             "array" => {
                 // { ids, kind: linear (dx, dy, dz?) | radial (cx, cy, angle_deg), count, move_to: second | last }
                 let ids = ids_of(p, "ids")?;
@@ -1725,6 +1763,13 @@ impl Session {
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template,
                 "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
+            "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),
+            "groups": d.group_instances().iter().map(|(id, g)| json!({
+                "id": id, "type_id": g.group_type, "name": d.group_type(g.group_type).map(|t| t.name.clone()),
+                "origin": g.frame.origin, "angle_deg": g.frame.angle_deg, "mirrored": g.frame.mirrored, "level_id": g.frame.level, "pinned": g.pinned,
+                "members": g.live(d).into_iter().map(|(_, m)| m).collect::<Vec<_>>(),
+                "excluded": d.group_type(g.group_type).map_or(0, |t| t.members.len()).saturating_sub(g.live(d).len()),
+            })).collect::<Vec<_>>(),
             "grid_types": d.grid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "view_types": d.view_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind, "template_for_new": t.template_for_new })).collect::<Vec<_>>(),
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
@@ -2289,6 +2334,7 @@ impl Session {
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
             Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
             Element::TextNote(t) => Ok(props::text_note_props(d, id, t)),
+            Element::GroupInstance(g) => Ok(props::group_props(d, id, g)),
             _ => Err("nothing to show".into()),
         }
     }
@@ -3838,6 +3884,108 @@ mod tests {
         call(&mut s, "array", json!({ "ids": [lvl], "kind": "linear", "dx": 0, "dy": 0, "dz": 6000, "count": 3, "move_to": "last" }));
         assert_eq!(lv(&mut s), l0 + 2);
         assert!(s.handle("array", &json!({ "ids": [lvl], "kind": "linear", "dx": 500, "dy": 0, "count": 3 })).unwrap_err().contains("up or down"));
+    }
+
+    #[test]
+    fn model_groups_place_edit_exclude_and_ungroup() {
+        let (mut s, lvl, wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == lvl).unwrap()["id"].clone();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let wall = |s: &mut Session, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let a = wall(&mut s, [0, 0], [4000, 0]);
+        let b = wall(&mut s, [4000, 0], [4000, 3000]);
+        let w = call(&mut s, "place_instance", json!({ "type_id": win, "host_id": a, "point": [2000, 0] }))["id"].as_u64().unwrap();
+        let groups = |s: &mut Session| call(s, "doc_info", json!({}))["groups"].as_array().unwrap().clone();
+        let walls = |s: &mut Session| {
+            let mut v: Vec<(i64, i64, i64, i64)> = call(s, "plan", json!({ "view_id": fp }))["walls"].as_array().unwrap().iter().map(|w| {
+                let r = |v: &Value| v.as_f64().unwrap().round() as i64;
+                (r(&w["start"][0]), r(&w["start"][1]), r(&w["end"][0]), r(&w["end"][1]))
+            }).collect();
+            v.sort();
+            v
+        };
+        let inserts = |s: &mut Session| call(s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().len();
+
+        // levels are left out with a note; the origin is the middle of the members
+        let out = call(&mut s, "create_group", json!({ "ids": [a, b, w, lvl] }));
+        let g = out["id"].as_u64().unwrap();
+        assert!(out["notes"][0].as_str().unwrap().contains("never grouped"));
+        let gs = groups(&mut s);
+        assert_eq!(gs[0]["name"], "Model Group 1");
+        assert_eq!(gs[0]["members"].as_array().unwrap().len(), 3);
+        assert_eq!((gs[0]["origin"]["x"].as_f64().unwrap(), gs[0]["origin"]["y"].as_f64().unwrap()), (2000.0, 1500.0));
+        // a member cannot go in a second group, and a door needs its wall
+        assert!(s.handle("create_group", &json!({ "ids": [a] })).unwrap_err().contains("already in a group"));
+
+        // copying the group makes a second instance of the same type
+        let g2 = call(&mut s, "transform", json!({ "ids": [g], "kind": "move", "dx": 10000, "dy": 0, "copy": true }))["ids"][0].as_u64().unwrap();
+        assert_eq!(groups(&mut s).len(), 2);
+        assert!(walls(&mut s).contains(&(10000, 0, 14000, 0)));
+        assert_eq!(inserts(&mut s), 2);
+        // turning it carries the members round its origin (12000, 1500)
+        call(&mut s, "transform", json!({ "ids": [g2], "kind": "rotate", "cx": 12000, "cy": 1500, "angle_deg": 90 }));
+        assert!(walls(&mut s).contains(&(13500, -500, 13500, 3500)));
+        let g2_before: Vec<Value> = groups(&mut s)[1]["members"].as_array().unwrap().clone();
+
+        // Edit Group: add a wall to the first instance; Finish adds it to the second, turned with it
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        let c = wall(&mut s, [0, 0], [0, 3000]);
+        call(&mut s, "add_to_group", json!({ "id": g, "ids": [c] }));
+        call(&mut s, "finish_group", json!({ "id": g }));
+        call(&mut s, "edit_commit", json!({ "mark": mark, "name": "Edit group" }));
+        let gs = groups(&mut s);
+        assert_eq!(gs[1]["members"].as_array().unwrap().len(), 4);
+        assert!(walls(&mut s).contains(&(13500, -500, 10500, -500)));
+        // the second instance's existing members kept their ids
+        for m in &g2_before {
+            assert!(gs[1]["members"].as_array().unwrap().contains(m));
+        }
+        // one undo takes the whole edit back
+        call(&mut s, "undo", json!({}));
+        assert_eq!(groups(&mut s)[1]["members"].as_array().unwrap().len(), 3);
+        call(&mut s, "redo", json!({}));
+        // Cancel drops everything since the edit began
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        call(&mut s, "remove_from_group", json!({ "id": g, "ids": [c] }));
+        call(&mut s, "edit_cancel", json!({ "mark": mark }));
+        assert_eq!(groups(&mut s)[0]["members"].as_array().unwrap().len(), 4);
+
+        // Exclude the wall with the window in the second instance: the window goes too; Restore brings both back
+        let n_ins = inserts(&mut s);
+        let a2 = call(&mut s, "plan", json!({ "view_id": fp }))["walls"].as_array().unwrap().iter().find(|x| x["start"][0].as_f64().unwrap().round() == 13500.0 && x["start"][1].as_f64().unwrap().round() == -500.0 && x["end"][1].as_f64().unwrap().round() == 3500.0).unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "exclude_members", json!({ "ids": [a2] }));
+        assert_eq!(groups(&mut s)[1]["members"].as_array().unwrap().len(), 2);
+        assert_eq!(groups(&mut s)[1]["excluded"], 2);
+        assert_eq!(inserts(&mut s), n_ins - 1);
+        call(&mut s, "restore_excluded", json!({ "ids": [g2] }));
+        assert_eq!(groups(&mut s)[1]["members"].as_array().unwrap().len(), 4);
+        assert_eq!(inserts(&mut s), n_ins);
+
+        // a pinned group refuses to move
+        call(&mut s, "patch_group", json!({ "id": g2, "patch": { "pinned": true } }));
+        assert!(s.handle("transform", &json!({ "ids": [g2], "kind": "move", "dx": 100, "dy": 0 })).unwrap_err().contains("pinned"));
+        call(&mut s, "patch_group", json!({ "id": g2, "patch": { "pinned": false } }));
+
+        // Ungroup leaves the walls; deleting a group deletes its members
+        let n = walls(&mut s).len();
+        call(&mut s, "ungroup", json!({ "ids": [g2] }));
+        assert_eq!(groups(&mut s).len(), 1);
+        assert_eq!(walls(&mut s).len(), n);
+        call(&mut s, "delete", json!({ "ids": [g] }));
+        assert!(groups(&mut s).is_empty());
+        assert_eq!(walls(&mut s).len(), n - 3);
+        // the type stays and can be placed again, on another level, with tops moved up a level
+        let info = call(&mut s, "doc_info", json!({}));
+        let t = info["group_types"][0]["id"].as_u64().unwrap();
+        let l2 = info["levels"][1]["id"].as_u64().unwrap();
+        let out = call(&mut s, "place_group", json!({ "type_id": t, "at": [0, 20000], "level_id": l2 }));
+        let gi = out["id"].as_u64().unwrap();
+        let fp2 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == l2).unwrap()["id"].clone();
+        assert_eq!(call(&mut s, "plan", json!({ "view_id": fp2 }))["walls"].as_array().unwrap().len(), 3);
+        assert_eq!(call(&mut s, "describe", json!({ "id": gi }))["kind"], "GroupInstance");
+        call(&mut s, "rename_group_type", json!({ "id": t, "name": "Bathroom" }));
+        assert_eq!(groups(&mut s)[0]["name"], "Bathroom");
     }
 
     #[test]

@@ -1158,3 +1158,20 @@ pub fn section_props(d: &Document, id: Id, s: &openarch_model::section::Section)
         ],
     })
 }
+
+/// Properties of a model group instance: its type, reference level and how many members it has.
+pub fn group_props(d: &Document, id: Id, g: &openarch_model::group::GroupInstance) -> Value {
+    let name = d.group_type(g.group_type).map(|t| t.name.clone()).unwrap_or_default();
+    let total = d.group_type(g.group_type).map_or(0, |t| t.members.len());
+    let live = g.live(d).len();
+    let level = d.level(g.frame.level).map(|l| l.name.clone()).unwrap_or_default();
+    json!({
+        "id": id, "kind": "GroupInstance", "title": format!("Model Groups: {name}"), "type_label": format!("Model Group: {name}"),
+        "type_id": g.group_type,
+        "target": { "method": "patch_group", "id": id },
+        "groups": [
+            group("Constraints", vec![ro("Reference Level", level), ro("Origin Level Offset", "0"), boolean("Pinned", "pinned", g.pinned, true)]),
+            group("Other", vec![ro("Members", live.to_string()), ro("Excluded", total.saturating_sub(live).to_string()), ro("Angle", format!("{:.2}°", g.frame.angle_deg)), ro("Mirrored", if g.frame.mirrored { "Yes" } else { "No" })]),
+        ],
+    })
+}

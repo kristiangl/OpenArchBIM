@@ -874,6 +874,10 @@ impl Document {
         self.refuse_pinned(ids, "deleted")?;
         self.grouped("Delete", |d| {
             let mut rest = vec![];
+            let groups: Vec<Id> = ids.iter().copied().filter(|i| d.group_instance(*i).is_some()).collect();
+            if !groups.is_empty() {
+                d.delete_groups(&groups)?;
+            }
             for &id in ids {
                 match d.get(id).cloned() {
                     Some(Element::Level(_)) => d.delete_level(id)?,
@@ -897,6 +901,10 @@ impl Document {
                         }
                     }
                     Some(Element::ProjectLocation(_)) => return Err("the project location cannot be deleted".into()),
+                    Some(Element::GroupInstance(_)) => {}
+                    // a member of a group deleted on its own is excluded from that instance
+                    None if groups.is_empty() => rest.push(id),
+                    None => {}
                     _ => rest.push(id),
                 }
             }

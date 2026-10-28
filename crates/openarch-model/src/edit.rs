@@ -297,6 +297,9 @@ impl Document {
     /// Move, Rotate or Mirror elements, or copy them transformed. Returns the ids of
     /// the elements that now sit in the new place (the copies when `opt.copy`).
     pub fn transform_elements(&mut self, ids: &[Id], x: Xform, opt: EditOptions) -> Result<Vec<Id>, String> {
+        if ids.iter().any(|i| self.group_instance(*i).is_some()) {
+            return self.transform_with_groups(ids, x, opt);
+        }
         // spot annotations standing on what moves go with it, in the same undo step
         let spots = if opt.copy { vec![] } else { self.spots_on(ids) };
         if spots.is_empty() {
@@ -314,7 +317,7 @@ impl Document {
         })
     }
 
-    fn transform_elements_inner(&mut self, ids: &[Id], x: Xform, opt: EditOptions) -> Result<Vec<Id>, String> {
+    pub(crate) fn transform_elements_inner(&mut self, ids: &[Id], x: Xform, opt: EditOptions) -> Result<Vec<Id>, String> {
         if let Xform::Mirror { ax, ay, bx, by } = x {
             if (ax - bx).hypot(ay - by) < 1e-6 {
                 return Err("the mirror axis needs two different points".into());
