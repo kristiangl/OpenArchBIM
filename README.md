@@ -32,6 +32,10 @@ Australian standards and metric units come first. Other regions are welcome late
 - **Familiar.** Concepts and workflows that working architects already know, so there is little to relearn.
 - **Built for big models.** Linked models and large projects are a design goal, not an afterthought.
 
+## Is this "vibe-coded"?
+
+Yes, AI was used to create this app. However, unlike most other vibe-coded apps, I am taking an iterative approach to development. I have been using other BIM programs for over 15 years, so I know what feels right and wrong in the app. My approach involves implementing one feature at a time and troubleshooting and bug-fixing as I go. So rather than immediately having a full app with all of the tools that only kind of works, there is a lot more time involved up-front before there is even a usable version of the app. But when we do finally launch, it will be a much more polished experience.
+
 ## Independence
 
 OpenArch BIM is an independent project. It is not affiliated with, endorsed by or sponsored by any software vendor. All product names and trademarks belong to their owners.
