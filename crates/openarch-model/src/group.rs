@@ -1,5 +1,6 @@
-//! Model groups: a set of walls, floors, roofs, doors, windows and components defined
-//! once (the group type) and placed many times (group instances).
+//! Groups: a set of elements defined once (the group type) and placed many times (group
+//! instances). A model group holds walls, floors, roofs, doors, windows and components; a
+//! detail group holds one view's detail lines, regions and text notes and is placed in a view.
 //!
 //! Members are ordinary elements in the document, so joins, hosting, drawing and
 //! quantities work on them unchanged. The instance records which element plays
@@ -19,7 +20,8 @@ use crate::element::*;
 use crate::family::HostRef;
 use crate::geom::Point;
 
-/// Where an instance sits: its origin, turn about Z, whether it is mirrored, and its reference level.
+/// Where an instance sits: its origin, turn about Z, whether it is mirrored, and its reference
+/// level (a model group) or the view it is drawn in (a detail group, whose `level` is 0).
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct GroupFrame {
     pub origin: Point,
@@ -27,7 +29,27 @@ pub struct GroupFrame {
     pub angle_deg: f64,
     #[serde(default)]
     pub mirrored: bool,
+    #[serde(default)]
     pub level: Id,
+    #[serde(default)]
+    pub view: Option<Id>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupKind {
+    #[default]
+    Model,
+    Detail,
+}
+
+impl GroupKind {
+    fn label(self) -> &'static str {
+        match self {
+            GroupKind::Model => "Model Group",
+            GroupKind::Detail => "Detail Group",
+        }
+    }
 }
 
 impl GroupFrame {
@@ -40,7 +62,7 @@ impl GroupFrame {
             Xform::Rotate { angle_deg, .. } => (self.angle_deg + angle_deg, self.mirrored),
             Xform::Mirror { ax, ay, bx, by } => (2.0 * (by - ay).atan2(bx - ax).to_degrees() - self.angle_deg, !self.mirrored),
         };
-        GroupFrame { origin, angle_deg: angle_deg.rem_euclid(360.0), mirrored, level: self.level }
+        GroupFrame { origin, angle_deg: angle_deg.rem_euclid(360.0), mirrored, ..*self }
     }
 
     /// The changes, in order, that carry what stands in this frame to `to` (plan only; levels are mapped apart).
@@ -74,6 +96,8 @@ pub struct GroupMember {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupType {
     pub name: String,
+    #[serde(default)]
+    pub kind: GroupKind,
     /// The frame `members` were captured in.
     pub frame: GroupFrame,
     pub members: Vec<GroupMember>,
@@ -103,6 +127,37 @@ fn groupable(e: &Element) -> bool {
     matches!(e, Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_))
 }
 
+fn detail_item(e: &Element) -> bool {
+    matches!(e, Element::DetailLine(_) | Element::DetailRegion(_) | Element::TextNote(_))
+}
+
+/// What may go in a group of this kind.
+fn fits_kind(kind: GroupKind, e: &Element) -> bool {
+    match kind {
+        GroupKind::Model => groupable(e),
+        GroupKind::Detail => detail_item(e),
+    }
+}
+
+/// The view a detail item is drawn in.
+fn detail_view(e: &Element) -> Option<Id> {
+    match e {
+        Element::DetailLine(l) => Some(l.view),
+        Element::DetailRegion(r) => Some(r.view),
+        Element::TextNote(t) => Some(t.view),
+        _ => None,
+    }
+}
+
+fn set_detail_view(e: &mut Element, view: Id) {
+    match e {
+        Element::DetailLine(l) => l.view = view,
+        Element::DetailRegion(r) => r.view = view,
+        Element::TextNote(t) => t.view = view,
+        _ => {}
+    }
+}
+
 /// Plan points that bound an element, for the origin of a new group.
 fn element_points(doc: &Document, id: Id, e: &Element) -> Vec<Point> {
     match e {
@@ -113,6 +168,9 @@ fn element_points(doc: &Document, id: Id, e: &Element) -> Vec<Point> {
             loops.iter().flatten().flat_map(|e| [e.curve.start(), e.curve.end()]).collect()
         }
         Element::FamilyInstance(_) => doc.instance_frame(id).map(|f| vec![f.origin]).unwrap_or_default(),
+        Element::DetailLine(l) => vec![l.curve.start(), l.curve.end(), l.curve.mid()],
+        Element::DetailRegion(r) => r.loops.iter().flatten().flat_map(|e| [e.curve.start(), e.curve.end()]).collect(),
+        Element::TextNote(t) => vec![t.at],
         _ => vec![],
     }
 }
@@ -123,6 +181,9 @@ fn set_pinned(e: &mut Element, pinned: bool) {
         Element::Floor(f) => f.pinned = pinned,
         Element::Roof(r) => r.pinned = pinned,
         Element::FamilyInstance(i) => i.pinned = pinned,
+        Element::DetailLine(l) => l.pinned = pinned,
+        Element::DetailRegion(r) => r.pinned = pinned,
+        Element::TextNote(t) => t.pinned = pinned,
         _ => {}
     }
 }
@@ -146,6 +207,9 @@ fn keep_identity(old: &Element, new: &mut Element) {
             n.pinned = o.pinned;
         }
         (Element::Floor(o), Element::Floor(n)) => n.pinned = o.pinned,
+        (Element::DetailLine(o), Element::DetailLine(n)) => n.pinned = o.pinned,
+        (Element::DetailRegion(o), Element::DetailRegion(n)) => n.pinned = o.pinned,
+        (Element::TextNote(o), Element::TextNote(n)) => n.pinned = o.pinned,
         _ => {}
     }
 }
@@ -256,9 +320,12 @@ impl Document {
     /// member whose wall is left out is left out too, unless `existing` gives the wall's element.
     /// Returns key to new element id.
     fn paste_members(&mut self, ty: &GroupType, to: &GroupFrame, skip: &BTreeSet<Id>, existing: &BTreeMap<Id, Id>, notes: &mut Vec<String>) -> Result<BTreeMap<Id, Id>, String> {
-        let steps = match (self.level_index(ty.frame.level), self.level_index(to.level)) {
-            (Some(a), Some(b)) => b - a,
-            _ => return Err("the group's reference level no longer exists".into()),
+        let steps = match ty.kind {
+            GroupKind::Detail => 0,
+            GroupKind::Model => match (self.level_index(ty.frame.level), self.level_index(to.level)) {
+                (Some(a), Some(b)) => b - a,
+                _ => return Err("the group's reference level no longer exists".into()),
+            },
         };
         let mut plain = vec![];
         let mut hosted = vec![];
@@ -268,6 +335,9 @@ impl Document {
             }
             let mut e = fresh(&m.element);
             self.shift_levels(&mut e, steps, notes)?;
+            if let (GroupKind::Detail, Some(v)) = (ty.kind, to.view) {
+                set_detail_view(&mut e, v);
+            }
             match &e {
                 Element::FamilyInstance(i) if i.host.is_some() => hosted.push((m.key, e)),
                 _ => plain.push((m.key, e)),
@@ -297,21 +367,24 @@ impl Document {
         Ok(map)
     }
 
-    /// Make a group from the selected elements (Create Group). Levels, grids and anything else
-    /// that cannot be grouped are left out and named in the notes. Returns the new instance.
+    /// Make a group from the selected elements (Create Group): a model group from model elements, or
+    /// a detail group when the selection holds only one view's detail items. Levels, grids and anything
+    /// else that cannot be grouped are left out and named in the notes. Returns the new instance.
     pub fn create_group(&mut self, ids: &[Id], name: Option<&str>, level: Option<Id>) -> Result<(Id, Vec<String>), String> {
         let mut notes = vec![];
-        let mut members: Vec<Id> = vec![];
+        let mut model: Vec<Id> = vec![];
+        let mut detail: Vec<Id> = vec![];
         let mut left_out = 0;
         let mut datums = 0;
         for &id in ids {
             match self.get(id) {
-                Some(e) if groupable(e) => {
+                Some(e) if groupable(e) || detail_item(e) => {
                     if self.group_of(id).is_some() {
                         return Err("an element in the selection is already in a group".into());
                     }
-                    if !members.contains(&id) {
-                        members.push(id);
+                    let list = if groupable(e) { &mut model } else { &mut detail };
+                    if !list.contains(&id) {
+                        list.push(id);
                     }
                 }
                 Some(Element::Level(_)) | Some(Element::Grid(_)) => datums += 1,
@@ -323,11 +396,26 @@ impl Document {
             notes.push("levels and grids are never grouped, so they were left out".to_string());
         }
         if left_out > 0 {
-            notes.push(format!("{left_out} item(s) that cannot go in a model group were left out"));
+            notes.push(format!("{left_out} item(s) that cannot go in a group were left out"));
         }
+        let kind = if model.is_empty() { GroupKind::Detail } else { GroupKind::Model };
+        if kind == GroupKind::Model && !detail.is_empty() {
+            notes.push("detail items were left out: groups holding both model and detail items come next".to_string());
+        }
+        let members = if kind == GroupKind::Model { model } else { detail };
         if members.is_empty() {
-            return Err("select walls, floors, roofs, doors, windows or components to group".into());
+            return Err("select walls, floors, roofs, doors, windows, components or detail items to group".into());
         }
+        let view = match kind {
+            GroupKind::Model => None,
+            GroupKind::Detail => {
+                let views: BTreeSet<Id> = members.iter().filter_map(|i| self.get(*i).and_then(detail_view)).collect();
+                if views.len() > 1 {
+                    return Err("the detail items of a group must all be in one view".into());
+                }
+                views.into_iter().next()
+            }
+        };
         for &id in &members {
             if let Some(Element::FamilyInstance(i)) = self.get(id) {
                 if i.host.is_some_and(|h| !members.contains(&h.wall)) {
@@ -342,21 +430,22 @@ impl Document {
                 }
                 n.to_string()
             }
-            None => self.next_group_name(),
+            None => self.next_group_name(kind),
         };
         let pts: Vec<Point> = members.iter().flat_map(|&id| element_points(self, id, self.get(id).unwrap())).collect();
         let (lo, hi) = pts.iter().fold((Point::new(f64::MAX, f64::MAX), Point::new(f64::MIN, f64::MIN)), |(lo, hi), p| {
             (Point::new(lo.x.min(p.x), lo.y.min(p.y)), Point::new(hi.x.max(p.x), hi.y.max(p.y)))
         });
         let origin = Point::new((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0);
-        let level = match level {
-            Some(l) if self.level(l).is_some() => l,
-            Some(_) => return Err("unknown level".into()),
-            None => self.lowest_member_level(&members).ok_or("the group's members have no level")?,
+        let level = match (kind, level) {
+            (GroupKind::Detail, _) => 0,
+            (_, Some(l)) if self.level(l).is_some() => l,
+            (_, Some(_)) => return Err("unknown level".into()),
+            (_, None) => self.lowest_member_level(&members).ok_or("the group's members have no level")?,
         };
-        let frame = GroupFrame { origin, angle_deg: 0.0, mirrored: false, level };
+        let frame = GroupFrame { origin, angle_deg: 0.0, mirrored: false, level, view };
         let mut inst = GroupInstance { group_type: 0, frame, members: members.iter().map(|&i| (i, i)).collect(), excluded: BTreeSet::new(), pinned: false };
-        let ty = GroupType { name, frame, members: self.capture(&inst) };
+        let ty = GroupType { name, kind, frame, members: self.capture(&inst) };
         let id = self.transact("Create group", |tx| {
             inst.group_type = tx.add(Element::GroupType(ty));
             Ok(tx.add(Element::GroupInstance(inst)))
@@ -378,9 +467,9 @@ impl Document {
         })
     }
 
-    fn next_group_name(&self) -> String {
+    fn next_group_name(&self, kind: GroupKind) -> String {
         let names: BTreeSet<String> = self.group_types().iter().map(|(_, t)| t.name.clone()).collect();
-        (1..).map(|n| format!("Model Group {n}")).find(|n| !names.contains(n)).unwrap()
+        (1..).map(|n| format!("{} {n}", kind.label())).find(|n| !names.contains(n)).unwrap()
     }
 
     /// The members of an instance as they stand now, with hosts given by key.
@@ -402,13 +491,26 @@ impl Document {
         out
     }
 
-    /// Place an instance of a group type with its origin at `at` on `level`, turned by `angle_deg`.
-    pub fn place_group(&mut self, group_type: Id, at: Point, level: Id, angle_deg: f64) -> Result<(Id, Vec<String>), String> {
+    /// Place an instance of a group type with its origin at `at`, turned by `angle_deg`: a model group
+    /// on the level `target`, a detail group in the view `target`.
+    pub fn place_group(&mut self, group_type: Id, at: Point, target: Id, angle_deg: f64) -> Result<(Id, Vec<String>), String> {
         let ty = self.group_type(group_type).cloned().ok_or("not a group type")?;
-        if self.level(level).is_none() {
-            return Err("unknown level".into());
-        }
-        let frame = GroupFrame { origin: at, angle_deg, mirrored: false, level };
+        let frame = match ty.kind {
+            GroupKind::Model => {
+                if self.level(target).is_none() {
+                    return Err("a model group is placed on a level".into());
+                }
+                GroupFrame { origin: at, angle_deg, mirrored: false, level: target, view: None }
+            }
+            GroupKind::Detail => {
+                match self.view(target) {
+                    Some(v) if v.view_kind != crate::view::ViewKind::ThreeD => {}
+                    Some(_) => return Err("detail groups are placed in 2D views, not 3D views".into()),
+                    None => return Err("a detail group is placed in a view".into()),
+                }
+                GroupFrame { origin: at, angle_deg, mirrored: false, level: 0, view: Some(target) }
+            }
+        };
         self.grouped("Place group", |d| d.place_frame(group_type, &ty, frame, BTreeSet::new()))
     }
 
@@ -503,6 +605,20 @@ impl Document {
         Ok(())
     }
 
+    /// Remove instances none of whose members are left (their view was deleted, say).
+    pub(crate) fn prune_empty_groups(&mut self) -> Result<(), String> {
+        let empty: Vec<Id> = self.group_instances().into_iter().filter(|(_, g)| g.excluded.len() < g.members.len() && g.live(self).is_empty()).map(|(i, _)| i).collect();
+        if empty.is_empty() {
+            return Ok(());
+        }
+        self.transact("Delete", |tx| {
+            for g in empty {
+                tx.remove(g)?;
+            }
+            Ok(())
+        })
+    }
+
     /// Exclude members from their instance: they are deleted here only, and doors in an excluded wall go too.
     pub fn exclude_members(&mut self, members: &[Id]) -> Result<(), String> {
         let mut by_group: BTreeMap<Id, Vec<Id>> = BTreeMap::new();
@@ -566,13 +682,21 @@ impl Document {
     /// Add elements to a group being edited (Edit Group > Add).
     pub fn add_to_group(&mut self, group: Id, ids: &[Id]) -> Result<(), String> {
         let mut inst = self.group_instance(group).cloned().ok_or("not a group")?;
+        let kind = self.group_type(inst.group_type).map(|t| t.kind).unwrap_or_default();
         for &id in ids {
             let e = self.get(id).ok_or_else(|| format!("no element {id}"))?;
             if matches!(e, Element::Level(_) | Element::Grid(_)) {
                 return Err("levels and grids are never grouped".into());
             }
-            if !groupable(e) {
-                return Err("only walls, floors, roofs, doors, windows and components go in a model group".into());
+            if !fits_kind(kind, e) {
+                return Err(match kind {
+                    GroupKind::Model => "only walls, floors, roofs, doors, windows and components go in a model group",
+                    GroupKind::Detail => "only detail lines, regions and text notes go in a detail group",
+                }
+                .into());
+            }
+            if kind == GroupKind::Detail && detail_view(e) != inst.frame.view {
+                return Err("a detail group takes detail items from its own view".into());
             }
             match self.group_of(id) {
                 Some(g) if g == group => continue,

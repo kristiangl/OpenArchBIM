@@ -97,7 +97,7 @@ const RIBBON = {
     { label: "Detail", items: [
       { id: "det-line", label: "Detail Line", big: true }, { id: "det-region", label: "Region", big: true, menu: [
         { id: "det-filled", label: "Filled Region" }, { id: "det-masking", label: "Masking Region" } ] },
-      { id: "det-comp", label: "Component", big: true }, { id: "det-insulation", label: "Insulation", big: true },
+      { id: "det-comp", label: "Component", big: true }, { id: "det-group", label: "Detail Group", big: true }, { id: "det-insulation", label: "Insulation", big: true },
       { id: "det-revcloud", label: "Revision Cloud", big: true } ] },
     { label: "Text", items: [
       { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true } ] },

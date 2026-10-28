@@ -91,7 +91,8 @@ const COMMANDS = {
   al: () => startEditTool("align"),
   ar: () => startEditTool("array"),
   gp: () => createGroup(),
-  "model-group": () => placeGroupCommand(),
+  "model-group": () => placeGroupCommand("model"),
+  "det-group": () => placeGroupCommand("detail"),
   pin: () => pinSelection(true),
   unpin: () => pinSelection(false),
   "v-vg": () => openVG(),
@@ -237,7 +238,7 @@ function modifyEnabled(id) {
   }
   if (["sel", "props", "v-vg"].includes(id)) return true;
   if (Sketch.active) return id === "sel" || id === "del" || !!SKETCH_MODIFY[id];
-  if (id === "gp") return app.selection.length > 0 && !app.groupEdit && (app.view.kind === "plan" || app.view.kind === "3d");
+  if (id === "gp") return app.selection.length > 0 && !app.groupEdit && app.view.kind !== "schedule";
   if (app.view.kind === "elevation") {
     if (id === "del") return app.selection.length > 0;
     return ["mv", "cp", "al", "ar"].includes(id);
@@ -1916,9 +1917,16 @@ Elev.callbacks.addGrid = async (u) => {
 // (detail lines, regions and text notes belong to the view and move in its own frame, across and up)
 Elev.callbacks.moveBy = async (ids, du, dz, copy) => {
   const f = Elev.data.frame, d = Elev.data;
-  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id));
-  const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i));
+  // detail groups drawn here move as detail items do; a model group only moves across
+  const grp = (i) => (app.info.groups || []).find((g) => g.id === i);
+  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(app.info.groups || []).filter((g) => g.kind === "detail" && g.view_id === app.view.viewId)].map((x) => x.id));
+  const mg = ids.filter((i) => grp(i) && grp(i).kind === "model");
+  const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i) && !mg.includes(i));
   let out = [];
+  if (mg.length) {
+    if (Math.abs(dz) > 0.5) setPrompt("A model group moves across in an elevation; to raise one, place it on another level.", true);
+    else { const r = await run("transform", { kind: "move", ids: mg, dx: f.right[0] * du, dy: f.right[1] * du, copy: !!copy, disjoin: false }); if (r) out.push(...r.ids); }
+  }
   if (model.length) { const r = await run("move_vertical", { ids: model, dz, dx: f.right[0] * du, dy: f.right[1] * du, copy: !!copy }); if (r) out.push(...r.ids); }
   if (det.length) { const r = await run("transform", { kind: "move", ids: det, dx: du, dy: dz, copy: !!copy, disjoin: false }); if (r) out.push(...r.ids); }
   await refresh();
@@ -2438,7 +2446,8 @@ async function startDetailLines(selectId, tool) {
   setPrompt(Sketch.promptText());
 }
 function beginDetailSession(selectId, tool) {
-  const V = noteView(), lines = V.detailLines();
+  // a group's lines stay out of the sketch, except the group's own in Edit Group
+  const V = noteView(), lines = V.detailLines().filter((l) => { const g = Plan.groupOf(l.id); return g == null || (app.groupEdit && app.groupEdit.id === g); });
   V.startSketch({
     kind: "detail", title: "Detail Lines", tool, fade: false, ink: getComputedStyle(document.documentElement).getPropertyValue("--text").trim(),
     curves: lines.map((l) => ({ ...l.entry, attr: { id: l.id, style: l.style } })),

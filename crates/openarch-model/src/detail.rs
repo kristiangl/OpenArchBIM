@@ -407,6 +407,19 @@ impl Document {
             .collect()
     }
 
+    /// The detail lines, regions and text notes drawn in a view (they go when it goes).
+    pub(crate) fn view_details(&self, view: Id) -> Vec<Id> {
+        self.iter()
+            .filter(|(_, e)| match e {
+                Element::DetailLine(l) => l.view == view,
+                Element::DetailRegion(r) => r.view == view,
+                Element::TextNote(t) => t.view == view,
+                _ => false,
+            })
+            .map(|(i, _)| i)
+            .collect()
+    }
+
     fn check_detail_view(&self, view: Id) -> Result<(), String> {
         match self.view(view) {
             Some(v) if v.view_kind != crate::view::ViewKind::ThreeD => Ok(()),
@@ -444,7 +457,8 @@ impl Document {
                 (id, DetailLine { view, curve: l.curve, style: l.style, pinned })
             })
             .collect();
-        let gone: Vec<Id> = have.iter().copied().filter(|i| !used.contains(i)).collect();
+        // lines in a group are not held by the sketch (outside Edit Group), so leaving them out keeps them
+        let gone: Vec<Id> = have.iter().copied().filter(|i| !used.contains(i) && self.group_of(*i).is_none()).collect();
         let changed = !gone.is_empty() || plan.iter().any(|(id, l)| id.is_none_or(|i| self.get(i) != Some(&Element::DetailLine(l.clone()))));
         if !changed {
             return Ok(plan.iter().filter_map(|(id, _)| *id).collect());

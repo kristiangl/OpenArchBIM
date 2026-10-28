@@ -27,6 +27,7 @@ const ICONS = {
   modelLine: '<path class="a2" d="M3 16l7-7 4 4 7-7"/><circle class="f" cx="3" cy="16" r="1.6"/><circle class="f" cx="21" cy="6" r="1.6"/>',
   modelText: '<path d="M4 4h12v3.5h-4.25V20h-3.5V7.5H4z"/><path class="a2" d="M16 4l3 2.5V10M11.75 20l3 1.5V9.5"/>',
   modelGroup: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/><rect x="6" y="6" width="5" height="5"/><circle class="a2" cx="15.5" cy="15.5" r="3"/>',
+  detailGroup: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/><path d="M6 17l5-9 3 5"/><path class="a2" d="M13 7h6M13 10h4"/>',
   editGroup: '<rect x="3" y="3" width="18" height="18" rx="1" stroke-dasharray="3 2"/><rect x="6" y="6" width="5" height="5"/><path class="a2" d="M13 20l1-4 6-6 3 3-6 6z"/>',
   ungroup: '<rect x="3" y="3" width="8" height="8" stroke-dasharray="3 2"/><rect x="13" y="13" width="8" height="8"/><path class="a2" d="M13 5h6v6M5 13v6h6"/>',
   groupAdd: '<rect x="3" y="3" width="14" height="14" rx="1" stroke-dasharray="3 2"/><path class="a2" d="M18 14v8M14 18h8"/>',
@@ -257,7 +258,7 @@ const ICONS = {
 // Ribbon ids, sketch tool ids and old two-letter monograms that use each icon
 const ICON_ALIAS = {
   // architecture
-  "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
+  "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "det-group": "detailGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
   "set-wp": "setWp", "show-wp": "showWp", "ref-plane": "refPlane",
   // structure
   "s-beam": "beam", "s-brace": "brace", "s-column": "sColumn", "s-truss": "truss", "s-isolated": "footing", "s-strip": "stripFooting", "s-slab": "slabEdge",

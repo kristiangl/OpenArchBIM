@@ -65,6 +65,9 @@ const NoteGeom = (() => {
 //   snap(sx, sy, { last, hvDeg, track }), shift() (Shift is held), options() (the Text tool's: leader, left_attach, right_attach, halign, valign),
 //   cb: { placeNote(points, options), patchNote(id, patch), addLeader(id, side, point, arc),
 //   moveLineEnds([{ id, end, to }]) } (DetailCallbacks) }
+// what is not in the group open in Edit Group is drawn in this ink
+const FADED = "#b8bcc2";
+
 function makeDetails(host) {
   let pts = []; // the Text tool's picks so far (view mm): the leader's end, its elbow, then where it meets the text
   let leaderFor = null; // { id, side, arc } while Add Leader waits for the new leader's end
@@ -128,7 +131,8 @@ function makeDetails(host) {
   // ---- drawing -----------------------------------------------------------------------------------------------------
   // detail lines and regions are paper sized (line widths, patterns, dashes): drawn round the view's origin at its
   // scale. sel: the selection; hov: what a click would pick.
-  function drawItems(sel, hov, accent, selecting) {
+  // `gripSel`: what shows grips, when the highlighted set is wider (a group's members light up with it)
+  function drawItems(sel, hov, accent, selecting, gripSel = sel) {
     lineGrips = [];
     const det = data().detail;
     if (!det || (!det.strokes.length && !det.fills.length)) return;
@@ -136,7 +140,10 @@ function makeDetails(host) {
     // a line whose end is being dragged is drawn where it goes instead
     const moving = lineDrag && lineDrag.moved ? new Set(lineDrag.g.members.map((m) => m.id)) : new Set();
     const shown = (x) => !host.held(x) && !(x.line != null && moving.has(x.line));
-    Ann.paths(c, det, b, null, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: shown });
+    // in Edit Group what is not in the group is drawn faint
+    const faded = (x) => !!host.faded && host.faded(x.line != null ? x.line : x.region);
+    Ann.paths(c, det, b, null, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: (x) => shown(x) && !faded(x) });
+    if (host.faded) Ann.paths(c, det, b, FADED, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: (x) => shown(x) && faded(x) });
     // selected regions show as floors do; selected and hovered lines in the accent or the hover colour
     for (const f of det.fills) {
       if (!sel.has(f.region) || host.held(f)) continue;
@@ -156,7 +163,7 @@ function makeDetails(host) {
       c.beginPath(); c.moveTo(o.x, o.y); c.lineTo(q.x, q.y); c.stroke();
     }
     // the ends of the selected straight lines: a grip each, one shared where selected lines meet
-    for (const g of lineGroups(sel)) {
+    for (const g of lineGroups(gripSel)) {
       const at = lineDrag && lineDrag.moved && Math.hypot(lineDrag.g.x - g.x, lineDrag.g.y - g.y) < 0.5 ? lineDrag.cur : g;
       const s = host.toScreen(at), shared = g.members.length > 1;
       c.fillStyle = "#ffffff"; c.lineWidth = 2;
@@ -211,7 +218,7 @@ function makeDetails(host) {
     c.restore();
   }
   // text notes: the text in its box (annotation.js lays it out), the leaders; the selected note's box and grips
-  function drawNotes(sel, hov, accent, selecting) {
+  function drawNotes(sel, hov, accent, selecting, gripSel = sel) {
     grips = [];
     drawDragSnap();
     const list = notes();
@@ -220,14 +227,16 @@ function makeDetails(host) {
     for (const n0 of list) {
       if (n0.id === editing) continue;
       const n = drag && drag.id === n0.id ? drag.n : n0;
-      const col = sel.has(n.id) || (leaderFor && leaderFor.id === n.id) ? accent : hov.has(n.id) ? "#d4572f" : null;
+      c.save();
+      const col = sel.has(n.id) || (leaderFor && leaderFor.id === n.id) ? accent : hov.has(n.id) ? "#d4572f" : host.faded && host.faded(n.id) ? FADED : null;
       // the text is laid out upright and turned about its anchor
       const rot = ((n.rotation_deg || 0) * Math.PI) / 180, anchor = m([n.text.x, n.text.y]);
       const turned = (fn) => { c.save(); if (rot) { c.translate(anchor.x, anchor.y); c.rotate(-rot); c.translate(-anchor.x, -anchor.y); } fn(); c.restore(); };
       turned(() => Ann.labels(c, [n.text], b, col, { bg }));
       const L = Ann.layout(n.text), ink = col || Ann.rgb(n.text.style.color), w = host.thin() ? 1 : Math.max(1, n.text.style.line_mm * b.k);
       for (const l of n.leaders) drawLeader(c, leaderPath(n, L, l).map(m), b.k, ink, w);
-      if (!(sel.has(n.id) && selecting && sel.size === 1)) continue;
+      c.restore();
+      if (!(gripSel.has(n.id) && selecting && gripSel.size === 1)) continue;
       // the box, the grips at its ends (its width), and on each leader its end and its elbow (or bend); a straight
       // leader's middle grip puts an elbow in. Off the box's top corners, the handles that move and turn the note.
       c.save();

@@ -271,15 +271,16 @@ const Plan = (() => {
   function groupify(c) {
     if (groupEdit) return c.filter((ids) => ids.every(editPickable));
     if (!memberOf.size) return c;
-    const out = [], tail = [], seen = new Set();
+    // each group comes where its first member would, and Tab reaches its members next
+    const out = [], byGroup = new Map();
     for (const ids of c) {
       if (ids.length > 1) { const free = ids.filter((i) => !memberOf.has(i)); if (free.length > 1) out.push(free); continue; }
       const g = memberOf.get(ids[0]);
       if (g == null) { out.push(ids); continue; }
-      if (!seen.has(g)) { seen.add(g); out.push([g]); }
-      tail.push(ids);
+      if (!byGroup.has(g)) { byGroup.set(g, []); out.push([g]); }
+      byGroup.get(g).push(ids);
     }
-    return [...out, ...tail];
+    return out.flatMap((ids) => (ids.length === 1 && byGroup.has(ids[0]) ? [ids, ...byGroup.get(ids[0])] : [ids]));
   }
   // a window takes a group when it holds every member drawn here, a crossing box when it touches one
   function groupBand(ids, window) {
@@ -309,7 +310,8 @@ const Plan = (() => {
     if (groupEdit) {
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "rgba(255,255,255,0.62)"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
       const g = modelGroups.find((x) => x.id === groupEdit.id);
-      paint(new Set(g ? g.members : []), "#202428", null, 1.4);
+      // detail items fade on their own (details.js); model members are drawn again over the fade
+      paint(new Set((g ? g.members : []).filter((m) => !Det.elements().some((e) => e.id === m))), "#202428", null, 1.4);
       paint(new Set([...sel].filter((i) => memberOf.get(i) === groupEdit.id || !memberOf.has(i))), accent, "rgba(46,111,158,0.45)", 2.5);
     }
     const hov = tool === "select" && selHover && !band ? selHover : [];
@@ -2421,6 +2423,7 @@ const Plan = (() => {
     data: () => data,
     thin: () => thin,
     held: (x) => heldBySketch(x),
+    faded: (id) => groupEdit != null && memberOf.get(id) !== groupEdit.id,
     snap: (sx, sy, o) => snap(sx, sy, o),
     shift: () => shift,
     options: () => DetailCallbacks.options(),
@@ -2481,6 +2484,7 @@ const Plan = (() => {
       render();
     },
     groupOf: (id) => memberOf.get(id),
+    viewData: () => data,
     placeGroupType(t) { groupPlace = t; setTool("groupplace"); },
     setSelection(ids) { sel = new Set(ids); render(); },
     gridOptions: () => ({ shape: gridShape, offset: gridOffset }),

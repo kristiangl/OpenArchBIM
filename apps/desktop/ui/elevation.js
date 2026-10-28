@@ -12,7 +12,20 @@ const Elev = (() => {
     addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
     dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
     arrayOptions: () => ({ arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false }), array: () => {},
+    editGroup: () => {}, groupPick: () => {}, placeGroup: () => {},
   };
+  // groups (doc_info): a click on a member picks its group, Tab the member; Edit Group and Place Group as in plan
+  let modelGroups = [], memberOf = new Map(), groupEdit = null, groupPlace = null;
+  const expandIds = (ids) => { const out = new Set(ids); for (const g of modelGroups) if (out.has(g.id)) g.members.forEach((m) => out.add(m)); return out; };
+  const editPickable = (id) => (groupEdit.mode === "add" ? !memberOf.has(id) : memberOf.get(id) === groupEdit.id);
+  function groupify(ids) {
+    if (groupEdit) return ids.filter(editPickable);
+    if (!memberOf.size) return ids;
+    // each group comes where its first member would, and Tab reaches its members next
+    const out = [], byGroup = new Map();
+    for (const id of ids) { const g = memberOf.get(id); if (g == null) out.push(id); else { if (!byGroup.has(g)) { byGroup.set(g, []); out.push(g); } byGroup.get(g).push(id); } }
+    return out.flatMap((id) => (byGroup.has(id) ? [id, ...byGroup.get(id)] : [id]));
+  }
   let data = null;
   let cam = { u: 0, z: 1500, s: 0.1 }; // centre (mm along the view's right axis, mm of height) and pixels per mm
   let tool = "select"; // select | level | grid | move | copy | align | text | noteleader | sketch | dimension | spot
@@ -193,7 +206,8 @@ const Elev = (() => {
 
   // everything under the cursor that a click could pick, nearest first: elements drawn there, then a level (a grid crosses
   // it), then a grid. Tab steps through them.
-  function candIds(sx, sy) {
+  function candIds(sx, sy) { return groupify(rawCandIds(sx, sy)); }
+  function rawCandIds(sx, sy) {
     const out = [...spotsAt(sx, sy), ...dimsAt(sx, sy), ...detailAt(sx, sy), ...itemsAt(sx, sy)], lid = levelAt(sx, sy), gid = gridAt(sx, sy);
     if (lid !== null) out.push(lid);
     if (gid !== null) out.push(gid);
@@ -721,8 +735,9 @@ const Elev = (() => {
     // Hidden Line draws every surface in the page colour with black linework, so what is behind shows nothing; Wireframe draws the
     // linework only; the other styles fill with the material colours.
     const style = data.visual_style || "hidden_line", viewBg = css("--view-bg");
+    const selD = expandIds(sel), hovD = expandIds(hoverIds || []);
     for (const it of data.items) {
-      const selected = sel.has(it.id), hovered = hoverIds && hoverIds.includes(it.id);
+      const selected = selD.has(it.id), hovered = hovD.has(it.id);
       if (it.cut) continue; // cuts are drawn after everything else, below
       // depth cueing: the model has worked out how far toward the background this item fades
       const f = it.fade == null ? 1 : it.fade, ink = f < 1 ? mix(text, viewBg, f) : text, fill = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`;
@@ -739,17 +754,20 @@ const Elev = (() => {
     }
     // What the plane cuts: every fill first, then every outline, so two elements that overlap (a wall and a slab that
     // clash) both show their outlines. Nothing is trimmed for the person; a clash stays a clash until they resolve it.
-    const cuts = data.items.filter((it) => it.cut), cutCol = (it) => (sel.has(it.id) ? accent : hoverIds && hoverIds.includes(it.id) ? accent : text);
-    for (const it of [...cuts.filter((i) => i.category !== "Walls"), ...cuts.filter((i) => i.category === "Walls")]) drawCut(it, style, viewBg, cutCol(it), sel.has(it.id), "fill");
-    for (const it of cuts) drawCut(it, style, viewBg, cutCol(it), sel.has(it.id), "line");
+    const cuts = data.items.filter((it) => it.cut), cutCol = (it) => (selD.has(it.id) ? accent : hovD.has(it.id) ? accent : text);
+    for (const it of [...cuts.filter((i) => i.category !== "Walls"), ...cuts.filter((i) => i.category === "Walls")]) drawCut(it, style, viewBg, cutCol(it), selD.has(it.id), "fill");
+    for (const it of cuts) drawCut(it, style, viewBg, cutCol(it), selD.has(it.id), "line");
     // a jogged section unrolls its runs side by side: a light fold line marks each jog
     for (const u of data.folds || []) {
       const a = toScreen(u, data.frame.z_max), b = toScreen(u, data.frame.z_min);
       ctx.save(); ctx.strokeStyle = mix(text, viewBg, 0.45); ctx.lineWidth = 1; ctx.setLineDash([10, 4, 2, 4]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
     }
-    const hov = new Set(tool === "select" && hoverIds ? hoverIds : []);
-    Det.drawItems(sel, hov, accent, tool === "select");
+    if (groupEdit) drawGroupFade(text);
+    const hov = new Set(tool === "select" && hoverIds ? [...hovD] : []);
+    Det.drawItems(selD, hov, accent, tool === "select", sel);
+    drawGroupOrigins(accent);
+    if (tool === "groupplace") drawGroupGhost(accent);
     drawGrids();
     drawCrop();
     for (const l of data.levels) {
@@ -791,7 +809,7 @@ const Elev = (() => {
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
       label(String(Math.round(u)), a.x + 8, a.y + 12, accent, "left", true);
     }
-    Det.drawNotes(sel, hov, accent, tool === "select");
+    Det.drawNotes(selD, hov, accent, tool === "select", sel);
     if (tool === "text") Det.preview(hover);
     if (detDrag) drawGhost(detDrag.d.x, detDrag.d.y);
     drawEdit();
@@ -835,6 +853,36 @@ const Elev = (() => {
     if (tool === "window") label(`Sill ${fmtElev(z0 - datum())}`, c.x + 6, c.y - 4, accent);
   }
 
+  // Edit Group: everything fades but the group's members, drawn again in the ink colour
+  function drawGroupFade(ink) {
+    const g = modelGroups.find((x) => x.id === groupEdit.id), mem = new Set(g ? g.members : []);
+    ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "rgba(255,255,255,0.62)"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
+    ctx.save(); ctx.strokeStyle = ink; ctx.lineWidth = 1.4;
+    for (const it of data.items) if (mem.has(it.id)) for (const poly of it.polys) { polyPath(poly); ctx.stroke(); }
+    ctx.restore();
+  }
+  // a selected detail group drawn in this view shows its origin
+  function drawGroupOrigins(accent) {
+    for (const g of modelGroups) {
+      if (!sel.has(g.id) || g.view_id !== data.view_id) continue;
+      const o = toScreen(g.origin.x, g.origin.y);
+      ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.fillStyle = "#fff";
+      ctx.fillRect(o.x - 5, o.y - 5, 10, 10); ctx.strokeRect(o.x - 5, o.y - 5, 10, 10);
+      ctx.beginPath(); ctx.moveTo(o.x - 9, o.y); ctx.lineTo(o.x + 9, o.y); ctx.moveTo(o.x, o.y - 9); ctx.lineTo(o.x, o.y + 9); ctx.stroke(); ctx.restore();
+    }
+  }
+  // Place Detail Group: an unmirrored instance in this view follows the cursor by its origin
+  function drawGroupGhost(accent) {
+    if (!groupPlace || !hover) return;
+    const g = modelGroups.find((x) => x.type_id === groupPlace.typeId && !x.mirrored && x.view_id === data.view_id);
+    if (!g) return;
+    const a = (-g.angle_deg * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a), mem = new Set(g.members);
+    const map = ([u, z]) => [hover.x + (u - g.origin.x) * c - (z - g.origin.y) * sn, hover.y + (u - g.origin.x) * sn + (z - g.origin.y) * c];
+    ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.4; ctx.setLineDash([6, 4]);
+    for (const e of Det.elements()) if (mem.has(e.id)) for (const r of e.rings || [e.ring]) { polyPath(r.map(map)); ctx.stroke(); }
+    ctx.restore();
+  }
+
   // ---- inline editing of a level's name or elevation -------------------------------------
   function closeInput() { const i = input; input = null; if (i) { i.onblur = null; i.remove(); } }
   function openInput(x, y, value, onDone) {
@@ -856,6 +904,8 @@ const Elev = (() => {
     const h = hoverPick(ev.offsetX, ev.offsetY);
     const target = h !== null ? [h] : [];
     tabIdx = 0;
+    // Edit Group's Add and Remove take what is clicked instead of selecting it
+    if (groupEdit && groupEdit.mode) { if (h !== null) cb.groupPick([h]); render(); return; }
     if (ev.shiftKey) target.forEach((i) => sel.delete(i));
     else if (ev.ctrlKey) target.forEach((i) => sel.add(i));
     else sel = new Set(target);
@@ -926,7 +976,7 @@ const Elev = (() => {
     if (moved && !band && tool === "sketch" && Sketch.canBand()) band = { x0: down.x, y0: down.y, x1: e.offsetX, y1: e.offsetY };
     if (band) { band.x1 = e.offsetX; band.y1 = e.offsetY; render(); return; }
     if (!lastMove || Math.hypot(e.offsetX - lastMove.x, e.offsetY - lastMove.y) > 3) snapCycle = 0;
-    if (tool === "sketch" || tool === "text" || tool === "noteleader") {
+    if (tool === "sketch" || tool === "text" || tool === "noteleader" || tool === "groupplace") {
       lastMove = { x: e.offsetX, y: e.offsetY };
       hover = tool === "sketch" ? snap(e.offsetX, e.offsetY) : Det.toolSnap(e.offsetX, e.offsetY);
       cb.cursor(`${Math.round(hover.x)}, ${fmtElev(hover.y - datum())}`);
@@ -1048,6 +1098,7 @@ const Elev = (() => {
         return;
       }
       if (tool === "dimension") { down = null; EDims.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
+      if (tool === "groupplace") { const p = Det.toolSnap(e.offsetX, e.offsetY); down = null; if (groupPlace) cb.placeGroup(groupPlace.typeId, { x: p.x, y: p.y }); return; }
       if (tool === "door" || tool === "window") { const w = toWorld(e.offsetX, e.offsetY); down = null; cb.place(tool, Math.round(w.u), Math.round(w.z)); return; }
       if (tool === "spot") { down = null; ESpots.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
       if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
@@ -1064,6 +1115,9 @@ const Elev = (() => {
     if (tool === "sketch") { Sketch.dblclick(); return; }
     if (tool !== "select" || !data) return;
     if (EDims.dblclick(e.offsetX, e.offsetY)) return; // a dimension's text dialog is open
+    // double-clicking a group opens it in Edit Group
+    const gh = hoverPick(e.offsetX, e.offsetY);
+    if (gh !== null && modelGroups.some((g) => g.id === gh)) { cb.editGroup(gh); return; }
     if (ESpots.dblclick(e.offsetX, e.offsetY)) return; // a bend came out of a spot's leader
     // a text note opens its text; a detail line, Detail Line with it selected; a region, Edit Boundary
     const did = detailAt(e.offsetX, e.offsetY)[0];
@@ -1098,7 +1152,7 @@ const Elev = (() => {
     if (t !== "spot") ESpots.stop();
     tool = t; typed = ""; candTab = 0; hover = null; band = null;
     ed = isEdit() ? newEd() : null;
-    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window"].includes(t) || isEdit() ? "crosshair" : "default";
+    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window", "groupplace"].includes(t) || isEdit() ? "crosshair" : "default";
     cb.prompt(promptText());
     if (typeof cb.tool === "function") cb.tool(t);
     render();
@@ -1109,6 +1163,7 @@ const Elev = (() => {
     if (tool === "door" || tool === "window") return `${tool === "door" ? "Door" : "Window"}: click on a wall seen in this view.${tool === "window" ? " The sill goes at the height clicked." : ""} Esc to finish.`;
     if (tool === "spot") return ESpots.prompt();
     if (tool === "text" || tool === "noteleader") return Det.promptText(tool);
+    if (tool === "groupplace") return groupPlace ? `Click to place ${groupPlace.name} by its origin. Esc to stop.` : "Pick a group to place.";
     if (tool === "level") return typed ? `Elevation ${typed}. Press Enter to place the level, Esc to clear.` : "Level: click at the height of the new level, or type its elevation and press Enter. Esc to finish.";
     if (tool === "grid") return "Grid: click where the grid line goes. It runs away from the view. Esc to finish.";
     if (isEdit()) return editPrompt();
@@ -1180,6 +1235,7 @@ const Elev = (() => {
   }
   const Det = makeDetails({
     ctx: () => ctx, toScreen: P, toWorld: W, css, render: () => render(),
+    faded: (id) => groupEdit != null && memberOf.get(id) !== groupEdit.id,
     zoom: () => cam.s,
     scale: () => (data && data.scale) || 100,
     data: () => data || {},
@@ -1262,6 +1318,7 @@ const Elev = (() => {
     setData(d, refit) {
       data = d;
       const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || [])].map((x) => x.id)]);
+      modelGroups.forEach((g) => ids.add(g.id));
       sel = new Set([...sel].filter((i) => ids.has(i)));
       index();
       buildSnap();
@@ -1272,6 +1329,8 @@ const Elev = (() => {
     getCamera() { return { ...cam }; },
     setCameraState(c) { cam = { ...c }; render(); },
     setSelection(ids) { sel = new Set(ids); render(); },
+    setGroups(list, edit) { modelGroups = list || []; memberOf = new Map(); for (const g of modelGroups) for (const m of g.members) memberOf.set(m, g.id); groupEdit = edit || null; render(); },
+    placeGroupType(t) { groupPlace = t; setTool("groupplace"); },
     selection: () => [...sel],
     render,
     // Detail Line and the regions sketch here when the view is open
@@ -1317,6 +1376,7 @@ const Elev = (() => {
       if (tool === "text" && e.key === " " && Det.flipArc()) return true;
       if (tool === "text" && e.key === "Escape") { if (Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); } else setTool("select"); return true; }
       if (tool === "noteleader" && e.key === "Escape") { setTool("select"); return true; }
+      if (tool === "groupplace" && e.key === "Escape") { setTool("select"); return true; }
       if (detDrag && e.key === "Escape") { detDrag = null; down = null; render(); return true; }
       if (e.key === "Escape" && Det.cancelDrag()) return true;
       if (tgrip && e.key === "Escape") { tgrip = null; render(); return true; }

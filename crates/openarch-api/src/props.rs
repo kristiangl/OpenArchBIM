@@ -1164,13 +1164,21 @@ pub fn group_props(d: &Document, id: Id, g: &openarch_model::group::GroupInstanc
     let name = d.group_type(g.group_type).map(|t| t.name.clone()).unwrap_or_default();
     let total = d.group_type(g.group_type).map_or(0, |t| t.members.len());
     let live = g.live(d).len();
-    let level = d.level(g.frame.level).map(|l| l.name.clone()).unwrap_or_default();
+    let detail = d.group_type(g.group_type).is_some_and(|t| t.kind == openarch_model::group::GroupKind::Detail);
+    let constraints = if detail {
+        let view = g.frame.view.and_then(|v| d.view(v)).map(|v| v.name.clone()).unwrap_or_default();
+        vec![ro("Owner View", view), boolean("Pinned", "pinned", g.pinned, true)]
+    } else {
+        let level = d.level(g.frame.level).map(|l| l.name.clone()).unwrap_or_default();
+        vec![ro("Reference Level", level), ro("Origin Level Offset", "0"), boolean("Pinned", "pinned", g.pinned, true)]
+    };
+    let (many, one) = if detail { ("Detail Groups", "Detail Group") } else { ("Model Groups", "Model Group") };
     json!({
-        "id": id, "kind": "GroupInstance", "title": format!("Model Groups: {name}"), "type_label": format!("Model Group: {name}"),
+        "id": id, "kind": "GroupInstance", "title": format!("{many}: {name}"), "type_label": format!("{one}: {name}"),
         "type_id": g.group_type,
         "target": { "method": "patch_group", "id": id },
         "groups": [
-            group("Constraints", vec![ro("Reference Level", level), ro("Origin Level Offset", "0"), boolean("Pinned", "pinned", g.pinned, true)]),
+            group("Constraints", constraints),
             group("Other", vec![ro("Members", live.to_string()), ro("Excluded", total.saturating_sub(live).to_string()), ro("Angle", format!("{:.2}°", g.frame.angle_deg)), ro("Mirrored", if g.frame.mirrored { "Yes" } else { "No" })]),
         ],
     })

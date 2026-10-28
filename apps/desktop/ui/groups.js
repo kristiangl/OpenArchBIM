@@ -1,5 +1,6 @@
-// Model groups in the project: Create Group, Place Model Group, the Modify | Model Groups panel and Edit Group.
-// Members stay ordinary elements. A click on one picks its group (plan.js); Tab reaches the member itself.
+// Groups in the project: Create Group, Place Model Group and Place Detail Group, the Modify | Model Groups (or Detail
+// Groups) panel and Edit Group. Members stay ordinary elements. A click on one picks its group (plan.js,
+// elevation.js); Tab reaches the member itself. A detail group lives in one view and is edited there.
 
 const groupById = (id) => (app.info.groups || []).find((g) => g.id === id);
 const selectedGroups = () => app.selection.map(groupById).filter(Boolean);
@@ -10,25 +11,35 @@ const selectedMembers = () => (app.groupEdit ? [] : app.selection.filter((id) =>
 function syncGroups() {
   if (app.groupEdit && !groupById(app.groupEdit.id)) app.groupEdit = null;
   Plan.setGroups(app.info.groups || [], app.groupEdit);
+  Elev.setGroups(app.info.groups || [], app.groupEdit);
 }
 
 async function selectOnly(ids) {
   app.selection = ids;
   Plan.setSelection(ids);
+  Elev.setSelection(ids);
   Plan.callbacks.select(ids);
 }
 
-function nextGroupName() {
-  const names = new Set((app.info.group_types || []).map((t) => t.name));
-  for (let n = 1; ; n++) if (!names.has(`Model Group ${n}`)) return `Model Group ${n}`;
+function nextGroupName(kind) {
+  const names = new Set((app.info.group_types || []).map((t) => t.name)), base = kind === "detail" ? "Detail Group" : "Model Group";
+  for (let n = 1; ; n++) if (!names.has(`${base} ${n}`)) return `${base} ${n}`;
+}
+
+// the current view's detail lines, regions and text notes
+function viewDetailIds() {
+  const d = app.view.kind === "plan" ? Plan.viewData() : app.view.kind === "elevation" ? Elev.data : null;
+  return new Set(d ? [...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id) : []);
 }
 
 // Create Group (GP): name it, and the selection becomes its first instance
 function createGroup() {
   const ids = app.selection.filter((id) => !groupById(id));
   if (!ids.length) { setPrompt("Select the elements to group first.", true); return; }
-  openModal("Create Model Group", (body, foot, close) => {
-    const inp = el("input", { type: "text", id: "group-name", value: nextGroupName(), style: "width:100%" });
+  // detail items alone make a detail group; with model elements they are left out (attached detail groups come next)
+  const det = viewDetailIds(), kind = ids.every((i) => det.has(i)) ? "detail" : "model";
+  openModal(kind === "detail" ? "Create Detail Group" : "Create Model Group", (body, foot, close) => {
+    const inp = el("input", { type: "text", id: "group-name", value: nextGroupName(kind), style: "width:100%" });
     const msg = el("div", { className: "modal-msg" });
     body.append(el("label", { textContent: "Name" }), inp, msg);
     const ok = async () => {
@@ -45,14 +56,20 @@ function createGroup() {
   });
 }
 
-// Architecture > Model Group: pick a group (when there are several), then click to place it by its origin
-async function placeGroupCommand() {
-  const types = app.info.group_types || [];
-  if (!types.length) { setPrompt("There are no groups yet. Select elements and use Create Group.", true); return; }
-  if (!(await ensurePlan("A group"))) return;
-  const go = (t) => { Plan.placeGroupType({ typeId: t.id, name: t.name }); setPrompt(`Click to place ${t.name} by its origin. Esc to stop.`); };
+// Architecture > Model Group and Annotate > Detail Group: pick a group (when there are several), then click to place
+// it by its origin. A model group goes on the plan's level; a detail group in the plan, elevation or section open.
+async function placeGroupCommand(kind = "model") {
+  const types = (app.info.group_types || []).filter((t) => t.kind === kind);
+  const what = kind === "detail" ? "detail groups" : "model groups";
+  if (!types.length) { setPrompt(`There are no ${what} yet. Select ${kind === "detail" ? "detail items" : "elements"} and use Create Group.`, true); return; }
+  if (kind === "model" ? !(await ensurePlan("A group")) : app.view.kind !== "plan" && app.view.kind !== "elevation") {
+    if (kind === "detail") setPrompt("Detail groups are placed in a plan, elevation or section view.", true);
+    return;
+  }
+  const V = app.view.kind === "elevation" ? Elev : Plan;
+  const go = (t) => { V.placeGroupType({ typeId: t.id, name: t.name, kind }); setPrompt(`Click to place ${t.name} by its origin. Esc to stop.`); };
   if (types.length === 1) { go(types[0]); return; }
-  openModal("Place Model Group", (body, foot, close) => {
+  openModal(kind === "detail" ? "Place Detail Group" : "Place Model Group", (body, foot, close) => {
     const sel = el("select", { size: Math.min(8, types.length), style: "width:100%" }, types.map((t, i) => new Option(t.name, t.id, false, i === 0)));
     const ok = () => { const t = types.find((x) => x.id === Number(sel.value)); close(); if (t) go(t); };
     sel.ondblclick = ok;
@@ -62,10 +79,11 @@ async function placeGroupCommand() {
   });
 }
 
-Plan.callbacks.placeGroup = async (typeId, p) => {
-  const v = viewById(app.view.viewId);
-  if (!v || v.level_id == null) { setPrompt("Place groups in a floor plan.", true); return; }
-  const r = await run("place_group", { type_id: typeId, at: [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000], level_id: v.level_id });
+Plan.callbacks.placeGroup = Elev.callbacks.placeGroup = async (typeId, p) => {
+  const v = viewById(app.view.viewId), t = (app.info.group_types || []).find((x) => x.id === typeId);
+  const at = [Math.round(p.x * 1000) / 1000, Math.round(p.y * 1000) / 1000];
+  if (t && t.kind !== "detail" && (!v || v.level_id == null)) { setPrompt("Place model groups in a floor plan.", true); return; }
+  const r = await run("place_group", t && t.kind === "detail" ? { type_id: typeId, at, view_id: app.view.viewId } : { type_id: typeId, at, level_id: v.level_id });
   if (!r) return;
   await refresh();
   setPrompt(r.notes.length ? `Placed. ${r.notes.join(". ")}.` : "Placed. Click to place another, or Esc to stop.");
@@ -75,13 +93,17 @@ Plan.callbacks.placeGroup = async (typeId, p) => {
 async function startGroupEdit(id) {
   const g = groupById(id);
   if (!g) return;
-  if (app.view.kind !== "plan") { setPrompt("Edit Group works in floor plans for now.", true); return; }
+  if (g.kind === "detail" ? g.view_id !== app.view.viewId : app.view.kind !== "plan") {
+    setPrompt(g.kind === "detail" ? "A detail group is edited in its own view: open that view first." : "Edit Group works in floor plans for now.", true);
+    return;
+  }
   const m = await run("edit_begin", {});
   if (!m) return;
   app.groupEdit = { id, mode: null, mark: m.mark };
   syncGroups();
   await selectOnly([]);
   if (Plan.tool !== "select") Plan.setTool("select");
+  if (Elev.tool !== "select") Elev.setTool("select");
   setPrompt(`Editing ${g.name}. Change its members as usual; Add and Remove change what is in it. Finish applies the change to every ${g.name}.`);
   updateRibbonContext(true);
 }
@@ -99,7 +121,8 @@ Plan.callbacks.groupPick = async (ids) => {
   if (!ge || !ge.mode) return;
   if (await run(ge.mode === "add" ? "add_to_group" : "remove_from_group", { id: ge.id, ids })) await refresh();
 };
-Plan.callbacks.editGroup = (id) => startGroupEdit(id);
+Plan.callbacks.editGroup = Elev.callbacks.editGroup = (id) => startGroupEdit(id);
+Elev.callbacks.groupPick = (ids) => Plan.callbacks.groupPick(ids);
 
 async function finishGroupEdit() {
   const ge = app.groupEdit;
@@ -151,11 +174,10 @@ function groupContext() {
       { label: "Cancel", ico: "✕", big: true, onclick: () => cancelGroupEdit(), cls: "cancel" },
     ] }] };
   }
-  if (app.view.kind !== "plan" && app.view.kind !== "3d") return null;
   const gs = selectedGroups();
   if (gs.length && gs.length === app.selection.length) {
-    const ids = gs.map((g) => g.id);
-    return { auto: true, key: `groups:${ids.join(",")}`, title: "Model Groups", groups: [{ label: "Group", items: [
+    const ids = gs.map((g) => g.id), detail = gs.every((g) => g.kind === "detail");
+    return { auto: true, key: `groups:${ids.join(",")}`, title: detail ? "Detail Groups" : "Model Groups", groups: [{ label: "Group", items: [
       { label: "Edit Group", icon: "editGroup", big: true, onclick: () => (gs.length === 1 ? startGroupEdit(gs[0].id) : setPrompt("Select one group to edit.", true)) },
       { label: "Ungroup", icon: "ungroup", onclick: async () => { const r = await run("ungroup", { ids }); if (r) { await refresh(); await selectOnly(r.ids); setPrompt("Ungrouped. The group stays in the project and can be placed again."); } } },
       { label: "Restore All Excluded", icon: "restoreExcluded", onclick: async () => { const r = await run("restore_excluded", { ids }); if (r) { await refresh(); setPrompt(r.ids.length ? `Restored ${r.ids.length} member${r.ids.length === 1 ? "" : "s"}.` : "Nothing is excluded."); } } },
@@ -164,7 +186,7 @@ function groupContext() {
   }
   const ms = selectedMembers();
   if (ms.length && ms.length === app.selection.length) {
-    return { auto: true, key: `members:${ms.join(",")}`, title: "Model Groups", groups: [{ label: "Group Member", items: [
+    return { auto: true, key: `members:${ms.join(",")}`, title: "Groups", groups: [{ label: "Group Member", items: [
       { label: "Exclude", icon: "exclude", big: true, onclick: () => excludeSelected() },
     ] }] };
   }

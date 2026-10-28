@@ -745,6 +745,9 @@ impl Document {
         };
         self.transact("Delete section", |tx| {
             if let Some(v) = s.view {
+                for i in tx.doc_ref().view_details(v) {
+                    tx.remove(i)?;
+                }
                 tx.remove(v)?;
             }
             for r in &refs {

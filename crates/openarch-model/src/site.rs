@@ -843,6 +843,9 @@ impl Document {
             } else {
                 let view = m.slots[slot].unwrap();
                 nm.slots[slot] = None;
+                for i in tx.doc_ref().view_details(view) {
+                    tx.remove(i)?;
+                }
                 tx.remove(view)?;
                 if nm.slots.iter().all(|s| s.is_none()) {
                     tx.remove(marker)?;
@@ -911,7 +914,8 @@ impl Document {
             if !rest.is_empty() {
                 d.delete(&rest)?;
             }
-            Ok(())
+            // a group whose members have all gone (a detail group's view deleted) goes too
+            d.prune_empty_groups()
         })
     }
 

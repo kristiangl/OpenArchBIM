@@ -1081,7 +1081,9 @@ impl Session {
                 Ok(json!({ "id": id, "notes": notes }))
             }
             "place_group" => {
-                let (id, notes) = self.doc.place_group(id_of(p, "type_id")?, point_of(p.get("at").ok_or("missing at")?)?, id_of(p, "level_id")?, num_of(p, "angle_deg").unwrap_or(0.0))?;
+                // a model group goes on a level, a detail group in a view
+                let target = id_of(p, "view_id").or_else(|_| id_of(p, "level_id"))?;
+                let (id, notes) = self.doc.place_group(id_of(p, "type_id")?, point_of(p.get("at").ok_or("missing at")?)?, target, num_of(p, "angle_deg").unwrap_or(0.0))?;
                 Ok(json!({ "id": id, "notes": notes }))
             }
             "ungroup" => Ok(json!({ "ids": self.doc.ungroup(&ids_of(p, "ids")?)? })),
@@ -1763,9 +1765,9 @@ impl Session {
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template,
                 "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
-            "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),
+            "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "kind": t.kind, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),
             "groups": d.group_instances().iter().map(|(id, g)| json!({
-                "id": id, "type_id": g.group_type, "name": d.group_type(g.group_type).map(|t| t.name.clone()),
+                "id": id, "type_id": g.group_type, "name": d.group_type(g.group_type).map(|t| t.name.clone()), "kind": d.group_type(g.group_type).map(|t| t.kind), "view_id": g.frame.view,
                 "origin": g.frame.origin, "angle_deg": g.frame.angle_deg, "mirrored": g.frame.mirrored, "level_id": g.frame.level, "pinned": g.pinned,
                 "members": g.live(d).into_iter().map(|(_, m)| m).collect::<Vec<_>>(),
                 "excluded": d.group_type(g.group_type).map_or(0, |t| t.members.len()).saturating_sub(g.live(d).len()),
@@ -3986,6 +3988,62 @@ mod tests {
         assert_eq!(call(&mut s, "describe", json!({ "id": gi }))["kind"], "GroupInstance");
         call(&mut s, "rename_group_type", json!({ "id": t, "name": "Bathroom" }));
         assert_eq!(groups(&mut s)[0]["name"], "Bathroom");
+    }
+
+    #[test]
+    fn detail_groups_live_in_a_view_and_place_in_others() {
+        let (mut s, lvl, wt, view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let ev = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "elevation").unwrap()["id"].as_u64().unwrap();
+        let v3 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+        let tt = info["text_note_types"][0]["id"].as_u64().unwrap();
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let lines = call(&mut s, "set_detail_lines", json!({ "view_id": view, "lines": [{ "curve": line([0.0, 0.0], [2000.0, 0.0]) }, { "curve": line([0.0, 0.0], [0.0, 1000.0]) }] }))["ids"].clone();
+        let note = call(&mut s, "add_text_note", json!({ "note": { "view": view, "at": { "x": 500.0, "y": 500.0 }, "text": "FLASHING", "text_type": tt } }))["id"].as_u64().unwrap();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [3000, 5000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let groups = |s: &mut Session| call(s, "doc_info", json!({}))["groups"].as_array().unwrap().clone();
+        let n_lines = |s: &mut Session, v: u64| {
+            let kind = if v == ev { "elevation" } else { "plan" };
+            call(s, kind, json!({ "view_id": v }))["detail_lines"].as_array().unwrap().len()
+        };
+
+        // a selection of detail items only makes a detail group in their view
+        let out = call(&mut s, "create_group", json!({ "ids": [lines[0], lines[1], note] }));
+        let g = out["id"].as_u64().unwrap();
+        let gs = groups(&mut s);
+        assert_eq!((gs[0]["kind"].as_str().unwrap(), gs[0]["name"].as_str().unwrap()), ("detail", "Detail Group 1"));
+        assert_eq!(gs[0]["view_id"], view);
+        assert_eq!(call(&mut s, "describe", json!({ "id": g }))["title"], "Detail Groups: Detail Group 1");
+        // with model elements in the selection the detail items stay out (attached detail groups come next)
+        let mixed = call(&mut s, "create_group", json!({ "ids": [w] }));
+        assert_eq!(groups(&mut s).iter().find(|x| x["id"] == mixed["id"]).unwrap()["kind"], "model");
+        call(&mut s, "undo", json!({}));
+        // a detail item from another view cannot join it
+        let other = call(&mut s, "set_detail_lines", json!({ "view_id": ev, "lines": [{ "curve": line([0.0, 0.0], [500.0, 500.0]) }] }))["ids"][0].clone();
+        assert!(s.handle("add_to_group", &json!({ "id": g, "ids": [other] })).unwrap_err().contains("own view"));
+        assert!(s.handle("add_to_group", &json!({ "id": g, "ids": [w] })).unwrap_err().contains("detail group"));
+        assert!(s.handle("create_group", &json!({ "ids": [lines[0], other] })).unwrap_err().contains("in a group"));
+
+        // placed in an elevation, in the plan again, never in 3D
+        let t = groups(&mut s)[0]["type_id"].as_u64().unwrap();
+        let ge = call(&mut s, "place_group", json!({ "type_id": t, "at": [1000, 3000], "view_id": ev }))["id"].as_u64().unwrap();
+        assert_eq!(n_lines(&mut s, ev), 3);
+        assert!(s.handle("place_group", &json!({ "type_id": t, "at": [0, 0], "view_id": v3 })).unwrap_err().contains("3D"));
+        let g2 = call(&mut s, "transform", json!({ "ids": [g], "kind": "move", "dx": 5000, "dy": 0, "copy": true }))["ids"][0].as_u64().unwrap();
+        assert_eq!(n_lines(&mut s, view), 4);
+        // Edit Group: a line added to the first instance reaches the elevation and the copy
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        let extra = call(&mut s, "set_detail_lines", json!({ "view_id": view, "lines": [{ "curve": line([2000.0, 0.0], [2000.0, 1000.0]) }] }))["ids"][0].clone();
+        call(&mut s, "add_to_group", json!({ "id": g, "ids": [extra] }));
+        call(&mut s, "finish_group", json!({ "id": g }));
+        call(&mut s, "edit_commit", json!({ "mark": mark, "name": "Edit group" }));
+        assert_eq!(n_lines(&mut s, view), 6);
+        assert_eq!(n_lines(&mut s, ev), 4);
+        assert_eq!(groups(&mut s).iter().find(|x| x["id"] == g2).unwrap()["members"].as_array().unwrap().len(), 4);
+        // deleting the elevation takes its instance with it
+        call(&mut s, "delete", json!({ "ids": [ev] }));
+        assert!(groups(&mut s).iter().all(|x| x["id"] != ge));
+        assert_eq!(groups(&mut s).len(), 2);
     }
 
     #[test]
