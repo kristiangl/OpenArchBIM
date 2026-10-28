@@ -661,6 +661,7 @@ pub enum Element {
     GlobalParam(crate::globalparam::GlobalParam),
     GroupType(crate::group::GroupType),
     GroupInstance(crate::group::GroupInstance),
+    GroupArray(crate::array::GroupArray),
 }
 
 impl Element {
@@ -703,6 +704,7 @@ impl Element {
             Element::GlobalParam(_) => "GlobalParam",
             Element::GroupType(_) => "GroupType",
             Element::GroupInstance(_) => "GroupInstance",
+            Element::GroupArray(_) => "GroupArray",
         }
     }
 }

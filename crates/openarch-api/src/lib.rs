@@ -1156,7 +1156,19 @@ impl Session {
                 };
                 let count = p.get("count").and_then(|v| v.as_u64()).ok_or("missing count")? as usize;
                 let to_last = p.get("move_to").and_then(|v| v.as_str()) == Some("last");
-                Ok(json!({ "ids": self.doc.array_elements(&ids, kind, count, to_last)? }))
+                // Group and Associate: the members are instances of one group, kept as an array
+                let associate = p.get("associate").and_then(|v| v.as_bool()).unwrap_or(false);
+                let (ids, array) = self.doc.array_with(&ids, kind, count, to_last, associate)?;
+                Ok(json!({ "ids": ids, "array": array }))
+            }
+            "set_array_count" => {
+                let n = p.get("count").and_then(|v| v.as_u64()).ok_or("missing count")? as usize;
+                self.doc.set_array_count(id_of(p, "id")?, n)?;
+                Ok(json!({}))
+            }
+            "remove_array" => {
+                self.doc.remove_array(id_of(p, "id")?)?;
+                Ok(json!({}))
             }
             "transform" => {
                 // Move, Copy, Rotate and Mirror: { ids, kind, copy, disjoin, dx, dy | cx, cy, angle_deg | a, b }
@@ -1797,6 +1809,7 @@ impl Session {
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template,
                 "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
+            "arrays": d.group_arrays().iter().map(|(id, a)| json!({ "id": id, "members": a.members, "count": a.members.len(), "move_to": if a.to_last { "last" } else { "second" }, "kind": if matches!(a.step, openarch_model::array::ArrayKind::Radial { .. }) { "radial" } else { "linear" } })).collect::<Vec<_>>(),
             "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "kind": t.kind, "attached_to": t.attached_to, "view_kind": t.view_kind, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),
             "groups": d.group_instances().iter().map(|(id, g)| json!({
                 "id": id, "type_id": g.group_type, "name": d.group_type(g.group_type).map(|t| t.name.clone()), "kind": d.group_type(g.group_type).map(|t| t.kind), "view_id": g.frame.view, "parent": g.parent,
@@ -4262,6 +4275,76 @@ mod tests {
         call(&mut s, "delete", json!({ "ids": [o2] }));
         assert_eq!(groups(&mut s).len(), count - 2);
         assert!(groups(&mut s).iter().all(|x| x["id"] != n2));
+    }
+
+    #[test]
+    fn associated_arrays_keep_number_and_spacing() {
+        let (mut s, lvl, wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == lvl).unwrap()["id"].clone();
+        let starts = |s: &mut Session| {
+            let mut v: Vec<(i64, i64)> = call(s, "plan", json!({ "view_id": fp }))["walls"].as_array().unwrap().iter().map(|w| (w["start"][0].as_f64().unwrap().round() as i64, w["start"][1].as_f64().unwrap().round() as i64)).collect();
+            v.sort();
+            v
+        };
+        let arrays = |s: &mut Session| call(s, "doc_info", json!({}))["arrays"].as_array().unwrap().clone();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 1000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+
+        // Group and Associate, Move To 2nd: four instances of one group, held as an array
+        let out = call(&mut s, "array", json!({ "ids": [w], "kind": "linear", "dx": 1000, "dy": 0, "count": 4, "move_to": "second", "associate": true }));
+        let arr = out["array"].as_u64().unwrap();
+        assert_eq!(starts(&mut s), vec![(0, 0), (1000, 0), (2000, 0), (3000, 0)]);
+        let gs = call(&mut s, "doc_info", json!({}))["groups"].as_array().unwrap().clone();
+        assert_eq!(gs.len(), 4);
+        assert!(gs.iter().all(|g| g["type_id"] == gs[0]["type_id"]));
+        // the number adds and removes members at the end
+        call(&mut s, "set_array_count", json!({ "id": arr, "count": 6 }));
+        assert_eq!(starts(&mut s).last().unwrap(), &(5000, 0));
+        call(&mut s, "set_array_count", json!({ "id": arr, "count": 3 }));
+        assert_eq!(starts(&mut s), vec![(0, 0), (1000, 0), (2000, 0)]);
+        assert_eq!(arrays(&mut s)[0]["count"], 3);
+        // moving the third member respaces the array: the first stays, the third lands where it was put
+        let m: Vec<u64> = arrays(&mut s)[0]["members"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect();
+        call(&mut s, "transform", json!({ "ids": [m[2]], "kind": "move", "dx": 1000, "dy": 0 }));
+        assert_eq!(starts(&mut s), vec![(0, 0), (1500, 0), (3000, 0)]);
+        // the first member carries the whole array; two members but not all are refused
+        call(&mut s, "transform", json!({ "ids": [m[0]], "kind": "move", "dx": 0, "dy": 500 }));
+        assert_eq!(starts(&mut s), vec![(0, 500), (1500, 500), (3000, 500)]);
+        assert!(s.handle("transform", &json!({ "ids": [m[1], m[2]], "kind": "move", "dx": 100, "dy": 0 })).unwrap_err().contains("one member"));
+        assert!(s.handle("transform", &json!({ "ids": [m[1]], "kind": "rotate", "cx": 0, "cy": 0, "angle_deg": 90 })).unwrap_err().contains("whole array"));
+        // the whole array turns, and keeps spacing along its new direction
+        call(&mut s, "transform", json!({ "ids": m, "kind": "rotate", "cx": 0, "cy": 500, "angle_deg": 90 }));
+        assert_eq!(starts(&mut s), vec![(0, 500), (0, 2000), (0, 3500)]);
+        call(&mut s, "set_array_count", json!({ "id": arr, "count": 4 }));
+        assert_eq!(starts(&mut s).last().unwrap(), &(0, 5000));
+        // one undo takes the number back
+        call(&mut s, "undo", json!({}));
+        assert_eq!(starts(&mut s).len(), 3);
+        // deleting a member ends the array; the other groups stay
+        call(&mut s, "delete", json!({ "ids": [m[1]] }));
+        assert!(arrays(&mut s).is_empty());
+        assert_eq!(call(&mut s, "doc_info", json!({}))["groups"].as_array().unwrap().len(), 2);
+
+        // Move To Last: a new number shares the same span out again
+        let w2 = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, -5000], "end": [0, -4000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let a2 = call(&mut s, "array", json!({ "ids": [w2], "kind": "linear", "dx": 3000, "dy": 0, "count": 4, "move_to": "last", "associate": true }))["array"].as_u64().unwrap();
+        call(&mut s, "set_array_count", json!({ "id": a2, "count": 7 }));
+        let row: Vec<i64> = starts(&mut s).into_iter().filter(|p| p.1 == -5000).map(|p| p.0).collect();
+        assert_eq!(row, vec![0, 500, 1000, 1500, 2000, 2500, 3000]);
+        // Remove Array leaves the groups
+        call(&mut s, "remove_array", json!({ "id": a2 }));
+        assert!(arrays(&mut s).is_empty());
+        assert_eq!(starts(&mut s).iter().filter(|p| p.1 == -5000).count(), 7);
+
+        // radial, a full turn to Last: a new number shares the turn
+        let w3 = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, -10000], "end": [0, -9000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let a3 = call(&mut s, "array", json!({ "ids": [w3], "kind": "radial", "cx": 0, "cy": -12000, "angle_deg": 360, "count": 4, "move_to": "last", "associate": true }))["array"].as_u64().unwrap();
+        call(&mut s, "set_array_count", json!({ "id": a3, "count": 3 }));
+        let ring: Vec<(i64, i64)> = starts(&mut s).into_iter().filter(|p| p.1 < -8000 && p.1 > -16000).collect();
+        assert_eq!(ring.len(), 3);
+        assert!(ring.contains(&(-1732, -13000)) && ring.contains(&(1732, -13000)), "{ring:?}");
+        // a level cannot be in an associated array
+        assert!(s.handle("array", &json!({ "ids": [lvl], "kind": "linear", "dx": 0, "dy": 0, "dz": 3000, "count": 2, "associate": true })).unwrap_err().contains("never grouped"));
     }
 
     #[test]

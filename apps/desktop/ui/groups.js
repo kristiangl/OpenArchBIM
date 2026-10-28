@@ -205,6 +205,7 @@ function groupContext() {
   }
   if (gs.length && gs.length === app.selection.length) {
     const ids = gs.map((g) => g.id), detail = gs.every((g) => g.kind === "detail");
+    const arr = gs.length === 1 ? (app.info.arrays || []).find((a) => a.members.includes(gs[0].id)) : null;
     return { auto: true, key: `groups:${ids.join(",")}`, title: detail ? "Detail Groups" : "Model Groups", groups: [{ label: "Group", items: [
       { label: "Edit Group", icon: "editGroup", big: true, onclick: () => (gs.length === 1 ? startGroupEdit(gs[0].id) : setPrompt("Select one group to edit.", true)) },
       { label: "Ungroup", icon: "ungroup", onclick: async () => { const r = await run("ungroup", { ids }); if (r) { await refresh(); await selectOnly(r.ids); setPrompt("Ungrouped. The group stays in the project and can be placed again."); } } },
@@ -212,7 +213,7 @@ function groupContext() {
       gs.length === 1 && gs[0].kind !== "detail" && app.view.kind === "plan"
         ? { label: "Attached Detail Groups", icon: "detailGroup", onclick: () => attachedDialog(gs[0]) }
         : greyButton("Attached Detail Groups", "detailGroup", "Attached Detail Groups: select one model group in a plan view"),
-    ] }] };
+    ] }, ...(arr ? [arrayPanel(arr)] : [])] };
   }
   const ms = selectedMembers();
   if (ms.length && ms.length === app.selection.length) {
@@ -246,4 +247,27 @@ async function attachedDialog(g) {
     };
     foot.append(button("OK", ok, true), button("Cancel", close));
   });
+}
+
+// a member of an associated array: its number (members come or go at the end with Move To 2nd, all are spaced
+// again within the span with Last) and Remove Array, which keeps the groups
+function arrayPanel(arr) {
+  const min = arr.kind === "radial" ? 3 : 2;
+  const num = el("input", { type: "number", min: String(min), max: "200", step: "1", value: arr.count, id: "rb-array-count" });
+  num.onchange = async () => {
+    const v = Math.round(parseFloat(num.value));
+    if (!(v >= min && v <= 200)) { setPrompt(`The number must be from ${min} to 200.`, true); num.value = arr.count; return; }
+    if (await run("set_array_count", { id: arr.id, count: v })) {
+      await refresh();
+      const now = (app.info.arrays || []).find((a) => a.id === arr.id);
+      // a member removed from the end may have been the one selected
+      if (now && !now.members.includes(app.selection[0])) await selectOnly([now.members[0]]);
+      setPrompt(`The array has ${v} members.`);
+    } else num.value = arr.count;
+  };
+  const field = el("label", { className: "rb-field", title: arr.move_to === "last" ? "Number: the members share the same span" : "Number: members come and go at the end" }, [el("span", { textContent: "Number" }), num]);
+  return { label: `Array (Move To ${arr.move_to === "last" ? "Last" : "2nd"})`, items: [
+    { node: field },
+    { label: "Remove Array", icon: "ungroup", onclick: async () => { if (await run("remove_array", { id: arr.id })) { await refresh(); setPrompt("The array is gone; its members stay as groups."); } } },
+  ] };
 }

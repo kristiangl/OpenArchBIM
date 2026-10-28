@@ -1355,8 +1355,8 @@ function renderOptionsBar() {
 }
 
 // ---- Array: its options, appended to the Modify tab (Modify | Array) ---------------
-// Linear or Radial, Group and Associate (needs groups, so it is off and greyed out for now), Number, Move To, and
-// Constrain for a linear array or the angle and centre for a radial one.
+// Linear or Radial, Group and Associate (on: the members are instances of one group, kept as an array), Number,
+// Move To, and Constrain for a linear array or the angle and centre for a radial one.
 function arrayContext() {
   const kindOfView = app.view.kind;
   const on = (kindOfView === "plan" && Plan.tool === "array" && !Sketch.active) || (kindOfView === "elevation" && Elev.tool === "array") || (kindOfView === "3d" && ed3 && ed3.tool === "array");
@@ -1369,8 +1369,8 @@ function arrayContext() {
     if (k === "radial" && kindOfView === "elevation") { b.disabled = true; b.title = "Radial: works in plan and 3D views"; }
     return b;
   };
-  const ga = sketchButton({ label: "Group and Associate", icon: "groupAssociate" }, false, () => {}, false);
-  ga.disabled = true; ga.title = "Group and Associate: comes after detail groups. Arrays are made as separate copies for now.";
+  const ga = sketchButton({ label: "Group and Associate", icon: "groupAssociate" }, false, () => set({ arrayAssociate: !o.arrayAssociate }), o.arrayAssociate !== false);
+  ga.title = "Group and Associate: the members are instances of one group, kept as an array whose number and spacing can change later. Off: separate copies.";
   const field = (label, input, title) => { const f = el("label", { className: "rb-field", title }, [el("span", { textContent: label }), input]); return f; };
   const num = el("input", { type: "number", min: radial ? "3" : "2", max: "200", step: "1", value: o.arrayCount, id: "rb-array-number" });
   num.onchange = () => { const v = Math.round(parseFloat(num.value)); const min = radial ? 3 : 2; if (v >= min && v <= 200) set({ arrayCount: v }); else { setPrompt(`The number must be from ${min} to 200.`, true); num.value = o.arrayCount; } };
@@ -1400,18 +1400,20 @@ Elev.callbacks.array = async (ids, du, dz) => {
   const f = Elev.data.frame, d = Elev.data, o = Plan.editOptions();
   const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || [])].map((x) => x.id));
   const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i));
-  const count = Math.max(2, o.arrayCount | 0), base = { kind: "linear", count, move_to: o.arrayMoveTo };
+  // an array going up is made of separate copies (Group and Associate goes across only)
+  const associate = o.arrayAssociate !== false && Math.abs(dz) < 1;
+  const count = Math.max(2, o.arrayCount | 0), base = { kind: "linear", count, move_to: o.arrayMoveTo, associate };
   let ok = false;
   if (model.length) ok = !!(await run("array", { ...base, ids: model, dx: f.right[0] * du, dy: f.right[1] * du, dz })) || ok;
   if (det.length) ok = !!(await run("array", { ...base, ids: det, dx: du, dy: dz })) || ok;
   await refresh();
-  if (ok) setPrompt(`Arrayed: ${count} members.`);
+  if (ok) setPrompt(`Arrayed: ${count} members${associate ? ", grouped and associated" : Math.abs(dz) >= 1 && o.arrayAssociate !== false ? " as separate copies (Group and Associate goes across, not up)" : ""}.`);
 };
 Plan.callbacks.array = async (p) => {
   const r = await run("array", p);
   if (!r) return; // run() has already put the reason in the status bar
   await refresh();
-  setPrompt(`Arrayed: ${p.count} members.`);
+  setPrompt(`Arrayed: ${p.count} members${r.array != null ? ", grouped and associated. Select a member to change the number" : ""}.`);
 };
 
 // ---- Place Wall: the draw palette, appended to the Modify tab ---------------
@@ -1615,6 +1617,7 @@ async function click3DEdit(sx, sy) {
       const a0 = Math.atan2(P[1][1] - P[0][1], P[1][0] - P[0][0]), a1 = Math.atan2(P[2][1] - P[0][1], P[2][0] - P[0][0]);
       p = { kind: "radial", ids, cx: P[0][0], cy: P[0][1], angle_deg: Math.round(((a1 - a0) * 180) / Math.PI * 100) / 100, count, move_to: o.arrayMoveTo };
     } else p = { kind: "linear", ids, dx: P[1][0] - P[0][0], dy: P[1][1] - P[0][1], count, move_to: o.arrayMoveTo };
+    p.associate = o.arrayAssociate !== false;
     const r = await run("array", p);
     end3DEdit();
     if (r) { await refresh(); setPrompt(`Arrayed: ${count} members.`); }

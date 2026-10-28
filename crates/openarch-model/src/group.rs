@@ -883,7 +883,10 @@ impl Document {
             if !rest.is_empty() {
                 out.extend(d.transform_elements(&rest, x, opt)?);
             }
-            for g in groups {
+            // members of associated arrays: one moved alone respaces its array, and is done here
+            let todo = d.arrays_for_transform(&groups, x, opt.copy)?;
+            out.extend(groups.iter().filter(|g| !todo.contains(g)).copied());
+            for g in todo {
                 let inst = d.group_instance(g).cloned().unwrap();
                 let frame = inst.frame.transformed(x);
                 let attached = d.attached_of(g);
@@ -950,6 +953,16 @@ impl Document {
     }
 
     /// Carry one instance's members through `x` and turn its frame with them.
+    /// Move one group instance and the attached detail groups shown for it, leaving walls joined to it alone.
+    pub(crate) fn move_group(&mut self, g: Id, x: Xform) -> Result<(), String> {
+        let opt = EditOptions { copy: false, disjoin: true };
+        self.move_instance(g, x, opt)?;
+        for a in self.attached_of(g) {
+            self.move_instance(a, x, opt)?;
+        }
+        Ok(())
+    }
+
     fn move_instance(&mut self, g: Id, x: Xform, opt: EditOptions) -> Result<(), String> {
         let inst = self.group_instance(g).cloned().unwrap();
         let live: Vec<Id> = inst.live(self).into_iter().map(|(_, id)| id).collect();
@@ -1034,6 +1047,7 @@ impl Document {
             all.extend(self.attached_of(g).into_iter().filter(|a| !ids.contains(a)));
         }
         let ids = &all[..];
+        self.end_arrays_of(ids)?;
         let mut freed = vec![];
         for &g in ids {
             let inst = self.group_instance(g).ok_or("not a group")?;
@@ -1061,6 +1075,7 @@ impl Document {
             members.extend(es);
         }
         let ids = &all[..];
+        self.end_arrays_of(ids)?;
         self.transact("Delete group", |tx| {
             for &g in ids {
                 tx.remove(g)?;

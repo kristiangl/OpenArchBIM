@@ -1664,7 +1664,7 @@ const Plan = (() => {
   const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align", "array"];
   const NEEDS_SELECTION = new Set(["move", "copy", "rotate", "mirror", "array"]);
   let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "",
-    arrayKind: "linear", arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false };
+    arrayKind: "linear", arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false, arrayAssociate: true };
   let cdrag = false; // the centre of rotation (Rotate, a radial Array) being dragged
   const radialTool = () => tool === "rotate" || (tool === "array" && eo.arrayKind === "radial");
   let ed = null; // { stage, p0, centre, typed, ... }
@@ -1771,8 +1771,8 @@ const Plan = (() => {
     const ids = [...sel], s = arrayStep(p), r = (x) => Math.round(x * 1000) / 1000;
     if (eo.arrayKind === "radial") {
       const c = centreOfRotation();
-      cb.array({ kind: "radial", ids, cx: r(c.x), cy: r(c.y), angle_deg: Math.round(s.angle * 100) / 100, count: s.n, move_to: eo.arrayMoveTo });
-    } else cb.array({ kind: "linear", ids, dx: r(s.v.x), dy: r(s.v.y), count: s.n, move_to: eo.arrayMoveTo });
+      cb.array({ kind: "radial", ids, cx: r(c.x), cy: r(c.y), angle_deg: Math.round(s.angle * 100) / 100, count: s.n, move_to: eo.arrayMoveTo, associate: eo.arrayAssociate });
+    } else cb.array({ kind: "linear", ids, dx: r(s.v.x), dy: r(s.v.y), count: s.n, move_to: eo.arrayMoveTo, associate: eo.arrayAssociate });
   }
 
   function offsetTarget() { return ed.target ? data.walls.find((w) => w.id === ed.target) : null; }
