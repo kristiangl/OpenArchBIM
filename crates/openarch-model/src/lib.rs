@@ -28,6 +28,7 @@ pub mod globalparam;
 pub mod grid;
 pub mod group;
 pub mod hosting;
+pub mod ifc;
 pub mod join;
 pub mod layers;
 pub mod mesh;

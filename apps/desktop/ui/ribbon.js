@@ -89,6 +89,8 @@ const RIBBON = {
       { id: "import-dxf", label: "Import DXF", big: true }, { id: "import-image", label: "Image", big: true } ] },
     { label: "Load from Library", items: [
       { id: "load-family", label: "Load Family", big: true } ] },
+    { label: "Export", items: [
+      { id: "export-ifc", label: "Export IFC", big: true } ] },
   ],
   Annotate: [
     { label: "Dimension", items: [

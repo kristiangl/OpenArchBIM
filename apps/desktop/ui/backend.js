@@ -63,6 +63,14 @@ const Backend = {
     return window.prompt("Create shared parameter file at (path)", current || "shared parameters.txt");
   },
 
+  // IFC export (.ifc)
+  async pickSaveIfc(current) {
+    if (this.isDesktop && window.__TAURI__.dialog) {
+      return window.__TAURI__.dialog.save({ defaultPath: current || "Project.ifc", filters: [{ name: "IFC4 file", extensions: ["ifc"] }] });
+    }
+    return window.prompt("Export IFC as (file path)", current || "project.ifc");
+  },
+
   // Lookup table files (.csv)
   async pickOpenCsv() {
     if (this.isDesktop && window.__TAURI__.dialog) {

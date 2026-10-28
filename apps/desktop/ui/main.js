@@ -91,6 +91,7 @@ const COMMANDS = {
   al: () => startEditTool("align"),
   ar: () => startEditTool("array"),
   gp: () => createGroup(),
+  "export-ifc": () => exportIfc(),
   "model-group": () => placeGroupCommand("model"),
   "det-group": () => placeGroupCommand("detail"),
   pin: () => pinSelection(true),
@@ -2057,6 +2058,15 @@ function updateUndoButtons() {
   u.title = sk && Sketch.canUndo ? "Undo sketch step (Ctrl+Z)" : app.info.undo ? `Undo ${app.info.undo} (Ctrl+Z)` : "Nothing to undo";
   r.disabled = sk ? !Sketch.canRedo : !app.info.redo;
   r.title = sk ? (Sketch.canRedo ? "Redo sketch step (Ctrl+Y)" : "Nothing to redo") : app.info.redo ? `Redo ${app.info.redo} (Ctrl+Y)` : "Nothing to redo";
+}
+
+// Insert > Export IFC: the model as an IFC4 file, named after the project file
+async function exportIfc() {
+  const base = (app.info.path || "Project.oab").replace(/\.[^./\\]+$/, "");
+  const path = await Backend.pickSaveIfc(`${base}.ifc`);
+  if (!path) return;
+  const r = await run("export_ifc", { path });
+  if (r) setPrompt(`Exported IFC4 to ${r.path} (${Math.max(1, Math.round(r.bytes / 1024))} KB).`);
 }
 
 async function save(asNew) {

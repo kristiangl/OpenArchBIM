@@ -1712,6 +1712,14 @@ impl Session {
                 *self = Session::new();
                 Ok(json!({}))
             }
+            // IFC4 export: { path, name? } (the name defaults to the file's stem)
+            "export_ifc" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string())).unwrap_or_else(|| "OpenArch project".into());
+                let text = self.doc.export_ifc(&name);
+                std::fs::write(&path, &text).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+                Ok(json!({ "path": path.to_string_lossy(), "bytes": text.len() }))
+            }
             "save" => {
                 let path = match p.get("path").and_then(|v| v.as_str()) {
                     Some(s) => PathBuf::from(s),
