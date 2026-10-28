@@ -332,6 +332,8 @@ pub struct GridLine {
     pub z0: f64,
     pub z1: f64,
     pub head: bool,
+    /// The head's diameter on paper (the grid type's Head Diameter), mm.
+    pub head_dia_mm: f64,
     pub pinned: bool,
 }
 
@@ -408,6 +410,26 @@ impl Document {
                 tx.add(Element::View(v));
             }
             Ok(id)
+        })
+    }
+
+    /// Copy a level `dz` up or down (elevation views): the copy takes the next free name and the source's type,
+    /// heads, extent and story settings, without a plan view (made when wanted, as with a new level).
+    pub fn copy_level(&mut self, id: Id, dz: f64) -> Result<Id, String> {
+        let src = self.level(id).cloned().ok_or("not a level")?;
+        let shown = src.elevation_mm - self.level_datum_z(&src);
+        self.grouped("Copy", |d| {
+            let new = d.add_level(None, shown + dz, false)?;
+            let mut l = d.level(new).cloned().ok_or("not a level")?;
+            l.level_type = src.level_type;
+            l.bubbles = src.bubbles;
+            l.extent = src.extent;
+            l.building_story = src.building_story;
+            l.structural = src.structural;
+            l.elevation_base = src.elevation_base;
+            l.elevation_mm = src.elevation_mm + dz;
+            d.transact("Copy", |tx| tx.update(new, Element::Level(l)))?;
+            Ok(new)
         })
     }
 
@@ -1160,7 +1182,7 @@ impl Document {
             if section.is_some() && (u < 0.0 || u > frame.right_mm) {
                 continue;
             }
-            grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], pinned: g.pinned });
+            grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], head_dia_mm: self.grid_type(g.grid_type).map_or(8.0, |t| t.bubble_dia_mm), pinned: g.pinned });
         }
         // a section is drawn run by run, so its reference lines are worked out across the whole view
         let refs = if section.is_some() { self.elevation_dim_lines(view).map(|e| e.refs).unwrap_or_default() } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };

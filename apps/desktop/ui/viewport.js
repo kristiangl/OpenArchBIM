@@ -721,6 +721,17 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         return s > 0 ? [eye[0] + d[0] * s, eye[1] + d[1] * s] : null;
       },
       /** Canvas pixel of a world point, for tests. */
+      /** A function from a world point to its canvas pixel for the current camera, null behind the eye (for many points). */
+      projector() {
+        const eye = eyePos(), vp = mat.mul(mat.perspective(0.9, canvas.clientWidth / canvas.clientHeight, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));
+        const W = canvas.clientWidth, H = canvas.clientHeight;
+        return (x0, y0, z0) => {
+          const w = vp[3] * x0 + vp[7] * y0 + vp[11] * z0 + vp[15];
+          if (w <= 1e-6) return null;
+          const x = vp[0] * x0 + vp[4] * y0 + vp[8] * z0 + vp[12], y = vp[1] * x0 + vp[5] * y0 + vp[9] * z0 + vp[13];
+          return { x: (x / w * 0.5 + 0.5) * W, y: (0.5 - y / w * 0.5) * H };
+        };
+      },
       project(p) {
         const eye = eyePos(), vp = mat.mul(mat.perspective(0.9, canvas.clientWidth / canvas.clientHeight, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));
         const x = vp[0] * p[0] + vp[4] * p[1] + vp[8] * p[2] + vp[12], y = vp[1] * p[0] + vp[5] * p[1] + vp[9] * p[2] + vp[13], w = vp[3] * p[0] + vp[7] * p[1] + vp[11] * p[2] + vp[15];

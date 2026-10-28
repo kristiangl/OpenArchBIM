@@ -60,7 +60,8 @@ const Elev = (() => {
   const toWorld = (sx, sy) => { const { w, h } = size(); return { u: (sx - w / 2) / cam.s + cam.u, z: (h / 2 - sy) / cam.s + cam.z }; };
   // annotation is drawn at its paper size: pixels in a paper millimetre are the view scale times the zoom
   const k = () => ((data && data.scale) || 100) * cam.s;
-  const gridR = () => Math.max(5, 4 * k()); // an 8 mm grid head
+  // a grid head's radius on screen, from its type's Head Diameter on paper (8 mm when not given)
+  const gridR = (g) => Math.max(5, (((g && g.head_dia_mm) || 8) / 2) * k());
   const headW = (l) => (l.head ? Math.max(Ann.extent(l.head).maxX, 0) * k() : 0); // how far a level's head reaches past its end
 
   function resize() {
@@ -174,7 +175,7 @@ const Elev = (() => {
     if (!data) return null;
     for (const g of data.grids || []) {
       const a = toScreen(g.u, g.z1), b = toScreen(g.u, g.z0);
-      if (Math.abs(sx - a.x) <= 5 && sy >= a.y - gridR() * 2 && sy <= b.y) return g.id;
+      if (Math.abs(sx - a.x) <= 5 && sy >= a.y - gridR(g) * 2 && sy <= b.y) return g.id;
     }
     return null;
   }
@@ -361,7 +362,7 @@ const Elev = (() => {
       ctx.strokeStyle = col; ctx.lineWidth = sel.has(g.id) ? 1.8 : 1; ctx.setLineDash([14, 4, 3, 4]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.setLineDash([]);
-      const R = gridR();
+      const R = gridR(g);
       ctx.beginPath(); ctx.arc(a.x, a.y - R, R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
       ctx.restore();
       label(g.name, a.x, a.y - R, col, "center", true);

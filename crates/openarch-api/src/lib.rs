@@ -1203,12 +1203,15 @@ impl Session {
                 // levels only move up and down, grids only sideways
                 let is_level = |d: &Document, i: &Id| d.level(*i).is_some();
                 let is_grid = |d: &Document, i: &Id| d.grid(*i).is_some();
-                if copy && ids.iter().any(|i| is_level(&self.doc, i)) {
-                    return Err("levels cannot be copied here".into());
-                }
                 let out = self.doc.grouped(if copy { "Copy" } else { "Move" }, |d| {
-                    let lateral: Vec<Id> = ids.iter().copied().filter(|i| !is_level(d, i)).collect();
-                    let mut target = ids.clone();
+                    // a copied level is made at its new height here; the rest are copied, then lifted
+                    let (levels, rest): (Vec<Id>, Vec<Id>) = ids.iter().copied().partition(|i| copy && is_level(d, i));
+                    let mut copies = vec![];
+                    for l in levels {
+                        copies.push(d.copy_level(l, dz)?);
+                    }
+                    let lateral: Vec<Id> = rest.iter().copied().filter(|i| !is_level(d, i)).collect();
+                    let mut target = rest.clone();
                     if !lateral.is_empty() && (copy || dx != 0.0 || dy != 0.0) {
                         let moved = d.transform_elements(&lateral, Xform::Move { dx, dy }, EditOptions { copy, disjoin: false })?;
                         if copy {
@@ -1221,6 +1224,7 @@ impl Session {
                             d.move_vertical(&lift, dz)?;
                         }
                     }
+                    target.extend(copies);
                     Ok(target)
                 })?;
                 Ok(json!({ "ids": out }))
@@ -3763,6 +3767,26 @@ mod tests {
         // pinned elements refuse, and an element with no height to change says so
         call(&mut s, "pin", json!({ "ids": [w] }));
         assert!(s.handle("move_vertical", &json!({ "ids": [w], "dz": 100 })).unwrap_err().contains("pinned"));
+    }
+
+    #[test]
+    fn levels_are_copied_in_an_elevation() {
+        let (mut s, lvl, _wt, _view) = setup();
+        let levels = |s: &mut Session| call(s, "doc_info", json!({}))["levels"].as_array().unwrap().clone();
+        let (n0, views0) = (levels(&mut s).len(), call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().len());
+        // a copy goes up by dz only (levels do not move sideways), takes the next free name and makes no plan
+        let out = call(&mut s, "move_vertical", json!({ "ids": [lvl], "dz": 3000, "dx": 500, "dy": 0, "copy": true }));
+        let new = out["ids"][0].as_u64().unwrap();
+        let ls = levels(&mut s);
+        assert_eq!(ls.len(), n0 + 1);
+        let l = ls.iter().find(|l| l["id"] == new).unwrap();
+        let src = ls.iter().find(|l| l["id"] == lvl).unwrap();
+        assert!((l["elevation_mm"].as_f64().unwrap() - src["elevation_mm"].as_f64().unwrap() - 3000.0).abs() < 1e-6, "{l}");
+        assert_ne!(l["name"], src["name"]);
+        assert_eq!(call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().len(), views0);
+        // one undo removes it
+        call(&mut s, "undo", json!({}));
+        assert_eq!(levels(&mut s).len(), n0);
     }
 
     #[test]

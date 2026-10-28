@@ -848,13 +848,7 @@ async function refreshView(force) {
       app.sceneRevision = scene.revision;
       app.sceneStyle = scene.visual_style || "shaded";
       app.vp.setMeshes(scene.meshes, app.selection);
-      // the corners of the model, for the 3D Modify tools to snap to (one per mm, a few thousand at most)
-      const seen = new Set(), pts = [];
-      for (const m of scene.meshes) for (let i = 0; i + 2 < m.verts.length && pts.length < 60000; i += 6) {
-        const k = `${Math.round(m.verts[i] * 1000)},${Math.round(m.verts[i + 1] * 1000)},${Math.round(m.verts[i + 2] * 1000)}`;
-        if (!seen.has(k)) { seen.add(k); pts.push(m.verts[i], m.verts[i + 1], m.verts[i + 2]); }
-      }
-      app.scenePts = pts;
+      snapGeometry3D(scene.meshes);
       if (force) app.vp.fit();
     }
     app.vp.setStyle(app.sceneStyle || "shaded");
@@ -1412,15 +1406,79 @@ function ed3Prompt() {
   return n ? `${name}: click where the base point goes.` : `${name}: click the base point (on the level plane). Esc cancels.`;
 }
 function end3DEdit(msg) { ed3 = null; $("#viewport").style.cursor = ""; draw3DEdit(); if (msg) setPrompt(msg); }
-// The point a 3D pick lands on: a corner of the model within 10 pixels (its plan position), else the level plane.
+// What the 3D Modify tools snap to: the corners of the model (app.scenePts) and its edges (app.sceneEdges, both ends
+// of each, x y z in metres). An edge is where two faces meet at an angle or where a face ends; the diagonals that
+// split a flat face into triangles are left out. Points are counted once per mm.
+function snapGeometry3D(meshes) {
+  const key = (v, i) => `${Math.round(v[i] * 1000)},${Math.round(v[i + 1] * 1000)},${Math.round(v[i + 2] * 1000)}`;
+  const seen = new Set(), pts = [], edges = new Map();
+  for (const m of meshes) {
+    const v = m.verts;
+    for (let t = 0; t + 17 < v.length && pts.length < 60000; t += 18) {
+      const ks = [key(v, t), key(v, t + 6), key(v, t + 12)];
+      // the face normal from the corners (the stored normals may be smoothed)
+      const ax = v[t + 6] - v[t], ay = v[t + 7] - v[t + 1], az = v[t + 8] - v[t + 2], bx = v[t + 12] - v[t], by = v[t + 13] - v[t + 1], bz = v[t + 14] - v[t + 2];
+      let n = [ay * bz - az * by, az * bx - ax * bz, ax * by - ay * bx];
+      const nl = Math.hypot(n[0], n[1], n[2]);
+      if (nl < 1e-12) continue;
+      n = n.map((c) => c / nl);
+      for (let j = 0; j < 3; j++) {
+        if (!seen.has(ks[j])) { seen.add(ks[j]); pts.push(v[t + j * 6], v[t + j * 6 + 1], v[t + j * 6 + 2]); }
+        const a = j, b = (j + 1) % 3, ek = ks[a] < ks[b] ? `${m.id}|${ks[a]}|${ks[b]}` : `${m.id}|${ks[b]}|${ks[a]}`;
+        const e = edges.get(ek);
+        if (e) e.n.push(n);
+        else edges.set(ek, { p: [v[t + a * 6], v[t + a * 6 + 1], v[t + a * 6 + 2], v[t + b * 6], v[t + b * 6 + 1], v[t + b * 6 + 2]], n: [n] });
+      }
+    }
+  }
+  const E = [];
+  for (const e of edges.values()) {
+    const flat = e.n.length === 2 && e.n[0][0] * e.n[1][0] + e.n[0][1] * e.n[1][1] + e.n[0][2] * e.n[1][2] > 0.999;
+    if (!flat && E.length < 120000) E.push(...e.p);
+  }
+  app.scenePts = pts;
+  app.sceneEdges = E;
+}
+// The point a 3D pick lands on, in this order: a corner of the model within 10 pixels, the middle of an edge within
+// 10 pixels, the nearest point of an edge within 6 pixels, else the level plane. A snap gives its plan position.
 function point3D(sx, sy) {
-  const vp = app.vp, P = app.scenePts || [];
+  const vp = app.vp, P = app.scenePts || [], E = app.sceneEdges || [], pr = vp.projector();
+  const hit = (snap, q) => ({ x: Math.round(q[0] * 1000), y: Math.round(q[1] * 1000), z: q[2], snap });
   let best = null, bd = 10;
   for (let i = 0; i + 2 < P.length; i += 3) {
-    const q = vp.project([P[i], P[i + 1], P[i + 2]]), d = Math.hypot(q.x - sx, q.y - sy);
+    const q = pr(P[i], P[i + 1], P[i + 2]);
+    if (!q) continue;
+    const d = Math.hypot(q.x - sx, q.y - sy);
     if (d < bd) { bd = d; best = [P[i], P[i + 1], P[i + 2]]; }
   }
-  if (best) return { x: Math.round(best[0] * 1000), y: Math.round(best[1] * 1000), snap: true, z: best[2] };
+  if (best) return hit("end", best);
+  bd = 10;
+  for (let i = 0; i + 5 < E.length; i += 6) {
+    const m = [(E[i] + E[i + 3]) / 2, (E[i + 1] + E[i + 4]) / 2, (E[i + 2] + E[i + 5]) / 2], q = pr(m[0], m[1], m[2]);
+    if (!q) continue;
+    const d = Math.hypot(q.x - sx, q.y - sy);
+    if (d < bd) { bd = d; best = m; }
+  }
+  if (best) return hit("mid", best);
+  // nearest: the closest edge on screen, then the point along it whose pixel is closest (a line stays a line on
+  // screen, so the distance has one minimum and a ternary search finds it)
+  bd = 6;
+  let edge = -1;
+  for (let i = 0; i + 5 < E.length; i += 6) {
+    const a = pr(E[i], E[i + 1], E[i + 2]), b = pr(E[i + 3], E[i + 4], E[i + 5]);
+    if (!a || !b) continue;
+    const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((sx - a.x) * dx + (sy - a.y) * dy) / l2)) : 0;
+    const d = Math.hypot(a.x + dx * t - sx, a.y + dy * t - sy);
+    if (d < bd) { bd = d; edge = i; }
+  }
+  if (edge >= 0) {
+    const at = (t) => [0, 1, 2].map((k) => E[edge + k] + (E[edge + 3 + k] - E[edge + k]) * t);
+    const dist = (t) => { const p = at(t), q = pr(p[0], p[1], p[2]); return q ? Math.hypot(q.x - sx, q.y - sy) : 1e9; };
+    let lo = 0, hi = 1;
+    for (let k = 0; k < 40; k++) { const m1 = lo + (hi - lo) / 3, m2 = hi - (hi - lo) / 3; if (dist(m1) < dist(m2)) hi = m2; else lo = m1; }
+    return hit("near", at((lo + hi) / 2));
+  }
   const g = vp.groundAt(sx, sy, ed3.z);
   return g ? { x: Math.round(g[0] * 1000), y: Math.round(g[1] * 1000), snap: false, z: ed3.z } : null;
 }
@@ -1438,7 +1496,13 @@ function draw3DEdit() {
   for (const p of P) { const s = S(p); c.beginPath(); c.arc(s.x, s.y, 3.5, 0, Math.PI * 2); c.fill(); }
   if (h) {
     const s = h.snap ? app.vp.project([h.x / 1000, h.y / 1000, h.z]) : S([h.x, h.y]);
-    if (h.snap) c.strokeRect(s.x - 5, s.y - 5, 10, 10); else { c.beginPath(); c.moveTo(s.x - 6, s.y); c.lineTo(s.x + 6, s.y); c.moveTo(s.x, s.y - 6); c.lineTo(s.x, s.y + 6); c.stroke(); }
+    // the snap's mark: a square on a corner, a triangle on the middle of an edge, an X on an edge, a cross on the plane
+    c.beginPath();
+    if (h.snap === "end") c.rect(s.x - 5, s.y - 5, 10, 10);
+    else if (h.snap === "mid") { c.moveTo(s.x, s.y - 6); c.lineTo(s.x + 6, s.y + 5); c.lineTo(s.x - 6, s.y + 5); c.closePath(); }
+    else if (h.snap === "near") { c.moveTo(s.x - 5, s.y - 5); c.lineTo(s.x + 5, s.y + 5); c.moveTo(s.x + 5, s.y - 5); c.lineTo(s.x - 5, s.y + 5); }
+    else { c.moveTo(s.x - 6, s.y); c.lineTo(s.x + 6, s.y); c.moveTo(s.x, s.y - 6); c.lineTo(s.x, s.y + 6); }
+    c.stroke();
     const from = ed3.tool === "rotate" && P.length ? P[0] : P[P.length - 1];
     if (from) {
       const a = S(from), b = S([h.x, h.y]);
