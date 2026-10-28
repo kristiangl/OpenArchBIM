@@ -26,6 +26,8 @@ pub struct Session {
     pub doc: Document,
     pub path: Option<PathBuf>,
     saved_revision: u64,
+    /// The group open in Edit Group, if any.
+    group_editing: Option<Id>,
 }
 
 impl Default for Session {
@@ -178,7 +180,7 @@ const LOCATION_LINES: [(&str, LocationLine, &str); 6] = [
 impl Session {
     pub fn new() -> Self {
         let doc = Document::new_project();
-        Session { saved_revision: doc.revision(), doc, path: None }
+        Session { saved_revision: doc.revision(), doc, path: None, group_editing: None }
     }
 
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
@@ -243,7 +245,12 @@ impl Session {
                 self.doc.patch_view(vid, &json!({ "hidden_elements": set }))?;
                 Ok(json!({}))
             }
-            "describe" => self.describe(id_of(p, "id")?),
+            "describe" => {
+                let id = id_of(p, "id")?;
+                let mut v = self.describe(id)?;
+                self.lock_group_member(id, &mut v);
+                Ok(v)
+            }
             "elevation" => self.elevation_json(id_of(p, "view_id")?),
             "add_level" => {
                 let name = p.get("name").and_then(|v| v.as_str());
@@ -1101,7 +1108,23 @@ impl Session {
                 self.doc.remove_from_group(id_of(p, "id")?, &ids_of(p, "ids")?)?;
                 Ok(json!({}))
             }
-            "finish_group" => Ok(json!({ "notes": self.doc.finish_group_edit(id_of(p, "id")?)? })),
+            // Finish Group: { id, resolve?: "fix" | "ungroup" }. Without resolve, instances that cannot take the
+            // change are listed and nothing is applied (applied: false)
+            "finish_group" => {
+                let resolve = match p.get("resolve").and_then(|v| v.as_str()) {
+                    Some("fix") => Some(openarch_model::group::Resolve::Fix),
+                    Some("ungroup") => Some(openarch_model::group::Resolve::Ungroup),
+                    Some(other) => return Err(format!("resolve must be fix or ungroup, not {other}")),
+                    None => None,
+                };
+                let f = self.doc.finish_group_edit(id_of(p, "id")?, resolve)?;
+                Ok(json!({ "notes": f.notes, "applied": f.applied, "conflicts": f.conflicts.iter().map(|(id, why)| json!({ "id": id, "reason": why })).collect::<Vec<_>>() }))
+            }
+            // the group open in Edit Group (or null): outside it, a member's properties are locked but for Comments and Mark
+            "group_edit_state" => {
+                self.group_editing = p.get("id").and_then(|v| v.as_u64());
+                Ok(json!({}))
+            }
             // Attached Detail Groups: which attached detail groups a model group instance shows in a plan view
             "attached_choices" => {
                 let c = self.doc.attached_choices(id_of(p, "id")?, id_of(p, "view_id")?)?;
@@ -2320,6 +2343,29 @@ impl Session {
             }
         }
         json!({ "revision": d.revision(), "meshes": meshes, "visual_style": settings.as_ref().map(|s| s.visual_style) })
+    }
+
+    /// A member of a group (at any depth) outside Edit Group: only the values that vary by group instance
+    /// (Comments, Mark) can change; the rest belong to the group type.
+    fn lock_group_member(&self, id: Id, v: &mut Value) {
+        let mut chain = vec![];
+        let mut at = id;
+        while let Some(g) = self.doc.group_of(at) {
+            chain.push(g);
+            at = g;
+        }
+        if chain.is_empty() || self.group_editing.is_some_and(|e| chain.contains(&e)) {
+            return;
+        }
+        v["group_locked"] = json!(true);
+        for g in v["groups"].as_array_mut().into_iter().flatten() {
+            for r in g["rows"].as_array_mut().into_iter().flatten() {
+                if !matches!(r["path"].as_str(), Some("comments") | Some("mark")) && r["kind"] != "ro" {
+                    r["locked"] = json!(true);
+                    r["lock_reason"] = json!("Set by the group: edit the group to change it. Comments and Mark vary by group instance.");
+                }
+            }
+        }
     }
 
     fn describe(&self, id: Id) -> Res {
@@ -4120,6 +4166,102 @@ mod tests {
         call(&mut s, "ungroup", json!({ "ids": [g] }));
         assert!(groups(&mut s).iter().all(|x| x["parent"] != g));
         assert_eq!(dims(&mut s, fp), vec![before]);
+    }
+
+    #[test]
+    fn fix_groups_vary_by_instance_and_nesting() {
+        let (mut s, lvl, wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let l2 = info["levels"][1]["id"].as_u64().unwrap();
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == lvl).unwrap()["id"].clone();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let wall = |s: &mut Session, l: u64, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": l, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let groups = |s: &mut Session| call(s, "doc_info", json!({}))["groups"].as_array().unwrap().clone();
+        let inst = |s: &mut Session, id: u64| groups(s).into_iter().find(|g| g["id"] == id).unwrap();
+        let members = |s: &mut Session, id: u64| inst(s, id)["members"].as_array().unwrap().iter().map(|m| m.as_u64().unwrap()).collect::<Vec<_>>();
+        let a = wall(&mut s, lvl, [0, 0], [4000, 0]);
+        let g = call(&mut s, "create_group", json!({ "ids": [a], "name": "Bay" }))["id"].as_u64().unwrap();
+        let t = inst(&mut s, g)["type_id"].as_u64().unwrap();
+        let g2 = call(&mut s, "place_group", json!({ "type_id": t, "at": [2000, 10000], "level_id": l2 }))["id"].as_u64().unwrap();
+
+        // Finish with a wall one level up: the copy on the top level has no level for it
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        let up = wall(&mut s, l2, [0, 2000], [4000, 2000]);
+        call(&mut s, "add_to_group", json!({ "id": g, "ids": [up] }));
+        let f = call(&mut s, "finish_group", json!({ "id": g }));
+        assert_eq!(f["applied"], false);
+        assert_eq!(f["conflicts"][0]["id"], g2);
+        assert_eq!(members(&mut s, g2).len(), 1, "nothing changed");
+        // Fix Groups excludes the wall from that instance only
+        let f = call(&mut s, "finish_group", json!({ "id": g, "resolve": "fix" }));
+        assert_eq!(f["applied"], true, "{f}");
+        call(&mut s, "edit_commit", json!({ "mark": mark, "name": "Edit group" }));
+        assert_eq!((members(&mut s, g).len(), members(&mut s, g2).len()), (2, 1));
+        assert_eq!(inst(&mut s, g2)["excluded"], 1);
+        // placing on the top level excludes what cannot be built there, and says so
+        let out = call(&mut s, "place_group", json!({ "type_id": t, "at": [2000, 20000], "level_id": l2 }));
+        assert!(out["notes"][0].as_str().unwrap().contains("excluded"), "{out}");
+
+        // a window in a wall the copy excludes: Ungroup frees that copy instead
+        let g3 = call(&mut s, "transform", json!({ "ids": [g], "kind": "move", "dx": 0, "dy": -10000, "copy": true }))["ids"][0].as_u64().unwrap();
+        let ground_walls: Vec<Value> = call(&mut s, "plan", json!({ "view_id": fp }))["walls"].as_array().unwrap().iter().map(|w| w["id"].clone()).collect();
+        let a3 = members(&mut s, g3).into_iter().find(|m| ground_walls.contains(&json!(m))).unwrap();
+        call(&mut s, "exclude_members", json!({ "ids": [a3] }));
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        let w = call(&mut s, "place_instance", json!({ "type_id": win, "host_id": a, "point": [2000, 0] }))["id"].as_u64().unwrap();
+        call(&mut s, "add_to_group", json!({ "id": g, "ids": [w] }));
+        let f = call(&mut s, "finish_group", json!({ "id": g }));
+        assert!(f["conflicts"].as_array().unwrap().iter().any(|c| c["id"] == g3 && c["reason"].as_str().unwrap().contains("no wall")), "{f}");
+        let f = call(&mut s, "finish_group", json!({ "id": g, "resolve": "ungroup" }));
+        call(&mut s, "edit_commit", json!({ "mark": mark, "name": "Edit group" }));
+        assert!(f["applied"].as_bool().unwrap());
+        assert!(groups(&mut s).iter().all(|x| x["id"] != g3));
+
+        // Comments vary by group instance; outside Edit Group the rest of a member's properties are locked
+        let a2 = members(&mut s, g2)[0];
+        call(&mut s, "patch_wall", json!({ "id": a2, "patch": { "comments": "Unit 102" } }));
+        let d = call(&mut s, "describe", json!({ "id": a2 }));
+        assert_eq!(d["group_locked"], true);
+        let rows: Vec<Value> = d["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
+        assert!(rows.iter().any(|r| r["path"] == "comments" && r["locked"].is_null()));
+        assert!(rows.iter().any(|r| r["locked"] == true));
+        call(&mut s, "group_edit_state", json!({ "id": g2 }));
+        assert!(call(&mut s, "describe", json!({ "id": a2 }))["group_locked"].is_null());
+        call(&mut s, "group_edit_state", json!({ "id": null }));
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        call(&mut s, "patch_wall", json!({ "id": a, "patch": { "comments": "Unit 101" } }));
+        call(&mut s, "finish_group", json!({ "id": g, "resolve": "fix" }));
+        call(&mut s, "edit_commit", json!({ "mark": mark }));
+        let d2 = call(&mut s, "describe", json!({ "id": a2 })).to_string();
+        assert!(d2.contains("Unit 102") && !d2.contains("Unit 101"), "comments stay per instance");
+
+        // nesting: a group of a group and a wall; copies carry the nested group, edits to it reach every copy
+        let w1 = wall(&mut s, lvl, [0, 30000], [2000, 30000]);
+        let n = call(&mut s, "create_group", json!({ "ids": [w1], "name": "Nested" }))["id"].as_u64().unwrap();
+        let w2 = wall(&mut s, lvl, [0, 31000], [2000, 31000]);
+        let o = call(&mut s, "create_group", json!({ "ids": [n, w2], "name": "Outer" }))["id"].as_u64().unwrap();
+        assert!(members(&mut s, o).contains(&n));
+        assert!(s.handle("add_to_group", &json!({ "id": n, "ids": [o] })).is_err(), "a group cannot hold a group that holds it");
+        let o2 = call(&mut s, "transform", json!({ "ids": [o], "kind": "move", "dx": 5000, "dy": 0, "copy": true }))["ids"][0].as_u64().unwrap();
+        let all: Vec<Value> = groups(&mut s).iter().map(|x| x["id"].clone()).collect();
+        let n2 = members(&mut s, o2).into_iter().find(|m| all.contains(&json!(m))).unwrap();
+        assert_eq!(members(&mut s, n2).len(), 1);
+        // moving the outer group carries the nested one
+        let y0 = inst(&mut s, n2)["origin"]["y"].as_f64().unwrap();
+        call(&mut s, "transform", json!({ "ids": [o2], "kind": "move", "dx": 0, "dy": 1000 }));
+        assert_eq!(inst(&mut s, n2)["origin"]["y"].as_f64().unwrap(), y0 + 1000.0);
+        // edit the nested group: the nested group inside the copy follows
+        let mark = call(&mut s, "edit_begin", json!({}))["mark"].clone();
+        let extra = wall(&mut s, lvl, [0, 30000], [0, 29000]);
+        call(&mut s, "add_to_group", json!({ "id": n, "ids": [extra] }));
+        call(&mut s, "finish_group", json!({ "id": n }));
+        call(&mut s, "edit_commit", json!({ "mark": mark }));
+        assert_eq!(members(&mut s, n2).len(), 2);
+        // deleting the outer copy deletes the nested group and its walls
+        let count = groups(&mut s).len();
+        call(&mut s, "delete", json!({ "ids": [o2] }));
+        assert_eq!(groups(&mut s).len(), count - 2);
+        assert!(groups(&mut s).iter().all(|x| x["id"] != n2));
     }
 
     #[test]

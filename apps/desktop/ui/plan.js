@@ -262,34 +262,63 @@ const Plan = (() => {
   // a selection with groups in it, as the elements drawn for it
   function expandIds(ids) {
     const out = new Set(ids);
-    for (const g of modelGroups) if (out.has(g.id)) g.members.forEach((m) => out.add(m));
+    // a group's members, and the members of the groups nested in it
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const g of modelGroups) if (out.has(g.id)) for (const m of g.members) if (!out.has(m)) { out.add(m); grew = true; }
+    }
     return out;
   }
-  // what a pick may take while a group is open in Edit Group: its members, or with Add what is in no group
-  function editPickable(id) { return groupEdit.mode === "add" ? !memberOf.has(id) : memberOf.get(id) === groupEdit.id; }
-  // a click on a member picks its group; Tab reaches the member on its own
+  // the groups holding an element, innermost first
+  function chainOf(id) {
+    const out = [];
+    for (let g = memberOf.get(id); g != null && !out.includes(g); g = memberOf.get(g)) out.push(g);
+    return out;
+  }
+  // what a pick takes for an element while a group is open in Edit Group: the element, or the nested group it is
+  // in; with Add, an element or outermost group outside the open group. Null when it cannot be picked.
+  function editUnit(id) {
+    const ch = chainOf(id);
+    if (groupEdit.mode === "add") return !ch.length ? id : ch.includes(groupEdit.id) ? null : ch[ch.length - 1];
+    const k = ch.indexOf(groupEdit.id);
+    return k < 0 ? null : k === 0 ? id : ch[k - 1];
+  }
+  // a click on a member picks its outermost group; Tab then reaches the groups inside it and the member itself
   function groupify(c) {
-    if (groupEdit) return c.filter((ids) => ids.every(editPickable));
+    if (groupEdit) {
+      const out = [];
+      for (const ids of c) {
+        const u = ids.map(editUnit);
+        if (u.some((x) => x == null)) continue;
+        const uniq = [...new Set(u)];
+        if (!out.some((o) => o.length === uniq.length && o.every((x, i) => x === uniq[i]))) out.push(uniq);
+      }
+      return out;
+    }
     if (!memberOf.size) return c;
-    // each group comes where its first member would, and Tab reaches its members next
+    // each group comes where its first member would, and Tab reaches what is in it next
     const out = [], byGroup = new Map();
     for (const ids of c) {
       if (ids.length > 1) { const free = ids.filter((i) => !memberOf.has(i)); if (free.length > 1) out.push(free); continue; }
-      const g = memberOf.get(ids[0]);
-      if (g == null) { out.push(ids); continue; }
-      if (!byGroup.has(g)) { byGroup.set(g, []); out.push([g]); }
-      byGroup.get(g).push(ids);
+      const ch = chainOf(ids[0]);
+      if (!ch.length) { out.push(ids); continue; }
+      const top = ch[ch.length - 1];
+      if (!byGroup.has(top)) { byGroup.set(top, []); out.push([top]); }
+      const list = byGroup.get(top);
+      for (const g of ch.slice(0, -1).reverse()) if (!list.some((x) => x.length === 1 && x[0] === g)) list.push([g]);
+      list.push(ids);
     }
     return out.flatMap((ids) => (ids.length === 1 && byGroup.has(ids[0]) ? [ids, ...byGroup.get(ids[0])] : [ids]));
   }
   // a window takes a group when it holds every member drawn here, a crossing box when it touches one
   function groupBand(ids, window) {
-    if (groupEdit) return ids.filter(editPickable);
+    if (groupEdit) return [...new Set(ids.map(editUnit).filter((x) => x != null))];
     if (!memberOf.size) return ids;
     const drawn = new Set(elements().map((e) => e.id)), got = new Set(ids);
     const out = ids.filter((i) => !memberOf.has(i));
     for (const g of modelGroups) {
-      const here = g.members.filter((m) => drawn.has(m));
+      if (memberOf.has(g.id)) continue; // a nested group comes with its outer group
+      const here = [...expandIds([g.id])].filter((m) => drawn.has(m));
       if (here.length && (window ? here.every((m) => got.has(m)) : here.some((m) => got.has(m)))) out.push(g.id);
     }
     return out;
@@ -311,14 +340,14 @@ const Plan = (() => {
       ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "rgba(255,255,255,0.62)"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
       const g = modelGroups.find((x) => x.id === groupEdit.id);
       // detail items fade on their own (details.js); model members are drawn again over the fade
-      paint(new Set((g ? g.members : []).filter((m) => !Det.elements().some((e) => e.id === m))), "#202428", null, 1.4);
-      paint(new Set([...sel].filter((i) => memberOf.get(i) === groupEdit.id || !memberOf.has(i))), accent, "rgba(46,111,158,0.45)", 2.5);
+      paint(new Set([...expandIds(g ? [g.id] : [])].filter((m) => !Det.elements().some((e) => e.id === m))), "#202428", null, 1.4);
+      paint(new Set([...expandIds([...sel].filter((i) => editUnit(i) === i))]), accent, "rgba(46,111,158,0.45)", 2.5);
     }
     const hov = tool === "select" && selHover && !band ? selHover : [];
     for (const g of modelGroups) {
       const on = sel.has(g.id), over = !on && hov.includes(g.id);
       if (!on && !over) continue;
-      paint(new Set(g.members), on ? accent : "#d4572f", on ? "rgba(46,111,158,0.35)" : null, on ? 2.5 : 2);
+      paint(expandIds([g.id]), on ? accent : "#d4572f", on ? "rgba(46,111,158,0.35)" : null, on ? 2.5 : 2);
       if (on) {
         // the group's origin: a small square with a cross
         const o = toScreen(g.origin);
@@ -1440,7 +1469,7 @@ const Plan = (() => {
 
     // Place Model Group: an instance of the type drawn here, unmirrored, follows the cursor by its origin
     if (tool === "groupplace" && groupPlace && hover) {
-      const g = modelGroups.find((x) => x.type_id === groupPlace.typeId && !x.mirrored && x.members.some((m) => elements().some((e) => e.id === m)));
+      const g = modelGroups.find((x) => x.type_id === groupPlace.typeId && !x.mirrored && [...expandIds([x.id])].some((m) => elements().some((e) => e.id === m)));
       if (g) {
         const a = (-g.angle_deg * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a);
         ghost((q) => ({ x: hover.x + (q.x - g.origin.x) * c - (q.y - g.origin.y) * sn, y: hover.y + (q.x - g.origin.x) * sn + (q.y - g.origin.y) * c }), new Set([g.id]));
@@ -2423,7 +2452,7 @@ const Plan = (() => {
     data: () => data,
     thin: () => thin,
     held: (x) => heldBySketch(x),
-    faded: (id) => groupEdit != null && memberOf.get(id) !== groupEdit.id,
+    faded: (id) => groupEdit != null && !chainOf(id).includes(groupEdit.id),
     snap: (sx, sy, o) => snap(sx, sy, o),
     shift: () => shift,
     options: () => DetailCallbacks.options(),

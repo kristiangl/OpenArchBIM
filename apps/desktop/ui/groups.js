@@ -9,7 +9,7 @@ const selectedMembers = () => (app.groupEdit ? [] : app.selection.filter((id) =>
 
 // after every refresh: the plan learns the groups, and an Edit Group whose group went (an undo) ends
 function syncGroups() {
-  if (app.groupEdit && !groupById(app.groupEdit.id)) app.groupEdit = null;
+  if (app.groupEdit && !groupById(app.groupEdit.id)) { app.groupEdit = null; run("group_edit_state", { id: null }); }
   Plan.setGroups(app.info.groups || [], app.groupEdit);
   Elev.setGroups(app.info.groups || [], app.groupEdit);
 }
@@ -34,10 +34,11 @@ function viewDetailIds() {
 
 // Create Group (GP): name it, and the selection becomes its first instance
 function createGroup() {
-  const ids = app.selection.filter((id) => !groupById(id));
+  // groups in the selection go inside the new one (an attached detail group stays with its model group)
+  const ids = app.selection.filter((id) => !groupById(id) || groupById(id).parent == null);
   if (!ids.length) { setPrompt("Select the elements to group first.", true); return; }
   // the view's items alone make a detail group; with model elements, a model group and its attached detail group
-  const det = viewDetailIds(), kind = ids.every((i) => det.has(i)) ? "detail" : "model";
+  const det = viewDetailIds(), kind = ids.every((i) => det.has(i) || (groupById(i) && groupById(i).kind === "detail")) ? "detail" : "model";
   openModal(kind === "detail" ? "Create Detail Group" : "Create Model Group", (body, foot, close) => {
     const inp = el("input", { type: "text", id: "group-name", value: nextGroupName(kind), style: "width:100%" });
     const msg = el("div", { className: "modal-msg" });
@@ -102,6 +103,7 @@ async function startGroupEdit(id) {
   const m = await run("edit_begin", {});
   if (!m) return;
   app.groupEdit = { id, mode: null, mark: m.mark };
+  await run("group_edit_state", { id });
   syncGroups();
   await selectOnly([]);
   if (Plan.tool !== "select") Plan.setTool("select");
@@ -126,13 +128,16 @@ Plan.callbacks.groupPick = async (ids) => {
 Plan.callbacks.editGroup = Elev.callbacks.editGroup = (id) => startGroupEdit(id);
 Elev.callbacks.groupPick = (ids) => Plan.callbacks.groupPick(ids);
 
-async function finishGroupEdit() {
+async function finishGroupEdit(resolve) {
   const ge = app.groupEdit;
   if (!ge) return;
-  const r = await run("finish_group", { id: ge.id });
+  const r = await run("finish_group", resolve ? { id: ge.id, resolve } : { id: ge.id });
   if (!r) return; // the reason is in the status bar; the edit stays open
+  // instances that cannot take the change: Fix Groups, Ungroup them, or go back to editing
+  if (!r.applied) { inconsistentDialog(ge, r.conflicts); return; }
   await run("edit_commit", { mark: ge.mark, name: "Edit group" });
   app.groupEdit = null;
+  await run("group_edit_state", { id: null });
   await refresh();
   await selectOnly([ge.id]);
   const n = (groupById(ge.id) && (app.info.group_types.find((t) => t.id === groupById(ge.id).type_id) || {}).count) || 1;
@@ -144,9 +149,23 @@ async function cancelGroupEdit() {
   if (!ge) return;
   await run("edit_cancel", { mark: ge.mark });
   app.groupEdit = null;
+  await run("group_edit_state", { id: null });
   await refresh();
   await selectOnly([ge.id]);
   setPrompt("Edit Group cancelled.");
+}
+
+// Groups Have Become Inconsistent: the change cannot be built in some instances
+function inconsistentDialog(ge, conflicts) {
+  const g = groupById(ge.id), name = g ? g.name : "the group";
+  openModal("Groups Have Become Inconsistent", (body, foot, close) => {
+    body.append(el("div", { className: "modal-msg", id: "inconsistent-msg", textContent: `${conflicts.length} instance${conflicts.length === 1 ? "" : "s"} of ${name} cannot take this change: ${conflicts[0].reason}.` }));
+    body.append(el("div", { textContent: "Fix Groups excludes what does not fit from those instances. Ungroup turns them into plain elements as they were. Cancel goes back to editing." }));
+    foot.append(
+      button("Fix Groups", () => { close(); finishGroupEdit("fix"); }, true),
+      button("Ungroup", () => { close(); finishGroupEdit("ungroup"); }),
+      button("Cancel", () => { close(); setPrompt(`Still editing ${name}.`); }));
+  });
 }
 
 // Delete on a member picked with Tab excludes it from that instance; anything else deletes as usual
@@ -177,6 +196,13 @@ function groupContext() {
     ] }] };
   }
   const gs = selectedGroups();
+  // a group inside another, picked with Tab: edit it (every copy follows) or exclude it from this one
+  if (gs.length === 1 && app.selection.length === 1 && Plan.groupOf(gs[0].id) != null && !ge) {
+    return { auto: true, key: `nested:${gs[0].id}`, title: "Model Groups", groups: [{ label: "Group in a Group", items: [
+      { label: "Edit Group", icon: "editGroup", big: true, onclick: () => startGroupEdit(gs[0].id) },
+      { label: "Exclude", icon: "exclude", big: true, onclick: () => excludeSelected() },
+    ] }] };
+  }
   if (gs.length && gs.length === app.selection.length) {
     const ids = gs.map((g) => g.id), detail = gs.every((g) => g.kind === "detail");
     return { auto: true, key: `groups:${ids.join(",")}`, title: detail ? "Detail Groups" : "Model Groups", groups: [{ label: "Group", items: [

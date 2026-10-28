@@ -16,14 +16,35 @@ const Elev = (() => {
   };
   // groups (doc_info): a click on a member picks its group, Tab the member; Edit Group and Place Group as in plan
   let modelGroups = [], memberOf = new Map(), groupEdit = null, groupPlace = null;
-  const expandIds = (ids) => { const out = new Set(ids); for (const g of modelGroups) if (out.has(g.id)) g.members.forEach((m) => out.add(m)); return out; };
-  const editPickable = (id) => (groupEdit.mode === "add" ? !memberOf.has(id) : memberOf.get(id) === groupEdit.id);
+  // a group's members, and those of the groups nested in it
+  const expandIds = (ids) => {
+    const out = new Set(ids);
+    for (let grew = true; grew; ) { grew = false; for (const g of modelGroups) if (out.has(g.id)) for (const m of g.members) if (!out.has(m)) { out.add(m); grew = true; } }
+    return out;
+  };
+  // the groups holding an element, innermost first
+  const chainOf = (id) => { const out = []; for (let g = memberOf.get(id); g != null && !out.includes(g); g = memberOf.get(g)) out.push(g); return out; };
+  // in Edit Group: the element or the nested group a pick takes (Add: what is outside the open group), or null
+  const editUnit = (id) => {
+    const ch = chainOf(id);
+    if (groupEdit.mode === "add") return !ch.length ? id : ch.includes(groupEdit.id) ? null : ch[ch.length - 1];
+    const k = ch.indexOf(groupEdit.id);
+    return k < 0 ? null : k === 0 ? id : ch[k - 1];
+  };
   function groupify(ids) {
-    if (groupEdit) return ids.filter(editPickable);
+    if (groupEdit) return [...new Set(ids.map(editUnit).filter((x) => x != null))];
     if (!memberOf.size) return ids;
-    // each group comes where its first member would, and Tab reaches its members next
+    // each outermost group comes where its first member would, and Tab reaches what is in it next
     const out = [], byGroup = new Map();
-    for (const id of ids) { const g = memberOf.get(id); if (g == null) out.push(id); else { if (!byGroup.has(g)) { byGroup.set(g, []); out.push(g); } byGroup.get(g).push(id); } }
+    for (const id of ids) {
+      const ch = chainOf(id);
+      if (!ch.length) { out.push(id); continue; }
+      const top = ch[ch.length - 1];
+      if (!byGroup.has(top)) { byGroup.set(top, []); out.push(top); }
+      const list = byGroup.get(top);
+      for (const g of ch.slice(0, -1).reverse()) if (!list.includes(g)) list.push(g);
+      list.push(id);
+    }
     return out.flatMap((id) => (byGroup.has(id) ? [id, ...byGroup.get(id)] : [id]));
   }
   let data = null;
@@ -855,7 +876,7 @@ const Elev = (() => {
 
   // Edit Group: everything fades but the group's members, drawn again in the ink colour
   function drawGroupFade(ink) {
-    const g = modelGroups.find((x) => x.id === groupEdit.id), mem = new Set(g ? g.members : []);
+    const mem = expandIds([groupEdit.id]);
     ctx.save(); ctx.setTransform(1, 0, 0, 1, 0, 0); ctx.fillStyle = "rgba(255,255,255,0.62)"; ctx.fillRect(0, 0, canvas.width, canvas.height); ctx.restore();
     ctx.save(); ctx.strokeStyle = ink; ctx.lineWidth = 1.4;
     for (const it of data.items) if (mem.has(it.id)) for (const poly of it.polys) { polyPath(poly); ctx.stroke(); }
@@ -876,7 +897,7 @@ const Elev = (() => {
     if (!groupPlace || !hover) return;
     const g = modelGroups.find((x) => x.type_id === groupPlace.typeId && !x.mirrored && x.view_id === data.view_id);
     if (!g) return;
-    const a = (-g.angle_deg * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a), mem = new Set(g.members);
+    const a = (-g.angle_deg * Math.PI) / 180, c = Math.cos(a), sn = Math.sin(a), mem = expandIds([g.id]);
     const map = ([u, z]) => [hover.x + (u - g.origin.x) * c - (z - g.origin.y) * sn, hover.y + (u - g.origin.x) * sn + (z - g.origin.y) * c];
     ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.4; ctx.setLineDash([6, 4]);
     for (const e of Det.elements()) if (mem.has(e.id)) for (const r of e.rings || [e.ring]) { polyPath(r.map(map)); ctx.stroke(); }
@@ -1235,7 +1256,7 @@ const Elev = (() => {
   }
   const Det = makeDetails({
     ctx: () => ctx, toScreen: P, toWorld: W, css, render: () => render(),
-    faded: (id) => groupEdit != null && memberOf.get(id) !== groupEdit.id,
+    faded: (id) => groupEdit != null && !chainOf(id).includes(groupEdit.id),
     zoom: () => cam.s,
     scale: () => (data && data.scale) || 100,
     data: () => data || {},

@@ -13,7 +13,7 @@ function rowCells(r, target) {
   label.textContent = r.label;
   const val = document.createElement("td");
   const lock = !!r.locked;
-  if (lock) { label.classList.add("locked"); val.classList.add("locked"); val.title = "Controlled by the view template"; }
+  if (lock) { label.classList.add("locked"); val.classList.add("locked"); val.title = r.lock_reason || "Controlled by the view template"; }
   const dis = (el) => { if (lock) el.disabled = true; return el; };
   if (r.kind === "select") {
     const sel = document.createElement("select");
@@ -219,6 +219,9 @@ async function renderProperties() {
     if (current == null) sel.add(new Option("*Varies*", "", false, true));
     for (const t of types) sel.add(new Option(t.label || `${t.name} (${t.thickness_mm} mm)`, t.id, false, t.id === current));
     sel.onchange = () => { if (sel.value !== "") onType(Number(sel.value)); };
+    // a member of a group outside Edit Group takes its type from the group
+    sel.title = d && d.group_locked ? "Set by the group: edit the group to change it" : "";
+    if (d && d.group_locked) sel.disabled = true;
   } else {
     sel.disabled = true;
     sel.add(new Option(d && d.type_label ? d.type_label : title, ""));

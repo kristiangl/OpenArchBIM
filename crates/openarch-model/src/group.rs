@@ -3,6 +3,11 @@
 //! detail group holds one view's detail lines, regions and text notes and is placed in a view.
 //! An attached detail group belongs to a model group type: its dimensions and spot annotations
 //! measure members of that model group, and each model instance shows it, or not, view by view.
+//! A group can hold other groups of its kind (nesting); a nested group is placed from its own type.
+//!
+//! When an edit cannot be carried to every instance (a wall needs a level the instance does not
+//! have, a door's wall is excluded there), Finish reports the instances and Fix Groups excludes
+//! what does not fit, or Ungroup frees them. Comments and Mark vary by group instance.
 //!
 //! Members are ordinary elements in the document, so joins, hosting, drawing and
 //! quantities work on them unchanged. The instance records which element plays
@@ -90,6 +95,24 @@ impl GroupFrame {
     }
 }
 
+/// How Finish Group settles instances that cannot take the change.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Resolve {
+    /// Exclude what cannot be built from those instances.
+    Fix,
+    /// Turn those instances into plain elements, as they stood before the edit.
+    Ungroup,
+}
+
+/// What Finish Group did: `applied` is false when instances could not take the change and no `Resolve`
+/// was given; nothing changed then and `conflicts` names them, with the reason.
+#[derive(Debug, Clone, Default)]
+pub struct Finish {
+    pub notes: Vec<String>,
+    pub conflicts: Vec<(Id, String)>,
+    pub applied: bool,
+}
+
 /// One member of a group type: the element as it stood when captured. A door or
 /// window's host wall is given by that wall's key, not an element id.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -165,6 +188,7 @@ fn detail_view(e: &Element) -> Option<Id> {
         Element::TextNote(t) => Some(t.view),
         Element::Dimension(d) => Some(d.view),
         Element::Spot(s) => Some(s.view),
+        Element::GroupInstance(g) => g.frame.view,
         _ => None,
     }
 }
@@ -262,6 +286,7 @@ fn element_points(doc: &Document, id: Id, e: &Element) -> Vec<Point> {
         Element::DetailLine(l) => vec![l.curve.start(), l.curve.end(), l.curve.mid()],
         Element::DetailRegion(r) => r.loops.iter().flatten().flat_map(|e| [e.curve.start(), e.curve.end()]).collect(),
         Element::TextNote(t) => vec![t.at],
+        Element::GroupInstance(g) => g.live(doc).into_iter().filter_map(|(_, m)| doc.get(m).map(|e| element_points(doc, m, e))).flatten().collect(),
         _ => vec![],
     }
 }
@@ -281,20 +306,24 @@ fn set_pinned(e: &mut Element, pinned: bool) {
     }
 }
 
-/// Give a rebuilt member the identity of the element it replaces: its mark, IFC GUID and pin.
+/// Give a rebuilt member the identity of the element it replaces: its IFC GUID, its pin and the values
+/// that vary by group instance (Comments, Mark).
 fn keep_identity(old: &Element, new: &mut Element) {
     match (old, new) {
         (Element::Wall(o), Element::Wall(n)) => {
+            n.comments = o.comments.clone();
             n.mark = o.mark.clone();
             n.ifc.guid = o.ifc.guid.clone();
             n.pinned = o.pinned;
         }
         (Element::Roof(o), Element::Roof(n)) => {
+            n.comments = o.comments.clone();
             n.mark = o.mark.clone();
             n.ifc.guid = o.ifc.guid.clone();
             n.pinned = o.pinned;
         }
         (Element::FamilyInstance(o), Element::FamilyInstance(n)) => {
+            n.comments = o.comments.clone();
             n.mark = o.mark.clone();
             n.ifc.guid = o.ifc.guid.clone();
             n.pinned = o.pinned;
@@ -427,8 +456,13 @@ impl Document {
         let mut plain = vec![];
         let mut hosted = vec![];
         let mut measuring = vec![];
+        let mut nests = vec![];
         for m in &ty.members {
             if skip.contains(&m.key) {
+                continue;
+            }
+            if let Element::GroupInstance(n) = &m.element {
+                nests.push((m.key, n.clone()));
                 continue;
             }
             if annotation(&m.element) {
@@ -463,7 +497,9 @@ impl Document {
             for (k, mut e) in hosted {
                 if let Element::FamilyInstance(i) = &mut e {
                     let h = i.host.unwrap();
-                    let Some(&wall) = map.get(&h.wall).or_else(|| existing.get(&h.wall)) else { continue };
+                    let Some(&wall) = map.get(&h.wall).or_else(|| existing.get(&h.wall)) else {
+                        return Err("a door or window in the group has no wall in this instance (its wall is excluded there)".into());
+                    };
                     i.host = Some(HostRef { wall, u_mm: h.u_mm });
                 }
                 map.insert(k, tx.add(e));
@@ -476,9 +512,9 @@ impl Document {
                 self.transform_elements_inner(&ids, *x, EditOptions { copy: false, disjoin: true })?;
             }
         }
+        let mut map = map;
         // dimensions and spots were carried to their place already; a dimension starts from what it measures there
         if !measuring.is_empty() {
-            let mut map = map;
             let added = self.transact("Place group", |tx| {
                 let mut out = vec![];
                 for (k, mut e) in measuring {
@@ -490,9 +526,73 @@ impl Document {
                 Ok(out)
             })?;
             map.extend(added);
-            return Ok(map);
+        }
+        // a nested group is placed from its own type, in its frame carried the same way
+        for (k, n) in nests {
+            let mut f = n.frame;
+            if ty.kind == GroupKind::Model {
+                f.level = self.level_steps(f.level, steps).ok_or("there is no level for a group inside this one that far up or down")?;
+            }
+            for x in &moves {
+                f = f.transformed(*x);
+            }
+            if ty.kind == GroupKind::Detail {
+                f.view = to.view;
+            }
+            let nty = self.group_type(n.group_type).cloned().ok_or("a group inside this one has lost its type")?;
+            let (nid, more) = self.place_frame(n.group_type, &nty, f, n.excluded.clone(), None)?;
+            notes.extend(more);
+            map.insert(k, nid);
         }
         Ok(map)
+    }
+
+    /// Paste as `paste_members` does, leaving out what cannot be built here instead of failing (Fix Groups):
+    /// members that need a level the instance does not have, doors whose wall is left out, and then, one at a
+    /// time, any member without which the rest goes in. Returns the members made and the keys left out.
+    fn paste_fixing(&mut self, ty: &GroupType, to: &GroupFrame, skip: &BTreeSet<Id>, existing: &BTreeMap<Id, Id>, parent: Option<Id>, notes: &mut Vec<String>) -> Result<(BTreeMap<Id, Id>, BTreeSet<Id>), String> {
+        let mut extra: BTreeSet<Id> = BTreeSet::new();
+        if ty.kind == GroupKind::Model {
+            if let (Some(a), Some(b)) = (self.level_index(ty.frame.level), self.level_index(to.level)) {
+                for m in &ty.members {
+                    let bad = match &m.element {
+                        Element::GroupInstance(n) => self.level_steps(n.frame.level, b - a).is_none(),
+                        e => self.shift_levels(&mut e.clone(), b - a, &mut vec![]).is_err(),
+                    };
+                    if bad && !skip.contains(&m.key) {
+                        extra.insert(m.key);
+                    }
+                }
+            }
+        }
+        // doors and windows whose wall is out go too
+        let out: BTreeSet<Id> = skip.union(&extra).copied().collect();
+        for m in &ty.members {
+            if let Element::FamilyInstance(i) = &m.element {
+                if i.host.is_some_and(|h| out.contains(&h.wall) && !existing.contains_key(&h.wall)) && !skip.contains(&m.key) {
+                    extra.insert(m.key);
+                }
+            }
+        }
+        let attempt = |d: &mut Document, extra: &BTreeSet<Id>, notes: &mut Vec<String>| {
+            let s2: BTreeSet<Id> = skip.union(extra).copied().collect();
+            d.grouped("Place group", |d| d.paste_members(ty, to, &s2, existing, parent, notes))
+        };
+        let first = match attempt(self, &extra, notes) {
+            Ok(map) => return Ok((map, extra)),
+            Err(e) => e,
+        };
+        for m in &ty.members {
+            if skip.contains(&m.key) || extra.contains(&m.key) {
+                continue;
+            }
+            let mut more = extra.clone();
+            more.insert(m.key);
+            if let Ok(map) = attempt(self, &more, notes) {
+                return Ok((map, more));
+            }
+        }
+        Err(first)
     }
 
     /// Where a dimension's references stand now, as the constraint solver starts from.
@@ -517,6 +617,20 @@ impl Document {
         let mut datums = 0;
         for &id in ids {
             match self.get(id) {
+                // a group in the selection is nested in the new one (an attached detail group stays with its model group)
+                Some(Element::GroupInstance(g)) => {
+                    if self.group_of(id).is_some() {
+                        return Err("an element in the selection is already in a group".into());
+                    }
+                    if g.parent.is_some() {
+                        left_out += 1;
+                        continue;
+                    }
+                    let list = if self.group_type(g.group_type).is_some_and(|t| t.kind == GroupKind::Detail) { &mut detail } else { &mut model };
+                    if !list.contains(&id) {
+                        list.push(id);
+                    }
+                }
                 Some(e) if groupable(e) || detail_item(e) || annotation(e) => {
                     if self.group_of(id).is_some() {
                         return Err("an element in the selection is already in a group".into());
@@ -612,6 +726,10 @@ impl Document {
         let frame = GroupFrame { origin, angle_deg: 0.0, mirrored: false, level, view };
         let mut inst = GroupInstance { group_type: 0, frame, members: members.iter().map(|&i| (i, i)).collect(), excluded: BTreeSet::new(), pinned: false, parent: None };
         let ty = GroupType { name: name.clone(), kind, attached_to: None, view_kind: None, frame, members: self.capture(&inst)? };
+        let depth = 1 + members.iter().filter_map(|m| self.group_instance(*m)).map(|g| self.type_depth(g.group_type)).max().unwrap_or(0);
+        if depth > 2 {
+            notes.push("groups nested more than two deep make editing slow".to_string());
+        }
         self.grouped("Create group", |d| {
             let id = d.transact("Create group", |tx| {
                 inst.group_type = tx.add(Element::GroupType(ty));
@@ -646,6 +764,7 @@ impl Document {
             Element::Floor(f) => Some(f.level),
             Element::Roof(r) => Some(r.level),
             Element::FamilyInstance(i) => Some(i.level),
+            Element::GroupInstance(g) => Some(g.frame.level),
             _ => None,
         };
         members.iter().filter_map(lv).min_by(|a, b| {
@@ -709,9 +828,14 @@ impl Document {
         self.grouped("Place group", |d| d.place_frame(group_type, &ty, frame, BTreeSet::new(), None))
     }
 
+    /// Place an instance; what cannot be built in this place is excluded from it, and the notes say so.
     fn place_frame(&mut self, group_type: Id, ty: &GroupType, frame: GroupFrame, excluded: BTreeSet<Id>, parent: Option<Id>) -> Result<(Id, Vec<String>), String> {
         let mut notes = vec![];
-        let members = self.paste_members(ty, &frame, &excluded, &BTreeMap::new(), parent, &mut notes)?;
+        let (members, extra) = self.paste_fixing(ty, &frame, &excluded, &BTreeMap::new(), parent, &mut notes)?;
+        if !extra.is_empty() {
+            notes.push(format!("{} member(s) of {} could not be built here and were excluded", extra.len(), ty.name));
+        }
+        let excluded: BTreeSet<Id> = excluded.union(&extra).copied().collect();
         let inst = GroupInstance { group_type, frame, members, excluded, pinned: false, parent };
         let id = self.transact("Place group", |tx| Ok(tx.add(Element::GroupInstance(inst))))?;
         Ok((id, notes))
@@ -731,7 +855,14 @@ impl Document {
                 groups.retain(|x| *x != g);
             }
         }
-        let inside: BTreeSet<Id> = groups.iter().flat_map(|g| self.group_instance(*g).unwrap().members.values().copied().collect::<Vec<_>>()).collect();
+        // whatever is inside a selected group (nested groups too) moves once, with it
+        let mut inside: BTreeSet<Id> = BTreeSet::new();
+        for g in &groups {
+            let (gs, es) = self.deep_contents(*g);
+            inside.extend(gs.into_iter().filter(|x| x != g));
+            inside.extend(es);
+        }
+        groups.retain(|g| !inside.contains(g));
         let rest: Vec<Id> = ids.iter().copied().filter(|i| !groups.contains(i) && !inside.contains(i)).collect();
         if !opt.copy {
             let pinned = groups.iter().filter(|g| self.group_instance(**g).is_some_and(|g| g.pinned)).count();
@@ -778,6 +909,41 @@ impl Document {
         })
     }
 
+    /// How many levels of groups a type holds, itself included.
+    fn type_depth(&self, t: Id) -> usize {
+        let Some(ty) = self.group_type(t) else { return 0 };
+        1 + ty.members.iter().filter_map(|m| if let Element::GroupInstance(n) = &m.element { Some(self.type_depth(n.group_type)) } else { None }).max().unwrap_or(0)
+    }
+
+    /// Whether type `t` holds an instance of `target`, at any depth.
+    fn type_contains(&self, t: Id, target: Id) -> bool {
+        let Some(ty) = self.group_type(t) else { return false };
+        ty.members.iter().any(|m| matches!(&m.element, Element::GroupInstance(n) if n.group_type == target || self.type_contains(n.group_type, target)))
+    }
+
+    /// Every group inside `g` (nested, and the attached detail groups shown for them) and every element in
+    /// them, `g` itself and its own attached groups included.
+    fn deep_contents(&self, g: Id) -> (Vec<Id>, Vec<Id>) {
+        let (mut groups, mut elements) = (vec![], vec![]);
+        let mut stack = vec![g];
+        while let Some(x) = stack.pop() {
+            if groups.contains(&x) {
+                continue;
+            }
+            let Some(inst) = self.group_instance(x) else { continue };
+            groups.push(x);
+            stack.extend(self.attached_of(x));
+            for (_, m) in inst.live(self) {
+                if self.group_instance(m).is_some() {
+                    stack.push(m);
+                } else {
+                    elements.push(m);
+                }
+            }
+        }
+        (groups, elements)
+    }
+
     /// The attached detail groups shown for a model group instance.
     pub fn attached_of(&self, parent: Id) -> Vec<Id> {
         self.group_instances().into_iter().filter(|(_, g)| g.parent == Some(parent)).map(|(i, _)| i).collect()
@@ -787,6 +953,13 @@ impl Document {
     fn move_instance(&mut self, g: Id, x: Xform, opt: EditOptions) -> Result<(), String> {
         let inst = self.group_instance(g).cloned().unwrap();
         let live: Vec<Id> = inst.live(self).into_iter().map(|(_, id)| id).collect();
+        let (nested, live): (Vec<Id>, Vec<Id>) = live.into_iter().partition(|i| self.group_instance(*i).is_some());
+        for n in nested {
+            self.move_instance(n, x, opt)?;
+            for a in self.attached_of(n) {
+                self.move_instance(a, x, opt)?;
+            }
+        }
         let (measuring, rest): (Vec<Id>, Vec<Id>) = live.into_iter().partition(|i| self.get(*i).is_some_and(annotation));
         if !rest.is_empty() {
             self.transform_elements_inner(&rest, x, opt)?;
@@ -848,6 +1021,14 @@ impl Document {
     /// Ungroup: the members stay where they are as ordinary elements, and so do those of the attached detail
     /// groups shown for it. The type stays.
     pub fn ungroup(&mut self, ids: &[Id]) -> Result<Vec<Id>, String> {
+        if ids.iter().any(|g| self.group_of(*g).is_some()) {
+            return Err("a group inside another is ungrouped from Edit Group on the outer group (Remove), or Ungroup the outer group first".into());
+        }
+        self.ungroup_any(ids)
+    }
+
+    /// Ungroup, nested groups included (Finish Group's Ungroup frees whichever instances cannot take a change).
+    fn ungroup_any(&mut self, ids: &[Id]) -> Result<Vec<Id>, String> {
         let mut all: Vec<Id> = ids.to_vec();
         for &g in ids {
             all.extend(self.attached_of(g).into_iter().filter(|a| !ids.contains(a)));
@@ -869,19 +1050,17 @@ impl Document {
 
     /// Delete group instances and their members, with the attached detail groups shown for them.
     pub(crate) fn delete_groups(&mut self, ids: &[Id]) -> Result<(), String> {
-        let mut all: Vec<Id> = ids.to_vec();
-        for &g in ids {
-            all.extend(self.attached_of(g).into_iter().filter(|a| !ids.contains(a)));
-        }
-        let ids = &all[..];
-        let mut members = vec![];
+        let (mut all, mut members) = (vec![], vec![]);
         for &g in ids {
             let inst = self.group_instance(g).ok_or("not a group")?;
             if inst.pinned {
                 return Err("a pinned group cannot be deleted; unpin it first".into());
             }
-            members.extend(inst.live(self).into_iter().map(|(_, id)| id));
+            let (gs, es) = self.deep_contents(g);
+            all.extend(gs.into_iter().filter(|x| !all.contains(x)).collect::<Vec<_>>());
+            members.extend(es);
         }
+        let ids = &all[..];
         self.transact("Delete group", |tx| {
             for &g in ids {
                 tx.remove(g)?;
@@ -919,7 +1098,13 @@ impl Document {
         }
         self.grouped("Exclude", |d| {
             let all: Vec<Id> = by_group.values().flatten().copied().collect();
-            d.delete(&all)?;
+            let (nested, plain): (Vec<Id>, Vec<Id>) = all.into_iter().partition(|m| d.group_instance(*m).is_some());
+            if !nested.is_empty() {
+                d.delete_groups(&nested)?;
+            }
+            if !plain.is_empty() {
+                d.delete(&plain)?;
+            }
             for g in by_group.keys() {
                 let mut inst = d.group_instance(*g).cloned().unwrap();
                 // whatever went with the members (doors in an excluded wall) is excluded too
@@ -981,6 +1166,26 @@ impl Document {
             if matches!(e, Element::Level(_) | Element::Grid(_)) {
                 return Err("levels and grids are never grouped".into());
             }
+            // a group goes in another of its kind, never in itself or in a group it holds
+            if let Element::GroupInstance(n) = e {
+                let nk = self.group_type(n.group_type).map(|t| t.kind).unwrap_or_default();
+                if n.parent.is_some() || attached {
+                    return Err("attached detail groups do not nest".into());
+                }
+                if nk != kind {
+                    return Err("a model group and a detail group cannot go in one another".into());
+                }
+                if id == group || n.group_type == inst.group_type || self.type_contains(n.group_type, inst.group_type) {
+                    return Err("a group cannot go inside itself".into());
+                }
+                match self.group_of(id) {
+                    Some(g) if g == group => continue,
+                    Some(_) => return Err("that group is already in another group".into()),
+                    None => {}
+                }
+                inst.members.insert(id, id);
+                continue;
+            }
             if !fits_kind(kind, attached, e) {
                 return Err(match kind {
                     GroupKind::Model => "only walls, floors, roofs, doors, windows and components go in a model group",
@@ -1030,7 +1235,7 @@ impl Document {
 
     /// Finish Group: the edited instance becomes the type's definition and every other instance of
     /// the type is rebuilt from it in its own place. Elements keep their ids, marks and GUIDs.
-    pub fn finish_group_edit(&mut self, group: Id) -> Result<Vec<String>, String> {
+    pub fn finish_group_edit(&mut self, group: Id, resolve: Option<Resolve>) -> Result<Finish, String> {
         let inst = self.group_instance(group).cloned().ok_or("not a group")?;
         if inst.live(self).is_empty() {
             return Err("a group needs at least one member; use Ungroup instead".into());
@@ -1045,23 +1250,57 @@ impl Document {
         let mut edited = inst.clone();
         edited.members.retain(|k, id| keys.contains(k) || self.get(*id).is_some());
         edited.excluded.retain(|k| keys.contains(k));
-        self.transact("Edit group", |tx| {
-            tx.update(tid, Element::GroupType(ty2))?;
-            tx.update(group, Element::GroupInstance(edited))
-        })?;
-        let others: Vec<Id> = self.group_instances().into_iter().filter(|(i, g)| *i != group && g.group_type == tid).map(|(i, _)| i).collect();
-        for o in others {
-            self.rebuild_instance(o, &ty, &mut notes)?;
+        let mut conflicts: Vec<(Id, String)> = vec![];
+        const HELD: &str = "\u{1}groups are inconsistent";
+        let r = self.grouped("Edit group", |d| {
+            d.transact("Edit group", |tx| {
+                tx.update(tid, Element::GroupType(ty2))?;
+                tx.update(group, Element::GroupInstance(edited))
+            })?;
+            let others: Vec<Id> = d.group_instances().into_iter().filter(|(i, g)| *i != group && g.group_type == tid).map(|(i, _)| i).collect();
+            for o in others {
+                if let Err(e) = d.grouped("Edit group", |d| d.rebuild_instance(o, &ty, &mut notes, false)) {
+                    conflicts.push((o, e));
+                }
+            }
+            if conflicts.is_empty() {
+                return Ok(());
+            }
+            match resolve {
+                None => Err(HELD.to_string()),
+                Some(Resolve::Fix) => {
+                    for (o, _) in &conflicts {
+                        d.rebuild_instance(*o, &ty, &mut notes, true)?;
+                    }
+                    notes.push(format!("Fix Groups excluded what could not be built in {} instance(s)", conflicts.len()));
+                    Ok(())
+                }
+                Some(Resolve::Ungroup) => {
+                    let ids: Vec<Id> = conflicts.iter().map(|c| c.0).collect();
+                    d.ungroup_any(&ids)?;
+                    notes.push(format!("{} instance(s) that could not take the change were ungrouped", ids.len()));
+                    Ok(())
+                }
+            }
+        });
+        match r {
+            Ok(()) => Ok(Finish { notes, conflicts, applied: true }),
+            Err(e) if e == HELD => Ok(Finish { notes: vec![], conflicts, applied: false }),
+            Err(e) => Err(e),
         }
-        Ok(notes)
     }
 
-    /// Rebuild one instance from its type, in its own frame.
-    fn rebuild_instance(&mut self, g: Id, ty: &GroupType, notes: &mut Vec<String>) -> Result<(), String> {
+    /// Rebuild one instance from its type, in its own frame. With `fix`, what cannot be built here is
+    /// excluded from it (Fix Groups) instead of failing.
+    fn rebuild_instance(&mut self, g: Id, ty: &GroupType, notes: &mut Vec<String>, fix: bool) -> Result<(), String> {
         let mut inst = self.group_instance(g).cloned().unwrap();
         let keys: BTreeSet<Id> = ty.members.iter().map(|m| m.key).collect();
         // members taken out of the type go from this instance
         let dropped: Vec<Id> = inst.members.iter().filter(|(k, id)| !keys.contains(k) && self.get(**id).is_some()).map(|(_, id)| *id).collect();
+        let (dropped_groups, dropped): (Vec<Id>, Vec<Id>) = dropped.into_iter().partition(|i| self.group_instance(*i).is_some());
+        if !dropped_groups.is_empty() {
+            self.delete_groups(&dropped_groups)?;
+        }
         if !dropped.is_empty() {
             self.delete(&dropped)?;
         }
@@ -1070,12 +1309,24 @@ impl Document {
         // an existing member whose element has gone stays out
         let mut skip = inst.excluded.clone();
         skip.extend(inst.members.iter().filter(|(_, id)| self.get(**id).is_none()).map(|(k, _)| *k));
-        let made = self.paste_members(ty, &inst.frame, &skip, &BTreeMap::new(), inst.parent, notes)?;
-        // each new copy takes over the element it replaces, so ids hold
+        let made = if fix {
+            let (made, extra) = self.paste_fixing(ty, &inst.frame, &skip, &BTreeMap::new(), inst.parent, notes)?;
+            inst.excluded.extend(extra);
+            made
+        } else {
+            self.paste_members(ty, &inst.frame, &skip, &BTreeMap::new(), inst.parent, notes)?
+        };
+        // each new copy takes over the element it replaces, so ids hold; a nested group is placed afresh and the
+        // old one goes
         let mut final_id: BTreeMap<Id, Id> = BTreeMap::new(); // temporary id to the id it ends up with
         let mut swaps: Vec<(Id, Id)> = vec![]; // (old, temporary)
+        let mut old_groups: Vec<Id> = vec![];
         for (k, tmp) in &made {
             match inst.members.get(k) {
+                Some(old) if self.group_instance(*old).is_some() => {
+                    old_groups.push(*old);
+                    final_id.insert(*tmp, *tmp);
+                }
                 Some(old) if self.get(*old).is_some() => {
                     final_id.insert(*tmp, *old);
                     swaps.push((*old, *tmp));
@@ -1119,7 +1370,11 @@ impl Document {
                 inst.members.insert(*k, final_id[tmp]);
             }
             tx.update(g, Element::GroupInstance(inst))
-        })
+        })?;
+        if !old_groups.is_empty() {
+            self.delete_groups(&old_groups)?;
+        }
+        Ok(())
     }
 }
 
