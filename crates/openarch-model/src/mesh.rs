@@ -71,13 +71,15 @@ fn prism_sides(out: &mut Vec<f32>, poly: &[Point], z0: f64, z1: f64) {
     }
 }
 
-/// A convex footprint swept from `z0` to `z1` (a curtain wall's panel or mullion), as triangles.
+/// A footprint swept from `z0` to `z1` (a curtain wall's panel or mullion, which on a curved wall follows the curve),
+/// as triangles.
 pub fn solid_mesh(ring: &[Point], z0: f64, z1: f64) -> Vec<f32> {
     let mut ring = ring.to_vec();
     if crate::geom::signed_area(&ring) < 0.0 {
         ring.reverse();
     }
-    let tris: Vec<[usize; 3]> = (1..ring.len().saturating_sub(1)).map(|i| [0, i, i + 1]).collect();
+    let fan = || (1..ring.len().saturating_sub(1)).map(|i| [0, i, i + 1]).collect();
+    let tris: Vec<[usize; 3]> = if ring.len() > 4 { crate::geom::triangulate(&ring).unwrap_or_else(fan) } else { fan() };
     let mut out = vec![];
     prism(&mut out, &ring, &tris, z0, z1);
     out

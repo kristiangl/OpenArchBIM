@@ -2144,13 +2144,19 @@ impl Session {
                     let t = d.wall_type(w.wall_type);
                     let hint = t.map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
                     let Some(style) = style_for(d, &settings, "Walls", None, view.element_overrides.get(&id), display, &hint) else { continue };
-                    // a curtain wall draws its panels and mullions: where the plane cuts them, or all of them seen from
-                    // above; at coarse detail just the line of its glass
+                    // a curtain wall draws its panels and mullions: where the plane cuts them (the transoms below it seen
+                    // from above), or all of them seen from above; at coarse detail just the line of its glass, at fine
+                    // its glazing units
                     if let Some(spec) = d.curtain_of(w) {
-                        let solids = d.curtain_solids(id);
-                        let shown = |s: &&openarch_model::curtain::CurtainSolid| display != "cut" || (s.z0 <= range.cut + 1e-6 && s.z1 >= range.cut - 1e-6);
+                        let solids = if wall_detail == DetailLevel::Fine { d.curtain_solids_fine(id) } else { d.curtain_solids(id) };
+                        let cut = |s: &&openarch_model::curtain::CurtainSolid| display != "cut" || (s.z0 <= range.cut + 1e-6 && s.z1 >= range.cut - 1e-6);
                         let rings = |mullion: bool| -> Vec<Vec<Value>> {
-                            solids.iter().filter(|s| matches!(s.part, openarch_model::curtain::CurtainPart::Mullion { .. }) == mullion).filter(shown).map(|s| s.ring.iter().map(pt).collect()).collect()
+                            solids.iter().filter(|s| matches!(s.part, openarch_model::curtain::CurtainPart::Mullion { .. }) == mullion).filter(cut).map(|s| s.ring.iter().map(pt).collect()).collect()
+                        };
+                        let below: Vec<Vec<Value>> = if display == "cut" {
+                            solids.iter().filter(|s| s.part == openarch_model::curtain::CurtainPart::Mullion { vertical: false } && s.z1 < range.cut - 1e-6 && s.z1 >= range.bottom - 1e-6).map(|s| s.ring.iter().map(pt).collect()).collect()
+                        } else {
+                            vec![]
                         };
                         let path = w.path();
                         let off = spec.panel.offset_mm;
@@ -2167,7 +2173,7 @@ impl Session {
                         curtains.push(json!({
                             "id": id, "display": display, "style": style.clone(),
                             "coarse": wall_detail == DetailLevel::Coarse,
-                            "line": line, "panels": rings(false), "mullions": rings(true),
+                            "line": line, "panels": rings(false), "mullions": rings(true), "below": below,
                         }));
                         let extents = d.wall_extents(w);
                         walls.push(json!({

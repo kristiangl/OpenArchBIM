@@ -1442,15 +1442,17 @@ impl Document {
                 items.push(ElevItem { id: l.id, category: "Walls", depth: l.depth, polys: vec![rect(l.u0, l.u1, l.z0, l.z1)], lines: vec![], fill: l.fill, stroke: l.stroke , ..Default::default() });
             }
         }
-        // curtain walls: each panel and mullion a rectangle across the view at its depth, glass in its own colour; one
-        // embedded in a wall sits on that wall's face, as a door does
+        // curtain walls: each panel and mullion a rectangle across the view at its depth, glass in its own colour (at
+        // fine detail each glazing unit's panes); one embedded in a wall sits on that wall's face, as a door does
+        let fine = self.effective_settings_of(v).detail_level == DetailLevel::Fine;
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
             if hidden(id) || self.curtain_of(w).is_none() {
                 continue;
             }
             let face = self.embedded_in(id).iter().filter_map(|h| host_near.get(h)).cloned().fold(f64::INFINITY, f64::min);
-            for s in self.curtain_solids(id) {
+            let solids = if fine { self.curtain_solids_fine(id) } else { self.curtain_solids(id) };
+            for s in solids {
                 let clipped;
                 let ring = match &sl {
                     Some(sc) => {

@@ -717,6 +717,36 @@ fn band(pts: &[Point], cum: &[f64], ua: f64, ub: f64, c0: f64, c1: f64) -> Vec<V
         .collect()
 }
 
+/// The stretch `ua..ub` of a path from `c0` to `c1` across it (left positive) as one counter-clockwise polygon,
+/// following the path's facets and mitred where they meet, so a curved stretch is one piece.
+fn band_ring(pts: &[Point], cum: &[f64], ua: f64, ub: f64, c0: f64, c1: f64) -> Vec<Point> {
+    let n = pts.len();
+    let normal = |i: usize| {
+        let (a, b) = (pts[i - 1], pts[i]);
+        let l = a.dist(&b).max(1e-9);
+        Point::new(-(b.y - a.y) / l, (b.x - a.x) / l)
+    };
+    let facet = |u: f64| cum.partition_point(|c| *c <= u).clamp(1, n - 1);
+    let place = |u: f64| {
+        let i = facet(u);
+        let t = (u.clamp(0.0, cum[n - 1]) - cum[i - 1]) / (cum[i] - cum[i - 1]).max(1e-9);
+        Point::new(pts[i - 1].x + (pts[i].x - pts[i - 1].x) * t, pts[i - 1].y + (pts[i].y - pts[i - 1].y) * t)
+    };
+    // each station: where it is, and how far to go across per mm (the mitre at a corner)
+    let mut stations: Vec<(Point, Point)> = vec![(place(ua), normal(facet(ua)))];
+    for (k, c) in cum.iter().enumerate().take(n - 1).skip(1) {
+        if *c > ua + 1e-6 && *c < ub - 1e-6 {
+            let (m1, m2) = (normal(k), normal(k + 1));
+            let d = 1.0 + m1.x * m2.x + m1.y * m2.y;
+            let m = if d > 0.1 { Point::new((m1.x + m2.x) / d, (m1.y + m2.y) / d) } else { m1 };
+            stations.push((pts[k], m));
+        }
+    }
+    stations.push((place(ub), normal(facet(ub - 1e-9))));
+    let off = |(p, m): &(Point, Point), c: f64| Point::new(p.x + m.x * c, p.y + m.y * c);
+    stations.iter().map(|s| off(s, c0)).chain(stations.iter().rev().map(|s| off(s, c1))).collect()
+}
+
 impl Document {
     /// The curtain spec of a wall's type, when it is a curtain wall.
     pub fn curtain_of(&self, w: &Wall) -> Option<&CurtainSpec> {
@@ -1075,6 +1105,16 @@ impl Document {
 
     /// The pieces of a curtain wall: its panels and mullions as plan footprints swept between heights.
     pub fn curtain_solids(&self, id: Id) -> Vec<CurtainSolid> {
+        self.curtain_solids_at(id, false)
+    }
+
+    /// The pieces of a curtain wall at Fine detail: as `curtain_solids`, but each glazed panel thick enough for it a
+    /// glazing unit, two 6 mm panes at its faces with the gap between.
+    pub fn curtain_solids_fine(&self, id: Id) -> Vec<CurtainSolid> {
+        self.curtain_solids_at(id, true)
+    }
+
+    fn curtain_solids_at(&self, id: Id, fine: bool) -> Vec<CurtainSolid> {
         let Some(Element::Wall(w)) = self.get(id) else { return vec![] };
         let Some(spec) = self.curtain_of(w) else { return vec![] };
         let Some(lay) = self.curtain_layout(w) else { return vec![] };
@@ -1106,6 +1146,12 @@ impl Document {
             if total <= 0.0 {
                 continue;
             }
+            // a glazing unit at fine detail: a pane at each face, the gap left out
+            let layers: Vec<(String, f64)> = if fine && panel.kind == PanelKind::Glazed && total >= 18.0 {
+                vec![(panel.material.clone(), 6.0), (String::new(), total - 12.0), (panel.material.clone(), 6.0)]
+            } else {
+                layers
+            };
             let (i0, j0) = cells[0];
             let at = CurtainRef::Panel { i: i0, j: j0 };
             for (ua, ub, za, zb2) in lay.panel_rects(n) {
@@ -1115,10 +1161,9 @@ impl Document {
                 let mut c1 = panel.offset_mm + total / 2.0;
                 for (material, t) in &layers {
                     let c0 = c1 - t.max(0.0);
-                    if c1 - c0 > 1e-6 {
-                        for ring in band(&pts, &cum, ua, ub, c0, c1) {
-                            out.push(CurtainSolid { part: CurtainPart::Panel, at, ring, z0: zb + za, z1: zb + zb2, material: material.clone(), glazed: panel.kind == PanelKind::Glazed });
-                        }
+                    if c1 - c0 > 1e-6 && !material.is_empty() {
+                        let ring = band_ring(&pts, &cum, ua, ub, c0, c1);
+                        out.push(CurtainSolid { part: CurtainPart::Panel, at, ring, z0: zb + za, z1: zb + zb2, material: material.clone(), glazed: panel.kind == PanelKind::Glazed });
                     }
                     c1 = c0;
                 }
@@ -1144,7 +1189,7 @@ impl Document {
                         let centre = band(&pts, &cum, p, p + 0.001, m.offset_mm, m.offset_mm + 0.001).first().map(|q| q[0]).unwrap_or(pts[0]);
                         vec![(0..16).map(|i| f64::from(i) * std::f64::consts::PI / 8.0).map(|t| Point::new(centre.x + radius_mm * t.cos(), centre.y + radius_mm * t.sin())).collect()]
                     }
-                    (None, _) => band(&pts, &cum, ua, ub, c0, c1),
+                    (None, _) => vec![band_ring(&pts, &cum, ua, ub, c0, c1)],
                 };
                 for ring in rings {
                     out.push(CurtainSolid { part, at, ring, z0: zb + r.lo, z1: zb + r.hi, material: m.material.clone(), glazed: false });
@@ -1154,9 +1199,8 @@ impl Document {
                 if zb2 - za < 1e-6 {
                     continue;
                 }
-                for ring in band(&pts, &cum, r.lo, r.hi, c0, c1) {
-                    out.push(CurtainSolid { part, at, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false });
-                }
+                let ring = band_ring(&pts, &cum, r.lo, r.hi, c0, c1);
+                out.push(CurtainSolid { part, at, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false });
             }
         }
         out
@@ -1859,5 +1903,47 @@ mod tests {
         assert_eq!(mullions.len(), d.curtain_layout(x).unwrap().runs.len());
         // the border verticals run the full height; the total run is the sum of the runs
         assert!(mullions.iter().any(|m| m.name == "Rectangular Mullion: 50 x 150" && m.length == 3000.0));
+    }
+
+    #[test]
+    fn curtain_walls_follow_splines_and_ellipses() {
+        use crate::curve::Curve;
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        let pts = vec![Point::new(0.0, 0.0), Point::new(2000.0, 1500.0), Point::new(4000.0, 0.0), Point::new(6000.0, 1000.0)];
+        let curves = [
+            Curve::Spline { points: pts.clone(), closed: false },
+            Curve::Ellipse { centre: Point::new(0.0, 0.0), rx: 4000.0, ry: 2000.0, rotation_deg: 0.0, t0_deg: Some(0.0), t1_deg: Some(120.0), ccw: true },
+        ];
+        for c in curves {
+            let (a, b) = (c.start(), c.end());
+            let w = d.add_wall(sf, lvl, a, b, 3000.0).unwrap();
+            let Some(Element::Wall(mut x)) = d.get(w).cloned() else { panic!() };
+            x.curve = Some(c.clone());
+            d.transact("curve", |tx| tx.update(w, Element::Wall(x))).unwrap();
+            let Some(Element::Wall(x)) = d.get(w).cloned() else { panic!() };
+            let len = x.path().length();
+            let lay = d.curtain_layout(&x).unwrap();
+            // the grid is laid out along the curve, at most 1200 apart
+            assert_eq!(lay.us.len() - 1, (len / 1200.0).ceil() as usize, "{len}");
+            // every panel and mullion comes out, the panels following the curve facet by facet
+            let solids = d.curtain_solids(w);
+            let panels: std::collections::BTreeSet<Id> = solids.iter().filter(|s| s.part == CurtainPart::Panel).map(|s| part_id(w, s.at)).collect();
+            assert_eq!(panels.len(), lay.panels.len());
+            assert_eq!(solids.iter().filter(|s| s.part == CurtainPart::Panel).count(), panels.len(), "one piece each");
+            assert!(solids.iter().any(|s| s.part == CurtainPart::Panel && s.ring.len() > 4), "following the curve");
+            // each vertical mullion stands on the curve
+            for (k, u) in lay.us.iter().enumerate().skip(1).take(lay.us.len() - 2) {
+                let (p, _) = x.path().at(*u);
+                let m = solids.iter().find(|s| s.at == CurtainRef::Mullion { vertical: true, k, s: 0 }).unwrap();
+                let k = m.ring.len() as f64;
+                let c = m.ring.iter().fold(Point::new(0.0, 0.0), |acc, q| Point::new(acc.x + q.x / k, acc.y + q.y / k));
+                assert!(c.dist(&p) < 30.0, "{c:?} {p:?}");
+            }
+            // fine detail: a glazing unit of two panes for each glazed piece
+            let glazed = solids.iter().filter(|s| s.glazed).count();
+            assert_eq!(d.curtain_solids_fine(w).iter().filter(|s| s.glazed).count(), 2 * glazed);
+        }
     }
 }

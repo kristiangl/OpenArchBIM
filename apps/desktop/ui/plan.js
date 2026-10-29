@@ -1188,8 +1188,8 @@ const Plan = (() => {
         ctx.setLineDash([]);
       }
     }
-    // curtain walls: where the plane cuts them, each mullion filled and outlined and each panel its glass; at coarse
-    // detail the line of the glass
+    // curtain walls: where the plane cuts them, each mullion filled and outlined and each panel its glass (at fine
+    // detail its glazing unit), the transoms below thin; at coarse detail the line of the glass
     for (const c of [...(data.curtains || [])].sort((a, b) => order[a.display] - order[b.display])) {
       const st = c.style, w1 = lw(st);
       ctx.strokeStyle = colour(st, st.line.color); ctx.setLineDash(dash(st)); ctx.lineJoin = "miter";
@@ -1199,6 +1199,9 @@ const Plan = (() => {
         ctx.stroke(); ctx.setLineDash([]);
         continue;
       }
+      // transoms below the cut plane, seen from above
+      ctx.lineWidth = 1;
+      for (const q of c.below || []) { polyPath(q); ctx.stroke(); }
       ctx.lineWidth = Math.max(1, w1 * 0.5);
       for (const q of c.panels) { polyPath(q); ctx.stroke(); }
       ctx.lineWidth = w1; ctx.fillStyle = bg;
