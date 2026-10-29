@@ -118,6 +118,9 @@ impl Document {
     /// `param_at` with the reason a formula did not work out.
     pub fn param_try(&self, t: &FamilyType, inst: Option<&FamilyInstance>, name: &str, depth: u8) -> Result<Option<ParamValue>, String> {
         let Some(fam) = self.family(t.family) else { return Ok(None) };
+        if let Some(v) = inst.and_then(|i| self.curtain_door_value(i, name)) {
+            return Ok(Some(ParamValue::Number(v)));
+        }
         let def = fam.param(name);
         if let Some(src) = def.and_then(|p| p.formula.as_deref()) {
             if depth > 8 {
@@ -155,6 +158,9 @@ impl Document {
     /// family default. Formula parameters are always worked out from the type.
     pub fn instance_param(&self, i: &FamilyInstance, name: &str) -> Option<ParamValue> {
         let t = self.family_type(i.type_id)?;
+        if let Some(v) = self.curtain_door_value(i, name) {
+            return Some(ParamValue::Number(v));
+        }
         if let Some(v) = self.reported_value(i, name) {
             return Some(ParamValue::Number(v));
         }
@@ -165,6 +171,26 @@ impl Document {
             }
         }
         self.param_at(t, Some(i), name, 0)
+    }
+
+    /// A door in a curtain wall's cell takes its width and height from the panel it fills (so the hole it would cut
+    /// is the panel), and its sill from the panel's foot.
+    fn curtain_door_value(&self, i: &FamilyInstance, name: &str) -> Option<f64> {
+        if !matches!(name, "Width" | "Height" | "Sill Height") {
+            return None;
+        }
+        let (l, r, lo, hi) = self.curtain_door_cell(i)?;
+        let Some(Element::Wall(w)) = self.get(i.host?.wall) else { return None };
+        if name == "Sill Height" {
+            let level = self.level(i.level).map_or(0.0, |l| l.elevation_mm);
+            return Some(self.wall_extent(w).0 - level + lo);
+        }
+        // the type's own size and the hole it cuts differ by its frame: keep that difference
+        let free = FamilyInstance { host: i.host.map(|h| HostRef { v_mm: None, ..h }), ..i.clone() };
+        let own = self.instance_param(&free, name).and_then(|v| v.as_f64()).unwrap_or(0.0);
+        let hole = self.instance_cut_box(&free).map(|b| if name == "Width" { b[1][0] - b[0][0] } else { b[1][2] - b[0][2] });
+        let cell = if name == "Width" { r - l } else { hi - lo };
+        Some((cell - hole.map_or(0.0, |h| h - own)).max(1.0))
     }
 
     fn dim(&self, i: &FamilyInstance, names: &[&str], fallback: f64) -> f64 {
@@ -193,8 +219,10 @@ impl Document {
         if path.length() < 1e-6 {
             return None;
         }
-        // on a curved wall the door sits square to the wall where it is
-        let (origin, dir) = path.at(host.u_mm);
+        // on a curved wall the door sits square to the wall where it is; a door in a curtain wall in the middle of
+        // its panel
+        let u = self.curtain_door_cell(i).map_or(host.u_mm, |(l, r, _, _)| (l + r) / 2.0);
+        let (origin, dir) = path.at(u);
         let left = Point::new(-dir.y, dir.x);
         let (wl, wr) = self.wall_extents(w);
         let (width, height, sill) = self.instance_opening_size(i);
@@ -472,7 +500,7 @@ impl Document {
         }
         let Some(Element::Wall(w)) = self.get(wall).cloned() else { return Err("the host must be a wall".into()) };
         if self.curtain_of(&w).is_some() {
-            return Err("doors and windows go into a curtain wall as panels, which come later".into());
+            return Err("A door goes into a curtain wall as a panel: Tab to the panel, unpin it and pick the door type in the type selector.".into());
         }
         let len = w.length();
         let (along, across, _) = w.path().project(point); // across is positive to the left of the wall
@@ -496,7 +524,7 @@ impl Document {
             return Err("the wall is shorter than the opening".into());
         }
         let u = along.clamp(width / 2.0, len - width / 2.0);
-        inst.host = Some(HostRef { wall, u_mm: u });
+        inst.host = Some(HostRef { wall, u_mm: u, v_mm: None });
         inst.flip_facing = (across < 0.0) != flip_facing;
         inst.flip_hand = flip_hand;
         inst.ifc.export_as = fam.category.ifc_class().to_string();
@@ -515,6 +543,10 @@ impl Document {
     pub fn fits(&self, inst: &FamilyInstance, ignore: Option<Id>) -> Result<(), String> {
         let Some(h) = inst.host else { return Ok(()) };
         let Some(Element::Wall(w)) = self.get(h.wall) else { return Err("the host wall no longer exists".into()) };
+        // a door in a curtain wall fills its cell, whatever size it is
+        if h.v_mm.is_some() {
+            return Ok(());
+        }
         let len = w.length();
         let (width, height, sill) = self.instance_opening_size(inst);
         if width <= 0.0 || height <= 0.0 {

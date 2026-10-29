@@ -380,6 +380,10 @@ pub struct HostRef {
     /// Distance of the instance centre from the wall start, measured along the
     /// wall's drawn path (mm). The instance follows the wall if it moves.
     pub u_mm: f64,
+    /// A door in a curtain wall: how far up the wall the point it holds is. It fills the panel over the cell holding
+    /// (`u_mm`, `v_mm`), its width, height and sill set by it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub v_mm: Option<f64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

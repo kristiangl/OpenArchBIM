@@ -147,14 +147,20 @@ async function renderProperties() {
     types = app.info.wall_types; current = d.type_id;
     onType = async (id) => { await run("set_wall_type", { id: d.id, type_id: id }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "FamilyInstance" && d.curtain_panel != null) {
+    // a door in a curtain wall is one of its panels: it swaps for any panel type
+    types = d.panel_types; current = d.type_id;
+    onType = async (id) => { await run("set_curtain_panel", { id: d.curtain_panel, type_id: id }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "FamilyInstance") {
     types = familyTypes(d.category); current = d.type_id;
     onType = async (id) => { await run("patch_instance", { id: d.id, patch: { type_id: id } }); await refresh(); };
     title = d.title;
   } else if (d && d.kind === "CurtainPanel") {
-    // a panel's types are the system panels; one pinned to the curtain wall type keeps the type's panel
+    // a panel's types are the system panels, the basic wall types and the door types; one pinned to the curtain wall
+    // type keeps the type's panel
     types = d.types; current = d.type_id;
-    onType = d.pinned ? null : async (id) => { await run("set_curtain_panel", { id: d.id, kind: id }); await refresh(); };
+    onType = d.pinned ? null : async (id) => { await run("set_curtain_panel", { id: d.id, type_id: id }); await refresh(); };
     title = d.title;
   } else if (d && d.kind === "Dimension") {
     types = app.info.dimension_types || []; current = d.type_id;

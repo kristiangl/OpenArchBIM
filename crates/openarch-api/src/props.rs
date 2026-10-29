@@ -431,7 +431,7 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
     );
     match i.host {
         Some(h) => {
-            add("Constraints", ro("Host", format!("Basic Wall ({})", h.wall)));
+            add("Constraints", ro("Host", format!("{} ({})", if h.v_mm.is_some() { "Curtain Wall" } else { "Basic Wall" }, h.wall)));
             add("Constraints", ro("Head Height", format!("{:.0}", sill + height)));
         }
         None => {
@@ -445,8 +445,11 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
         add("Construction", ro("Frame Fit", msg));
     }
     // instance parameters edit; type parameters show their value for context
+    // a door in a curtain wall's cell takes its size and sill from the cell
+    let cell_set = |p: &openarch_model::family::ParamDef| i.host.is_some_and(|h| h.v_mm.is_some()) && matches!(p.name.as_str(), "Width" | "Height" | "Sill Height");
     for p in fam.params.iter().filter(|p| p.instance) {
-        add(if p.group.is_empty() { "Other" } else { &p.group }, with_global(d, param_row(d, i, p, false), id, p, true));
+        let row = if cell_set(p) { param_row(d, i, p, true) } else { with_global(d, param_row(d, i, p, false), id, p, true) };
+        add(if p.group.is_empty() { "Other" } else { &p.group }, row);
     }
     for p in fam.params.iter().filter(|p| !p.instance && p.group != "Identity Data") {
         add(if p.group.is_empty() { "Other" } else { &p.group }, param_row(d, i, p, true));
@@ -467,12 +470,40 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
     add("IFC Parameters", ro("IfcGUID", i.ifc.guid.clone()));
     let order = ["Constraints", "Construction", "Materials and Finishes", "Dimensions", "Identity Data", "Phasing", "IFC Parameters"];
     groups.sort_by_key(|(n, _)| order.iter().position(|o| o == n).unwrap_or(order.len()));
-    Ok(json!({
+    let mut out = json!({
         "id": id, "kind": "FamilyInstance", "category": fam.category.label(), "type_id": i.type_id, "type_label": format!("{}: {}", fam.name, t.name),
         "title": format!("{}: {}", fam.category.label().trim_end_matches('s'), fam.name),
         "target": { "method": "patch_instance", "id": id },
         "groups": groups.into_iter().map(|(n, rows)| group(&n, rows)).collect::<Vec<_>>(),
-    }))
+    });
+    // a door in a curtain wall is that wall's panel: its type swaps for any panel's
+    if let Some((h, v)) = i.host.and_then(|h| Some((h, h.v_mm?))) {
+        if let Some((lay, Some((ci, cj)))) = d.get(h.wall).and_then(|e| if let Element::Wall(w) = e { d.curtain_layout(w) } else { None }).map(|l| { let c = l.cell_at(h.u_mm, v); (l, c) }) {
+            out["curtain_panel"] = json!(openarch_model::curtain::part_id(h.wall, lay.panel_ref(ci, cj)));
+            out["panel_types"] = json!(curtain_panel_types(d));
+        }
+    }
+    Ok(out)
+}
+
+/// What a curtain panel can be: the system panels (ids 0 to 2), the basic wall types and the door types.
+pub fn curtain_panel_types(d: &Document) -> Vec<Value> {
+    let mut out = vec![
+        json!({ "id": 0, "name": "Glazed", "family": "System Panel", "category": "Curtain Panels" }),
+        json!({ "id": 1, "name": "Solid", "family": "System Panel", "category": "Curtain Panels" }),
+        json!({ "id": 2, "name": "Empty", "family": "Empty System Panel", "category": "Curtain Panels" }),
+    ];
+    for (id, t) in d.wall_types() {
+        if t.curtain.is_none() {
+            out.push(json!({ "id": id, "name": t.name, "family": "Basic Wall", "category": "Walls" }));
+        }
+    }
+    for (id, t) in d.family_types() {
+        if let Some(f) = d.family(t.family).filter(|f| f.category == openarch_model::family::FamilyCategory::Doors) {
+            out.push(json!({ "id": id, "name": t.name, "family": f.name, "category": "Doors" }));
+        }
+    }
+    out
 }
 
 /// Type parameters of a family type, grouped like the Edit Type dialog.
@@ -649,7 +680,16 @@ fn curtain_type_groups(d: &Document, c: &openarch_model::curtain::CurtainSpec) -
         ("Rectangular 30 x 50", Some(MullionSpec::rectangular(30.0, 50.0))),
         ("Circular 50 Diameter", Some(MullionSpec { shape: MullionShape::Circular { radius_mm: 25.0 }, offset_mm: 0.0, material: "Aluminium".into() })),
     ];
+    // corner mullions, for the borders where curtain walls meet
+    let corner = |shape: MullionShape| Some(MullionSpec { shape, offset_mm: 0.0, material: "Aluminium".into() });
+    let corners: Vec<(&str, Option<MullionSpec>)> = vec![
+        ("L Corner 150 x 150 x 50", corner(MullionShape::LCorner { leg1_mm: 150.0, leg2_mm: 150.0, thickness_mm: 50.0 })),
+        ("V Corner 150 x 50", corner(MullionShape::VCorner { leg_mm: 150.0, thickness_mm: 50.0 })),
+        ("Quad Corner 150 x 150", corner(MullionShape::QuadCorner { depth1_mm: 150.0, depth2_mm: 150.0 })),
+        ("Trapezoid Corner 200 x 150", corner(MullionShape::TrapezoidCorner { centre_width_mm: 200.0, depth_mm: 150.0 })),
+    ];
     let mullion = |label: &str, key: &str, cur: &Option<MullionSpec>| {
+        let presets: Vec<&(&str, Option<MullionSpec>)> = presets.iter().chain(if key.starts_with("u_") { corners.iter() } else { [].iter() }).collect();
         let same = |p: &Option<MullionSpec>| match (p, cur) {
             (None, None) => true,
             (Some(a), Some(b)) => a.shape == b.shape,
@@ -1308,21 +1348,24 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
             let n = *lay.cell_panel.get(i).and_then(|c| c.get(j)).ok_or("the panel is gone")?;
             let cells = &lay.panels[n];
             let (pinned, panel) = d.curtain_panel_state(w, &lay, n);
+            let door = d.curtain_panel_door(wall, &lay, n).and_then(|id| match d.get(id) {
+                Some(Element::FamilyInstance(i)) => d.instance_family(i).map(|(f, t)| (i.type_id, f.name.clone(), t.name.clone())),
+                _ => None,
+            });
             let (i0, i1) = (cells.iter().map(|c| c.0).min().unwrap_or(0), cells.iter().map(|c| c.0).max().unwrap_or(0));
             let (j0, j1) = (cells.iter().map(|c| c.1).min().unwrap_or(0), cells.iter().map(|c| c.1).max().unwrap_or(0));
             let (width, height) = (lay.us[i1 + 1] - lay.us[i0], lay.vs[j1 + 1] - lay.vs[j0]);
-            let (kind_id, family, name) = match panel.kind {
-                PanelKind::Glazed => (0, "System Panel", "Glazed"),
-                PanelKind::Solid => (1, "System Panel", "Solid"),
-                PanelKind::Empty => (2, "Empty System Panel", "Empty"),
+            let wall_type = panel.wall_type.and_then(|t| d.wall_type(t).map(|wt| (t, wt.name.clone())));
+            let (kind_id, family, name): (Id, String, String) = match (door, panel.kind, wall_type) {
+                (Some((t, f, n)), _, _) => (t, f, n),
+                (None, PanelKind::Wall, Some((t, n))) => (t, "Basic Wall".into(), n),
+                (None, PanelKind::Solid, _) => (1, "System Panel".into(), "Solid".into()),
+                (None, PanelKind::Empty, _) | (None, PanelKind::Wall, None) => (2, "Empty System Panel".into(), "Empty".into()),
+                (None, PanelKind::Glazed, _) => (0, "System Panel".into(), "Glazed".into()),
             };
             Ok(json!({
                 "id": id, "kind": "CurtainPanel", "wall": wall, "type_id": kind_id, "pinned": pinned,
-                "types": [
-                    { "id": 0, "name": "Glazed", "family": "System Panel", "category": "Curtain Panels" },
-                    { "id": 1, "name": "Solid", "family": "System Panel", "category": "Curtain Panels" },
-                    { "id": 2, "name": "Empty", "family": "Empty System Panel", "category": "Curtain Panels" },
-                ],
+                "types": curtain_panel_types(d),
                 "title": format!("{family}: {name}"), "type_label": format!("{family}: {name}"), "target": target,
                 "groups": [
                     group("Constraints", vec![boolean("Pinned", "pinned", pinned, true)]),
@@ -1341,10 +1384,14 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
         CurtainRef::Mullion { vertical, k, s } => {
             let run = lay.run_of(vertical, k, s).ok_or("the mullion is gone")?;
             let last = lay.lines(vertical).len() - 1;
-            let m = spec.mullion_on(vertical, k, last).clone().ok_or("the mullion is gone")?;
+            let m = lay.mullion(spec, vertical, k).cloned().ok_or("the mullion is gone")?;
             let title = match m.shape {
                 MullionShape::Rectangular { width1_mm, width2_mm, thickness_mm } => format!("Rectangular Mullion: {} x {}", round(width1_mm + width2_mm), round(thickness_mm)),
                 MullionShape::Circular { radius_mm } => format!("Circular Mullion: {} mm radius", round(radius_mm)),
+                MullionShape::LCorner { leg1_mm, leg2_mm, thickness_mm } => format!("L Corner Mullion: {} x {} x {}", round(leg1_mm), round(leg2_mm), round(thickness_mm)),
+                MullionShape::VCorner { leg_mm, thickness_mm } => format!("V Corner Mullion: {} x {}", round(leg_mm), round(thickness_mm)),
+                MullionShape::QuadCorner { depth1_mm, depth2_mm } => format!("Quad Corner Mullion: {} x {}", round(depth1_mm), round(depth2_mm)),
+                MullionShape::TrapezoidCorner { centre_width_mm, depth_mm } => format!("Trapezoid Corner Mullion: {} x {}", round(centre_width_mm), round(depth_mm)),
             };
             Ok(json!({
                 "id": id, "kind": "Mullion", "wall": wall, "pinned": run.pinned,
@@ -1354,7 +1401,7 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
                     group("Dimensions", vec![num("Length", "", round(run.hi - run.lo), false)]),
                     group("Construction", vec![
                         ro("Orientation", if vertical { "Vertical" } else { "Horizontal" }),
-                        ro("Position", if k == 0 || k == last { "Border" } else { "Interior" }),
+                        ro("Position", if vertical && ((k == 0 && lay.corners[0].is_some()) || (k == last && lay.corners[1].is_some())) { "Corner" } else if k == 0 || k == last { "Border" } else { "Interior" }),
                         num("Offset", "", round(m.offset_mm), false),
                     ]),
                     group("Materials and Finishes", vec![ro("Material", m.material.clone())]),

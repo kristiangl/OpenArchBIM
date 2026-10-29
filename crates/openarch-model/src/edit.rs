@@ -526,6 +526,9 @@ impl Document {
             let Some(Element::FamilyInstance(i)) = self.get(id) else { continue };
             let mut ni = i.clone();
             if let Some(h) = i.host {
+                if h.v_mm.is_some() {
+                    return Err("A door in a curtain wall stays in its cell: move the grid lines round it, or the wall.".into());
+                }
                 let Some(frame) = self.instance_frame(id) else { return Err("the host wall no longer exists".into()) };
                 let Xform::Move { dx, dy } = x else {
                     return Err("doors and windows rotate and mirror with their walls: select the walls too".into());
@@ -533,7 +536,7 @@ impl Document {
                 let target = Point::new(frame.origin.x + dx, frame.origin.y + dy);
                 if opt.copy || opt.disjoin {
                     let (wall, u) = self.host_wall_at(i.level, target, Some(h.wall)).ok_or("there is no wall there to host it")?;
-                    ni.host = Some(HostRef { wall, u_mm: u });
+                    ni.host = Some(HostRef { wall, u_mm: u, v_mm: None });
                     if let Some(Element::Wall(nw)) = self.get(wall) {
                         let (_, across, _) = nw.path().project(target);
                         // facing follows the side the instance lands on, as when placing
@@ -544,7 +547,7 @@ impl Document {
                 } else {
                     // moving along its own host: only the part of the move along the wall counts
                     let u = h.u_mm + dx * frame.dir.x + dy * frame.dir.y;
-                    ni.host = Some(HostRef { wall: h.wall, u_mm: u });
+                    ni.host = Some(HostRef { wall: h.wall, u_mm: u, v_mm: None });
                 }
             } else {
                 ni.location = x.apply(i.location);
@@ -597,7 +600,7 @@ impl Document {
                 if follows {
                     if let Some(h) = ni.host {
                         if let Some(&nw) = wall_map.get(&h.wall) {
-                            ni.host = Some(HostRef { wall: nw, u_mm: h.u_mm });
+                            ni.host = Some(HostRef { wall: nw, ..h });
                         }
                     }
                 }

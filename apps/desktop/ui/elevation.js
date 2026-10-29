@@ -77,10 +77,44 @@ const Elev = (() => {
   // curtain walls (data.curtains): the Curtain Grid tool's placement and the line it would place, the line placed in
   // All Except Picked waiting for its segments, the grid line whose segments are being added or removed (and the tool to
   // go back to), and a grid line placed by hand being dragged
-  let cgSig = new Map(), cgMode = "all", cgHover = null, cgPending = null, segLine = null, segHover = null, segReturn = "select", cgDrag = null;
+  let cgSig = new Map(), cgMode = "all", cgHover = null, cgPending = null, segLine = null, segHover = null, segReturn = "select", cgDrag = null, joinHover = null;
   const PART_BASE = 2 ** 51;
   const partWall = (id) => (id >= PART_BASE && id < 2 * PART_BASE ? Math.floor((id - PART_BASE) / 2 ** 27) : null);
+  // a part id's kind (0, 1 grid lines; 2 panel; 3, 4 mullions), line and segment
+  const partOf = (id) => { const x = id - PART_BASE; return { kind: Math.floor(x / 2 ** 24) % 8, a: Math.floor(x / 4096) % 4096, b: x % 4096 }; };
   const faces = () => (data && data.curtains) || [];
+  // the selected mullion run, alone in the selection, with its face
+  function selMullion() {
+    if (sel.size !== 1) return null;
+    const id = [...sel][0];
+    if (partWall(id) == null) return null;
+    for (const f of faces()) { const m = (f.mullions || []).find((x) => x.id === id); if (m) return { f, m }; }
+    return null;
+  }
+  // Toggle Mullion Join: a square at each crossing of the selected mullion, "+" where it stops (join it through), "-"
+  // where it runs through (break it)
+  const JOIN_PX = 7;
+  function joinAt(sx, sy) {
+    const s = selMullion();
+    if (!s || tool !== "select") return null;
+    for (const j of s.m.joins) { const p = toScreen(j.at[0], j.at[1]); if (Math.abs(sx - p.x) <= JOIN_PX + 2 && Math.abs(sy - p.y) <= JOIN_PX + 2) return { wall: s.f.wall, ...j }; }
+    return null;
+  }
+  function drawJoinToggles(accent, viewBg) {
+    const s = selMullion();
+    if (!s || tool !== "select") return;
+    ctx.save();
+    for (const j of s.m.joins) {
+      const p = toScreen(j.at[0], j.at[1]), r = JOIN_PX, hot = joinHover && joinHover.k === j.k && joinHover.j === j.j;
+      ctx.fillStyle = hot ? accent : viewBg; ctx.strokeStyle = accent; ctx.lineWidth = 1.2;
+      ctx.fillRect(p.x - r, p.y - r, 2 * r, 2 * r); ctx.strokeRect(p.x - r, p.y - r, 2 * r, 2 * r);
+      ctx.strokeStyle = hot ? viewBg : accent; ctx.lineWidth = 1.6;
+      ctx.beginPath(); ctx.moveTo(p.x - r + 3, p.y); ctx.lineTo(p.x + r - 3, p.y);
+      if (!j.through) { ctx.moveTo(p.x, p.y - r + 3); ctx.lineTo(p.x, p.y + r - 3); }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
   const gridLine = (id) => { for (const f of faces()) { const l = f.lines.find((x) => x.id === id); if (l) return { f, l }; } return null; };
   // along a curtain wall from its start at the view's `u` (null off its ends), and the view's `u` along it
   function alongOf(f, u) {
@@ -892,6 +926,7 @@ const Elev = (() => {
     }
     if (groupEdit) drawGroupFade(text);
     drawCurtainGrids(accent, text, viewBg);
+    drawJoinToggles(accent, viewBg);
     const hov = new Set(tool === "select" && hoverIds ? [...hovD] : []);
     Det.drawItems(selD, hov, accent, tool === "select", sel);
     drawGroupOrigins(accent);
@@ -1139,6 +1174,12 @@ const Elev = (() => {
     }
     if (tool === "curtaingrid") { cgHover = curtainGridAt(e.offsetX, e.offsetY); cb.prompt(promptText()); render(); return; }
     if (tool === "cgsegments") { segHover = segmentAt(e.offsetX, e.offsetY); render(); return; }
+    const jh = !down && joinAt(e.offsetX, e.offsetY);
+    if ((jh ? `${jh.k},${jh.j}` : "") !== (joinHover ? `${joinHover.k},${joinHover.j}` : "")) {
+      joinHover = jh || null;
+      cb.cursor(jh ? (jh.through ? "Break the mullion here" : "Join the mullion through here") : "");
+      render();
+    }
     if (cgDrag) {
       if (!cgDrag.moved && Math.hypot(e.offsetX - cgDrag.x, e.offsetY - cgDrag.y) < 4) return;
       cgDrag.moved = true;
@@ -1261,6 +1302,8 @@ const Elev = (() => {
         return;
       }
       if (tool === "cgsegments") { down = null; const s = segmentAt(e.offsetX, e.offsetY); if (s != null) cb.curtainCall("toggle_curtain_segment", { id: segLine, s }); return; }
+      const jt = joinAt(e.offsetX, e.offsetY);
+      if (jt) { down = null; cb.curtainCall("toggle_curtain_join", { wall: jt.wall, k: jt.k, j: jt.j }); return; }
       if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
       else if (isEdit()) editClick(e);
       else if (tool === "level") {
@@ -1489,7 +1532,16 @@ const Elev = (() => {
       modelGroups.forEach((g) => ids.add(g.id));
       for (const it of d.items) if (it.part != null) ids.add(it.part);
       for (const f of d.curtains || []) for (const l of f.lines) ids.add(l.id);
-      sel = new Set([...sel].filter((i) => ids.has(i)));
+      // a mullion joined to the one below it, or broken, carries on as the run holding its first segment
+      let remapped = false;
+      sel = new Set([...sel].map((i) => {
+        if (ids.has(i) || partWall(i) == null) return i;
+        const p = partOf(i), f = (d.curtains || []).find((x) => x.wall === partWall(i));
+        const m = f && (f.mullions || []).find((x) => { const q = partOf(x.id); return q.kind === p.kind && q.a === p.a && q.b <= p.b && p.b < x.s1; });
+        if (m) remapped = true;
+        return m ? m.id : i;
+      }).filter((i) => ids.has(i)));
+      if (remapped) cb.select([...sel]);
       // a line added or taken away renumbers a curtain wall's grid, so its parts leave the selection
       const sig = new Map((d.curtains || []).map((f) => [f.wall, f.lines.length]));
       for (const [w, n] of cgSig) if (sig.has(w) && sig.get(w) !== n) sel = new Set([...sel].filter((i) => partWall(i) !== w));
@@ -1513,6 +1565,7 @@ const Elev = (() => {
     setCurtainMode(m) { cgMode = m; cgHover = null; cb.prompt(promptText()); render(); },
     startSegments(id) { segReturn = "select"; setTool("cgsegments"); segLine = id; sel = new Set([id]); cb.select([...sel]); cb.prompt(promptText()); render(); },
     finishSegments() { const id = segLine, back = segReturn; setTool(back); if (back === "select" && id != null) { sel = new Set([id]); cb.select([...sel]); } render(); },
+    mullionInfo(id) { const s = selMullion(); return s && s.m.id === id ? { id, wall: s.f.wall, joins: s.m.joins.length } : null; },
     gridLineInfo(id) { const g = gridLine(id); return g ? { id, wall: g.f.wall, vertical: g.l.vertical, typed: g.l.typed, edge: g.l.edge } : null; },
     getCamera() { return { ...cam }; },
     setCameraState(c) { cam = { ...c }; render(); },

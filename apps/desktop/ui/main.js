@@ -1851,6 +1851,10 @@ function curtainContext() {
     const g = Elev.gridLineInfo(app.selection[0]);
     if (g && !g.edge) return { auto: true, key: `cgrid:${g.id}`, title: "Curtain Wall Grids", groups: [
       { label: "Curtain Grid", items: [{ label: "Add/Remove Segments", icon: "segments", big: true, onclick: () => Elev.startSegments(g.id) }] } ] };
+    const m = Elev.mullionInfo(app.selection[0]);
+    const join = (continuous) => async () => { await Elev.callbacks.curtainCall("set_mullion_continuous", { id: m.id, continuous }); };
+    if (m && m.joins) return { auto: true, key: `mullion:${m.id}`, title: "Curtain Wall Mullions", groups: [
+      { label: "Mullion", items: [{ label: "Make Continuous", icon: "joinMullion", big: true, onclick: join(true) }, { label: "Break at Join", icon: "breakMullion", big: true, onclick: join(false) }] } ] };
   }
   return null;
 }

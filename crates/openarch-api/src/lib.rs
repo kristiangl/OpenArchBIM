@@ -1122,15 +1122,30 @@ impl Session {
                 Ok(json!({ "on": self.doc.toggle_curtain_segment(wall, vertical, k, s)? }))
             }
             "set_curtain_panel" => {
-                use openarch_model::curtain::{part_of, CurtainRef, PanelKind};
+                use openarch_model::curtain::{part_of, CurtainRef, PanelChoice, PanelKind};
                 let Some((wall, CurtainRef::Panel { i, j })) = part_of(id_of(p, "id")?) else { return Err("not a curtain panel".into()) };
-                let kind = match p.get("kind").and_then(|v| v.as_u64()) {
-                    Some(0) => PanelKind::Glazed,
-                    Some(1) => PanelKind::Solid,
-                    Some(2) => PanelKind::Empty,
-                    _ => return Err("kind is 0 (glazed), 1 (solid) or 2 (empty)".into()),
+                // the system panels by number, or a basic wall type or a door type
+                let choice = match p.get("type_id").or_else(|| p.get("kind")).and_then(|v| v.as_u64()) {
+                    Some(0) => PanelChoice::System(PanelKind::Glazed),
+                    Some(1) => PanelChoice::System(PanelKind::Solid),
+                    Some(2) => PanelChoice::System(PanelKind::Empty),
+                    Some(t) if matches!(self.doc.get(t), Some(Element::WallType(_))) => PanelChoice::Wall(t),
+                    Some(t) if matches!(self.doc.get(t), Some(Element::FamilyType(_))) => PanelChoice::Door(t),
+                    _ => return Err("type_id is 0 (glazed), 1 (solid), 2 (empty), a basic wall type or a door type".into()),
                 };
-                self.doc.set_curtain_panel(wall, i, j, kind)?;
+                self.doc.set_curtain_panel(wall, i, j, choice)?;
+                Ok(json!({}))
+            }
+            "toggle_curtain_join" => {
+                let k = p.get("k").and_then(|v| v.as_u64()).ok_or("missing k")? as usize;
+                let j = p.get("j").and_then(|v| v.as_u64()).ok_or("missing j")? as usize;
+                Ok(json!({ "vertical": self.doc.toggle_curtain_join(id_of(p, "wall")?, k, j)? }))
+            }
+            "set_mullion_continuous" => {
+                use openarch_model::curtain::{part_of, CurtainRef};
+                let Some((wall, CurtainRef::Mullion { vertical, k, s })) = part_of(id_of(p, "id")?) else { return Err("not a mullion".into()) };
+                let continuous = p.get("continuous").and_then(|v| v.as_bool()).ok_or("missing continuous")?;
+                self.doc.set_curtain_mullion_continuous(wall, vertical, k, s, continuous)?;
                 Ok(json!({}))
             }
             "patch_curtain_part" => {
@@ -2132,7 +2147,7 @@ impl Session {
                     // a curtain wall draws its panels and mullions: where the plane cuts them, or all of them seen from
                     // above; at coarse detail just the line of its glass
                     if let Some(spec) = d.curtain_of(w) {
-                        let solids = d.curtain_solids(w);
+                        let solids = d.curtain_solids(id);
                         let shown = |s: &&openarch_model::curtain::CurtainSolid| display != "cut" || (s.z0 <= range.cut + 1e-6 && s.z1 >= range.cut - 1e-6);
                         let rings = |mullion: bool| -> Vec<Vec<Value>> {
                             solids.iter().filter(|s| matches!(s.part, openarch_model::curtain::CurtainPart::Mullion { .. }) == mullion).filter(shown).map(|s| s.ring.iter().map(pt).collect()).collect()
@@ -2463,7 +2478,7 @@ impl Session {
             if let Element::Wall(w) = e {
                 if d.curtain_of(w).is_some() {
                     if shown("Walls") {
-                        for s in d.curtain_solids(w) {
+                        for s in d.curtain_solids(id) {
                             let verts = mesh::solid_mesh(&s.ring, s.z0, s.z1);
                             if s.glazed {
                                 meshes.push(json!({ "id": id, "kind": "Glass", "verts": verts }));
@@ -4508,6 +4523,52 @@ mod tests {
         assert!(ring.contains(&(-1732, -13000)) && ring.contains(&(1732, -13000)), "{ring:?}");
         // a level cannot be in an associated array
         assert!(s.handle("array", &json!({ "ids": [lvl], "kind": "linear", "dx": 0, "dy": 0, "dz": 3000, "count": 2, "associate": true })).unwrap_err().contains("never grouped"));
+    }
+
+    #[test]
+    fn a_curtain_panel_becomes_a_door_and_mullions_join_over_the_api() {
+        use openarch_model::curtain::{part_id, CurtainRef};
+        let (mut s, lvl, _wt, view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let sf = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Storefront").unwrap()["id"].as_u64().unwrap();
+        let w = call(&mut s, "add_wall", json!({ "type_id": sf, "level_id": lvl, "start": [0, 0], "end": [3600, 0], "height_mm": 3000 }))["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        // the panel's types run from the system panels through the basic walls to the doors
+        let p0 = part_id(w, CurtainRef::Panel { i: 1, j: 0 });
+        let d = call(&mut s, "describe", json!({ "id": p0 }));
+        let types: Vec<&str> = d["types"].as_array().unwrap().iter().map(|t| t["category"].as_str().unwrap()).collect();
+        assert!(types.starts_with(&["Curtain Panels"; 3]) && types.contains(&"Walls") && types.contains(&"Doors"), "{types:?}");
+        call(&mut s, "pin", json!({ "ids": [p0], "pinned": false }));
+        call(&mut s, "set_curtain_panel", json!({ "id": p0, "type_id": door }));
+        // the door is an element of its own, in plan and in the elevation, and swaps back through its panel
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["id"] == view).unwrap()["id"].clone();
+        let inserts = call(&mut s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().clone();
+        assert_eq!(inserts.len(), 1);
+        let did = inserts[0]["id"].as_u64().unwrap();
+        let dd = call(&mut s, "describe", json!({ "id": did }));
+        assert_eq!((dd["curtain_panel"].as_u64(), dd["type_id"].as_u64()), (Some(p0), Some(door)));
+        let width = dd["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().iter()).find(|r| r["label"] == "Width").unwrap()["raw"].as_f64().unwrap();
+        assert!(width > 1100.0 && width < 1150.0, "the door inside its frame fills the 1150 wide panel: {width}");
+        let e = s.handle("transform", &json!({ "kind": "move", "ids": [did], "dx": 500, "dy": 0 })).unwrap_err();
+        assert!(e.contains("stays in its cell"), "{e}");
+        let ev = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "South").unwrap()["id"].clone();
+        let e = call(&mut s, "elevation", json!({ "view_id": ev }));
+        assert!(e["items"].as_array().unwrap().iter().any(|i| i["id"] == did));
+        assert_eq!(call(&mut s, "describe", json!({ "id": p0 }))["type_id"], door);
+        // a vertical mullion with its crossings: toggle one, then make it continuous again
+        let face = &e["curtains"][0];
+        let m = face["mullions"].as_array().unwrap().iter().find(|m| m["id"] == part_id(w, CurtainRef::Mullion { vertical: true, k: 2, s: 0 })).unwrap().clone();
+        assert_eq!(m["joins"].as_array().unwrap().iter().map(|j| j["through"].as_bool().unwrap()).collect::<Vec<_>>(), vec![false, true, false]);
+        assert_eq!(call(&mut s, "toggle_curtain_join", json!({ "wall": w, "k": 2, "j": 1 }))["vertical"], false);
+        call(&mut s, "set_mullion_continuous", json!({ "id": m["id"], "continuous": true }));
+        let e = call(&mut s, "elevation", json!({ "view_id": ev }));
+        let m = e["curtains"][0]["mullions"].as_array().unwrap().iter().find(|x| x["id"] == m["id"]).unwrap().clone();
+        assert_eq!((m["s1"].as_u64(), m["joins"][0]["through"].as_bool()), (Some(2), Some(true)));
+        // the door goes back to glass, and undo brings it back
+        call(&mut s, "set_curtain_panel", json!({ "id": p0, "type_id": 0 }));
+        assert!(call(&mut s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().is_empty());
+        call(&mut s, "undo", json!({}));
+        assert_eq!(call(&mut s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().len(), 1);
     }
 
     #[test]

@@ -338,6 +338,28 @@ pub struct CurtainFace {
     pub z0: f64,
     pub z1: f64,
     pub lines: Vec<CurtainGridLine>,
+    /// Its mullions, each a run over segments `s0..s1` of its line, with the crossings at its ends and along it.
+    pub mullions: Vec<CurtainMullion>,
+}
+
+/// A run of mullion in the view, by its part id, and where other mullions meet it: the ends (where it stops or turns
+/// the corner) and the crossings it runs through.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurtainMullion {
+    pub id: Id,
+    /// The segment past its last (its first is in its id).
+    pub s1: usize,
+    pub joins: Vec<CurtainJoin>,
+}
+
+/// Where a vertical and a horizontal mullion meet: U line `k`, V line `j`, the point in the view, and whether the
+/// mullion it belongs to runs through there.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurtainJoin {
+    pub k: usize,
+    pub j: usize,
+    pub at: [f64; 2],
+    pub through: bool,
 }
 
 /// One grid line of a curtain wall in the view, its edges included, with its segments.
@@ -1109,7 +1131,8 @@ impl Document {
                 continue;
             }
             let Some(h) = i.host else { continue };
-            if !wall_pieces.contains_key(&h.wall) {
+            // a door in a curtain wall's cell shows with the wall, which draws its own pieces
+            if !wall_pieces.contains_key(&h.wall) && !(h.v_mm.is_some() && !hidden(h.wall)) {
                 continue;
             }
             let Some(f) = self.instance_frame(iid) else { continue };
@@ -1278,7 +1301,19 @@ impl Document {
             let segs = (0..lay.us.len() - 1).map(|i| CurtainSeg { a: [u_at(lay.us[i]), zb + at], b: [u_at(lay.us[i + 1]), zb + at], on: lay.v_on[j][i] }).collect();
             lines.push(CurtainGridLine { id: part_id(wid, CurtainRef::Line { vertical: false, k: j }), vertical: false, k: j, at: *at, typed: lay.v_typed[j], edge: j == 0 || j + 1 == lay.vs.len(), segs });
         }
-        Some(CurtainFace { wall: wid, stops, z0: zb, z1: zt, lines })
+        let mullions = lay
+            .runs
+            .iter()
+            .map(|r| {
+                let joins = (r.s0..=r.s1)
+                    .map(|t| if r.vertical { (r.k, t) } else { (t, r.k) })
+                    .filter(|(k, j)| lay.meets(*k, *j))
+                    .map(|(k, j)| CurtainJoin { k, j, at: [u_at(lay.us[k]), zb + lay.vs[j]], through: lay.through[k][j] == r.vertical })
+                    .collect();
+                CurtainMullion { id: part_id(wid, CurtainRef::Mullion { vertical: r.vertical, k: r.k, s: r.s0 }), s1: r.s1, joins }
+            })
+            .collect();
+        Some(CurtainFace { wall: wid, stops, z0: zb, z1: zt, lines, mullions })
     }
 
     /// The model drawn in an elevation, or in one run of a section (`sl`): walls, openings, families, floors and roofs
@@ -1415,7 +1450,7 @@ impl Document {
                 continue;
             }
             let face = self.embedded_in(id).iter().filter_map(|h| host_near.get(h)).cloned().fold(f64::INFINITY, f64::min);
-            for s in self.curtain_solids(w) {
+            for s in self.curtain_solids(id) {
                 let clipped;
                 let ring = match &sl {
                     Some(sc) => {
@@ -1450,7 +1485,8 @@ impl Document {
                 continue;
             }
             let Some(h) = i.host else { continue };
-            if !wall_pieces.contains_key(&h.wall) {
+            // a door in a curtain wall's cell shows with the wall, which draws its own pieces
+            if !wall_pieces.contains_key(&h.wall) && !(h.v_mm.is_some() && !hidden(h.wall)) {
                 continue;
             }
             let Some(f) = self.instance_frame(iid) else { continue };

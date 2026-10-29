@@ -500,7 +500,7 @@ impl Document {
                     let Some(&wall) = map.get(&h.wall).or_else(|| existing.get(&h.wall)) else {
                         return Err("a door or window in the group has no wall in this instance (its wall is excluded there)".into());
                     };
-                    i.host = Some(HostRef { wall, u_mm: h.u_mm });
+                    i.host = Some(HostRef { wall, ..h });
                 }
                 map.insert(k, tx.add(e));
             }
@@ -791,7 +791,7 @@ impl Document {
                 if let Some(h) = i.host {
                     // a door whose wall is not a member has nothing to stand in elsewhere
                     let Some(&wk) = key_of.get(&h.wall) else { continue };
-                    i.host = Some(HostRef { wall: wk, u_mm: h.u_mm });
+                    i.host = Some(HostRef { wall: wk, ..h });
                 }
             }
             if annotation(&e) && !map_measured(&mut e, &|id| parent_key.get(&id).copied()) {
@@ -1358,7 +1358,7 @@ impl Document {
                 keep_identity(doc.get(old).unwrap(), &mut e);
                 if let Element::FamilyInstance(i) = &mut e {
                     if let Some(h) = i.host {
-                        i.host = Some(HostRef { wall: *final_id.get(&h.wall).unwrap_or(&h.wall), u_mm: h.u_mm });
+                        i.host = Some(HostRef { wall: *final_id.get(&h.wall).unwrap_or(&h.wall), ..h });
                     }
                 }
                 tx.update(old, e)?;
@@ -1372,7 +1372,7 @@ impl Document {
                     if let Some(h) = i.host {
                         if let Some(&w) = final_id.get(&h.wall) {
                             if w != h.wall {
-                                tx.update(tmp, Element::FamilyInstance(crate::family::FamilyInstance { host: Some(HostRef { wall: w, u_mm: h.u_mm }), ..i }))?;
+                                tx.update(tmp, Element::FamilyInstance(crate::family::FamilyInstance { host: Some(HostRef { wall: w, ..h }), ..i }))?;
                             }
                         }
                     }
