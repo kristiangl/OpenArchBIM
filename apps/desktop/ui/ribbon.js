@@ -60,6 +60,7 @@ const RIBBON = {
       { id: "column", label: "Column", big: true },
       { id: "roof", label: "Roof", big: true }, { id: "ceiling", label: "Ceiling", big: true },
       { id: "floor", label: "Floor", big: true }, { id: "curtain", label: "Curtain System", big: true },
+      { id: "curtain-grid", label: "Curtain Grid", big: true },
       { id: "stair", label: "Stair", big: true }, { id: "ramp", label: "Ramp", big: true },
       { id: "railing", label: "Railing", big: true } ] },
     { label: "Circulation", items: [] },

@@ -4,6 +4,12 @@
 //! Everything is worked out from the wall's line, base and top each time it is drawn: the pieces are solids, each a
 //! plan footprint swept between two heights, so plans, sections, elevations and the 3D view draw them alike.
 //!
+//! Each wall can add grid lines of its own (the Curtain Grid tool, or a file), take segments out of any interior line
+//! (the cells either side then share one panel), unpin panels and mullions from the type, swap an unpinned panel and
+//! delete an unpinned mullion. These are kept on the wall by position (`CurtainLines`), so they hold while the grid
+//! around them changes. Panels, mullions and grid lines are not elements: each has a part id (`part_id`) made from
+//! its wall and its place in the grid, which selection and Properties use.
+//!
 //! A curtain type keeps one layer as thick as its glazing zone so the rest of the program (extents, location line,
 //! selection) treats the wall as it does any other; the layer is not drawn. Curtain walls take no part in wall
 //! joins. With Automatically Embed on, a curtain wall standing in a basic wall cuts its opening in it.
@@ -203,14 +209,172 @@ pub enum JoinCondition {
     BorderAndHorizontal,
 }
 
-/// Grid lines placed on one curtain wall (by hand, or read from a file): along its length from its start, and up
-/// its height from its base. They add to the lines the type lays out.
+/// What one curtain wall changes on its type's grid. Grid lines placed by hand (or read from a file): along its length
+/// from its start, and up its height from its base; they add to the lines the type lays out. Segments taken out of
+/// lines, mullions unpinned or deleted, and panels unpinned or swapped, each kept by where it is.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CurtainLines {
     #[serde(default)]
     pub u: Vec<f64>,
     #[serde(default)]
     pub v: Vec<f64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub removed: Vec<SegmentAt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unpinned: Vec<SegmentAt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub deleted: Vec<SegmentAt>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub panels: Vec<PanelAt>,
+}
+
+/// One segment of a grid line, between the lines that cross it: on the vertical (U) line `at` along the wall, or the
+/// horizontal (V) line `at` up it; the segment holding `mid`, measured the other way.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct SegmentAt {
+    pub vertical: bool,
+    pub at: f64,
+    pub mid: f64,
+}
+
+/// A panel taken off the type (unpinned): the one covering the point `u` along the wall and `v` up it; its own
+/// panel once it has been swapped.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PanelAt {
+    pub u: f64,
+    pub v: f64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub panel: Option<PanelSpec>,
+}
+
+/// A panel, mullion or grid line of a curtain wall, by its place in the grid: a vertical (U) line `k`, a horizontal
+/// (V) line `k`, the panel whose first cell is `i` along and `j` up, or the mullion on line `k` from segment `s`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum CurtainRef {
+    Line { vertical: bool, k: usize },
+    Panel { i: usize, j: usize },
+    Mullion { vertical: bool, k: usize, s: usize },
+}
+
+/// Part ids sit above every element id and below the site point ids, under 2^53 so they survive JSON.
+pub const PART_BASE: u64 = 1 << 51;
+
+/// The id selection and Properties use for a part of curtain wall `wall`.
+pub fn part_id(wall: Id, r: CurtainRef) -> Id {
+    let (kind, a, b) = match r {
+        CurtainRef::Line { vertical, k } => (if vertical { 0 } else { 1 }, k, 0),
+        CurtainRef::Panel { i, j } => (2, i, j),
+        CurtainRef::Mullion { vertical, k, s } => (if vertical { 3 } else { 4 }, k, s),
+    };
+    PART_BASE + (((wall << 3) | kind) << 24) + ((a as u64 & 0xfff) << 12) + (b as u64 & 0xfff)
+}
+
+/// The wall and the part a part id names.
+pub fn part_of(id: Id) -> Option<(Id, CurtainRef)> {
+    if !(PART_BASE..2 * PART_BASE).contains(&id) {
+        return None;
+    }
+    let x = id - PART_BASE;
+    let (head, a, b) = (x >> 24, ((x >> 12) & 0xfff) as usize, (x & 0xfff) as usize);
+    let r = match head & 7 {
+        0 => CurtainRef::Line { vertical: true, k: a },
+        1 => CurtainRef::Line { vertical: false, k: a },
+        2 => CurtainRef::Panel { i: a, j: b },
+        3 => CurtainRef::Mullion { vertical: true, k: a, s: b },
+        4 => CurtainRef::Mullion { vertical: false, k: a, s: b },
+        _ => return None,
+    };
+    Some((head >> 3, r))
+}
+
+/// A run of mullion on one grid line: segments `s0..s1`, from `lo` to `hi` along the line (up a U line, along a V
+/// line), joined where this direction runs through.
+#[derive(Debug, Clone, PartialEq)]
+pub struct MullionRun {
+    pub vertical: bool,
+    pub k: usize,
+    pub s0: usize,
+    pub s1: usize,
+    pub lo: f64,
+    pub hi: f64,
+    pub pinned: bool,
+}
+
+/// A curtain wall's grid worked out: its lines (ends included), which segments and mullions are there, which cells
+/// share a panel, and its mullion runs.
+#[derive(Debug, Clone)]
+pub struct CurtainLayout {
+    pub len: f64,
+    pub height: f64,
+    pub us: Vec<f64>,
+    pub vs: Vec<f64>,
+    /// Laid out by the type (the edges count): these are pinned and stay where the type puts them.
+    pub u_typed: Vec<bool>,
+    pub v_typed: Vec<bool>,
+    /// `[line][segment]`: whether the segment is there (not taken out).
+    pub u_on: Vec<Vec<bool>>,
+    pub v_on: Vec<Vec<bool>>,
+    /// `[line][segment]`: whether a mullion stands on it.
+    pub u_mull: Vec<Vec<bool>>,
+    pub v_mull: Vec<Vec<bool>>,
+    /// The cells (`i` along, `j` up) of each panel, its first cell first; and the panel of each cell.
+    pub panels: Vec<Vec<(usize, usize)>>,
+    pub cell_panel: Vec<Vec<usize>>,
+    pub runs: Vec<MullionRun>,
+    /// What each line's mullion takes up across it: along the wall for a U line, up it for a V line.
+    pub uspan: Vec<(f64, f64)>,
+    pub vspan: Vec<(f64, f64)>,
+}
+
+impl CurtainLayout {
+    /// The panel covering cell `(i, j)`, as its part.
+    pub fn panel_ref(&self, i: usize, j: usize) -> CurtainRef {
+        let (i, j) = self.panels[self.cell_panel[i][j]][0];
+        CurtainRef::Panel { i, j }
+    }
+
+    /// The run of mullion a segment belongs to.
+    pub fn run_of(&self, vertical: bool, k: usize, s: usize) -> Option<&MullionRun> {
+        self.runs.iter().find(|r| r.vertical == vertical && r.k == k && (r.s0..r.s1).contains(&s))
+    }
+
+    /// Which lines in one direction the type lays out.
+    pub fn typed(&self, vertical: bool) -> &[bool] {
+        if vertical {
+            &self.u_typed
+        } else {
+            &self.v_typed
+        }
+    }
+
+    /// The lines crossing a U line (the V lines) or a V line.
+    pub fn across(&self, vertical: bool) -> &[f64] {
+        if vertical {
+            &self.vs
+        } else {
+            &self.us
+        }
+    }
+    pub fn lines(&self, vertical: bool) -> &[f64] {
+        if vertical {
+            &self.us
+        } else {
+            &self.vs
+        }
+    }
+}
+
+const TYPED_LINE: &str = "This grid line comes from the curtain wall type: change the type's grid to move or remove it.";
+
+/// The line within a millimetre of `at`.
+fn line_index(lines: &[f64], at: f64) -> Option<usize> {
+    lines.iter().position(|p| (p - at).abs() < 1.0)
+}
+
+/// The segment between two lines that holds `mid`.
+fn seg_index(lines: &[f64], mid: f64) -> Option<usize> {
+    (0..lines.len().saturating_sub(1)).find(|j| lines[*j] < mid && mid < lines[j + 1])
 }
 
 /// What makes a wall type a curtain wall type.
@@ -254,6 +418,18 @@ impl CurtainSpec {
         panel.max(mullions).max(1.0)
     }
 
+    /// The mullion type on grid line `k` of `last + 1`: a border one on the first and last, else the interior one.
+    pub fn mullion_on(&self, vertical: bool, k: usize, last: usize) -> &Option<MullionSpec> {
+        match (vertical, k == 0, k == last) {
+            (true, true, _) => &self.u_border1,
+            (true, _, true) => &self.u_border2,
+            (true, _, _) => &self.u_interior,
+            (false, true, _) => &self.v_border1,
+            (false, _, true) => &self.v_border2,
+            (false, _, _) => &self.v_interior,
+        }
+    }
+
     /// The one bookkeeping layer a curtain type carries.
     pub fn layer(&self) -> Layer {
         Layer::new(&self.panel.material, self.thickness(), LayerFunction::Structure, true)
@@ -273,6 +449,8 @@ pub enum CurtainPart {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct CurtainSolid {
     pub part: CurtainPart,
+    /// The panel or mullion it is (a panel over merged cells, or a mullion run, can be several solids).
+    pub at: CurtainRef,
     pub ring: Vec<Point>,
     pub z0: f64,
     pub z1: f64,
@@ -330,6 +508,12 @@ impl Document {
 
     /// A curtain wall's grid lines, along its length and up its height, the ends included.
     pub fn curtain_grid(&self, w: &Wall) -> Option<(Vec<f64>, Vec<f64>)> {
+        self.curtain_layout(w).map(|l| (l.us, l.vs))
+    }
+
+    /// A curtain wall's grid worked out: the type's lines and the wall's own, the segments taken out, the cells that
+    /// share a panel, and where each mullion runs.
+    pub fn curtain_layout(&self, w: &Wall) -> Option<CurtainLayout> {
         let spec = self.curtain_of(w)?;
         let len = w.path().length();
         let (z0, z1) = self.wall_extent(w);
@@ -337,32 +521,46 @@ impl Document {
         if len < 1.0 || h < 1.0 {
             return None;
         }
+        let none = CurtainLines::default();
+        let own = w.curtain_lines.as_ref().unwrap_or(&none);
+        let (ru, rv) = (spec.u.positions(len), spec.v.positions(h));
         // the type's lines and the wall's own, inside its ends
-        let merge = |rule: Vec<f64>, own: &[f64], end: f64| {
-            let mut all: Vec<f64> = rule.into_iter().chain(own.iter().copied()).filter(|p| *p > 1.0 && *p < end - 1.0).collect();
+        let merge = |rule: &[f64], own: &[f64], end: f64| {
+            let mut all: Vec<f64> = rule.iter().chain(own).copied().filter(|p| *p > 1.0 && *p < end - 1.0).collect();
             all.sort_by(f64::total_cmp);
             all.dedup_by(|a, b| (*a - *b).abs() < 1.0);
             std::iter::once(0.0).chain(all).chain(std::iter::once(end)).collect::<Vec<f64>>()
         };
-        let none = CurtainLines::default();
-        let own = w.curtain_lines.as_ref().unwrap_or(&none);
-        Some((merge(spec.u.positions(len), &own.u, len), merge(spec.v.positions(h), &own.v, h)))
-    }
-
-    /// The pieces of a curtain wall: its panels and mullions as plan footprints swept between heights.
-    pub fn curtain_solids(&self, w: &Wall) -> Vec<CurtainSolid> {
-        let Some(spec) = self.curtain_of(w) else { return vec![] };
-        let Some((us, vs)) = self.curtain_grid(w) else { return vec![] };
-        let path = w.path();
-        let pts = path.pts.clone();
-        let cum = cumulative(&pts);
-        let len = *us.last().unwrap();
-        let (zb, zt) = self.wall_extent(w);
-        let h = zt - zb;
+        let (us, vs) = (merge(&ru, &own.u, len), merge(&rv, &own.v, h));
+        let typed = |lines: &[f64], rule: &[f64]| -> Vec<bool> { lines.iter().enumerate().map(|(k, p)| k == 0 || k + 1 == lines.len() || rule.iter().any(|r| (r - p).abs() < 1.0)).collect() };
+        let (u_typed, v_typed) = (typed(&us, &ru), typed(&vs, &rv));
         let (nu, nv) = (us.len() - 1, vs.len() - 1);
-        let u_spec = |k: usize| if k == 0 { &spec.u_border1 } else if k == nu { &spec.u_border2 } else { &spec.u_interior };
-        let v_spec = |j: usize| if j == 0 { &spec.v_border1 } else if j == nv { &spec.v_border2 } else { &spec.v_interior };
-        // what each grid line's mullion takes up along the face (a border mullion stays inside the edge)
+        // where something kept by position is now: (vertical, line, segment)
+        let find = |sa: &SegmentAt| -> Option<(bool, usize, usize)> {
+            let (lines, across) = if sa.vertical { (&us, &vs) } else { (&vs, &us) };
+            Some((sa.vertical, line_index(lines, sa.at)?, seg_index(across, sa.mid)?))
+        };
+        let mut u_on = vec![vec![true; nv]; nu + 1];
+        let mut v_on = vec![vec![true; nu]; nv + 1];
+        for (vert, k, j) in own.removed.iter().filter_map(find) {
+            // the edges keep every segment
+            if vert && k > 0 && k < nu {
+                u_on[k][j] = false;
+            } else if !vert && k > 0 && k < nv {
+                v_on[k][j] = false;
+            }
+        }
+        let mut u_mull: Vec<Vec<bool>> = (0..=nu).map(|k| (0..nv).map(|j| u_on[k][j] && spec.mullion_on(true, k, nu).is_some()).collect()).collect();
+        let mut v_mull: Vec<Vec<bool>> = (0..=nv).map(|j| (0..nu).map(|i| v_on[j][i] && spec.mullion_on(false, j, nv).is_some()).collect()).collect();
+        for (vert, k, j) in own.deleted.iter().filter_map(find) {
+            if vert {
+                u_mull[k][j] = false;
+            } else {
+                v_mull[k][j] = false;
+            }
+        }
+        let unpinned: Vec<(bool, usize, usize)> = own.unpinned.iter().filter_map(find).collect();
+        // what each grid line's mullion takes up across it (a border mullion stays inside the edge)
         let span = |p: f64, k: usize, last: usize, end: f64, m: &Option<MullionSpec>| -> (f64, f64) {
             match m {
                 None => (p, p),
@@ -378,72 +576,421 @@ impl Document {
                 }
             }
         };
-        let uspan: Vec<(f64, f64)> = us.iter().enumerate().map(|(k, p)| span(*p, k, nu, len, u_spec(k))).collect();
-        let vspan: Vec<(f64, f64)> = vs.iter().enumerate().map(|(j, p)| span(*p, j, nv, h, v_spec(j))).collect();
-        let mut out = vec![];
-        // panels: each cell between the mullions round it
-        if spec.panel.kind != PanelKind::Empty && spec.panel.thickness_mm > 0.0 {
-            let (c0, c1) = (spec.panel.offset_mm - spec.panel.thickness_mm / 2.0, spec.panel.offset_mm + spec.panel.thickness_mm / 2.0);
-            for i in 0..nu {
-                let (ua, ub) = (uspan[i].1, uspan[i + 1].0);
-                if ub - ua < 1.0 {
-                    continue;
-                }
-                for j in 0..nv {
-                    let (za, zb2) = (vspan[j].1, vspan[j + 1].0);
-                    if zb2 - za < 1.0 {
-                        continue;
-                    }
-                    for ring in band(&pts, &cum, ua, ub, c0, c1) {
-                        out.push(CurtainSolid { part: CurtainPart::Panel, ring, z0: zb + za, z1: zb + zb2, material: spec.panel.material.clone(), glazed: spec.panel.kind == PanelKind::Glazed });
-                    }
+        let uspan: Vec<(f64, f64)> = us.iter().enumerate().map(|(k, p)| span(*p, k, nu, len, spec.mullion_on(true, k, nu))).collect();
+        let vspan: Vec<(f64, f64)> = vs.iter().enumerate().map(|(j, p)| span(*p, j, nv, h, spec.mullion_on(false, j, nv))).collect();
+        // cells either side of a segment taken out share a panel
+        fn root(parent: &mut [usize], mut x: usize) -> usize {
+            while parent[x] != x {
+                parent[x] = parent[parent[x]];
+                x = parent[x];
+            }
+            x
+        }
+        let cell = |i: usize, j: usize| i * nv + j;
+        let mut parent: Vec<usize> = (0..nu * nv).collect();
+        for k in 1..nu {
+            for j in 0..nv {
+                if !u_on[k][j] {
+                    let (a, b) = (root(&mut parent, cell(k - 1, j)), root(&mut parent, cell(k, j)));
+                    parent[a] = b;
                 }
             }
         }
-        // which mullions run through: (vertical, horizontal) for a border or an interior line
+        for j in 1..nv {
+            for i in 0..nu {
+                if !v_on[j][i] {
+                    let (a, b) = (root(&mut parent, cell(i, j - 1)), root(&mut parent, cell(i, j)));
+                    parent[a] = b;
+                }
+            }
+        }
+        let mut panels: Vec<Vec<(usize, usize)>> = vec![];
+        let mut cell_panel = vec![vec![0; nv]; nu];
+        let mut of_root: std::collections::HashMap<usize, usize> = Default::default();
+        for i in 0..nu {
+            for j in 0..nv {
+                let r = root(&mut parent, cell(i, j));
+                let n = *of_root.entry(r).or_insert_with(|| {
+                    panels.push(vec![]);
+                    panels.len() - 1
+                });
+                panels[n].push((i, j));
+                cell_panel[i][j] = n;
+            }
+        }
+        // where a U line `k` and a V line `j` cross, which runs through: the vertical (true) or the horizontal. One that
+        // goes on both sides wins over one that stops there; otherwise the join condition says.
         let continuous = |border: bool| match spec.join {
             JoinCondition::NotDefined | JoinCondition::VerticalContinuous => (true, false),
             JoinCondition::HorizontalContinuous => (false, true),
             JoinCondition::BorderAndVertical => (true, border),
             JoinCondition::BorderAndHorizontal => (border, true),
         };
-        // vertical mullions, on the U lines
-        for (k, p) in us.iter().enumerate() {
-            let Some(m) = u_spec(k) else { continue };
-            let border = k == 0 || k == nu;
-            let (ua, ub) = uspan[k];
+        let owner = |k: usize, j: usize| -> bool {
+            let (below, above) = (j > 0 && u_mull[k][j - 1], j < nv && u_mull[k][j]);
+            let (left, right) = (k > 0 && v_mull[j][k - 1], k < nu && v_mull[j][k]);
+            let (vt, ht) = (below && above, left && right);
+            if vt != ht {
+                return vt;
+            }
+            continuous(k == 0 || k == nu).0 || !continuous(j == 0 || j == nv).1
+        };
+        // mullion runs: up each U line, then along each V line
+        let mut runs = vec![];
+        for vertical in [true, false] {
+            let (n_lines, n_segs) = if vertical { (nu + 1, nv) } else { (nv + 1, nu) };
+            for k in 0..n_lines {
+                let has = |s: usize| if vertical { u_mull[k][s] } else { v_mull[k][s] };
+                // at node `t` along this line: whether this line runs through it, whether a crossing mullion is there,
+                // and the crossing line and what its mullion takes up
+                let mine = |t: usize| if vertical { owner(k, t) } else { !owner(t, k) };
+                let other = |t: usize| {
+                    if vertical {
+                        (k > 0 && v_mull[t][k - 1]) || (k < nu && v_mull[t][k])
+                    } else {
+                        (k > 0 && u_mull[t][k - 1]) || (k < nv && u_mull[t][k])
+                    }
+                };
+                let cross = |t: usize| if vertical { (vs[t], vspan[t]) } else { (us[t], uspan[t]) };
+                let typed_line = if vertical { u_typed[k] } else { v_typed[k] };
+                let mut s = 0;
+                while s < n_segs {
+                    if !has(s) {
+                        s += 1;
+                        continue;
+                    }
+                    let s0 = s;
+                    while s + 1 < n_segs && has(s + 1) && mine(s + 1) {
+                        s += 1;
+                    }
+                    let s1 = s + 1;
+                    s = s1;
+                    // an end it owns reaches the far face of the crossing mullion; else it stops at the near one
+                    let lo = match (other(s0), mine(s0)) {
+                        (false, _) => cross(s0).0,
+                        (true, true) => cross(s0).1 .0,
+                        (true, false) => cross(s0).1 .1,
+                    };
+                    let hi = match (other(s1), mine(s1)) {
+                        (false, _) => cross(s1).0,
+                        (true, true) => cross(s1).1 .1,
+                        (true, false) => cross(s1).1 .0,
+                    };
+                    let pinned = typed_line && (s0..s1).any(|x| !unpinned.contains(&(vertical, k, x)));
+                    runs.push(MullionRun { vertical, k, s0, s1, lo, hi, pinned });
+                }
+            }
+        }
+        Some(CurtainLayout { len, height: h, us, vs, u_typed, v_typed, u_on, v_on, u_mull, v_mull, panels, cell_panel, runs, uspan, vspan })
+    }
+
+    /// Panel `n` of a curtain wall: whether it is pinned to the type, and the panel it shows.
+    pub fn curtain_panel_state(&self, w: &Wall, lay: &CurtainLayout, n: usize) -> (bool, PanelSpec) {
+        let spec = self.curtain_of(w).map(|s| s.panel.clone()).unwrap_or_default();
+        let Some(cells) = lay.panels.get(n) else { return (true, spec) };
+        let inside = |p: &PanelAt| cells.iter().any(|(i, j)| lay.us[*i] < p.u && p.u < lay.us[i + 1] && lay.vs[*j] < p.v && p.v < lay.vs[j + 1]);
+        match w.curtain_lines.as_ref().and_then(|o| o.panels.iter().find(|p| inside(p))) {
+            Some(p) => (false, p.panel.clone().unwrap_or(spec)),
+            None => (true, spec),
+        }
+    }
+
+    /// The pieces of a curtain wall: its panels and mullions as plan footprints swept between heights.
+    pub fn curtain_solids(&self, w: &Wall) -> Vec<CurtainSolid> {
+        let Some(spec) = self.curtain_of(w) else { return vec![] };
+        let Some(lay) = self.curtain_layout(w) else { return vec![] };
+        let path = w.path();
+        let pts = path.pts.clone();
+        let cum = cumulative(&pts);
+        let (zb, _) = self.wall_extent(w);
+        let (us, vs) = (&lay.us, &lay.vs);
+        let (nu, nv) = (us.len() - 1, vs.len() - 1);
+        let mut out = vec![];
+        // panels: each inside the mullions round it; cells that share a panel reach the line between them
+        for (n, cells) in lay.panels.iter().enumerate() {
+            let (_, panel) = self.curtain_panel_state(w, &lay, n);
+            if panel.kind == PanelKind::Empty || panel.thickness_mm <= 0.0 {
+                continue;
+            }
+            let (i0, j0) = cells[0];
+            let at = CurtainRef::Panel { i: i0, j: j0 };
+            let (c0, c1) = (panel.offset_mm - panel.thickness_mm / 2.0, panel.offset_mm + panel.thickness_mm / 2.0);
+            let same = |i: usize, j: usize| cells.contains(&(i, j));
+            let edges = |i: usize, j: usize| -> (f64, f64, f64, f64) {
+                let left = if (i > 0 && same(i - 1, j)) || !lay.u_mull[i][j] { us[i] } else { lay.uspan[i].1 };
+                let right = if (i + 1 < nu && same(i + 1, j)) || !lay.u_mull[i + 1][j] { us[i + 1] } else { lay.uspan[i + 1].0 };
+                let low = if (j > 0 && same(i, j - 1)) || !lay.v_mull[j][i] { vs[j] } else { lay.vspan[j].1 };
+                let high = if (j + 1 < nv && same(i, j + 1)) || !lay.v_mull[j + 1][i] { vs[j + 1] } else { lay.vspan[j + 1].0 };
+                (left, right, low, high)
+            };
+            let (imin, imax) = (cells.iter().map(|c| c.0).min().unwrap(), cells.iter().map(|c| c.0).max().unwrap());
+            let (jmin, jmax) = (cells.iter().map(|c| c.1).min().unwrap(), cells.iter().map(|c| c.1).max().unwrap());
+            let rects: Vec<(f64, f64, f64, f64)> = if cells.len() == (imax - imin + 1) * (jmax - jmin + 1) {
+                // a rectangle of cells: one panel inside the mullions round it
+                vec![(
+                    (jmin..=jmax).map(|j| edges(imin, j).0).fold(f64::NEG_INFINITY, f64::max),
+                    (jmin..=jmax).map(|j| edges(imax, j).1).fold(f64::INFINITY, f64::min),
+                    (imin..=imax).map(|i| edges(i, jmin).2).fold(f64::NEG_INFINITY, f64::max),
+                    (imin..=imax).map(|i| edges(i, jmax).3).fold(f64::INFINITY, f64::min),
+                )]
+            } else {
+                cells.iter().map(|(i, j)| edges(*i, *j)).collect()
+            };
+            for (ua, ub, za, zb2) in rects {
+                if ub - ua < 1.0 || zb2 - za < 1.0 {
+                    continue;
+                }
+                for ring in band(&pts, &cum, ua, ub, c0, c1) {
+                    out.push(CurtainSolid { part: CurtainPart::Panel, at, ring, z0: zb + za, z1: zb + zb2, material: panel.material.clone(), glazed: panel.kind == PanelKind::Glazed });
+                }
+            }
+        }
+        // mullions: each run on its line
+        for r in &lay.runs {
+            let Some(m) = spec.mullion_on(r.vertical, r.k, if r.vertical { nu } else { nv }) else { continue };
+            if r.hi - r.lo < 1e-6 {
+                continue;
+            }
             let (c0, c1) = (m.offset_mm - m.depth() / 2.0, m.offset_mm + m.depth() / 2.0);
-            let pieces: Vec<(f64, f64)> = if continuous(border).0 { vec![(0.0, h)] } else { (0..nv).map(|j| (vspan[j].1, vspan[j + 1].0)).filter(|(a, b)| b - a > 1.0).collect() };
-            for (za, zb2) in pieces {
+            let at = CurtainRef::Mullion { vertical: r.vertical, k: r.k, s: r.s0 };
+            let part = CurtainPart::Mullion { vertical: r.vertical };
+            if r.vertical {
+                let (ua, ub) = lay.uspan[r.k];
                 let rings: Vec<Vec<Point>> = match m.shape {
                     MullionShape::Circular { radius_mm } => {
-                        let centre = band(&pts, &cum, *p, *p + 0.001, m.offset_mm, m.offset_mm + 0.001).first().map(|q| q[0]).unwrap_or(pts[0]);
+                        let p = us[r.k];
+                        let centre = band(&pts, &cum, p, p + 0.001, m.offset_mm, m.offset_mm + 0.001).first().map(|q| q[0]).unwrap_or(pts[0]);
                         vec![(0..16).map(|i| f64::from(i) * std::f64::consts::PI / 8.0).map(|t| Point::new(centre.x + radius_mm * t.cos(), centre.y + radius_mm * t.sin())).collect()]
                     }
                     MullionShape::Rectangular { .. } => band(&pts, &cum, ua, ub, c0, c1),
                 };
                 for ring in rings {
-                    out.push(CurtainSolid { part: CurtainPart::Mullion { vertical: true }, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false });
+                    out.push(CurtainSolid { part, at, ring, z0: zb + r.lo, z1: zb + r.hi, material: m.material.clone(), glazed: false });
                 }
-            }
-        }
-        // horizontal mullions (transoms), on the V lines
-        for (j, _) in vs.iter().enumerate() {
-            let Some(m) = v_spec(j) else { continue };
-            let border = j == 0 || j == nv;
-            let (za, zb2) = vspan[j];
-            if zb2 - za < 1e-6 {
-                continue;
-            }
-            let (c0, c1) = (m.offset_mm - m.depth() / 2.0, m.offset_mm + m.depth() / 2.0);
-            let pieces: Vec<(f64, f64)> = if continuous(border).1 { vec![(0.0, len)] } else { (0..nu).map(|i| (uspan[i].1, uspan[i + 1].0)).filter(|(a, b)| b - a > 1.0).collect() };
-            for (ua, ub) in pieces {
-                for ring in band(&pts, &cum, ua, ub, c0, c1) {
-                    out.push(CurtainSolid { part: CurtainPart::Mullion { vertical: false }, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false });
+            } else {
+                let (za, zb2) = lay.vspan[r.k];
+                if zb2 - za < 1e-6 {
+                    continue;
+                }
+                for ring in band(&pts, &cum, r.lo, r.hi, c0, c1) {
+                    out.push(CurtainSolid { part, at, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false });
                 }
             }
         }
         out
+    }
+
+    /// Changes what a curtain wall keeps of its own grid, as one undo step.
+    fn edit_curtain(&mut self, wall: Id, label: &str, f: impl FnOnce(&CurtainLayout, &mut CurtainLines) -> Result<(), String>) -> Result<(), String> {
+        let Some(Element::Wall(mut w)) = self.get(wall).cloned() else { return Err("not a wall".into()) };
+        let lay = self.curtain_layout(&w).ok_or("not a curtain wall")?;
+        let mut own = w.curtain_lines.clone().unwrap_or_default();
+        f(&lay, &mut own)?;
+        w.curtain_lines = (own != CurtainLines::default()).then_some(own);
+        self.transact(label, |tx| tx.update(wall, Element::Wall(w)))
+    }
+
+    /// Adds a grid line to a curtain wall: vertical (a U line) `at` along it from its start, or horizontal (a V line)
+    /// `at` up it from its base. With `only`, the line keeps just the segment holding that point (One Segment).
+    pub fn add_curtain_line(&mut self, wall: Id, vertical: bool, at: f64, only: Option<f64>) -> Result<(), String> {
+        self.edit_curtain(wall, "Curtain Grid", |lay, own| {
+            let lines = lay.lines(vertical);
+            let end = *lines.last().unwrap();
+            if !(at > 1.0 && at < end - 1.0) {
+                return Err("A grid line goes inside the curtain wall, not on its edge.".into());
+            }
+            if line_index(lines, at).is_some() {
+                return Err("There is a grid line there already.".into());
+            }
+            if vertical {
+                own.u.push(at);
+            } else {
+                own.v.push(at);
+            }
+            // what is kept on segments the new line crosses holds for both halves, and a panel kept by a point stays
+            // with the half it is in
+            let span = |x: f64| seg_index(lines, x).map(|j| (lines[j], lines[j + 1])).filter(|(a, b)| *a < at && at < *b);
+            for l in [&mut own.removed, &mut own.unpinned, &mut own.deleted] {
+                let mut halves = vec![];
+                for s in l.iter_mut().filter(|s| s.vertical != vertical) {
+                    if let Some((a, b)) = span(s.mid) {
+                        s.mid = (a + at) / 2.0;
+                        halves.push(SegmentAt { mid: (at + b) / 2.0, ..*s });
+                    }
+                }
+                l.extend(halves);
+            }
+            for p in own.panels.iter_mut() {
+                let x = if vertical { &mut p.u } else { &mut p.v };
+                if let Some((a, b)) = span(*x) {
+                    *x = if *x < at { (a + at) / 2.0 } else { (at + b) / 2.0 };
+                }
+            }
+            if let Some(mid) = only {
+                for w in lay.across(vertical).windows(2) {
+                    if !(w[0] < mid && mid < w[1]) {
+                        own.removed.push(SegmentAt { vertical, at, mid: (w[0] + w[1]) / 2.0 });
+                    }
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Takes a grid line placed on the wall off it again, with what was kept on it.
+    pub fn remove_curtain_line(&mut self, wall: Id, vertical: bool, k: usize) -> Result<(), String> {
+        self.edit_curtain(wall, "Delete Curtain Grid", |lay, own| {
+            let at = *lay.lines(vertical).get(k).ok_or("no such grid line")?;
+            if lay.typed(vertical)[k] {
+                return Err(TYPED_LINE.into());
+            }
+            let list = if vertical { &mut own.u } else { &mut own.v };
+            list.retain(|p| (p - at).abs() >= 1.0);
+            for l in [&mut own.removed, &mut own.unpinned, &mut own.deleted] {
+                l.retain(|s| !(s.vertical == vertical && (s.at - at).abs() < 1.0));
+            }
+            Ok(())
+        })
+    }
+
+    /// Moves a grid line placed on the wall to `to`, between the lines either side of it. What is kept on it moves
+    /// with it; what is kept in the segments and cells beside it stays with them.
+    pub fn move_curtain_line(&mut self, wall: Id, vertical: bool, k: usize, to: f64) -> Result<(), String> {
+        self.edit_curtain(wall, "Move Curtain Grid", |lay, own| {
+            let lines = lay.lines(vertical);
+            let at = *lines.get(k).ok_or("no such grid line")?;
+            if lay.typed(vertical)[k] {
+                return Err(TYPED_LINE.into());
+            }
+            if !(to > lines[k - 1] + 1.0 && to < lines[k + 1] - 1.0) {
+                return Err("A grid line moves only as far as the lines either side of it.".into());
+            }
+            let list = if vertical { &mut own.u } else { &mut own.v };
+            for p in list.iter_mut().filter(|p| (**p - at).abs() < 1.0) {
+                *p = to;
+            }
+            let remid = |mid: f64| match seg_index(lines, mid) {
+                Some(j) if j == k || j + 1 == k => (if j == k { to } else { lines[j] } + if j + 1 == k { to } else { lines[j + 1] }) / 2.0,
+                _ => mid,
+            };
+            for l in [&mut own.removed, &mut own.unpinned, &mut own.deleted] {
+                for s in l.iter_mut() {
+                    if s.vertical == vertical && (s.at - at).abs() < 1.0 {
+                        s.at = to;
+                    } else if s.vertical != vertical {
+                        s.mid = remid(s.mid);
+                    }
+                }
+            }
+            for p in own.panels.iter_mut() {
+                if vertical {
+                    p.u = remid(p.u);
+                } else {
+                    p.v = remid(p.v);
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Takes segment `s` out of interior grid line `k`, or puts it back (Add/Remove Segments). Returns whether the
+    /// segment is there now.
+    pub fn toggle_curtain_segment(&mut self, wall: Id, vertical: bool, k: usize, s: usize) -> Result<bool, String> {
+        let mut now = false;
+        self.edit_curtain(wall, "Add/Remove Segments", |lay, own| {
+            let n = lay.lines(vertical).len() - 1;
+            if k == 0 || k >= n {
+                return Err("The edges of a curtain wall keep all their segments.".into());
+            }
+            let across = lay.across(vertical);
+            if s + 1 >= across.len() {
+                return Err("no such segment".into());
+            }
+            let at = lay.lines(vertical)[k];
+            let on = if vertical { lay.u_on[k][s] } else { lay.v_on[k][s] };
+            if on {
+                own.removed.push(SegmentAt { vertical, at, mid: (across[s] + across[s + 1]) / 2.0 });
+            } else {
+                own.removed.retain(|x| !(x.vertical == vertical && (x.at - at).abs() < 1.0 && across[s] < x.mid && x.mid < across[s + 1]));
+            }
+            now = !on;
+            Ok(())
+        })?;
+        Ok(now)
+    }
+
+    /// Pins the mullion holding segment `s` of line `k` to the type, or unpins it.
+    pub fn set_curtain_mullion_pinned(&mut self, wall: Id, vertical: bool, k: usize, s: usize, pinned: bool) -> Result<(), String> {
+        self.edit_curtain(wall, if pinned { "Pin" } else { "Unpin" }, |lay, own| {
+            let r = lay.run_of(vertical, k, s).ok_or("there is no mullion there")?.clone();
+            if !lay.typed(vertical)[k] {
+                return Err("A mullion on a grid line placed by hand is not pinned to the type.".into());
+            }
+            let (at, across) = (lay.lines(vertical)[k], lay.across(vertical));
+            for x in r.s0..r.s1 {
+                own.unpinned.retain(|q| !(q.vertical == vertical && (q.at - at).abs() < 1.0 && across[x] < q.mid && q.mid < across[x + 1]));
+                if !pinned {
+                    own.unpinned.push(SegmentAt { vertical, at, mid: (across[x] + across[x + 1]) / 2.0 });
+                }
+            }
+            Ok(())
+        })
+    }
+
+    /// Deletes the mullion holding segment `s` of line `k`. One pinned to the type has to be unpinned first.
+    pub fn delete_curtain_mullion(&mut self, wall: Id, vertical: bool, k: usize, s: usize) -> Result<(), String> {
+        self.edit_curtain(wall, "Delete Mullion", |lay, own| {
+            let r = lay.run_of(vertical, k, s).ok_or("there is no mullion there")?.clone();
+            if r.pinned {
+                return Err("The mullion is pinned to the curtain wall type: unpin it first.".into());
+            }
+            let (at, across) = (lay.lines(vertical)[k], lay.across(vertical));
+            for x in r.s0..r.s1 {
+                own.deleted.push(SegmentAt { vertical, at, mid: (across[x] + across[x + 1]) / 2.0 });
+            }
+            Ok(())
+        })
+    }
+
+    /// Pins the panel over cell `(i, j)` to the type (it takes the type's panel again), or unpins it.
+    pub fn set_curtain_panel_pinned(&mut self, wall: Id, i: usize, j: usize, pinned: bool) -> Result<(), String> {
+        self.edit_curtain(wall, if pinned { "Pin" } else { "Unpin" }, |lay, own| {
+            let cells = lay.cell_panel.get(i).and_then(|c| c.get(j)).map(|n| &lay.panels[*n]).ok_or("there is no panel there")?;
+            let (us, vs) = (&lay.us, &lay.vs);
+            own.panels.retain(|p| !cells.iter().any(|(i, j)| us[*i] < p.u && p.u < us[i + 1] && vs[*j] < p.v && p.v < vs[j + 1]));
+            if !pinned {
+                let (i0, j0) = cells[0];
+                own.panels.push(PanelAt { u: (us[i0] + us[i0 + 1]) / 2.0, v: (vs[j0] + vs[j0 + 1]) / 2.0, panel: None });
+            }
+            Ok(())
+        })
+    }
+
+    /// Swaps the unpinned panel over cell `(i, j)` for a system panel of `kind`, as thick as the type's.
+    pub fn set_curtain_panel(&mut self, wall: Id, i: usize, j: usize, kind: PanelKind) -> Result<(), String> {
+        let base = match self.get(wall) {
+            Some(Element::Wall(w)) => self.curtain_of(w).ok_or("not a curtain wall")?.panel.clone(),
+            _ => return Err("not a wall".into()),
+        };
+        self.edit_curtain(wall, "Change Panel", |lay, own| {
+            let cells = lay.cell_panel.get(i).and_then(|c| c.get(j)).map(|n| &lay.panels[*n]).ok_or("there is no panel there")?;
+            let (us, vs) = (&lay.us, &lay.vs);
+            let p = own
+                .panels
+                .iter_mut()
+                .find(|p| cells.iter().any(|(i, j)| us[*i] < p.u && p.u < us[i + 1] && vs[*j] < p.v && p.v < vs[j + 1]))
+                .ok_or("The panel is pinned to the curtain wall type: unpin it first.")?;
+            p.panel = (kind != base.kind).then(|| PanelSpec {
+                kind,
+                material: match kind {
+                    PanelKind::Glazed => default_glass(),
+                    PanelKind::Solid => default_aluminium(),
+                    PanelKind::Empty => base.material.clone(),
+                },
+                ..base.clone()
+            });
+            Ok(())
+        })
     }
 
     /// The outline a curtain wall covers in plan: its path offset by its extents either side.
@@ -618,5 +1165,84 @@ mod tests {
         // a door does not go in a curtain wall (curtain wall doors come with panels)
         let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).is_some_and(|f| f.category == crate::family::FamilyCategory::Doors)).unwrap().0;
         assert!(d.place_on_wall(door, c, Point::new(3000.0, 0.0)).is_err());
+    }
+
+    #[test]
+    fn a_curtain_walls_own_grid_segments_and_panels() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 3000.0).unwrap();
+        let wall = |d: &Document| match d.get(w) {
+            Some(Element::Wall(x)) => x.clone(),
+            _ => panic!(),
+        };
+        let count = |d: &Document, f: &dyn Fn(&CurtainSolid) -> bool| d.curtain_solids(&wall(d)).iter().filter(|s| f(s)).count();
+        let panels = |d: &Document| count(d, &|s| s.part == CurtainPart::Panel);
+        assert_eq!(panels(&d), 6);
+        // a line placed by hand: 4 bays
+        d.add_curtain_line(w, true, 600.0, None).unwrap();
+        let lay = d.curtain_layout(&wall(&d)).unwrap();
+        assert_eq!(lay.us, vec![0.0, 600.0, 1200.0, 2400.0, 3600.0]);
+        assert_eq!(lay.u_typed, vec![true, false, true, true, true]);
+        assert_eq!(panels(&d), 8);
+        assert!(d.add_curtain_line(w, true, 600.4, None).is_err(), "one there already");
+        assert!(d.add_curtain_line(w, true, 0.5, None).is_err(), "on the edge");
+        // a segment out of the type's line at 1200: the two lower cells share one panel, and the mullion there goes
+        assert!(!d.toggle_curtain_segment(w, true, 2, 0).unwrap());
+        assert_eq!(panels(&d), 7);
+        let solids = d.curtain_solids(&wall(&d));
+        let merged = solids.iter().find(|s| s.part == CurtainPart::Panel && s.at == CurtainRef::Panel { i: 1, j: 0 }).unwrap();
+        let xs: Vec<f64> = merged.ring.iter().map(|p| p.x).collect();
+        assert!((xs.iter().cloned().fold(f64::INFINITY, f64::min) - 625.0).abs() < 1e-6 && (xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - 2375.0).abs() < 1e-6, "{xs:?}");
+        let on_1200 = |d: &Document| d.curtain_layout(&wall(d)).unwrap().runs.iter().filter(|r| r.vertical && r.k == 2).map(|r| (r.s0, r.s1)).collect::<Vec<_>>();
+        assert_eq!(on_1200(&d), vec![(1, 2)]);
+        assert!(d.toggle_curtain_segment(w, true, 0, 0).is_err(), "the edges keep their segments");
+        // the line placed by hand moves, the type's does not; what was taken out of the type's line stays out
+        assert!(d.move_curtain_line(w, true, 2, 1300.0).is_err());
+        d.move_curtain_line(w, true, 1, 700.0).unwrap();
+        assert_eq!(d.curtain_layout(&wall(&d)).unwrap().us[1], 700.0);
+        assert_eq!(panels(&d), 7);
+        assert!(d.move_curtain_line(w, true, 1, 1250.0).is_err(), "not past its neighbour");
+        // part ids name the wall and the part
+        for r in [CurtainRef::Line { vertical: true, k: 3 }, CurtainRef::Panel { i: 2, j: 1 }, CurtainRef::Mullion { vertical: false, k: 1, s: 4 }] {
+            assert_eq!(part_of(part_id(w, r)), Some((w, r)));
+        }
+        assert_eq!(part_of(w), None);
+        // a mullion of the type's is pinned: unpinned, it can go
+        let verticals = |d: &Document| count(d, &|s| s.part == CurtainPart::Mullion { vertical: true });
+        let before = verticals(&d);
+        assert!(d.delete_curtain_mullion(w, true, 3, 0).is_err());
+        d.set_curtain_mullion_pinned(w, true, 3, 0, false).unwrap();
+        d.delete_curtain_mullion(w, true, 3, 0).unwrap();
+        assert_eq!(verticals(&d), before - 1);
+        // the panel next to it now reaches the line
+        // a panel is pinned until unpinned; then it can be swapped, and pinning it takes the type's panel again
+        assert!(d.set_curtain_panel(w, 0, 1, PanelKind::Solid).is_err());
+        d.set_curtain_panel_pinned(w, 0, 1, false).unwrap();
+        d.set_curtain_panel(w, 0, 1, PanelKind::Solid).unwrap();
+        let solid = |d: &Document| count(d, &|s| s.part == CurtainPart::Panel && !s.glazed && s.material == "Aluminium");
+        assert_eq!(solid(&d), 1);
+        d.set_curtain_panel(w, 0, 1, PanelKind::Empty).unwrap();
+        assert_eq!(panels(&d), 6);
+        d.set_curtain_panel_pinned(w, 0, 1, true).unwrap();
+        assert_eq!((panels(&d), solid(&d)), (7, 0));
+        // One Segment: a transom across the first bay only
+        d.add_curtain_line(w, false, 1000.0, Some(300.0)).unwrap();
+        let lay = d.curtain_layout(&wall(&d)).unwrap();
+        let k = lay.vs.iter().position(|v| *v == 1000.0).unwrap();
+        assert_eq!(lay.v_on[k], vec![true, false, false, false]);
+        assert_eq!(panels(&d), 8);
+        // a line through the middle of a segment taken out leaves both halves out
+        d.add_curtain_line(w, true, 3000.0, None).unwrap();
+        let lay = d.curtain_layout(&wall(&d)).unwrap();
+        assert_eq!(lay.v_on[k], vec![true, false, false, false, false]);
+        d.undo().unwrap();
+        // each change is one undo step; taking the hand-placed line off takes what was kept on it
+        d.undo().unwrap();
+        assert_eq!(panels(&d), 7);
+        d.remove_curtain_line(w, true, 1).unwrap();
+        assert!(d.remove_curtain_line(w, true, 1).is_err(), "now the type's line at 1200");
+        assert_eq!(d.curtain_layout(&wall(&d)).unwrap().us, vec![0.0, 1200.0, 2400.0, 3600.0]);
     }
 }

@@ -1215,7 +1215,7 @@ impl Document {
             }
             let mut nw = Wall::new(tid, level, start, end, mm(z1 - z0));
             nw.base_offset_mm = mm(z0 - elevation(level));
-            nw.curtain_lines = Some(crate::curtain::CurtainLines { u: u_lines, v: v_lines });
+            nw.curtain_lines = Some(crate::curtain::CurtainLines { u: u_lines, v: v_lines, ..Default::default() });
             let g = guid_of(id);
             if valid_guid(&g) {
                 nw.ifc.guid = g;

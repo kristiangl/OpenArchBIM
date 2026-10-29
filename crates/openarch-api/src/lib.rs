@@ -43,6 +43,16 @@ fn ids_of(p: &Value, key: &str) -> Result<Vec<Id>, String> {
     Ok(a.iter().filter_map(|v| v.as_u64()).collect())
 }
 
+/// Pins a panel or mullion of a curtain wall to its type, or unpins it.
+fn pin_curtain_part(d: &mut Document, id: Id, pinned: bool) -> Result<(), String> {
+    use openarch_model::curtain::{part_of, CurtainRef};
+    match part_of(id).ok_or("not a part of a curtain wall")? {
+        (wall, CurtainRef::Panel { i, j }) => d.set_curtain_panel_pinned(wall, i, j, pinned),
+        (wall, CurtainRef::Mullion { vertical, k, s }) => d.set_curtain_mullion_pinned(wall, vertical, k, s, pinned),
+        (_, CurtainRef::Line { .. }) => Err("A curtain grid line is pinned when the type lays it out, and free when it was placed by hand.".into()),
+    }
+}
+
 /// Ids the plan uses for the project base point and the survey point, which are not elements of
 /// their own (both live in the project location). Below 2^53 so they survive JSON.
 pub const SITE_BASE_ID: u64 = 4_503_599_627_370_001;
@@ -1074,7 +1084,66 @@ impl Session {
                 if ids.iter().any(|i| *i == SITE_BASE_ID || *i == SITE_SURVEY_ID) {
                     return Err("the project base point and survey point cannot be deleted".into());
                 }
-                self.doc.delete_items(&ids)?;
+                // grid lines and mullions of curtain walls go one by one, highest first so the rest keep their places
+                let (mut parts, rest): (Vec<Id>, Vec<Id>) = ids.into_iter().partition(|i| openarch_model::curtain::part_of(*i).is_some());
+                if parts.is_empty() {
+                    self.doc.delete_items(&rest)?;
+                    return Ok(json!({}));
+                }
+                parts.sort_unstable_by(|a, b| b.cmp(a));
+                self.doc.grouped("Delete", |d| {
+                    use openarch_model::curtain::{part_of, CurtainRef};
+                    for id in parts {
+                        let Some((wall, r)) = part_of(id) else { continue };
+                        match r {
+                            CurtainRef::Line { vertical, k } => d.remove_curtain_line(wall, vertical, k)?,
+                            CurtainRef::Mullion { vertical, k, s } => d.delete_curtain_mullion(wall, vertical, k, s)?,
+                            CurtainRef::Panel { .. } => return Err("A curtain panel cannot be deleted: unpin it and change it to an Empty panel instead.".into()),
+                        }
+                    }
+                    if !rest.is_empty() {
+                        d.delete_items(&rest)?;
+                    }
+                    Ok(())
+                })?;
+                Ok(json!({}))
+            }
+            // ---- curtain walls: their own grid lines, segments, panels and mullions (openarch_model::curtain) ----
+            "add_curtain_line" => {
+                let vertical = p.get("vertical").and_then(|v| v.as_bool()).ok_or("missing vertical")?;
+                let only = p.get("only").and_then(|v| v.as_f64());
+                self.doc.add_curtain_line(id_of(p, "wall")?, vertical, num_of(p, "at")?, only)?;
+                Ok(json!({}))
+            }
+            "toggle_curtain_segment" => {
+                use openarch_model::curtain::{part_of, CurtainRef};
+                let Some((wall, CurtainRef::Line { vertical, k })) = part_of(id_of(p, "id")?) else { return Err("not a curtain grid line".into()) };
+                let s = p.get("s").and_then(|v| v.as_u64()).ok_or("missing s")? as usize;
+                Ok(json!({ "on": self.doc.toggle_curtain_segment(wall, vertical, k, s)? }))
+            }
+            "set_curtain_panel" => {
+                use openarch_model::curtain::{part_of, CurtainRef, PanelKind};
+                let Some((wall, CurtainRef::Panel { i, j })) = part_of(id_of(p, "id")?) else { return Err("not a curtain panel".into()) };
+                let kind = match p.get("kind").and_then(|v| v.as_u64()) {
+                    Some(0) => PanelKind::Glazed,
+                    Some(1) => PanelKind::Solid,
+                    Some(2) => PanelKind::Empty,
+                    _ => return Err("kind is 0 (glazed), 1 (solid) or 2 (empty)".into()),
+                };
+                self.doc.set_curtain_panel(wall, i, j, kind)?;
+                Ok(json!({}))
+            }
+            "patch_curtain_part" => {
+                use openarch_model::curtain::{part_of, CurtainRef};
+                let id = id_of(p, "id")?;
+                let patch = p.get("patch").ok_or("missing patch")?;
+                if let Some(pinned) = patch.get("pinned").and_then(|v| v.as_bool()) {
+                    pin_curtain_part(&mut self.doc, id, pinned)?;
+                }
+                if let Some(at) = patch.get("at").and_then(|v| v.as_f64()) {
+                    let Some((wall, CurtainRef::Line { vertical, k })) = part_of(id) else { return Err("only a grid line has a position".into()) };
+                    self.doc.move_curtain_line(wall, vertical, k, at)?;
+                }
                 Ok(json!({}))
             }
             "set_wall_type" => {
@@ -1651,7 +1720,12 @@ impl Session {
                 let ids: Vec<Id> = p.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_u64()).collect()).unwrap_or_default();
                 let pinned = p.get("pinned").and_then(|v| v.as_bool()).unwrap_or(true);
                 self.doc.grouped(if pinned { "Pin" } else { "Unpin" }, |d| {
-                    let rest: Vec<Id> = ids.iter().copied().filter(|i| *i != SITE_BASE_ID && *i != SITE_SURVEY_ID).collect();
+                    for id in &ids {
+                        if openarch_model::curtain::part_of(*id).is_some() {
+                            pin_curtain_part(d, *id, pinned)?;
+                        }
+                    }
+                    let rest: Vec<Id> = ids.iter().copied().filter(|i| *i != SITE_BASE_ID && *i != SITE_SURVEY_ID && openarch_model::curtain::part_of(*i).is_none()).collect();
                     d.set_pinned(&rest, pinned)?;
                     if ids.contains(&SITE_BASE_ID) {
                         d.patch_project_location(&json!({ "base_pinned": pinned }))?;
@@ -2473,6 +2547,9 @@ impl Session {
         }
         if id == SITE_SURVEY_ID {
             return props::site_point_props(d, openarch_model::site::SitePoint::Survey);
+        }
+        if openarch_model::curtain::part_of(id).is_some() {
+            return props::curtain_part_props(d, id);
         }
         match d.get(id).ok_or("no such element")? {
             Element::Wall(w) => Ok(props::wall_props(d, id, w)),
@@ -4431,6 +4508,66 @@ mod tests {
         assert!(ring.contains(&(-1732, -13000)) && ring.contains(&(1732, -13000)), "{ring:?}");
         // a level cannot be in an associated array
         assert!(s.handle("array", &json!({ "ids": [lvl], "kind": "linear", "dx": 0, "dy": 0, "dz": 3000, "count": 2, "associate": true })).unwrap_err().contains("never grouped"));
+    }
+
+    #[test]
+    fn curtain_parts_are_picked_and_changed_by_their_part_ids() {
+        let (mut s, lvl, _wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let sf = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Storefront").unwrap()["id"].as_u64().unwrap();
+        let w = call(&mut s, "add_wall", json!({ "type_id": sf, "level_id": lvl, "start": [0, 0], "end": [3600, 0], "height_mm": 3000 }))["id"].as_u64().unwrap();
+        let ev = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "South").unwrap()["id"].clone();
+        let elev = |s: &mut Session| call(s, "elevation", json!({ "view_id": ev }));
+        // each panel and mullion drawn carries its part id; the wall's grid comes with it
+        let e = elev(&mut s);
+        let parts: Vec<u64> = e["items"].as_array().unwrap().iter().filter(|i| i["id"] == w).filter_map(|i| i["part"].as_u64()).collect();
+        assert_eq!(parts.len(), 6 + 4 + 5, "six panels, four vertical mullions, five horizontal pieces");
+        let face = &e["curtains"][0];
+        assert_eq!(face["wall"], w);
+        let interior: Vec<&Value> = face["lines"].as_array().unwrap().iter().filter(|l| l["edge"] == false).collect();
+        assert_eq!(interior.len(), 3, "{face}");
+        // Properties of a panel, a mullion and a grid line
+        let kinds: Vec<String> = parts.iter().map(|p| call(&mut s, "describe", json!({ "id": p }))["kind"].as_str().unwrap().to_string()).collect();
+        assert_eq!(kinds.iter().filter(|k| *k == "CurtainPanel").count(), 6);
+        assert_eq!(kinds.iter().filter(|k| *k == "Mullion").count(), 9);
+        let line = interior.iter().find(|l| l["vertical"] == true).unwrap()["id"].as_u64().unwrap();
+        let d = call(&mut s, "describe", json!({ "id": line }));
+        assert_eq!((d["kind"].as_str(), d["typed"].as_bool()), (Some("CurtainGrid"), Some(true)));
+        // a line placed by hand, then the type's line at 1200 losing its lower segment
+        call(&mut s, "add_curtain_line", json!({ "wall": w, "vertical": true, "at": 600 }));
+        let on = call(&mut s, "toggle_curtain_segment", json!({ "id": openarch_model::curtain::part_id(w, openarch_model::curtain::CurtainRef::Line { vertical: true, k: 2 }), "s": 0 }));
+        assert_eq!(on["on"], false);
+        let e = elev(&mut s);
+        let panels = |e: &Value| e["items"].as_array().unwrap().iter().filter_map(|i| i["part"].as_u64()).filter(|p| matches!(openarch_model::curtain::part_of(*p), Some((_, openarch_model::curtain::CurtainRef::Panel { .. })))).collect::<std::collections::BTreeSet<u64>>();
+        assert_eq!(panels(&e).len(), 7);
+        // the hand-placed line moves through Properties and goes with Delete; the type's line refuses both
+        let hand = openarch_model::curtain::part_id(w, openarch_model::curtain::CurtainRef::Line { vertical: true, k: 1 });
+        call(&mut s, "patch_curtain_part", json!({ "id": hand, "patch": { "at": 450 } }));
+        assert_eq!(call(&mut s, "describe", json!({ "id": hand }))["groups"][0]["rows"][0]["raw"], 450.0);
+        let typed = openarch_model::curtain::part_id(w, openarch_model::curtain::CurtainRef::Line { vertical: true, k: 2 });
+        assert!(s.handle("delete", &json!({ "ids": [typed] })).is_err());
+        assert!(s.handle("patch_curtain_part", &json!({ "id": typed, "patch": { "at": 1300 } })).is_err());
+        call(&mut s, "delete", json!({ "ids": [hand] }));
+        assert_eq!(panels(&elev(&mut s)).len(), 5);
+        // a panel: pinned, it cannot change; unpinned, it swaps; a panel cannot be deleted
+        let p0 = openarch_model::curtain::part_id(w, openarch_model::curtain::CurtainRef::Panel { i: 2, j: 1 });
+        assert!(s.handle("set_curtain_panel", &json!({ "id": p0, "kind": 2 })).is_err());
+        call(&mut s, "pin", json!({ "ids": [p0], "pinned": false }));
+        call(&mut s, "set_curtain_panel", json!({ "id": p0, "kind": 2 }));
+        assert_eq!(call(&mut s, "describe", json!({ "id": p0 }))["title"], "Empty System Panel: Empty");
+        assert_eq!(panels(&elev(&mut s)).len(), 4, "an empty panel draws nothing");
+        assert!(s.handle("delete", &json!({ "ids": [p0] })).is_err());
+        // a mullion: unpinned through Properties, then deleted
+        let m = openarch_model::curtain::part_id(w, openarch_model::curtain::CurtainRef::Mullion { vertical: true, k: 2, s: 1 });
+        assert!(s.handle("delete", &json!({ "ids": [m] })).is_err());
+        call(&mut s, "patch_curtain_part", json!({ "id": m, "patch": { "pinned": false } }));
+        call(&mut s, "delete", json!({ "ids": [m] }));
+        assert!(s.handle("describe", &json!({ "id": m })).is_err(), "gone");
+        // all of it undoes step by step: eight changes
+        for _ in 0..8 {
+            call(&mut s, "undo", json!({}));
+        }
+        assert_eq!(panels(&elev(&mut s)).len(), 6);
     }
 
     #[test]

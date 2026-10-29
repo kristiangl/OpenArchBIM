@@ -182,11 +182,14 @@ pub struct ElevItem {
     pub holes: Vec<Vec<[f64; 2]>>,
     /// How strongly it is drawn: 1 in full, less as depth cueing fades it toward the background.
     pub fade: f64,
+    /// The part of a curtain wall it is (a panel or mullion), by its part id; `id` is the wall.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub part: Option<Id>,
 }
 
 impl Default for ElevItem {
     fn default() -> Self {
-        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0 }
+        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0, part: None }
     }
 }
 
@@ -230,10 +233,10 @@ fn merge_at_seams(items: Vec<ElevItem>, seams: &[f64]) -> Vec<ElevItem> {
     };
     let mut items = items;
     let mut keep = vec![true; items.len()];
-    let mut groups: std::collections::BTreeMap<(Id, u64, u64, u64), Vec<(usize, [f64; 4])>> = Default::default();
+    let mut groups: std::collections::BTreeMap<(Id, Option<Id>, u64, u64, u64), Vec<(usize, [f64; 4])>> = Default::default();
     for (k, it) in items.iter().enumerate() {
         if let Some(r) = rect(it) {
-            groups.entry((it.id, it.depth.to_bits(), r[2].to_bits(), r[3].to_bits())).or_default().push((k, r));
+            groups.entry((it.id, it.part, it.depth.to_bits(), r[2].to_bits(), r[3].to_bits())).or_default().push((k, r));
         }
     }
     for mut g in groups.into_values() {
@@ -321,6 +324,43 @@ pub struct ElevationData {
     pub visual_style: VisualStyle,
     /// Where a jogged section's line jogs (across the view, mm): the view draws a fold line there.
     pub folds: Vec<f64>,
+    /// The curtain walls seen, with their grids.
+    pub curtains: Vec<CurtainFace>,
+}
+
+/// A curtain wall seen in an elevation or section: how its length maps onto the view and its grid lines, for picking
+/// the lines and for the Curtain Grid tool.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurtainFace {
+    pub wall: Id,
+    /// Along the wall from its start, and the view's `u` there, at each point of its path.
+    pub stops: Vec<[f64; 2]>,
+    pub z0: f64,
+    pub z1: f64,
+    pub lines: Vec<CurtainGridLine>,
+}
+
+/// One grid line of a curtain wall in the view, its edges included, with its segments.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurtainGridLine {
+    /// Its part id.
+    pub id: Id,
+    pub vertical: bool,
+    pub k: usize,
+    /// Along the wall (a vertical line) or up it from its base.
+    pub at: f64,
+    /// Laid out by the type, which pins it.
+    pub typed: bool,
+    pub edge: bool,
+    pub segs: Vec<CurtainSeg>,
+}
+
+/// A segment of a curtain grid line in the view's frame (`[u, z]` ends), and whether it is there or taken out.
+#[derive(Debug, Clone, Serialize)]
+pub struct CurtainSeg {
+    pub a: [f64; 2],
+    pub b: [f64; 2],
+    pub on: bool,
 }
 
 /// A grid seen end on in an elevation: a vertical line with its head at the top.
@@ -1198,7 +1238,47 @@ impl Document {
         }
         // a section is drawn run by run, so its reference lines are worked out across the whole view
         let refs = if section.is_some() { self.elevation_dim_lines(view).map(|e| e.refs).unwrap_or_default() } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };
-        Ok(ElevationData { view_id: view, name: v.name.clone(), frame, scale: v.settings.scale as f64, levels, grids, items, refs, visual_style: settings.visual_style, folds })
+        // the curtain walls drawn, with their grids along their paths
+        let mut seen: Vec<Id> = items.iter().filter(|i| i.part.is_some()).map(|i| i.id).collect();
+        seen.sort_unstable();
+        seen.dedup();
+        let curtains = seen.into_iter().filter_map(|wid| self.curtain_face(wid, &u_of)).collect();
+        Ok(ElevationData { view_id: view, name: v.name.clone(), frame, scale: v.settings.scale as f64, levels, grids, items, refs, visual_style: settings.visual_style, folds, curtains })
+    }
+
+    /// A curtain wall's grid in a view whose horizontal is `u_of`.
+    fn curtain_face(&self, wid: Id, u_of: &dyn Fn(Point) -> f64) -> Option<CurtainFace> {
+        use crate::curtain::{part_id, CurtainRef};
+        let Some(Element::Wall(w)) = self.get(wid) else { return None };
+        let lay = self.curtain_layout(w)?;
+        let pts = w.path().pts;
+        let (zb, zt) = self.wall_extent(w);
+        let mut stops = vec![];
+        let mut run = 0.0;
+        for (k, p) in pts.iter().enumerate() {
+            if k > 0 {
+                run += pts[k - 1].dist(p);
+            }
+            stops.push([run, u_of(*p)]);
+        }
+        // the view's u at a distance along the wall
+        let u_at = |d: f64| -> f64 {
+            let k = stops.partition_point(|s| s[0] <= d).clamp(1, stops.len() - 1);
+            let (a, b) = (stops[k - 1], stops[k]);
+            let t = if b[0] - a[0] > 1e-9 { (d - a[0]) / (b[0] - a[0]) } else { 0.0 };
+            a[1] + (b[1] - a[1]) * t
+        };
+        let mut lines = vec![];
+        for (k, at) in lay.us.iter().enumerate() {
+            let u = u_at(*at);
+            let segs = (0..lay.vs.len() - 1).map(|j| CurtainSeg { a: [u, zb + lay.vs[j]], b: [u, zb + lay.vs[j + 1]], on: lay.u_on[k][j] }).collect();
+            lines.push(CurtainGridLine { id: part_id(wid, CurtainRef::Line { vertical: true, k }), vertical: true, k, at: *at, typed: lay.u_typed[k], edge: k == 0 || k + 1 == lay.us.len(), segs });
+        }
+        for (j, at) in lay.vs.iter().enumerate() {
+            let segs = (0..lay.us.len() - 1).map(|i| CurtainSeg { a: [u_at(lay.us[i]), zb + at], b: [u_at(lay.us[i + 1]), zb + at], on: lay.v_on[j][i] }).collect();
+            lines.push(CurtainGridLine { id: part_id(wid, CurtainRef::Line { vertical: false, k: j }), vertical: false, k: j, at: *at, typed: lay.v_typed[j], edge: j == 0 || j + 1 == lay.vs.len(), segs });
+        }
+        Some(CurtainFace { wall: wid, stops, z0: zb, z1: zt, lines })
     }
 
     /// The model drawn in an elevation, or in one run of a section (`sl`): walls, openings, families, floors and roofs
@@ -1361,7 +1441,7 @@ impl Document {
                 // a mullion stands in front of the glass it frames
                 let depth = if s.part == crate::curtain::CurtainPart::Panel { dmin + 0.25 } else { dmin };
                 let depth = if face.is_finite() { (face - 1.0).min(depth) + if s.part == crate::curtain::CurtainPart::Panel { 0.25 } else { 0.0 } } else { depth };
-                items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, s.z0, s.z1)], lines: vec![], fill, stroke: true, ..Default::default() });
+                items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, s.z0, s.z1)], lines: vec![], fill, stroke: true, part: Some(crate::curtain::part_id(id, s.at)), ..Default::default() });
             }
         }
         // doors and windows sit on the wall face

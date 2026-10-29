@@ -1270,3 +1270,97 @@ pub fn group_props(d: &Document, id: Id, g: &openarch_model::group::GroupInstanc
         ],
     })
 }
+
+/// Properties of a part of a curtain wall: a grid line, a panel or a mullion. Panels list the system panels as their
+/// types; a pinned panel keeps the type's until it is unpinned.
+pub fn curtain_part_props(d: &Document, id: Id) -> Res {
+    use openarch_model::curtain::{part_of, CurtainRef, MullionShape, PanelKind};
+    let (wall, r) = part_of(id).ok_or("not a part of a curtain wall")?;
+    let Some(Element::Wall(w)) = d.get(wall) else { return Err("its curtain wall is gone".into()) };
+    let spec = d.curtain_of(w).ok_or("not a curtain wall")?;
+    let lay = d.curtain_layout(w).ok_or("the curtain wall has no grid")?;
+    let target = json!({ "method": "patch_curtain_part", "id": id });
+    let round = |x: f64| (x * 10.0).round() / 10.0;
+    match r {
+        CurtainRef::Line { vertical, k } => {
+            let lines = lay.lines(vertical);
+            let at = *lines.get(k).ok_or("the grid line is gone")?;
+            let typed = lay.typed(vertical)[k];
+            let edge = k == 0 || k + 1 == lines.len();
+            let on = if vertical { &lay.u_on[k] } else { &lay.v_on[k] };
+            Ok(json!({
+                "id": id, "kind": "CurtainGrid", "wall": wall, "vertical": vertical, "k": k, "typed": typed, "edge": edge,
+                "title": "Curtain Wall Grid", "type_label": "Curtain Wall Grid", "target": target,
+                "groups": [
+                    group("Constraints", vec![
+                        num(if vertical { "Distance from Start" } else { "Height from Base" }, "at", round(at), !typed),
+                        boolean("Pinned", "pinned", typed, false),
+                    ]),
+                    group("Identity Data", vec![
+                        ro("Category", "Curtain Wall Grids"),
+                        ro("Laid Out By", if edge { "Curtain wall edge" } else if typed { "Type" } else { "Placed by hand" }),
+                        ro("Segments", format!("{} of {}", on.iter().filter(|x| **x).count(), on.len())),
+                    ]),
+                ],
+            }))
+        }
+        CurtainRef::Panel { i, j } => {
+            let n = *lay.cell_panel.get(i).and_then(|c| c.get(j)).ok_or("the panel is gone")?;
+            let cells = &lay.panels[n];
+            let (pinned, panel) = d.curtain_panel_state(w, &lay, n);
+            let (i0, i1) = (cells.iter().map(|c| c.0).min().unwrap_or(0), cells.iter().map(|c| c.0).max().unwrap_or(0));
+            let (j0, j1) = (cells.iter().map(|c| c.1).min().unwrap_or(0), cells.iter().map(|c| c.1).max().unwrap_or(0));
+            let (width, height) = (lay.us[i1 + 1] - lay.us[i0], lay.vs[j1 + 1] - lay.vs[j0]);
+            let (kind_id, family, name) = match panel.kind {
+                PanelKind::Glazed => (0, "System Panel", "Glazed"),
+                PanelKind::Solid => (1, "System Panel", "Solid"),
+                PanelKind::Empty => (2, "Empty System Panel", "Empty"),
+            };
+            Ok(json!({
+                "id": id, "kind": "CurtainPanel", "wall": wall, "type_id": kind_id, "pinned": pinned,
+                "types": [
+                    { "id": 0, "name": "Glazed", "family": "System Panel", "category": "Curtain Panels" },
+                    { "id": 1, "name": "Solid", "family": "System Panel", "category": "Curtain Panels" },
+                    { "id": 2, "name": "Empty", "family": "Empty System Panel", "category": "Curtain Panels" },
+                ],
+                "title": format!("{family}: {name}"), "type_label": format!("{family}: {name}"), "target": target,
+                "groups": [
+                    group("Constraints", vec![boolean("Pinned", "pinned", pinned, true)]),
+                    group("Dimensions", vec![
+                        num("Width", "", round(width), false),
+                        num("Height", "", round(height), false),
+                        ro("Area", format!("{:.3} m\u{b2}", width * height / 1e6)),
+                        num("Thickness", "", if panel.kind == PanelKind::Empty { 0.0 } else { round(panel.thickness_mm) }, false),
+                        num("Offset", "", round(panel.offset_mm), false),
+                    ]),
+                    group("Materials and Finishes", vec![ro("Material", if panel.kind == PanelKind::Empty { "<none>".to_string() } else { panel.material.clone() })]),
+                    group("Identity Data", vec![ro("Category", "Curtain Panels"), ro("Cells", cells.len().to_string())]),
+                ],
+            }))
+        }
+        CurtainRef::Mullion { vertical, k, s } => {
+            let run = lay.run_of(vertical, k, s).ok_or("the mullion is gone")?;
+            let last = lay.lines(vertical).len() - 1;
+            let m = spec.mullion_on(vertical, k, last).clone().ok_or("the mullion is gone")?;
+            let title = match m.shape {
+                MullionShape::Rectangular { width1_mm, width2_mm, thickness_mm } => format!("Rectangular Mullion: {} x {}", round(width1_mm + width2_mm), round(thickness_mm)),
+                MullionShape::Circular { radius_mm } => format!("Circular Mullion: {} mm radius", round(radius_mm)),
+            };
+            Ok(json!({
+                "id": id, "kind": "Mullion", "wall": wall, "pinned": run.pinned,
+                "title": title, "type_label": title, "target": target,
+                "groups": [
+                    group("Constraints", vec![boolean("Pinned", "pinned", run.pinned, lay.typed(vertical)[k])]),
+                    group("Dimensions", vec![num("Length", "", round(run.hi - run.lo), false)]),
+                    group("Construction", vec![
+                        ro("Orientation", if vertical { "Vertical" } else { "Horizontal" }),
+                        ro("Position", if k == 0 || k == last { "Border" } else { "Interior" }),
+                        num("Offset", "", round(m.offset_mm), false),
+                    ]),
+                    group("Materials and Finishes", vec![ro("Material", m.material.clone())]),
+                    group("Identity Data", vec![ro("Category", "Curtain Wall Mullions")]),
+                ],
+            }))
+        }
+    }
+}

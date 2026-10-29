@@ -73,6 +73,7 @@ const COMMANDS = {
   },
   "show-wp": () => { Plan.setShowWorkGrid(!Plan.showWorkGrid); setPrompt(Plan.showWorkGrid ? "Work plane grid shown." : "Work plane grid hidden."); },
   level: () => startLevelTool(),
+  "curtain-grid": () => startCurtainGridTool(),
   grid: () => startGridTool(),
   "v-elev": () => startElevationTool(),
   "v-section": () => startSectionTool(),
@@ -287,6 +288,8 @@ function currentContext() {
   if (Sketch.active) return sketchContext();
   if (app.view.kind === "plan" && Plan.tool === "wall") return wallContext();
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
+  const cc = curtainContext();
+  if (cc) return cc;
   const ac = arrayContext();
   if (ac) return ac;
   const gc = groupContext();
@@ -1823,6 +1826,35 @@ async function flipAction() {
 // ---- levels, elevation markers and the project points ---------------------------------------
 // Levels are drawn in an elevation (elevation.js); markers are placed in a plan. The model checks every
 // change (names, pins, doors that would stop fitting) and the status bar shows why one is refused.
+// Curtain Grid places grid lines on a curtain wall seen face on, so it works in an elevation or section view
+function startCurtainGridTool() {
+  if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
+  if (app.view.kind !== "elevation") { setPrompt("Curtain Grid works in an elevation or section view: open one that looks at the curtain wall.", true); return; }
+  Elev.startCurtainGrid();
+  updateRibbonContext(true);
+}
+
+// The Modify tab's panels for curtain walls: Placement while Curtain Grid is on, and Add/Remove Segments for a selected
+// grid line (also while it runs)
+function curtainContext() {
+  if (app.view.kind !== "elevation") return null;
+  if (Elev.tool === "curtaingrid") {
+    const m = Elev.curtainMode;
+    const opt = (id, label, icon) => ({ label, icon, on: m === id, onclick: () => { Elev.setCurtainMode(id); updateRibbonContext(); } });
+    return { auto: true, key: "curtaingrid", title: "Place Curtain Grid", groups: [
+      { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => Elev.setTool("select") }] },
+      { label: "Placement", items: [opt("all", "All Segments", "gridAll"), opt("one", "One Segment", "gridOne"), opt("except", "All Except Picked", "gridExcept")] } ] };
+  }
+  if (Elev.tool === "cgsegments") return { auto: true, key: "cgsegments", title: "Curtain Wall Grids", groups: [
+    { label: "Curtain Grid", items: [{ label: "Add/Remove Segments", icon: "segments", big: true, on: true, onclick: () => Elev.finishSegments() }] } ] };
+  if (Elev.tool === "select" && app.selection.length === 1) {
+    const g = Elev.gridLineInfo(app.selection[0]);
+    if (g && !g.edge) return { auto: true, key: `cgrid:${g.id}`, title: "Curtain Wall Grids", groups: [
+      { label: "Curtain Grid", items: [{ label: "Add/Remove Segments", icon: "segments", big: true, onclick: () => Elev.startSegments(g.id) }] } ] };
+  }
+  return null;
+}
+
 async function startLevelTool() {
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
   if (app.view.kind !== "elevation") {
@@ -1950,6 +1982,12 @@ Elev.callbacks.editRegion = (id) => startRegionSketch(null, id);
 Elev.callbacks.editNote = (id) => DetailCallbacks.editNote(id);
 Elev.callbacks.tempSettings = () => tdimSettings();
 Elev.callbacks.tool = (t) => { clearSelectionForTool(t); renderOptionsBar(); renderProperties(); };
+// a change to a curtain wall's own grid (Curtain Grid, Add/Remove Segments, dragging a line placed by hand)
+Elev.callbacks.curtainCall = async (method, params) => {
+  const r = await run(method, params);
+  if (r) { await refresh(); renderProperties(); updateRibbonContext(); }
+  return r;
+};
 Elev.callbacks.prompt = (t) => setPrompt(t);
 Elev.callbacks.cursor = (t) => { $("#cursor-pos").textContent = `Elev: ${t}`; };
 Elev.callbacks.select = (ids) => Plan.callbacks.select(ids);

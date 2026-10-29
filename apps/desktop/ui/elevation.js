@@ -12,7 +12,7 @@ const Elev = (() => {
     addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
     dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
     arrayOptions: () => ({ arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false }), array: () => {},
-    editGroup: () => {}, groupPick: () => {}, placeGroup: () => {},
+    editGroup: () => {}, groupPick: () => {}, placeGroup: () => {}, curtainCall: () => {},
   };
   // groups (doc_info): a click on a member picks its group, Tab the member; Edit Group and Place Group as in plan
   let modelGroups = [], memberOf = new Map(), groupEdit = null, groupPlace = null;
@@ -74,6 +74,109 @@ const Elev = (() => {
   let snapCycle = 0; // Tab steps through the snap points in reach
   let band = null; // a window or crossing box in the sketch's Select tool
   let detDrag = null; // selected detail items carried by a drag: { ids, p0, d }
+  // curtain walls (data.curtains): the Curtain Grid tool's placement and the line it would place, the line placed in
+  // All Except Picked waiting for its segments, the grid line whose segments are being added or removed (and the tool to
+  // go back to), and a grid line placed by hand being dragged
+  let cgSig = new Map(), cgMode = "all", cgHover = null, cgPending = null, segLine = null, segHover = null, segReturn = "select", cgDrag = null;
+  const PART_BASE = 2 ** 51;
+  const partWall = (id) => (id >= PART_BASE && id < 2 * PART_BASE ? Math.floor((id - PART_BASE) / 2 ** 27) : null);
+  const faces = () => (data && data.curtains) || [];
+  const gridLine = (id) => { for (const f of faces()) { const l = f.lines.find((x) => x.id === id); if (l) return { f, l }; } return null; };
+  // along a curtain wall from its start at the view's `u` (null off its ends), and the view's `u` along it
+  function alongOf(f, u) {
+    for (let k = 1; k < f.stops.length; k++) {
+      const [d0, u0] = f.stops[k - 1], [d1, u1] = f.stops[k];
+      if (Math.abs(u1 - u0) > 1e-6 && (u - u0) * (u - u1) <= 0) return d0 + ((u - u0) / (u1 - u0)) * (d1 - d0);
+    }
+    return null;
+  }
+  function uAlong(f, d) {
+    for (let k = 1; k < f.stops.length; k++) {
+      const [d0, u0] = f.stops[k - 1], [d1, u1] = f.stops[k];
+      if (d <= d1 || k === f.stops.length - 1) return u0 + (d1 > d0 ? (d - d0) / (d1 - d0) : 0) * (u1 - u0);
+    }
+    return f.stops[0][1];
+  }
+  const near = (sx, sy, s, px) => segDist(sx, sy, toScreen(s.a[0], s.a[1]), toScreen(s.b[0], s.b[1])) <= px;
+  // the interior grid lines of curtain walls by the cursor, by wall
+  function curtainLinesAt(sx, sy) {
+    const out = new Map();
+    for (const f of faces()) for (const l of f.lines) {
+      if (l.edge || !l.segs.some((s) => s.on && near(sx, sy, s, 5))) continue;
+      if (!out.has(f.wall)) out.set(f.wall, []);
+      out.get(f.wall).push(l.id);
+    }
+    return out;
+  }
+  // the panels and mullions of curtain walls under the cursor, nearest first, by wall
+  function partsAt(sx, sy) {
+    const p = toWorld(sx, sy), out = new Map();
+    for (let i = data.items.length - 1; i >= 0; i--) {
+      const it = data.items[i];
+      if (it.part == null || !it.polys.some((poly) => inPoly(p, poly))) continue;
+      if (!out.has(it.id)) out.set(it.id, []);
+      if (!out.get(it.id).includes(it.part)) out.get(it.id).push(it.part);
+    }
+    return out;
+  }
+  // where the Curtain Grid tool would place a line on the curtain wall under the cursor: a vertical line when the cursor
+  // is nearer the top or bottom of its cell, a horizontal one when nearer a side; One Segment keeps to that cell
+  function curtainGridAt(sx, sy) {
+    const p = toWorld(sx, sy), wall = [...partsAt(sx, sy).keys()][0];
+    const f = faces().find((x) => x.wall === wall);
+    if (!f) return null;
+    const d = alongOf(f, p.u), h = p.z - f.z0;
+    if (d == null) return null;
+    const us = f.lines.filter((l) => l.vertical).map((l) => l.at), vs = f.lines.filter((l) => !l.vertical).map((l) => l.at);
+    const i = Math.max(0, us.findIndex((x, k) => k + 1 < us.length && d >= x && d <= us[k + 1]));
+    const j = Math.max(0, vs.findIndex((x, k) => k + 1 < vs.length && h >= x && h <= vs[k + 1]));
+    const toSide = Math.min(Math.abs(uAlong(f, us[i]) - p.u), Math.abs(uAlong(f, us[i + 1]) - p.u));
+    const toEnd = Math.min(Math.abs(h - vs[j]), Math.abs(h - vs[j + 1]));
+    const vertical = toEnd < toSide, one = cgMode === "one";
+    const at = Math.round((vertical ? d : h) / step()) * step();
+    const [e0, e1] = vertical ? (one ? [vs[j], vs[j + 1]] : [0, vs[vs.length - 1]]) : one ? [us[i], us[i + 1]] : [0, us[us.length - 1]];
+    const a = vertical ? [uAlong(f, at), f.z0 + e0] : [uAlong(f, e0), f.z0 + at], b = vertical ? [uAlong(f, at), f.z0 + e1] : [uAlong(f, e1), f.z0 + at];
+    return { wall: f.wall, vertical, at, a, b, only: one ? (vertical ? (vs[j] + vs[j + 1]) / 2 : (us[i] + us[i + 1]) / 2) : null };
+  }
+  // the segment of the line in Add/Remove Segments under the cursor
+  function segmentAt(sx, sy) {
+    const g = gridLine(segLine);
+    if (!g) return null;
+    let best = null;
+    g.l.segs.forEach((s, k) => { const d = segDist(sx, sy, toScreen(s.a[0], s.a[1]), toScreen(s.b[0], s.b[1])); if (d <= 8 && (!best || d < best.d)) best = { k, d }; });
+    return best ? best.k : null;
+  }
+  // Curtain grid lines show while the Curtain Grid tool is on and on a curtain wall that is selected or hovered or has a
+  // part selected: dashed, a segment taken out dotted, a selected or hovered line in the accent colour.
+  function drawCurtainGrids(accent, text, viewBg) {
+    const ids = [...sel, ...(hoverIds || [])];
+    const line = (a, b) => { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); };
+    for (const f of faces()) {
+      const show = tool === "curtaingrid" || tool === "cgsegments" || ids.some((i) => i === f.wall || partWall(i) === f.wall);
+      if (!show) continue;
+      for (const l of f.lines) {
+        if (l.edge) continue;
+        const on = sel.has(l.id) || (hoverIds || []).includes(l.id) || segLine === l.id;
+        l.segs.forEach((g, s) => {
+          ctx.save();
+          ctx.strokeStyle = on ? accent : mix(text, viewBg, 0.55);
+          ctx.lineWidth = on ? 1.6 : 1;
+          ctx.setLineDash(g.on ? [8, 4] : [2, 4]);
+          if (tool === "cgsegments" && segLine === l.id && segHover === s) { ctx.lineWidth = 3; ctx.setLineDash([]); }
+          if (!(cgDrag && cgDrag.moved && cgDrag.id === l.id)) line(toScreen(g.a[0], g.a[1]), toScreen(g.b[0], g.b[1]));
+          ctx.restore();
+        });
+      }
+    }
+    ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.6; ctx.setLineDash([8, 4]);
+    if (tool === "curtaingrid" && cgHover) line(toScreen(cgHover.a[0], cgHover.a[1]), toScreen(cgHover.b[0], cgHover.b[1]));
+    if (cgDrag && cgDrag.moved) {
+      const f = cgDrag.f, len = f.stops[f.stops.length - 1][0];
+      if (cgDrag.vertical) line(toScreen(uAlong(f, cgDrag.at), f.z0), toScreen(uAlong(f, cgDrag.at), f.z1));
+      else line(toScreen(uAlong(f, 0), f.z0 + cgDrag.at), toScreen(uAlong(f, len), f.z0 + cgDrag.at));
+    }
+    ctx.restore();
+  }
   const EDIT = ["move", "copy", "align", "array"];
   const isEdit = () => EDIT.includes(tool);
 
@@ -229,7 +332,10 @@ const Elev = (() => {
   // it), then a grid. Tab steps through them.
   function candIds(sx, sy) { return groupify(rawCandIds(sx, sy)); }
   function rawCandIds(sx, sy) {
-    const out = [...spotsAt(sx, sy), ...dimsAt(sx, sy), ...detailAt(sx, sy), ...itemsAt(sx, sy)], lid = levelAt(sx, sy), gid = gridAt(sx, sy);
+    // a curtain wall comes first; Tab reaches its grid lines, mullions and panels under the cursor next
+    const parts = groupEdit ? new Map() : partsAt(sx, sy), lines = groupEdit ? new Map() : curtainLinesAt(sx, sy);
+    const items = itemsAt(sx, sy).flatMap((id) => [id, ...(lines.get(id) || []), ...(parts.get(id) || [])]);
+    const out = [...spotsAt(sx, sy), ...dimsAt(sx, sy), ...detailAt(sx, sy), ...items], lid = levelAt(sx, sy), gid = gridAt(sx, sy);
     if (lid !== null) out.push(lid);
     if (gid !== null) out.push(gid);
     return out;
@@ -758,7 +864,7 @@ const Elev = (() => {
     const style = data.visual_style || "hidden_line", viewBg = css("--view-bg");
     const selD = expandIds(sel), hovD = expandIds(hoverIds || []);
     for (const it of data.items) {
-      const selected = selD.has(it.id), hovered = hovD.has(it.id);
+      const selected = selD.has(it.id) || selD.has(it.part), hovered = hovD.has(it.id) || hovD.has(it.part);
       if (it.cut) continue; // cuts are drawn after everything else, below
       // depth cueing: the model has worked out how far toward the background this item fades
       const f = it.fade == null ? 1 : it.fade, ink = f < 1 ? mix(text, viewBg, f) : text, fill = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`;
@@ -775,7 +881,7 @@ const Elev = (() => {
     }
     // What the plane cuts: every fill first, then every outline, so two elements that overlap (a wall and a slab that
     // clash) both show their outlines. Nothing is trimmed for the person; a clash stays a clash until they resolve it.
-    const cuts = data.items.filter((it) => it.cut), cutCol = (it) => (selD.has(it.id) ? accent : hovD.has(it.id) ? accent : text);
+    const cuts = data.items.filter((it) => it.cut), cutCol = (it) => (selD.has(it.id) || selD.has(it.part) ? accent : hovD.has(it.id) || hovD.has(it.part) ? accent : text);
     for (const it of [...cuts.filter((i) => i.category !== "Walls"), ...cuts.filter((i) => i.category === "Walls")]) drawCut(it, style, viewBg, cutCol(it), selD.has(it.id), "fill");
     for (const it of cuts) drawCut(it, style, viewBg, cutCol(it), selD.has(it.id), "line");
     // a jogged section unrolls its runs side by side: a light fold line marks each jog
@@ -785,6 +891,7 @@ const Elev = (() => {
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
     }
     if (groupEdit) drawGroupFade(text);
+    drawCurtainGrids(accent, text, viewBg);
     const hov = new Set(tool === "select" && hoverIds ? [...hovD] : []);
     Det.drawItems(selD, hov, accent, tool === "select", sel);
     drawGroupOrigins(accent);
@@ -959,6 +1066,9 @@ const Elev = (() => {
       const g = gripAt(e.offsetX, e.offsetY);
       if (g && g.kind === "bubble") { down = null; cb.toggleBubble(g.id, g.end, g.l.bubbles); return; }
       if (g && g.kind === "end") { drag = { id: g.id, kind: "end", end: g.end, u: g.end === 0 ? g.l.u0 : g.l.u1, moved: false, group: lockGroup(g.id, modelEnd(g.l, g.end)), align: null }; down = null; return; }
+      // pressing on a selected curtain grid line placed by hand and moving drags it along the wall
+      const sg = sel.size === 1 ? gridLine([...sel][0]) : null;
+      if (sg && !sg.l.typed && !sg.l.edge && sg.l.segs.some((s) => near(e.offsetX, e.offsetY, s, 5))) cgDrag = { id: sg.l.id, f: sg.f, vertical: sg.l.vertical, start: sg.l.at, at: sg.l.at, x: e.offsetX, y: e.offsetY, moved: false };
       const lid = levelAt(e.offsetX, e.offsetY);
       if (lid !== null && sel.has(lid) && !itemsAt(e.offsetX, e.offsetY).length) {
         const l = data.levels.find((x) => x.id === lid);
@@ -1024,6 +1134,17 @@ const Elev = (() => {
         drag.align = al;
         drag.u = al ? al.u : Math.round(p.u / 10) * 10;
       }
+      render();
+      return;
+    }
+    if (tool === "curtaingrid") { cgHover = curtainGridAt(e.offsetX, e.offsetY); cb.prompt(promptText()); render(); return; }
+    if (tool === "cgsegments") { segHover = segmentAt(e.offsetX, e.offsetY); render(); return; }
+    if (cgDrag) {
+      if (!cgDrag.moved && Math.hypot(e.offsetX - cgDrag.x, e.offsetY - cgDrag.y) < 4) return;
+      cgDrag.moved = true;
+      const v = cgDrag.vertical ? alongOf(cgDrag.f, p.u) : p.z - cgDrag.f.z0;
+      if (v != null) cgDrag.at = Math.round(v / step()) * step();
+      cb.cursor(`${Math.round(cgDrag.at)}`);
       render();
       return;
     }
@@ -1094,6 +1215,15 @@ const Elev = (() => {
       if (wasClick && tool !== "select") setTool("select");
       return;
     }
+    if (cgDrag) {
+      const g = cgDrag; cgDrag = null;
+      if (g.moved) {
+        down = null;
+        if (Math.abs(g.at - g.start) > 0.5) cb.curtainCall("patch_curtain_part", { id: g.id, patch: { at: g.at } });
+        render();
+        return;
+      }
+    }
     if (drag) {
       const d = drag; drag = null;
       const l = data.levels.find((x) => x.id === d.id);
@@ -1122,6 +1252,15 @@ const Elev = (() => {
       if (tool === "groupplace") { const p = Det.toolSnap(e.offsetX, e.offsetY); down = null; if (groupPlace) cb.placeGroup(groupPlace.typeId, { x: p.x, y: p.y }); return; }
       if (tool === "door" || tool === "window") { const w = toWorld(e.offsetX, e.offsetY); down = null; cb.place(tool, Math.round(w.u), Math.round(w.z)); return; }
       if (tool === "spot") { down = null; ESpots.click(e.offsetX, e.offsetY, e); cb.prompt(promptText()); return; }
+      if (tool === "curtaingrid") {
+        down = null;
+        const c = curtainGridAt(e.offsetX, e.offsetY);
+        if (!c) return;
+        if (cgMode === "except") cgPending = { wall: c.wall, vertical: c.vertical, at: c.at };
+        cb.curtainCall("add_curtain_line", { wall: c.wall, vertical: c.vertical, at: c.at, ...(c.only != null ? { only: c.only } : {}) });
+        return;
+      }
+      if (tool === "cgsegments") { down = null; const s = segmentAt(e.offsetX, e.offsetY); if (s != null) cb.curtainCall("toggle_curtain_segment", { id: segLine, s }); return; }
       if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
       else if (isEdit()) editClick(e);
       else if (tool === "level") {
@@ -1171,9 +1310,10 @@ const Elev = (() => {
     if (t !== "noteleader") Det.stopLeader();
     if (t !== "dimension") EDims.stop();
     if (t !== "spot") ESpots.stop();
-    tool = t; typed = ""; candTab = 0; hover = null; band = null;
+    tool = t; typed = ""; candTab = 0; hover = null; band = null; cgHover = null; segHover = null;
+    if (t !== "cgsegments") segLine = null;
     ed = isEdit() ? newEd() : null;
-    canvas.style.cursor = ["level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window", "groupplace"].includes(t) || isEdit() ? "crosshair" : "default";
+    canvas.style.cursor = ["curtaingrid", "cgsegments", "level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window", "groupplace"].includes(t) || isEdit() ? "crosshair" : "default";
     cb.prompt(promptText());
     if (typeof cb.tool === "function") cb.tool(t);
     render();
@@ -1187,6 +1327,13 @@ const Elev = (() => {
     if (tool === "groupplace") return groupPlace ? `Click to place ${groupPlace.name} by its origin. Esc to stop.` : "Pick a group to place.";
     if (tool === "level") return typed ? `Elevation ${typed}. Press Enter to place the level, Esc to clear.` : "Level: click at the height of the new level, or type its elevation and press Enter. Esc to finish.";
     if (tool === "grid") return "Grid: click where the grid line goes. It runs away from the view. Esc to finish.";
+    if (tool === "curtaingrid") {
+      const how = { all: "All Segments", one: "One Segment", except: "All Except Picked" }[cgMode];
+      return cgHover
+        ? `Curtain Grid (${how}): click to place a ${cgHover.vertical ? "vertical" : "horizontal"} grid line ${Math.round(cgHover.at)} mm ${cgHover.vertical ? "from the wall's start" : "above its base"}. Esc to finish.`
+        : `Curtain Grid (${how}): point at a curtain wall. Near the top or bottom of a panel the line runs vertical; near its side, horizontal. Esc to finish.`;
+    }
+    if (tool === "cgsegments") return "Add/Remove Segments: click a segment of the grid line to take it out or put it back. Esc to finish.";
     if (isEdit()) return editPrompt();
     return "Ready.";
   }
@@ -1340,13 +1487,33 @@ const Elev = (() => {
       data = d;
       const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || [])].map((x) => x.id)]);
       modelGroups.forEach((g) => ids.add(g.id));
+      for (const it of d.items) if (it.part != null) ids.add(it.part);
+      for (const f of d.curtains || []) for (const l of f.lines) ids.add(l.id);
       sel = new Set([...sel].filter((i) => ids.has(i)));
+      // a line added or taken away renumbers a curtain wall's grid, so its parts leave the selection
+      const sig = new Map((d.curtains || []).map((f) => [f.wall, f.lines.length]));
+      for (const [w, n] of cgSig) if (sig.has(w) && sig.get(w) !== n) sel = new Set([...sel].filter((i) => partWall(i) !== w));
+      cgSig = sig;
+      if (segLine != null && !ids.has(segLine)) setTool(segReturn);
       index();
       buildSnap();
       if (refit) fit();
+      if (cgPending) {
+        // All Except Picked: the line just placed waits for the segments to leave out
+        const pend = cgPending; cgPending = null;
+        const f = (d.curtains || []).find((x) => x.wall === pend.wall), l = f && f.lines.find((x) => x.vertical === pend.vertical && Math.abs(x.at - pend.at) < 1);
+        if (l) { segReturn = "curtaingrid"; setTool("cgsegments"); segLine = l.id; sel = new Set([l.id]); cb.select([...sel]); cb.prompt(promptText()); }
+      }
       render();
     },
     fit() { fit(); render(); },
+    // curtain walls: the Curtain Grid tool, its placement, and Add/Remove Segments on a grid line
+    startCurtainGrid() { setTool("curtaingrid"); },
+    get curtainMode() { return cgMode; },
+    setCurtainMode(m) { cgMode = m; cgHover = null; cb.prompt(promptText()); render(); },
+    startSegments(id) { segReturn = "select"; setTool("cgsegments"); segLine = id; sel = new Set([id]); cb.select([...sel]); cb.prompt(promptText()); render(); },
+    finishSegments() { const id = segLine, back = segReturn; setTool(back); if (back === "select" && id != null) { sel = new Set([id]); cb.select([...sel]); } render(); },
+    gridLineInfo(id) { const g = gridLine(id); return g ? { id, wall: g.f.wall, vertical: g.l.vertical, typed: g.l.typed, edge: g.l.edge } : null; },
     getCamera() { return { ...cam }; },
     setCameraState(c) { cam = { ...c }; render(); },
     setSelection(ids) { sel = new Set(ids); render(); },
@@ -1429,7 +1596,13 @@ const Elev = (() => {
           return true;
         }
       }
-      if ((tool === "grid" || tool === "door" || tool === "window") && e.key === "Escape") { setTool("select"); return true; }
+      if ((tool === "grid" || tool === "door" || tool === "window" || tool === "curtaingrid") && e.key === "Escape") { setTool("select"); return true; }
+      if (tool === "cgsegments" && (e.key === "Escape" || e.key === "Enter")) {
+        const id = segLine, back = segReturn;
+        setTool(back);
+        if (back === "select" && id != null) { sel = new Set([id]); cb.select([...sel]); render(); }
+        return true;
+      }
       if (e.key === "Escape" && tool === "select") { if (sel.size) { sel = new Set(); cb.select([]); render(); } return true; }
       return false;
     },

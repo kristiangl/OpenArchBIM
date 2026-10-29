@@ -151,6 +151,11 @@ async function renderProperties() {
     types = familyTypes(d.category); current = d.type_id;
     onType = async (id) => { await run("patch_instance", { id: d.id, patch: { type_id: id } }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "CurtainPanel") {
+    // a panel's types are the system panels; one pinned to the curtain wall type keeps the type's panel
+    types = d.types; current = d.type_id;
+    onType = d.pinned ? null : async (id) => { await run("set_curtain_panel", { id: d.id, kind: id }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Dimension") {
     types = app.info.dimension_types || []; current = d.type_id;
     onType = async (id) => { await run("patch_dimension", { id: d.id, patch: { dim_type: id } }); await refresh(); };
@@ -220,8 +225,8 @@ async function renderProperties() {
     for (const t of types) sel.add(new Option(t.label || `${t.name} (${t.thickness_mm} mm)`, t.id, false, t.id === current));
     sel.onchange = () => { if (sel.value !== "") onType(Number(sel.value)); };
     // a member of a group outside Edit Group takes its type from the group
-    sel.title = d && d.group_locked ? "Set by the group: edit the group to change it" : "";
-    if (d && d.group_locked) sel.disabled = true;
+    sel.title = d && d.group_locked ? "Set by the group: edit the group to change it" : d && d.kind === "CurtainPanel" && d.pinned ? "Pinned to the curtain wall type: unpin the panel to change it" : "";
+    if (d && (d.group_locked || !onType)) sel.disabled = true;
   } else {
     sel.disabled = true;
     sel.add(new Option(d && d.type_label ? d.type_label : title, ""));
@@ -234,7 +239,7 @@ async function renderProperties() {
   };
   // Edit Type is available for family types (doors and windows)
   const et = $("#edit-type");
-  et.hidden = !(types && types.length);
+  et.hidden = !(types && types.length) || (d && d.kind === "CurtainPanel");
   // OK on another type (or a duplicate) puts the selection, or the placing tool, on it
   et.onclick = () => openTypeProperties(Number(sel.value) || current, { onType });
   // families with stored geometry open in the family editor

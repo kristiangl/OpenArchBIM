@@ -22,6 +22,11 @@ const ICONS = {
   room: '<rect x="3" y="3" width="18" height="18" rx="1"/><path class="af" d="M12 8.5l3.5 3.5-3.5 3.5L8.5 12z"/>',
 
   // ---- build, model, room, datum, work plane ----
+  curtainGrid: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16" stroke-dasharray="2.5 2"/><path class="a2" d="M12 3v18"/>',
+  gridAll: '<rect x="4" y="3" width="16" height="18"/><path class="a2" d="M12 3v18"/>',
+  gridOne: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 3v9"/>',
+  gridExcept: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 12v9"/><path d="M12 3v9" stroke-dasharray="1.5 2"/>',
+  segments: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 12v9"/><path d="M12 3v9" stroke-dasharray="1.5 2"/><path class="a2" d="M15 6.5h4M17 4.5v4"/>',
   curtain: '<rect x="4" y="3" width="16" height="18"/><path d="M4 9h16M4 15h16M9.3 3v18M14.7 3v18"/><rect class="af" x="9.3" y="9" width="5.4" height="6"/>',
   railing: '<path class="a2" d="M3 7h18"/><path d="M5 7v13M12 7v13M19 7v13M3 20h18M5 13.5h14"/>',
   modelLine: '<path class="a2" d="M3 16l7-7 4 4 7-7"/><circle class="f" cx="3" cy="16" r="1.6"/><circle class="f" cx="21" cy="6" r="1.6"/>',
@@ -258,7 +263,7 @@ const ICONS = {
 // Ribbon ids, sketch tool ids and old two-letter monograms that use each icon
 const ICON_ALIAS = {
   // architecture
-  "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "det-group": "detailGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
+  "curtain-grid": "curtainGrid", "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "det-group": "detailGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
   "set-wp": "setWp", "show-wp": "showWp", "ref-plane": "refPlane",
   // structure
   "s-beam": "beam", "s-brace": "brace", "s-column": "sColumn", "s-truss": "truss", "s-isolated": "footing", "s-strip": "stripFooting", "s-slab": "slabEdge",
