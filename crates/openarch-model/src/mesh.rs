@@ -92,6 +92,14 @@ pub fn wall_mesh(doc: &Document, w: &Wall, outline: &[Point; 4], openings: &[Ope
     if w.curve.is_some() {
         return None; // curved walls are meshed layer by layer
     }
+    if let Some(shapes) = doc.wall_profile_shapes(w) {
+        // an edited profile, less its doors and windows, across the whole wall
+        let z0 = doc.wall_extent(w).0;
+        let holes: Vec<crate::layers::Ring> = openings.iter().map(|o| vec![Point::new(o.u0, o.z0 - z0), Point::new(o.u1, o.z0 - z0), Point::new(o.u1, o.z1 - z0), Point::new(o.u0, o.z1 - z0)]).collect();
+        let mut out = vec![];
+        profile_prism(&mut out, w, z0, outline, &crate::layers::subtract_shapes(&shapes, &holes));
+        return Some(out);
+    }
     let o = outline;
     let (z0, z1) = doc.wall_extent(w);
     if z1 <= z0 {
@@ -146,6 +154,20 @@ pub fn wall_layer_meshes(doc: &Document, id: u64, w: &Wall, wl: &WallLayers) -> 
     let (z0, z1) = doc.wall_extent(w);
     if z1 <= z0 || wl.layers.is_empty() {
         return vec![];
+    }
+    if let (Some(shapes), None) = (doc.wall_profile_solid(id, w), &w.curve) {
+        // an edited profile: the outline across each layer, its ends where the layer's ends are
+        let mut out = vec![];
+        for l in wl.layers.iter().filter(|l| !l.is_void) {
+            let mut verts = vec![];
+            for ring in l.shapes.iter().filter_map(|s| s.first()) {
+                profile_prism(&mut verts, w, z0, ring, &shapes);
+            }
+            if !verts.is_empty() {
+                out.push(LayerMesh { material: l.material.clone(), color: doc.material(&l.material).map_or([200, 200, 200], |m| m.graphics.shading_color), verts });
+            }
+        }
+        return out;
     }
     let mut zs = vec![z0, z1];
     for op in doc.wall_openings(id) {
@@ -332,6 +354,76 @@ pub fn floor_mesh(doc: &Document, f: &Floor) -> Option<Vec<f32>> {
         }
     }
     Some(out)
+}
+
+/// A straight wall's edited profile (`shapes`, along the wall and up from `z0`) extruded across the plan `ring` of the
+/// wall or one of its layers. The outline's points on the wall's ends go to where the ring ends on each face, so the
+/// ends follow the wall's joins.
+fn profile_prism(out: &mut Vec<f32>, w: &Wall, z0: f64, ring: &[Point], shapes: &[crate::layers::Shape]) {
+    let len = w.length();
+    if len < 1e-6 || ring.len() < 3 {
+        return;
+    }
+    let d = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+    let n = Point::new(-d.y, d.x);
+    let (along, across) = (|p: &Point| (p.x - w.start.x) * d.x + (p.y - w.start.y) * d.y, |p: &Point| (p.x - w.start.x) * n.x + (p.y - w.start.y) * n.y);
+    let cs: Vec<f64> = ring.iter().map(across).collect();
+    let (c0, c1) = (cs.iter().cloned().fold(f64::INFINITY, f64::min), cs.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+    if c1 - c0 < 1e-6 {
+        return;
+    }
+    // where the ring starts and ends along the wall on the line `c` across it
+    let ends = |c: f64| -> (f64, f64) {
+        let mut xs = vec![];
+        for i in 0..ring.len() {
+            let (p, q) = (ring[i], ring[(i + 1) % ring.len()]);
+            let (cp, cq) = (across(&p), across(&q));
+            if (cp - c) * (cq - c) <= 0.0 && (cp - cq).abs() > 1e-9 {
+                let t = (c - cp) / (cq - cp);
+                xs.push(along(&p) + (along(&q) - along(&p)) * t);
+            }
+        }
+        (xs.iter().cloned().fold(f64::INFINITY, f64::min), xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+    };
+    let eps = (c1 - c0) * 1e-3;
+    let sides = [(c0, ends(c0 + eps)), (c1, ends(c1 - eps))];
+    if sides.iter().any(|(_, (a, b))| !a.is_finite() || !b.is_finite()) {
+        return;
+    }
+    let at = |q: Point, side: usize| -> [f64; 3] {
+        let (c, (s, e)) = sides[side];
+        let x = if q.x <= 1.0 { s } else if q.x >= len - 1.0 { e } else { q.x };
+        [w.start.x + d.x * x + n.x * c, w.start.y + d.y * x + n.y * c, z0 + q.y]
+    };
+    let (front, back) = ([n.x, n.y, 0.0], [-n.x, -n.y, 0.0]);
+    for shape in shapes {
+        let Some(outer) = shape.first() else { continue };
+        let region = crate::geom::Region { outer: outer.clone(), holes: shape[1..].to_vec() };
+        if let Some((pts, tris)) = triangulate_region(&region) {
+            for t in tris {
+                tri_facing(out, at(pts[t[0]], 1), at(pts[t[1]], 1), at(pts[t[2]], 1), front);
+                tri_facing(out, at(pts[t[0]], 0), at(pts[t[1]], 0), at(pts[t[2]], 0), back);
+            }
+        }
+        // the edges round the outline and its holes, across the wall: each faces away from the solid
+        for (k, r) in shape.iter().enumerate() {
+            let mut r = r.clone();
+            if (signed_area(&r) > 0.0) != (k == 0) {
+                r.reverse();
+            }
+            for i in 0..r.len() {
+                let (p, q) = (r[i], r[(i + 1) % r.len()]);
+                let (ex, ey) = (q.x - p.x, q.y - p.y);
+                let l = ex.hypot(ey);
+                if l < 1e-9 {
+                    continue;
+                }
+                let nrm = [d.x * ey / l, d.y * ey / l, -ex / l];
+                tri_facing(out, at(p, 0), at(q, 0), at(q, 1), nrm);
+                tri_facing(out, at(p, 0), at(q, 1), at(p, 1), nrm);
+            }
+        }
+    }
 }
 
 /// A triangle wound so that its front face looks along `n`.

@@ -852,8 +852,40 @@ impl Document {
                     openings.push((cut.u0, cut.u1, f.z0, f.z1));
                 }
             }
+            // an edited profile: where the plane crosses the wall, what the outline reaches; where it runs along the
+            // wall, the outline over that stretch
+            let profile = if w.curve.is_none() { self.wall_profile_shapes(w) } else { None };
+            let wl = w.start.dist(&w.end).max(1e-9);
+            let along = |p: Point| ((p.x - w.start.x) * (w.end.x - w.start.x) + (p.y - w.start.y) * (w.end.y - w.start.y)) / wl;
             let push_cuts = |out: &mut Vec<ElevItem>, rings: &[&[Point]], material: Option<&str>, fill: [u8; 3], depth: f64| {
                 for cut in sl.cuts(rings, sl.plane + PLANE_EPS) {
+                    if let Some(shapes) = &profile {
+                        let (a0, a1) = (along(cut.p0), along(cut.p1));
+                        let item = |polys: Vec<Vec<[f64; 2]>>, holes: Vec<Vec<[f64; 2]>>| ElevItem { id, category: "Walls", depth, polys, fill, cut: true, material: material.map(str::to_string), holes, ..Default::default() };
+                        if (a1 - a0).abs() < 1.0 {
+                            for (h0, h1) in self.wall_profile_column(w, (a0 + a1) / 2.0).unwrap_or_default() {
+                                // the doors and windows the plane passes through, inside this piece
+                                let holes = openings
+                                    .iter()
+                                    .filter_map(|&(a, b, v0, v1)| {
+                                        let (u0, u1, v0, v1) = (a.max(cut.u0), b.min(cut.u1), v0.max(h0), v1.min(h1));
+                                        (u1 - u0 > 0.5 && v1 - v0 > 0.5).then(|| rect(u0, u1, v0, v1))
+                                    })
+                                    .collect();
+                                out.push(item(vec![rect(cut.u0, cut.u1, h0, h1)], holes));
+                            }
+                        } else {
+                            let to_u = |x: f64| cut.u0 + (x - a0) / (a1 - a0) * (cut.u1 - cut.u0);
+                            let view = |r: &Vec<Point>| r.iter().map(|p| [to_u(p.x), z0 + p.y]).collect::<Vec<[f64; 2]>>();
+                            for s in shapes {
+                                let rs: Vec<Vec<Point>> = s.iter().map(|r| crate::site::clip_x(r, a0.min(a1), a0.max(a1))).filter(|r| r.len() >= 3).collect();
+                                if let Some(outer) = rs.first() {
+                                    out.push(item(vec![view(outer)], rs[1..].iter().map(view).collect()));
+                                }
+                            }
+                        }
+                        continue;
+                    }
                     let holes: Vec<Vec<[f64; 2]>> = openings
                         .iter()
                         .filter_map(|&(a, b, h0, h1)| {

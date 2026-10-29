@@ -1690,6 +1690,19 @@ impl Session {
                     Err(e) => Ok(json!({ "ok": false, "error": { "message": e } })),
                 }
             }
+            // ---- Edit Profile: a wall's outline sketched in an elevation or section (openarch_model::wallprofile) ----
+            "wall_profile_sketch" => {
+                let (curves, base, top) = self.doc.wall_profile_sketch(id_of(p, "id")?, id_of(p, "view_id")?)?;
+                Ok(json!({ "curves": curves.iter().map(describe_curve).collect::<Vec<_>>(), "base": base, "top": top }))
+            }
+            "set_wall_profile" => {
+                self.doc.set_wall_profile(id_of(p, "id")?, id_of(p, "view_id")?, &curves_of(p, "curves")?)?;
+                Ok(json!({}))
+            }
+            "reset_wall_profile" => {
+                self.doc.reset_wall_profile(id_of(p, "id")?)?;
+                Ok(json!({}))
+            }
             "floor_sketch" => {
                 let id = id_of(p, "id")?;
                 let Some(Element::Floor(f)) = self.doc.get(id) else { return Err("not a floor".into()) };
@@ -1941,6 +1954,7 @@ impl Session {
             "annotation_categories": ANNOTATION_CATEGORIES,
             "levels": d.levels().iter().map(|(id, l)| json!({ "id": id, "name": l.name, "elevation_mm": l.elevation_mm, "elevation": d.level_display_elevation(l), "building_story": l.building_story })).collect::<Vec<_>>(),
             "site_ids": { "base": SITE_BASE_ID, "survey": SITE_SURVEY_ID },
+            "profiled_walls": d.iter().filter(|(_, e)| matches!(e, Element::Wall(w) if w.profile.is_some())).map(|(id, _)| id).collect::<Vec<_>>(),
             "wall_types": d.wall_types().iter().map(|(id, t)| json!({
                 "id": id, "name": t.name, "thickness_mm": t.thickness_mm(),
                 // reach left/right of each location line, for the plan preview
@@ -2133,7 +2147,8 @@ impl Session {
             match e {
                 Element::Wall(w) => {
                     let Some(poly) = polygons.get(&id) else { continue };
-                    let (z0, z1) = d.wall_extent(w);
+                    // a wall with an edited profile is where its outline reaches
+                    let (z0, z1) = d.wall_z_range(w);
                     let display = match range.classify(z0, z1) {
                         PlanDisplay::Hidden if in_underlay(w.base_level) => "underlay",
                         PlanDisplay::Hidden => continue,
@@ -2709,8 +2724,8 @@ impl Session {
                     f.insert("Level".to_string(), PValue::Text(d.level(w.base_level).map_or("?".into(), |l| l.name.clone())));
                     f.insert("Length".to_string(), PValue::Num((len * 100.0).round() / 100.0));
                     f.insert("Height".to_string(), PValue::Num((h * 100.0).round() / 100.0));
-                    // net of the doors and windows cut in the wall
-                    let net = len * h - d.wall_opening_area(id) / 1e6;
+                    // net of the doors and windows cut in the wall; an edited profile's own area
+                    let net = d.wall_profile_area(id, w).map_or(len * h - d.wall_opening_area(id) / 1e6, |a| a / 1e6);
                     f.insert("Area".to_string(), PValue::Num((net * 100.0).round() / 100.0));
                     walls.push(Row { id: id.to_string(), fields: f });
                 }

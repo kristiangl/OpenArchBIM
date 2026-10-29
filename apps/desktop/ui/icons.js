@@ -27,6 +27,8 @@ const ICONS = {
   gridOne: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 3v9"/>',
   gridExcept: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 12v9"/><path d="M12 3v9" stroke-dasharray="1.5 2"/>',
   segments: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 12v9"/><path d="M12 3v9" stroke-dasharray="1.5 2"/><path class="a2" d="M15 6.5h4M17 4.5v4"/>',
+  editProfile: '<path d="M3 21V10l9-7 9 7v11z"/><path class="a2" d="M8 21v-6h4v6"/><path class="a2" d="M14.5 13.5l4-4 2 2-4 4h-2z"/>',
+  resetProfile: '<path d="M3 21V8h18v13z"/><path class="a2" d="M7 5.5A6 6 0 0 1 17 5"/><path class="a2" d="M17 2v3h-3"/>',
   joinMullion: '<path d="M3 10.5h7.5M13.5 10.5h7.5M3 13.5h7.5M13.5 13.5h7.5"/><rect class="af" x="10.5" y="3" width="3" height="18"/>',
   breakMullion: '<rect x="3" y="10.5" width="18" height="3"/><path class="a2" d="M10.5 3v6M13.5 3v6M10.5 15v6M13.5 15v6"/>',
   curtain: '<rect x="4" y="3" width="16" height="18"/><path d="M4 9h16M4 15h16M9.3 3v18M14.7 3v18"/><rect class="af" x="9.3" y="9" width="5.4" height="6"/>',

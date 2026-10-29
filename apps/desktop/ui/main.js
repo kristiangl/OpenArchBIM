@@ -299,6 +299,12 @@ function currentContext() {
   const b = editBoundaryTarget();
   if (b) return { auto: true, key: `boundary:${b.label}:${app.selection[0]}`, title: b.label.replace(/^Edit /, ""), groups: [
     { label: "Mode", items: [{ label: b.label, icon: "editBoundary", onclick: b.run }] } ] };
+  const pt = profileTarget();
+  if (pt) return { auto: true, key: `profile:${pt.id}:${pt.profiled}`, title: "Walls", groups: [
+    { label: "Mode", items: [
+      { label: "Edit Profile", icon: "editProfile", big: true, onclick: () => startProfileSketch(pt.id) },
+      ...(pt.profiled ? [{ label: "Reset Profile", icon: "resetProfile", big: true, onclick: () => resetProfile(pt.id) }] : []),
+    ] } ] };
   const sec = selectedSection();
   if (sec && !sec.pinned) return { auto: true, key: `section:${sec.id}`, title: "Section", groups: [
     { label: "Section", items: [{ label: "Split Segment", ico: "Sl", onclick: () => runCommand("split-segment") }] } ] };
@@ -2485,6 +2491,7 @@ Sketch.callbacks.prompt = (t, isError) => setPrompt(t, !!isError);
 Sketch.callbacks.slope = () => openSlopeDialog();
 Sketch.callbacks.finish = async (o) => {
   if (o.kind === "region") return finishRegion(o);
+  if (o.kind === "profile") return finishProfile(o);
   const roof = o.kind === "roof";
   const r = roof
     ? (o.id ? await run("set_roof_sketch", { id: o.id, edges: o.edges }) : await run("add_roof_sketch", { type_id: app.roofTypeId, level_id: o.levelId, edges: o.edges }))
@@ -2570,6 +2577,58 @@ async function leaveDetailLines() {
   await refresh();
   renderProperties();
   setPrompt("Ready.");
+}
+
+// ---- Edit Profile: a selected straight wall's outline, sketched in an elevation or section square to it ----
+// The sketch starts from the wall as it is: its bottom on the base constraint, its top on the top constraint.
+function profileTarget() {
+  if (app.selection.length !== 1 || Sketch.active) return null;
+  const id = app.selection[0];
+  let wall = false;
+  if (app.view.kind === "plan" && Plan.tool === "select") wall = (Plan.selectionInfo().Walls || []).includes(id);
+  else if (app.view.kind === "elevation" && Elev.tool === "select" && Elev.data) {
+    wall = Elev.data.items.some((i) => i.id === id && i.category === "Walls" && i.part == null) && !(Elev.data.curtains || []).some((c) => c.wall === id);
+  }
+  return wall ? { id, profiled: (app.info.profiled_walls || []).includes(id) } : null;
+}
+async function startProfileSketch(id) {
+  if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
+  const tryView = async (vid) => { try { return await Backend.call("wall_profile_sketch", { id, view_id: vid }); } catch (e) { return { err: String(e.message || e) }; } };
+  // this view when it looks square at the wall, else the first elevation or section that does
+  let vid = app.view.kind === "elevation" ? app.view.viewId : null;
+  let r = vid != null ? await tryView(vid) : null;
+  if (!r || r.err) {
+    for (const v of app.info.views.filter((x) => x.view_kind === "elevation" || x.view_kind === "section")) {
+      const t = await tryView(v.id);
+      if (!t.err) { vid = v.id; r = t; break; }
+      if (!r) r = t;
+    }
+  }
+  if (!r || r.err) { setPrompt(r && r.err ? r.err.replace(/^Error: /, "") : "Edit Profile needs an elevation or section view that looks square at the wall.", true); return; }
+  if (app.view.kind !== "elevation" || app.view.viewId !== vid) await openView("elevation", vid);
+  app.selection = []; Plan.setSelection([]); Elev.setSelection([]);
+  Elev.startSketch({ kind: "profile", id, curves: r.curves, tool: "select", title: "Edit Profile" });
+  renderSketchUI();
+  renderProperties();
+  setPrompt("Edit Profile: change the wall's outline; loops inside it become openings. Finish when done.");
+}
+async function finishProfile(o) {
+  const r = await run("set_wall_profile", { id: o.id, view_id: Elev.viewId(), curves: o.curves });
+  if (!r) return false;
+  Elev.endSketch();
+  endSketchUI();
+  await refresh();
+  app.selection = [o.id]; Elev.setSelection([o.id]);
+  renderProperties();
+  updateRibbonContext();
+  setPrompt("Profile updated.");
+  return true;
+}
+async function resetProfile(id) {
+  if (!(await run("reset_wall_profile", { id }))) return;
+  await refresh();
+  updateRibbonContext();
+  setPrompt("Profile reset.");
 }
 
 async function startRegionSketch(masking, editId) {

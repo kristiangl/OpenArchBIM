@@ -379,7 +379,8 @@ impl Document {
         if self.get(wall).is_some_and(|e| matches!(e, Element::Wall(w) if w.curve.is_some())) {
             return vec![*outline];
         }
-        let blocked: Vec<(f64, f64)> = self.wall_openings(wall).into_iter().filter(|o| o.z0 < cut && cut < o.z1).map(|o| (o.u0, o.u1)).collect();
+        // doors and windows spanning the cut, and the gaps in an edited profile there
+        let blocked = self.wall_cut_gaps(wall, cut);
         if blocked.is_empty() {
             return vec![*outline];
         }

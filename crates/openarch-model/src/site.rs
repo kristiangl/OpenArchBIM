@@ -1355,6 +1355,11 @@ impl Document {
             let (a, b) = (path.pts[0], *path.pts.last().unwrap());
             let wl = (b.x - a.x).hypot(b.y - a.y).max(1e-9);
             let edge_on = ((b.x - a.x) * right.x + (b.y - a.y) * right.y).abs() / wl < 0.2;
+            // an edited profile, along the wall from its start and up from its base
+            let profile = if w.curve.is_none() { self.wall_profile_shapes(w) } else { None };
+            let dir = Point::new((b.x - a.x) / wl, (b.y - a.y) / wl);
+            let along = |p: Point| (p.x - a.x) * dir.x + (p.y - a.y) * dir.y;
+            let (ua, us_per) = (u_of(a), dir.x * right.x + dir.y * right.y);
             if let Some(wlay) = layer_geo.get(id) {
                 let stroke = !(edge_on && !(wlay.free[0] && wlay.free[1]));
                 for layer in wlay.layers.iter().filter(|l| !l.is_void && l.thickness > 0.0) {
@@ -1386,6 +1391,25 @@ impl Document {
                         let depth = if edge_on { dmin + 0.5 } else { dmin };
                         let near = host_near.entry(*id).or_insert(f64::INFINITY);
                         *near = near.min(dmin);
+                        if let Some(shapes) = &profile {
+                            // the outline over the stretch of wall this layer piece covers: face on its shape, end on
+                            // (or cut across) the heights it reaches there
+                            let als: Vec<f64> = ring.iter().map(|p| along(*p)).collect();
+                            let (a0, a1) = (als.iter().cloned().fold(f64::INFINITY, f64::min), als.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                            let clipped: Vec<Vec<Vec<Point>>> = shapes.iter().map(|s| s.iter().map(|r| clip_x(r, a0, a1)).filter(|r| r.len() >= 3).collect::<Vec<_>>()).filter(|s: &Vec<Vec<Point>>| !s.is_empty()).collect();
+                            if edge_on {
+                                let (lo, hi) = clipped.iter().flatten().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| (l.min(p.y), h.max(p.y)));
+                                if hi > lo {
+                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![rect(u0, u1, z0 + lo, z0 + hi)], lines: vec![], fill, stroke, ..Default::default() });
+                                }
+                            } else {
+                                let view = |r: &Vec<Point>| r.iter().map(|p| [ua + us_per * p.x, z0 + p.y]).collect::<Vec<[f64; 2]>>();
+                                for s in &clipped {
+                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![view(&s[0])], holes: s[1..].iter().map(view).collect(), lines: vec![], fill, stroke, ..Default::default() });
+                                }
+                            }
+                            continue;
+                        }
                         layer_items.push(LayerItem { id: *id, depth, u0, u1, z0, z1, fill, edge_on, stroke });
                     }
                 }
@@ -1743,6 +1767,29 @@ impl Document {
         }
         (items, wall_pieces, host_near)
     }
+}
+
+/// A ring cut to the stretch `x0..x1` (Sutherland-Hodgman against the two lines).
+pub(crate) fn clip_x(ring: &[Point], x0: f64, x1: f64) -> Vec<Point> {
+    let side = |r: &[Point], keep: &dyn Fn(Point) -> bool, at: f64| -> Vec<Point> {
+        let mut out = vec![];
+        for i in 0..r.len() {
+            let (p, q) = (r[i], r[(i + 1) % r.len()]);
+            let cross = |p: Point, q: Point| Point::new(at, p.y + (at - p.x) / (q.x - p.x) * (q.y - p.y));
+            match (keep(p), keep(q)) {
+                (true, true) => out.push(q),
+                (true, false) => out.push(cross(p, q)),
+                (false, true) => {
+                    out.push(cross(p, q));
+                    out.push(q);
+                }
+                (false, false) => {}
+            }
+        }
+        out
+    };
+    let r = side(ring, &|p| p.x >= x0, x0);
+    side(&r, &|p| p.x <= x1, x1)
 }
 
 #[cfg(test)]

@@ -49,6 +49,7 @@ pub mod systypes;
 pub mod tempdim;
 pub mod view;
 pub mod wallpath;
+pub mod wallprofile;
 
 pub use doc::{Document, JoinChange, Tx};
 pub use element::*;

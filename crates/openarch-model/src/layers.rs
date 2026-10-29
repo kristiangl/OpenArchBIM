@@ -680,9 +680,7 @@ impl Document {
         let Some(t) = self.wall_type_for(w) else {
             return wl.layers.clone();
         };
-        let blocked: Vec<(f64, f64)> = cut_z
-            .map(|z| self.wall_openings(wall).into_iter().filter(|o| o.z0 < z && z < o.z1).map(|o| (o.u0, o.u1)).collect())
-            .unwrap_or_default();
+        let blocked: Vec<(f64, f64)> = cut_z.map(|z| self.wall_cut_gaps(wall, z)).unwrap_or_default();
         plan_layers(w, &t, self.wall_extents(w), wl, &blocked)
     }
 }

@@ -451,8 +451,30 @@ impl Document {
             if crate::geom::signed_area(&outline) < 0.0 {
                 outline.reverse();
             }
-            let profile = w.profile(&outline, &[]);
-            let shape = w.swept(&[(profile, 0.0, z1 - z0)], &[axis]);
+            let shape = match self.wall_profile_shapes(wl).filter(|_| wl.curve.is_none()) {
+                // an edited profile: its outline (with its own openings) in the wall's face, swept across the wall from
+                // its left face to its right
+                Some(shapes) => {
+                    let (l, r) = self.wall_extents(wl);
+                    let o = w.add(format!("IFCCARTESIANPOINT((0.,{},0.))", real(l)));
+                    let (zdir, xdir) = (w.add("IFCDIRECTION((0.,-1.,0.))"), w.add("IFCDIRECTION((1.,0.,0.))"));
+                    let place = w.add(format!("IFCAXIS2PLACEMENT3D(#{o},#{zdir},#{xdir})"));
+                    let items: Vec<u64> = shapes
+                        .iter()
+                        .filter(|s| !s.is_empty())
+                        .map(|s| {
+                            let p = w.profile(&s[0], &s[1..]);
+                            w.add(format!("IFCEXTRUDEDAREASOLID(#{p},#{place},#{},{})", w.z, real(l + r)))
+                        })
+                        .collect();
+                    let rep = w.add(format!("IFCSHAPEREPRESENTATION(#{},'Body','SweptSolid',({}))", w.body, refs(&items)));
+                    w.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{rep},#{axis}))"))
+                }
+                None => {
+                    let profile = w.profile(&outline, &[]);
+                    w.swept(&[(profile, 0.0, z1 - z0)], &[axis])
+                }
+            };
             let ty = self.wall_type(wl.wall_type);
             let tname = ty.map_or(String::new(), |t| t.name.clone());
             let class = if wl.ifc.predefined_type.is_empty() { ".STANDARD.".to_string() } else { format!(".{}.", wl.ifc.predefined_type.to_uppercase()) };

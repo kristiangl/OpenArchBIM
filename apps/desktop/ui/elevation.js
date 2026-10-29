@@ -904,8 +904,10 @@ const Elev = (() => {
       const f = it.fade == null ? 1 : it.fade, ink = f < 1 ? mix(text, viewBg, f) : text, fill = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`;
       for (const poly of it.polys) {
         polyPath(poly);
-        if (style === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill(); }
-        else if (style !== "wireframe") { ctx.fillStyle = f < 1 ? mix(fill, viewBg, f) : fill; ctx.fill(); }
+        // holes (the openings in a wall's edited profile) go through the fill and are outlined with it
+        for (const h of it.holes || []) { h.forEach(([u, z], i) => { const s = toScreen(u, z); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
+        if (style === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill("evenodd"); }
+        else if (style !== "wireframe") { ctx.fillStyle = f < 1 ? mix(fill, viewBg, f) : fill; ctx.fill("evenodd"); }
         ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : 1; if (it.stroke !== false || selected) ctx.stroke();
       }
       for (const [p, q] of it.lines) {

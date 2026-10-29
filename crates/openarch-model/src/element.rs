@@ -498,6 +498,9 @@ pub struct Wall {
     /// A curtain wall's own grid lines, beside those its type lays out.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curtain_lines: Option<crate::curtain::CurtainLines>,
+    /// An outline sketched with Edit Profile, in place of the wall's rectangle.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub profile: Option<crate::wallprofile::WallProfile>,
 }
 
 impl Wall {
@@ -530,6 +533,7 @@ impl Wall {
             flipped: false,
             pinned: false,
             curtain_lines: None,
+            profile: None,
         }
     }
 }
