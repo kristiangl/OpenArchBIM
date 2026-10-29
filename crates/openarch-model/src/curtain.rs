@@ -222,6 +222,19 @@ impl MullionSpec {
         }
     }
 
+    /// Its type's name: its shape and sizes.
+    pub fn name(&self) -> String {
+        let r = |x: f64| (x * 10.0).round() / 10.0;
+        match self.shape {
+            MullionShape::Rectangular { width1_mm, width2_mm, thickness_mm } => format!("Rectangular Mullion: {} x {}", r(width1_mm + width2_mm), r(thickness_mm)),
+            MullionShape::Circular { radius_mm } => format!("Circular Mullion: {} mm radius", r(radius_mm)),
+            MullionShape::LCorner { leg1_mm, leg2_mm, thickness_mm } => format!("L Corner Mullion: {} x {} x {}", r(leg1_mm), r(leg2_mm), r(thickness_mm)),
+            MullionShape::VCorner { leg_mm, thickness_mm } => format!("V Corner Mullion: {} x {}", r(leg_mm), r(thickness_mm)),
+            MullionShape::QuadCorner { depth1_mm, depth2_mm } => format!("Quad Corner Mullion: {} x {}", r(depth1_mm), r(depth2_mm)),
+            MullionShape::TrapezoidCorner { centre_width_mm, depth_mm } => format!("Trapezoid Corner Mullion: {} x {}", r(centre_width_mm), r(depth_mm)),
+        }
+    }
+
     pub fn is_corner(&self) -> bool {
         !matches!(self.shape, MullionShape::Rectangular { .. } | MullionShape::Circular { .. })
     }
@@ -621,6 +634,29 @@ impl CurtainSpec {
     }
 }
 
+/// A row of the curtain panel schedule: its size (inside the mullions round it, mm), material and U-value (W/m²K).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurtainPanelRow {
+    pub wall: Id,
+    pub part: Id,
+    pub family: String,
+    pub name: String,
+    pub width: f64,
+    pub height: f64,
+    pub material: String,
+    pub u_value: Option<f64>,
+}
+
+/// A row of the mullion schedule: a run of mullion, its type and length (mm).
+#[derive(Debug, Clone, PartialEq)]
+pub struct CurtainMullionRow {
+    pub wall: Id,
+    pub part: Id,
+    pub name: String,
+    pub length: f64,
+    pub material: String,
+}
+
 /// What a solid of a curtain wall is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -943,6 +979,70 @@ impl Document {
             Some(p) => (false, p.panel.clone().unwrap_or(spec)),
             None => (true, spec),
         }
+    }
+
+    /// What panel `n` of a curtain wall is, for its type selector and schedules: the type's id (0 to 2 for the system
+    /// panels, else a basic wall type or a door type), its family and its name.
+    pub fn curtain_panel_type(&self, wall: Id, w: &Wall, lay: &CurtainLayout, n: usize) -> (Id, String, String) {
+        let door = self.curtain_panel_door(wall, lay, n).and_then(|id| match self.get(id) {
+            Some(Element::FamilyInstance(i)) => self.instance_family(i).map(|(f, t)| (i.type_id, f.name.clone(), t.name.clone())),
+            _ => None,
+        });
+        if let Some(d) = door {
+            return d;
+        }
+        let (_, panel) = self.curtain_panel_state(w, lay, n);
+        match (panel.kind, panel.wall_type.and_then(|t| self.wall_type(t).map(|wt| (t, wt.name.clone())))) {
+            (PanelKind::Wall, Some((t, name))) => (t, "Basic Wall".into(), name),
+            (PanelKind::Solid, _) => (1, "System Panel".into(), "Solid".into()),
+            (PanelKind::Empty, _) | (PanelKind::Wall, None) => (2, "Empty System Panel".into(), "Empty".into()),
+            (PanelKind::Glazed, _) => (0, "System Panel".into(), "Glazed".into()),
+        }
+    }
+
+    /// Every curtain panel and mullion in the project, for the schedules. Panels holding a door are left to the door
+    /// schedule. A panel's U-value is worked out from its materials' conductivity plus the standard surface
+    /// resistances of a wall (0.17 m²K/W); none when a material has no conductivity.
+    pub fn curtain_schedule(&self) -> (Vec<CurtainPanelRow>, Vec<CurtainMullionRow>) {
+        let (mut panels, mut mullions) = (vec![], vec![]);
+        for (id, e) in self.iter() {
+            let Element::Wall(w) = e else { continue };
+            let (Some(spec), Some(lay)) = (self.curtain_of(w), self.curtain_layout(w)) else { continue };
+            for (n, cells) in lay.panels.iter().enumerate() {
+                if self.curtain_panel_door(id, &lay, n).is_some() {
+                    continue;
+                }
+                let Some((l, r, lo, hi)) = lay.panel_rect(n) else { continue };
+                let (_, family, name) = self.curtain_panel_type(id, w, &lay, n);
+                let (_, panel) = self.curtain_panel_state(w, &lay, n);
+                let layers: Vec<(String, f64)> = match panel.kind {
+                    PanelKind::Empty => vec![],
+                    PanelKind::Wall => panel.wall_type.and_then(|t| self.wall_type(t)).map_or(vec![], |t| t.layers.iter().filter(|l| !l.is_void).map(|l| (l.material.clone(), l.thickness_mm)).collect()),
+                    _ => vec![(panel.material.clone(), panel.thickness_mm)],
+                };
+                let resistance: Option<f64> = layers.iter().map(|(m, t)| self.material(m).and_then(|m| m.physical.conductivity_w_mk).filter(|k| *k > 0.0).map(|k| t / 1000.0 / k)).sum();
+                let (i, j) = cells[0];
+                panels.push(CurtainPanelRow {
+                    wall: id,
+                    part: part_id(id, CurtainRef::Panel { i, j }),
+                    family,
+                    name,
+                    width: r - l,
+                    height: hi - lo,
+                    material: layers.first().map_or(String::new(), |l| l.0.clone()),
+                    u_value: resistance.filter(|_| !layers.is_empty()).map(|r| 1.0 / (r + 0.17)),
+                });
+            }
+            for run in &lay.runs {
+                let Some(m) = lay.mullion(spec, run.vertical, run.k) else { continue };
+                let corner = if run.vertical && run.k == 0 { lay.corners[0].as_ref() } else if run.vertical && run.k + 1 == lay.us.len() { lay.corners[1].as_ref() } else { None };
+                if run.hi - run.lo < 1.0 || corner.is_some_and(|c| !c.draws) {
+                    continue;
+                }
+                mullions.push(CurtainMullionRow { wall: id, part: part_id(id, CurtainRef::Mullion { vertical: run.vertical, k: run.k, s: run.s0 }), name: m.name(), length: run.hi - run.lo, material: m.material.clone() });
+            }
+        }
+        (panels, mullions)
     }
 
     /// The doors standing in a curtain wall's cells: each door, the point along and up the wall it holds, and its
@@ -1737,5 +1837,27 @@ mod tests {
         assert!(l2.corners[0].as_ref().is_some_and(|c| !c.draws && c.other == w));
         assert_eq!(l2.uspan[0], (0.0, 75.0));
         assert!(d.curtain_solids(w2).iter().all(|s| s.at != CurtainRef::Mullion { vertical: true, k: 0, s: 0 }));
+    }
+
+    #[test]
+    fn curtain_panels_and_mullions_are_scheduled() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 3000.0).unwrap();
+        let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single-Flush" && t.name == "820 x 2040").unwrap().0;
+        d.set_curtain_panel_pinned(w, 1, 0, false).unwrap();
+        d.set_curtain_panel(w, 1, 0, PanelChoice::Door(door)).unwrap();
+        let (panels, mullions) = d.curtain_schedule();
+        // six cells, one holding a door, which the door schedule lists
+        assert_eq!(panels.len(), 5);
+        let first = panels.iter().find(|p| p.part == part_id(w, CurtainRef::Panel { i: 0, j: 0 })).unwrap();
+        assert_eq!((first.name.as_str(), first.width, first.height, first.material.as_str()), ("Glazed", 1125.0, 2025.0, "Glass"));
+        // 25 mm of glass at 1 W/mK, with the surface resistances
+        assert!((first.u_value.unwrap() - 1.0 / (0.025 + 0.17)).abs() < 1e-9);
+        let Some(Element::Wall(x)) = d.get(w) else { panic!() };
+        assert_eq!(mullions.len(), d.curtain_layout(x).unwrap().runs.len());
+        // the border verticals run the full height; the total run is the sum of the runs
+        assert!(mullions.iter().any(|m| m.name == "Rectangular Mullion: 50 x 150" && m.length == 3000.0));
     }
 }

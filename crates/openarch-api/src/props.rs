@@ -1314,7 +1314,7 @@ pub fn group_props(d: &Document, id: Id, g: &openarch_model::group::GroupInstanc
 /// Properties of a part of a curtain wall: a grid line, a panel or a mullion. Panels list the system panels as their
 /// types; a pinned panel keeps the type's until it is unpinned.
 pub fn curtain_part_props(d: &Document, id: Id) -> Res {
-    use openarch_model::curtain::{part_of, CurtainRef, MullionShape, PanelKind};
+    use openarch_model::curtain::{part_of, CurtainRef, PanelKind};
     let (wall, r) = part_of(id).ok_or("not a part of a curtain wall")?;
     let Some(Element::Wall(w)) = d.get(wall) else { return Err("its curtain wall is gone".into()) };
     let spec = d.curtain_of(w).ok_or("not a curtain wall")?;
@@ -1348,21 +1348,10 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
             let n = *lay.cell_panel.get(i).and_then(|c| c.get(j)).ok_or("the panel is gone")?;
             let cells = &lay.panels[n];
             let (pinned, panel) = d.curtain_panel_state(w, &lay, n);
-            let door = d.curtain_panel_door(wall, &lay, n).and_then(|id| match d.get(id) {
-                Some(Element::FamilyInstance(i)) => d.instance_family(i).map(|(f, t)| (i.type_id, f.name.clone(), t.name.clone())),
-                _ => None,
-            });
             let (i0, i1) = (cells.iter().map(|c| c.0).min().unwrap_or(0), cells.iter().map(|c| c.0).max().unwrap_or(0));
             let (j0, j1) = (cells.iter().map(|c| c.1).min().unwrap_or(0), cells.iter().map(|c| c.1).max().unwrap_or(0));
             let (width, height) = (lay.us[i1 + 1] - lay.us[i0], lay.vs[j1 + 1] - lay.vs[j0]);
-            let wall_type = panel.wall_type.and_then(|t| d.wall_type(t).map(|wt| (t, wt.name.clone())));
-            let (kind_id, family, name): (Id, String, String) = match (door, panel.kind, wall_type) {
-                (Some((t, f, n)), _, _) => (t, f, n),
-                (None, PanelKind::Wall, Some((t, n))) => (t, "Basic Wall".into(), n),
-                (None, PanelKind::Solid, _) => (1, "System Panel".into(), "Solid".into()),
-                (None, PanelKind::Empty, _) | (None, PanelKind::Wall, None) => (2, "Empty System Panel".into(), "Empty".into()),
-                (None, PanelKind::Glazed, _) => (0, "System Panel".into(), "Glazed".into()),
-            };
+            let (kind_id, family, name) = d.curtain_panel_type(wall, w, &lay, n);
             Ok(json!({
                 "id": id, "kind": "CurtainPanel", "wall": wall, "type_id": kind_id, "pinned": pinned,
                 "types": curtain_panel_types(d),
@@ -1385,14 +1374,7 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
             let run = lay.run_of(vertical, k, s).ok_or("the mullion is gone")?;
             let last = lay.lines(vertical).len() - 1;
             let m = lay.mullion(spec, vertical, k).cloned().ok_or("the mullion is gone")?;
-            let title = match m.shape {
-                MullionShape::Rectangular { width1_mm, width2_mm, thickness_mm } => format!("Rectangular Mullion: {} x {}", round(width1_mm + width2_mm), round(thickness_mm)),
-                MullionShape::Circular { radius_mm } => format!("Circular Mullion: {} mm radius", round(radius_mm)),
-                MullionShape::LCorner { leg1_mm, leg2_mm, thickness_mm } => format!("L Corner Mullion: {} x {} x {}", round(leg1_mm), round(leg2_mm), round(thickness_mm)),
-                MullionShape::VCorner { leg_mm, thickness_mm } => format!("V Corner Mullion: {} x {}", round(leg_mm), round(thickness_mm)),
-                MullionShape::QuadCorner { depth1_mm, depth2_mm } => format!("Quad Corner Mullion: {} x {}", round(depth1_mm), round(depth2_mm)),
-                MullionShape::TrapezoidCorner { centre_width_mm, depth_mm } => format!("Trapezoid Corner Mullion: {} x {}", round(centre_width_mm), round(depth_mm)),
-            };
+            let title = m.name();
             Ok(json!({
                 "id": id, "kind": "Mullion", "wall": wall, "pinned": run.pinned,
                 "title": title, "type_label": title, "target": target,

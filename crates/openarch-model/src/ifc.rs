@@ -2,8 +2,10 @@
 //! tools read. Levels that are building storeys become IfcBuildingStorey; walls are their joined plan outline swept
 //! up (a curved wall, its faceted outline), with an IfcOpeningElement for each door or window that voids the wall
 //! and the door or window filling it; flat floors are their outline less holes swept down from the top, sloped
-//! floors, roofs, doors, windows and components closed triangle sets of what the 3D view draws. Layered wall and
-//! floor types go out as material layer sets, materials with their shading colour. Groups become IfcGroup.
+//! floors, roofs, doors, windows and components closed triangle sets of what the 3D view draws. A curtain wall is an
+//! IfcCurtainWall aggregating its panels (IfcPlate), mullions (IfcMember) and the doors in its cells; embedded, it
+//! fills the opening it cuts in its host. Layered wall and floor types go out as material layer sets, materials with
+//! their shading colour. Groups become IfcGroup.
 //!
 //! Ported from BIMCraft (https://github.com/IPedrax/BIMCraft, crates/core/src/ifc.rs at commit c269c8c),
 //! Copyright (c) 2026 IPedrax and the BIMCraft contributors, MIT OR Apache-2.0: the STEP writer (string escaping,
@@ -35,6 +37,8 @@ const PSET: u64 = 12;
 const PSET_DEFINES: u64 = 13;
 const GROUP: u64 = 14;
 const GROUP_MEMBERS: u64 = 15;
+const CURTAIN_PART: u64 = 16;
+const CURTAIN_PARTS: u64 = 17;
 
 /// A STEP string: quotes doubled, backslashes escaped, anything outside printable ASCII as \X2\ or \X4\.
 fn s(text: &str) -> String {
@@ -364,6 +368,9 @@ impl Document {
         let mut wall_uses: BTreeMap<(Id, String, bool), Vec<u64>> = BTreeMap::new(); // (type, offset, flipped): walls
         let mut floor_uses: BTreeMap<(Id, String), Vec<u64>> = BTreeMap::new();
         let skip = |ifc: &IfcParams| ifc.export == IfcExport::No;
+        // curtain walls: each its IfcCurtainWall and the plates, members and doors it aggregates
+        let mut curtains: BTreeMap<Id, (u64, Vec<u64>)> = BTreeMap::new();
+        let mut part_materials: BTreeMap<String, Vec<u64>> = BTreeMap::new();
 
         // walls: swept from their joined outline, with an opening element for each door or window in them
         let outlines = self.wall_outlines();
@@ -376,6 +383,51 @@ impl Document {
             let lv = storey_of(wl.base_level);
             let (_, storey_at, sz) = storeys[&lv];
             let (z0, z1) = self.wall_extent(wl);
+            if self.curtain_of(wl).is_some() {
+                // its line as the axis; the panels and mullions carry the body, each a plan footprint swept up
+                let at = w.place(Some(storey_at), (0.0, 0.0, z0 - sz), None);
+                let pts: Vec<u64> = wl.path().pts.iter().map(|p| w.point(*p)).collect();
+                let line = w.add(format!("IFCPOLYLINE(({}))", refs(&pts)));
+                let axis = w.add(format!("IFCSHAPEREPRESENTATION(#{},'Axis','Curve2D',(#{line}))", w.axis));
+                let shape = w.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{axis}))"));
+                let tname = self.wall_type(wl.wall_type).map_or(String::new(), |t| t.name.clone());
+                let desc = if wl.comments.is_empty() { "$".into() } else { s(&wl.comments) };
+                let tag = if wl.mark.is_empty() { "$".into() } else { s(&wl.mark) };
+                let ent = w.add(format!("IFCCURTAINWALL({},$,{},{desc},{},#{at},#{shape},{tag},.NOTDEFINED.)", own_guid(id, &wl.ifc), s(&tname), s(&tname)));
+                contained.entry(lv).or_default().push(ent);
+                products.insert(id, ent);
+                let ext = self.wall_type(wl.wall_type).is_some_and(|t| t.function == WallFunction::Exterior);
+                let p1 = w.boolean("IsExternal", ext);
+                w.pset(ent, id, "Pset_CurtainWallCommon", &[p1]);
+                let mut by_part: BTreeMap<Id, Vec<crate::curtain::CurtainSolid>> = BTreeMap::new();
+                for sol in self.curtain_solids(id) {
+                    by_part.entry(crate::curtain::part_id(id, sol.at)).or_default().push(sol);
+                }
+                let part_at = w.place(Some(at), (0.0, 0.0, 0.0), None);
+                let mut parts = vec![];
+                for (pid, solids) in by_part {
+                    let swept: Vec<(u64, f64, f64)> = solids
+                        .iter()
+                        .map(|sol| {
+                            let mut ring = sol.ring.clone();
+                            if crate::geom::signed_area(&ring) < 0.0 {
+                                ring.reverse();
+                            }
+                            (w.profile(&ring, &[]), sol.z0 - z0, sol.z1 - sol.z0)
+                        })
+                        .collect();
+                    let body = w.swept(&swept, &[]);
+                    let guid = s(&derived(CURTAIN_PART, pid));
+                    let part = match solids[0].part {
+                        crate::curtain::CurtainPart::Panel => w.add(format!("IFCPLATE({guid},$,'Curtain Panel',$,{},#{part_at},#{body},$,.CURTAIN_PANEL.)", s(&solids[0].material))),
+                        crate::curtain::CurtainPart::Mullion { .. } => w.add(format!("IFCMEMBER({guid},$,'Mullion',$,{},#{part_at},#{body},$,.MULLION.)", s(&solids[0].material))),
+                    };
+                    part_materials.entry(solids[0].material.clone()).or_default().push(part);
+                    parts.push(part);
+                }
+                curtains.insert(id, (ent, parts));
+                continue;
+            }
             let ring: Vec<Point> = match outlines.get(&id) {
                 Some(o) => o.to_vec(),
                 None => match polygons.get(&id) {
@@ -527,8 +579,26 @@ impl Document {
             if let Some((opening, ..)) = openings.get(&id) {
                 w.add(format!("IFCRELFILLSELEMENT({},$,$,$,#{opening},#{ent})", s(&derived(FILLS, id))));
             }
-            contained.entry(lv).or_default().push(ent);
+            // a door in a curtain wall's cell is one of its parts
+            match i.host.filter(|h| h.v_mm.is_some()).and_then(|h| curtains.get_mut(&h.wall)) {
+                Some((_, parts)) => parts.push(ent),
+                None => contained.entry(lv).or_default().push(ent),
+            }
             products.insert(id, ent);
+        }
+
+        for (id, (ent, parts)) in &curtains {
+            if !parts.is_empty() {
+                w.add(format!("IFCRELAGGREGATES({},$,$,$,#{ent},({}))", s(&derived(CURTAIN_PARTS, *id)), refs(parts)));
+            }
+            // an embedded curtain wall fills the opening it cuts in its host
+            if let Some((opening, ..)) = openings.get(id) {
+                w.add(format!("IFCRELFILLSELEMENT({},$,$,$,#{opening},#{ent})", s(&derived(FILLS, *id))));
+            }
+        }
+        for (k, (name, ents)) in part_materials.into_iter().enumerate() {
+            let m = w.material(self, &name);
+            w.add(format!("IFCRELASSOCIATESMATERIAL({},$,$,$,({}),#{m})", s(&derived(MATERIALS, 2_000_000 + k as u64)), refs(&ents)));
         }
 
         // layered types: a layer set per type, used by its walls from their left face (the exterior unless flipped)
@@ -636,6 +706,7 @@ mod tests {
             ("IFCRELFILLSELEMENT", 6), ("IFCMATERIAL", 3), ("IFCSTYLEDREPRESENTATION", 4), ("IFCMATERIALDEFINITIONREPRESENTATION", 4),
             ("IFCMATERIALLAYER", 7), ("IFCMATERIALLAYERSET", 3), ("IFCMATERIALLAYERSETUSAGE", 5), ("IFCRELASSOCIATESMATERIAL", 6),
             ("IFCGROUP", 5), ("IFCRELASSIGNSTOGROUP", 7), ("IFCRELCONTAINEDINSPATIALSTRUCTURE", 6),
+            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9),
         ]
         .into_iter()
         .collect();
@@ -694,6 +765,41 @@ mod tests {
         assert!(valid_guid(&g) && g == derived(ELEMENT, 42) && g != derived(ELEMENT, 43));
         assert!(valid_guid(&new_ifc_guid()));
         assert_eq!(utc(0), "1970-01-01T00:00:00");
+    }
+
+    #[test]
+    fn a_curtain_wall_exports_with_its_panels_mullions_and_door_and_comes_back() {
+        use crate::curtain::{PanelChoice, PanelKind};
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let brick = d.wall_types().iter().find(|(_, t)| t.name == "Double Brick Cavity").unwrap().0;
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        d.add_wall(brick, lvl, Point::new(-1000.0, 0.0), Point::new(5000.0, 0.0), 3000.0).unwrap();
+        // a storefront standing in the brick wall, a door in one cell and the panel above it solid
+        let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 2700.0).unwrap();
+        let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single-Flush" && t.name == "820 x 2040").unwrap().0;
+        d.set_curtain_panel_pinned(w, 1, 0, false).unwrap();
+        d.set_curtain_panel(w, 1, 0, PanelChoice::Door(door)).unwrap();
+        d.set_curtain_panel_pinned(w, 1, 1, false).unwrap();
+        d.set_curtain_panel(w, 1, 1, PanelChoice::System(PanelKind::Solid)).unwrap();
+        let f = d.export_ifc("Test");
+        check_references(&f);
+        check_attribute_counts(&f);
+        assert_eq!((count(&f, "IFCCURTAINWALL"), count(&f, "IFCWALL")), (1, 1));
+        assert_eq!(count(&f, "IFCPLATE"), 5, "six cells, one a door");
+        assert_eq!(count(&f, "IFCMEMBER"), d.curtain_layout(match d.get(w) { Some(Element::Wall(x)) => x, _ => unreachable!() }).unwrap().runs.len());
+        assert_eq!(count(&f, "IFCDOOR"), 1);
+        // the curtain wall holds its parts and the door; it fills the opening it cuts in the brick wall
+        let aggregates = f.lines().find(|l| l.contains("IFCRELAGGREGATES") && l.contains(&format!("#{}", f.lines().find(|l| l.contains("=IFCCURTAINWALL(")).unwrap().split('=').next().unwrap().trim_start_matches('#')))).unwrap();
+        let door_ref = f.lines().find(|l| l.contains("=IFCDOOR(")).unwrap().split('=').next().unwrap();
+        assert!(aggregates.contains(&format!("{door_ref},")) || aggregates.contains(&format!("{door_ref})")), "{aggregates}");
+        assert_eq!((count(&f, "IFCOPENINGELEMENT"), count(&f, "IFCRELFILLSELEMENT")), (1, 1));
+        // read back, it is a curtain wall again with the same grid
+        let (back, _) = Document::from_ifc(f.as_bytes()).unwrap();
+        let cw: Vec<&Wall> = back.iter().filter_map(|(_, e)| if let Element::Wall(x) = e { back.curtain_of(x).map(|_| x) } else { None }).collect();
+        assert_eq!(cw.len(), 1);
+        let lay = back.curtain_layout(cw[0]).unwrap();
+        assert_eq!((lay.us.len(), lay.vs.len()), (4, 3), "{:?} {:?}", lay.us, lay.vs);
     }
 
     #[test]

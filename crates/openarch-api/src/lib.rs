@@ -2791,9 +2791,39 @@ impl Session {
                 "count": count,
             })
         };
+        // curtain panels and mullions: one row each, the curtain wall by its mark (or id); mullions totalled by type
+        let (panels, mullions) = d.curtain_schedule();
+        let wall_name = |id: Id| match d.get(id) {
+            Some(Element::Wall(w)) if !w.mark.is_empty() => w.mark.clone(),
+            _ => id.to_string(),
+        };
+        let mut runs: std::collections::BTreeMap<String, (usize, f64)> = Default::default();
+        for m in &mullions {
+            let r = runs.entry(m.name.clone()).or_default();
+            r.0 += 1;
+            r.1 += m.length;
+        }
+        let curtain_panels = json!({
+            "name": "Curtain Panels",
+            "columns": ["Curtain Wall", "Type", "Width", "Height", "Area", "Material", "U-Value"],
+            "rows": panels.iter().map(|p| vec![
+                wall_name(p.wall), format!("{}: {}", p.family, p.name), format!("{:.0}", p.width), format!("{:.0}", p.height),
+                format!("{:.2}", p.width * p.height / 1e6), p.material.clone(), p.u_value.map_or(String::new(), |u| format!("{u:.2}")),
+            ]).collect::<Vec<_>>(),
+            "count": panels.len(),
+            "area": format!("{:.2}", panels.iter().map(|p| p.width * p.height).sum::<f64>() / 1e6),
+        });
+        let curtain_mullions = json!({
+            "name": "Curtain Wall Mullions",
+            "columns": ["Curtain Wall", "Type", "Length", "Material"],
+            "rows": mullions.iter().map(|m| vec![wall_name(m.wall), m.name.clone(), format!("{:.0}", m.length), m.material.clone()]).collect::<Vec<_>>(),
+            "count": mullions.len(),
+            "by_type": runs.iter().map(|(n, (c, l))| json!({ "type": n, "count": c, "length": format!("{:.2}", l / 1000.0) })).collect::<Vec<_>>(),
+        });
         json!({
             "walls": table("Walls"), "floors": table("Floors"), "total_cost": show(ev.global("Total Cost")),
             "doors": inserts(FamilyCategory::Doors), "windows": inserts(FamilyCategory::Windows),
+            "curtain_panels": curtain_panels, "curtain_mullions": curtain_mullions,
         })
     }
 }

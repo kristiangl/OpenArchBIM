@@ -886,6 +886,8 @@ async function renderSchedule() {
   };
   const plain = (t) => `<h3>${t.name} <span class="rate">${t.count} placed</span></h3>
     <table class="sched"><thead><tr>${t.columns.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${t.rows.map((row) => `<tr>${row.map((v, i) => `<td class="${i >= 3 && i <= 5 ? "num" : ""}">${v}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${t.columns.length}" class="empty">No ${t.name.toLowerCase()} yet</td></tr>`}</tbody></table>`;
+  const curtain = (t, note, nums) => `<h3>${t.name} <span class="rate">${note}</span></h3>
+    <table class="sched"><thead><tr>${t.columns.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${t.rows.map((row) => `<tr>${row.map((v, i) => `<td class="${nums.includes(i) ? "num" : ""}">${v}</td>`).join("")}</tr>`).join("") || `<tr><td colspan="${t.columns.length}" class="empty">No ${t.name.toLowerCase()} yet</td></tr>`}</tbody></table>`;
   const host = $("#schedule-view");
   const focused = document.activeElement && document.activeElement.dataset ? document.activeElement.dataset.rate : null;
   host.innerHTML = `<div class="sched-wrap">
@@ -895,6 +897,9 @@ async function renderSchedule() {
     ${table(r.floors, "floor", "Floor rate $/m&sup2;")}
     ${plain(r.doors)}
     ${plain(r.windows)}
+    ${curtain(r.curtain_panels, `${r.curtain_panels.count} panels, ${r.curtain_panels.area} m&sup2;`, [2, 3, 4, 6])}
+    ${curtain(r.curtain_mullions, `${r.curtain_mullions.count} mullions`, [2])}
+    ${r.curtain_mullions.by_type.length ? `<table class="sched"><thead><tr><th>Mullion Type</th><th>Count</th><th>Total Run (m)</th></tr></thead><tbody>${r.curtain_mullions.by_type.map((t) => `<tr><td>${t.type}</td><td class="num">${t.count}</td><td class="num">${t.length}</td></tr>`).join("")}</tbody></table>` : ""}
     <div class="grand">Total cost (formula: <code>[Walls.Cost.Sum] + [Floors.Cost.Sum]</code>): <b id="total-cost">${r.total_cost}</b></div>
   </div>`;
   host.querySelectorAll("input[data-rate]").forEach((inp) => {
