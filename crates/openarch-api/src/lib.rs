@@ -2033,6 +2033,7 @@ impl Session {
         let layer_geo = if wall_detail == DetailLevel::Coarse { Default::default() } else { d.wall_layer_geometry() };
         let mut layered: Vec<LayeredWall> = vec![];
         let mut walls = vec![];
+        let mut curtains = vec![];
         let mut floors = vec![];
         let mut roofs = vec![];
         let mut inserts = vec![];
@@ -2054,6 +2055,51 @@ impl Session {
                     let t = d.wall_type(w.wall_type);
                     let hint = t.map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
                     let Some(style) = style_for(d, &settings, "Walls", None, view.element_overrides.get(&id), display, &hint) else { continue };
+                    // a curtain wall draws its panels and mullions: where the plane cuts them, or all of them seen from
+                    // above; at coarse detail just the line of its glass
+                    if let Some(spec) = d.curtain_of(w) {
+                        let solids = d.curtain_solids(w);
+                        let shown = |s: &&openarch_model::curtain::CurtainSolid| display != "cut" || (s.z0 <= range.cut + 1e-6 && s.z1 >= range.cut - 1e-6);
+                        let rings = |mullion: bool| -> Vec<Vec<Value>> {
+                            solids.iter().filter(|s| matches!(s.part, openarch_model::curtain::CurtainPart::Mullion { .. }) == mullion).filter(shown).map(|s| s.ring.iter().map(pt).collect()).collect()
+                        };
+                        let path = w.path();
+                        let off = spec.panel.offset_mm;
+                        let line: Vec<Value> = path
+                            .pts
+                            .iter()
+                            .enumerate()
+                            .map(|(i, p)| {
+                                let (a, b) = if i + 1 < path.pts.len() { (path.pts[i], path.pts[i + 1]) } else { (path.pts[i - 1], path.pts[i]) };
+                                let l = a.dist(&b).max(1e-9);
+                                json!([p.x - (b.y - a.y) / l * off, p.y + (b.x - a.x) / l * off])
+                            })
+                            .collect();
+                        curtains.push(json!({
+                            "id": id, "display": display, "style": style.clone(),
+                            "coarse": wall_detail == DetailLevel::Coarse,
+                            "line": line, "panels": rings(false), "mullions": rings(true),
+                        }));
+                        let extents = d.wall_extents(w);
+                        walls.push(json!({
+                            "layered": false, "curtain": true, "id": id,
+                            "corners": poly.iter().map(pt).collect::<Vec<_>>(),
+                            "curve": w.curve,
+                            "grips": Document::wall_grips(w).iter().map(|q| [q.x, q.y]).collect::<Vec<_>>(),
+                            "length": w.length(),
+                            "pieces": [poly.iter().map(pt).collect::<Vec<_>>()],
+                            "shape": [],
+                            "start": pt(&w.start), "end": pt(&w.end),
+                            "extents": [extents.0, extents.1],
+                            "thickness": t.map_or(100.0, |t| t.thickness_mm()),
+                            "type": t.map(|t| t.name.clone()),
+                            "display": display, "style": style,
+                            "pinned": w.pinned,
+                            "faces": [{ "off": 0.0, "kind": "centre" }, { "off": extents.0, "kind": "face" }, { "off": -extents.1, "kind": "face" }],
+                            "dont_clean": false,
+                        }));
+                        continue;
+                    }
                     // doors and windows break the wall where they span the cut plane
                     let pieces: Vec<Vec<openarch_model::geom::Point>> = match outlines.get(&id) {
                         Some(o) => d.wall_plan_pieces(id, o, (display == "cut").then_some(range.cut)).into_iter().map(|q| q.to_vec()).collect(),
@@ -2310,7 +2356,7 @@ impl Session {
                 "enabled": view.crop.enabled, "visible": view.crop.region_visible,
                 "region": view.crop.region.map(|(a, b)| json!([pt(&a), pt(&b)])),
             },
-            "walls": walls, "floors": floors, "roofs": roofs, "inserts": inserts,
+            "walls": walls, "curtains": curtains, "floors": floors, "roofs": roofs, "inserts": inserts,
             "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
@@ -2338,6 +2384,23 @@ impl Session {
         for (id, e) in d.iter() {
             if hidden.contains(&id) {
                 continue;
+            }
+            // a curtain wall: each panel and mullion, glass see-through
+            if let Element::Wall(w) = e {
+                if d.curtain_of(w).is_some() {
+                    if shown("Walls") {
+                        for s in d.curtain_solids(w) {
+                            let verts = mesh::solid_mesh(&s.ring, s.z0, s.z1);
+                            if s.glazed {
+                                meshes.push(json!({ "id": id, "kind": "Glass", "verts": verts }));
+                            } else {
+                                let color = d.material(&s.material).map_or([190, 190, 190], |m| m.graphics.shading_color);
+                                meshes.push(json!({ "id": id, "kind": "Wall", "material": s.material, "color": color, "verts": verts }));
+                            }
+                        }
+                    }
+                    continue;
+                }
             }
             if let (Element::Wall(w), Some(wl)) = (e, layered.get(&id)) {
                 // layered walls draw one mesh per layer in the material's shading colour
@@ -2507,6 +2570,7 @@ impl Session {
         if kind == SysKind::Wall && error.is_none() {
             let wrap = |k: &str| -> Result<Wrap, String> { serde_json::from_value(p.get(k).cloned().unwrap_or(json!("none"))).map_err(|e| format!("bad {k}: {e}")) };
             let t = WallType {
+                curtain: None,
                 name: String::new(),
                 layers: layers.clone(),
                 wrap_ends: wrap("wrap_ends")?,
@@ -4367,6 +4431,42 @@ mod tests {
         assert!(ring.contains(&(-1732, -13000)) && ring.contains(&(1732, -13000)), "{ring:?}");
         // a level cannot be in an associated array
         assert!(s.handle("array", &json!({ "ids": [lvl], "kind": "linear", "dx": 0, "dy": 0, "dz": 3000, "count": 2, "associate": true })).unwrap_err().contains("never grouped"));
+    }
+
+    #[test]
+    fn curtain_walls_draw_their_panels_and_mullions() {
+        let (mut s, lvl, _wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == lvl).unwrap()["id"].clone();
+        let sf = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Storefront").unwrap()["id"].as_u64().unwrap();
+        let w = call(&mut s, "add_wall", json!({ "type_id": sf, "level_id": lvl, "start": [0, 0], "end": [3600, 0], "height_mm": 3000 }))["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": fp }));
+        let c = &plan["curtains"][0];
+        assert_eq!(c["id"], w);
+        // cut at 1200: three panels in the bottom row, four vertical mullions
+        assert_eq!((c["panels"].as_array().unwrap().len(), c["mullions"].as_array().unwrap().len()), (3, 4), "{c}");
+        assert_eq!(plan["walls"].as_array().unwrap().iter().find(|x| x["id"] == w).unwrap()["curtain"], true);
+        // the 3D view: six glass panels and the mullions
+        let scene = call(&mut s, "scene", json!({}));
+        let mine: Vec<&Value> = scene["meshes"].as_array().unwrap().iter().filter(|m| m["id"] == w).collect();
+        assert_eq!(mine.iter().filter(|m| m["kind"] == "Glass").count(), 6);
+        assert_eq!(mine.iter().filter(|m| m["kind"] == "Wall").count(), 4 + 5);
+        // Type Properties: the grid groups; a spacing of 900 makes four bays
+        let tp = call(&mut s, "describe_any_type", json!({ "id": sf }));
+        let names: Vec<&str> = tp["groups"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"Vertical Grid") && names.contains(&"Vertical Mullions"), "{names:?}");
+        call(&mut s, "patch_system_type", json!({ "id": sf, "patch": { "curtain": { "u": { "spacing_mm": 900 } } } }));
+        let plan = call(&mut s, "plan", json!({ "view_id": fp }));
+        assert_eq!(plan["curtains"][0]["panels"].as_array().unwrap().len(), 4);
+        // mullions switched off: the type's glazing zone is just the glass
+        call(&mut s, "patch_system_type", json!({ "id": sf, "patch": { "curtain": { "u_interior": null, "u_border1": null, "u_border2": null, "v_interior": null, "v_border1": null, "v_border2": null } } }));
+        let t = call(&mut s, "doc_info", json!({}))["wall_types"].as_array().unwrap().iter().find(|t| t["id"] == sf).unwrap().clone();
+        assert_eq!(t["thickness_mm"].as_f64().or(t["thickness"].as_f64()).unwrap_or(25.0), 25.0, "{t}");
+        assert!(s.handle("patch_system_type", &json!({ "id": sf, "patch": { "curtain": { "v": { "spacing_mm": 0 } } } })).is_err());
+        // an elevation shows the panels and mullions
+        let ev = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "South").unwrap()["id"].clone();
+        let e = call(&mut s, "elevation", json!({ "view_id": ev }));
+        assert!(e["items"].as_array().unwrap().iter().filter(|i| i["id"] == w).count() >= 4);
     }
 
     #[test]

@@ -996,7 +996,7 @@ impl Document {
         let polys = self.wall_polygons();
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
-            if hidden(id) {
+            if hidden(id) || self.curtain_of(w).is_some() {
                 continue;
             }
             let pieces: Vec<Vec<Point>> = if w.curve.is_none() {
@@ -1325,6 +1325,43 @@ impl Document {
         for (k, l) in layer_items.iter().enumerate() {
             if !merged[k] {
                 items.push(ElevItem { id: l.id, category: "Walls", depth: l.depth, polys: vec![rect(l.u0, l.u1, l.z0, l.z1)], lines: vec![], fill: l.fill, stroke: l.stroke , ..Default::default() });
+            }
+        }
+        // curtain walls: each panel and mullion a rectangle across the view at its depth, glass in its own colour; one
+        // embedded in a wall sits on that wall's face, as a door does
+        for (id, e) in self.iter() {
+            let Element::Wall(w) = e else { continue };
+            if hidden(id) || self.curtain_of(w).is_none() {
+                continue;
+            }
+            let face = self.embedded_in(id).iter().filter_map(|h| host_near.get(h)).cloned().fold(f64::INFINITY, f64::min);
+            for s in self.curtain_solids(w) {
+                let clipped;
+                let ring = match &sl {
+                    Some(sc) => {
+                        clipped = sc.clip_ring(&s.ring);
+                        &clipped
+                    }
+                    None => &s.ring,
+                };
+                if ring.len() < 3 {
+                    continue;
+                }
+                let us: Vec<f64> = ring.iter().map(|p| u_of(*p)).collect();
+                let ds: Vec<f64> = ring.iter().map(|p| d_of(*p)).collect();
+                let (dmin, dmax) = (ds.iter().cloned().fold(f64::INFINITY, f64::min), ds.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                if !visible(dmin, dmax) {
+                    continue;
+                }
+                let (u0, u1) = (us.iter().cloned().fold(f64::INFINITY, f64::min), us.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                if u1 - u0 < 0.5 {
+                    continue;
+                }
+                let fill = self.material(&s.material).map_or([200, 200, 200], |m| m.graphics.shading_color);
+                // a mullion stands in front of the glass it frames
+                let depth = if s.part == crate::curtain::CurtainPart::Panel { dmin + 0.25 } else { dmin };
+                let depth = if face.is_finite() { (face - 1.0).min(depth) + if s.part == crate::curtain::CurtainPart::Panel { 0.25 } else { 0.0 } } else { depth };
+                items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, s.z0, s.z1)], lines: vec![], fill, stroke: true, ..Default::default() });
             }
         }
         // doors and windows sit on the wall face

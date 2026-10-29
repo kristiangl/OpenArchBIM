@@ -331,6 +331,8 @@ impl Document {
                 out.push(o);
             }
         }
+        // curtain walls standing in this one with Automatically Embed cut their openings too
+        out.extend(self.embed_cuts(wall));
         out.sort_by(|a, b| a.u0.total_cmp(&b.u0));
         out
     }
@@ -469,6 +471,9 @@ impl Document {
             return Err(format!("{} does not host in walls", fam.name));
         }
         let Some(Element::Wall(w)) = self.get(wall).cloned() else { return Err("the host must be a wall".into()) };
+        if self.curtain_of(&w).is_some() {
+            return Err("doors and windows go into a curtain wall as panels, which come later".into());
+        }
         let len = w.length();
         let (along, across, _) = w.path().project(point); // across is positive to the left of the wall
         let mut inst = FamilyInstance::new(type_id, w.base_level);

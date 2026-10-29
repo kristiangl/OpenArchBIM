@@ -275,6 +275,9 @@ pub struct WallType {
     /// height vertically compound layers are laid out over).
     #[serde(default = "default_sample_height")]
     pub sample_height_mm: f64,
+    /// A curtain wall type: its grids, panels and mullions (the one layer then stands for its glazing zone).
+    #[serde(default)]
+    pub curtain: Option<crate::curtain::CurtainSpec>,
 }
 
 fn default_sample_height() -> f64 {

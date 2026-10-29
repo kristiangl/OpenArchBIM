@@ -1162,7 +1162,7 @@ const Plan = (() => {
     // a shape follows the view's Wall Join Display: all walls, or same type only.
     const sameType = data.view && data.view.wall_join_display === "clean_same_type";
     const groups = new Map();
-    for (const wl of data.walls.filter((w) => !w.layered).sort((a, b) => order[a.display] - order[b.display])) {
+    for (const wl of data.walls.filter((w) => !w.layered && !w.curtain).sort((a, b) => order[a.display] - order[b.display])) {
       // a "don't clean" join keeps its seams, so that wall is drawn on its own
       const key = [wl.display, JSON.stringify(wl.style), sameType ? wl.type : "", wl.dont_clean ? wl.id : ""].join("|");
       if (!groups.has(key)) groups.set(key, []);
@@ -1187,6 +1187,23 @@ const Plan = (() => {
         for (const wl of group) for (const q of wl.pieces) { polyPath(q); ctx.stroke(); }
         ctx.setLineDash([]);
       }
+    }
+    // curtain walls: where the plane cuts them, each mullion filled and outlined and each panel its glass; at coarse
+    // detail the line of the glass
+    for (const c of [...(data.curtains || [])].sort((a, b) => order[a.display] - order[b.display])) {
+      const st = c.style, w1 = lw(st);
+      ctx.strokeStyle = colour(st, st.line.color); ctx.setLineDash(dash(st)); ctx.lineJoin = "miter";
+      if (c.coarse) {
+        ctx.lineWidth = w1; ctx.beginPath();
+        c.line.forEach((q, i) => { const s2 = toScreen({ x: q[0], y: q[1] }); i ? ctx.lineTo(s2.x, s2.y) : ctx.moveTo(s2.x, s2.y); });
+        ctx.stroke(); ctx.setLineDash([]);
+        continue;
+      }
+      ctx.lineWidth = Math.max(1, w1 * 0.5);
+      for (const q of c.panels) { polyPath(q); ctx.stroke(); }
+      ctx.lineWidth = w1; ctx.fillStyle = bg;
+      for (const q of c.mullions) { polyPath(q); ctx.fill(); ctx.stroke(); }
+      ctx.setLineDash([]);
     }
     // roofs: the outline and the hips, ridges and valleys, drawn over the walls they cover
     for (const r of [...(data.roofs || [])].sort((a, b) => order[a.display] - order[b.display])) {

@@ -620,6 +620,10 @@ impl Document {
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
             let Some(t) = self.wall_type_for(w) else { continue };
+            // a curtain wall's layer only stands for its glazing zone; its panels and mullions are drawn instead
+            if t.curtain.is_some() {
+                continue;
+            }
             let specs: Vec<LayerSpec> = t.layers.iter().map(|l| LayerSpec { thickness: l.thickness_mm, priority: l.join_priority(), core: l.core }).collect();
             let facets = self.wall_facets(id, w);
             facets_of.insert(id, facets.len());

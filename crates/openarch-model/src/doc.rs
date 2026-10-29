@@ -154,7 +154,7 @@ impl Document {
                 ("Concrete 200", vec![layer("Concrete", 200.0, St, true)]),
                 ("Blockwork 190", vec![layer("Concrete Block", 190.0, St, true)]),
             ] {
-                tx.add(Element::WallType(WallType { name: name.into(), layers, wrap_ends: Wrap::None, wrap_inserts: Wrap::None, coarse_fill: default_coarse_fill(), function: WallFunction::default(), info: TypeInfo::default(), sample_height_mm: 6000.0 }));
+                tx.add(Element::WallType(WallType { name: name.into(), layers, wrap_ends: Wrap::None, wrap_inserts: Wrap::None, coarse_fill: default_coarse_fill(), function: WallFunction::default(), info: TypeInfo::default(), sample_height_mm: 6000.0, curtain: None }));
             }
             for (name, layers) in [
                 ("Concrete Slab 200", vec![floor_layer("Concrete", 200.0, St)]),
@@ -182,6 +182,7 @@ impl Document {
         d.ensure_annotation_defaults();
         d.ensure_view_types();
         d.ensure_detail_defaults();
+        d.ensure_curtain_types();
         d.undo.clear(); // starting state is not undoable
         d
     }
@@ -1226,7 +1227,37 @@ impl Document {
     /// to the next, so joins and layers work on it the way they do on straight walls; ids carry
     /// the wall and the facet number (see `wallpath`).
     pub(crate) fn join_walls_list(&self) -> Vec<crate::join::JoinWall> {
-        self.iter().filter_map(|(id, e)| if let Element::Wall(w) = e { Some(self.wall_facets(id, w)) } else { None }).flatten().collect()
+        // curtain walls take no part in joins: they stop at a wall's face, and an embedded one cuts its host
+        self.iter().filter_map(|(id, e)| if let Element::Wall(w) = e { (self.curtain_of(w).is_none()).then(|| self.wall_facets(id, w)) } else { None }).flatten().collect()
+    }
+
+    /// The curtain wall types a project starts with, added to projects saved before curtain walls.
+    pub(crate) fn ensure_curtain_types(&mut self) {
+        if self.wall_types().iter().any(|(_, t)| t.curtain.is_some()) {
+            return;
+        }
+        let taken: Vec<String> = self.wall_types().iter().map(|(_, t)| t.name.clone()).collect();
+        let _ = self.transact("Curtain wall types", |tx| {
+            for (name, spec) in crate::curtain::starter_types() {
+                if taken.contains(&name) {
+                    continue;
+                }
+                let layers = vec![spec.layer()];
+                tx.add(Element::WallType(WallType {
+                    name,
+                    layers,
+                    wrap_ends: Wrap::None,
+                    wrap_inserts: Wrap::None,
+                    coarse_fill: default_coarse_fill(),
+                    function: WallFunction::Exterior,
+                    info: TypeInfo::default(),
+                    sample_height_mm: 6000.0,
+                    curtain: Some(spec),
+                }));
+            }
+            Ok(())
+        });
+        self.clear_history();
     }
 
     pub(crate) fn wall_facets(&self, id: Id, w: &Wall) -> Vec<crate::join::JoinWall> {
@@ -1272,6 +1303,10 @@ impl Document {
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
             let n = w.path().pts.len() - 1;
+            if self.curtain_of(w).is_some() {
+                out.insert(id, self.curtain_outline(w));
+                continue;
+            }
             let quads: Vec<&[Point; 4]> = (0..n).filter_map(|k| by_facet.get(&facet_id(id, k))).collect();
             if quads.len() != n || n == 0 {
                 continue;

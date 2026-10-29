@@ -225,6 +225,22 @@ impl Document {
                 if !(n.sample_height_mm.is_finite() && n.sample_height_mm >= 100.0) {
                     return Err("the sample height must be at least 100 mm".into());
                 }
+                let mut n = n;
+                // a curtain type's one layer follows its glazing zone
+                if let Some(c) = &n.curtain {
+                    for r in [&c.u, &c.v] {
+                        if !(r.spacing_mm.is_finite() && r.spacing_mm >= 10.0) {
+                            return Err("a grid spacing must be at least 10 mm".into());
+                        }
+                        if r.number > 500 || !r.offset_mm.is_finite() {
+                            return Err("a grid takes at most 500 lines".into());
+                        }
+                    }
+                    if !(c.panel.thickness_mm.is_finite() && c.panel.thickness_mm >= 0.0) {
+                        return Err("a panel cannot be less than nothing thick".into());
+                    }
+                    n.layers = vec![c.layer()];
+                }
                 Element::WallType(n)
             }
             Element::FloorType(t) => Element::FloorType(apply_patch(t, patch)?),

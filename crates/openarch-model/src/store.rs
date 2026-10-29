@@ -69,6 +69,7 @@ impl Document {
         d.ensure_annotation_defaults(); // projects saved before annotation families
         d.ensure_view_types(); // projects saved before view types
         d.ensure_detail_defaults(); // projects saved before detail items
+        d.ensure_curtain_types(); // projects saved before curtain walls
         if v < 2 {
             d.use_hidden_line_in_elevations_and_3d(); // projects saved before the visual style was drawn
         }

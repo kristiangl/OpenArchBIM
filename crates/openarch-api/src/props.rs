@@ -518,7 +518,12 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         _ => unreachable!(),
     };
     let v = assembly_values(d, layers);
-    let mut construction = vec![dialog("Structure", "assembly", "Edit...")];
+    let curtain = match d.get(id) {
+        Some(Element::WallType(t)) => t.curtain.as_ref(),
+        _ => None,
+    };
+    let mut construction = if curtain.is_some() { vec![] } else { vec![dialog("Structure", "assembly", "Edit...")] };
+    let mut curtain_groups: Vec<Value> = vec![];
     let siblings: Vec<Value> = match kind {
         SysKind::Wall => d.wall_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
         SysKind::Floor => d.floor_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
@@ -526,6 +531,24 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
     };
     let mut wall_extra = json!(null);
     match d.get(id) {
+        Some(Element::WallType(t)) if t.curtain.is_some() => {
+            let c = t.curtain.as_ref().unwrap();
+            construction.push(enum_select(
+                "Function",
+                "function",
+                &name_of(&t.function),
+                &[("interior", "Interior"), ("exterior", "Exterior"), ("foundation", "Foundation"), ("retaining", "Retaining"), ("soffit", "Soffit"), ("core_shaft", "Core-shaft")],
+            ));
+            construction.push(boolean("Automatically Embed", "curtain.auto_embed", c.auto_embed, true));
+            construction.push(enum_select(
+                "Join Condition",
+                "curtain.join",
+                &name_of(&c.join),
+                &[("not_defined", "Not Defined"), ("vertical_continuous", "Vertical Grid Continuous"), ("horizontal_continuous", "Horizontal Grid Continuous"), ("border_and_vertical", "Border and Vertical Grid Continuous"), ("border_and_horizontal", "Border and Horizontal Grid Continuous")],
+            ));
+            curtain_groups = curtain_type_groups(d, c);
+            wall_extra = json!({ "sample_height_mm": t.sample_height_mm });
+        }
         Some(Element::WallType(t)) => {
             construction.push(enum_select("Wrapping at Inserts", "wrap_inserts", &name_of(&t.wrap_inserts), &[("none", "Do not wrap"), ("exterior", "Exterior"), ("interior", "Interior"), ("both", "Both")]));
             construction.push(enum_select("Wrapping at Ends", "wrap_ends", &name_of(&t.wrap_ends), &[("none", "None"), ("exterior", "Exterior"), ("interior", "Interior")]));
@@ -570,8 +593,8 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         "patch": "patch_system_type", "duplicate": "duplicate_system_type",
         "sides": [kind.sides().0, kind.sides().1],
         "layers": layers, "wall": wall_extra, "values": v,
-        "groups": [
-            group("Construction", construction),
+        "curtain": curtain.is_some(),
+        "groups": all_groups(group("Construction", construction), curtain_groups, vec![
             group("Graphics", vec![
                 fill_pattern_row("Coarse Scale Fill Pattern", "coarse_fill.pattern", coarse.pattern.as_deref(), "drafting"),
                 json!({ "label": "Coarse Scale Fill Color", "value": format!("#{:02x}{:02x}{:02x}", colour[0], colour[1], colour[2]), "raw": colour, "kind": "color", "path": "coarse_fill.color" }),
@@ -589,8 +612,67 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
                 text("Export Type to IFC As", "info.ifc_export_as", &info.ifc_export_as),
                 text("Type IFC Predefined Type", "info.ifc_predefined_type", &info.ifc_predefined_type),
             ]),
-        ],
+        ]),
     }))
+}
+
+/// Construction first, then a curtain type's own groups, then the rest.
+fn all_groups(construction: Value, curtain: Vec<Value>, rest: Vec<Value>) -> Vec<Value> {
+    std::iter::once(construction).chain(curtain).chain(rest).collect()
+}
+
+/// A curtain wall type's grids, panel and mullions as Type Properties groups.
+fn curtain_type_groups(d: &Document, c: &openarch_model::curtain::CurtainSpec) -> Vec<Value> {
+    use openarch_model::curtain::{MullionShape, MullionSpec};
+    let grid = |key: &str, title: &str, r: &openarch_model::curtain::GridRule| {
+        group(title, vec![
+            enum_select("Layout", &format!("curtain.{key}.layout"), &name_of(&r.layout), &[("none", "None"), ("fixed_distance", "Fixed Distance"), ("fixed_number", "Fixed Number"), ("maximum_spacing", "Maximum Spacing"), ("minimum_spacing", "Minimum Spacing")]),
+            num("Spacing", &format!("curtain.{key}.spacing_mm"), r.spacing_mm, true),
+            num("Number", &format!("curtain.{key}.number"), f64::from(r.number), true),
+            enum_select("Justification", &format!("curtain.{key}.justify"), &name_of(&r.justify), &[("beginning", "Beginning"), ("center", "Center"), ("end", "End")]),
+            num("Offset", &format!("curtain.{key}.offset_mm"), r.offset_mm, true),
+        ])
+    };
+    let materials: Vec<String> = d.materials().into_iter().map(|(_, m)| m.name.clone()).collect();
+    let material_row = |label: &str, path: &str, current: &str| {
+        let mut opts: Vec<(String, Value, bool)> = materials.iter().map(|m| (m.clone(), nest(path, json!(m)), m == current)).collect();
+        if !materials.iter().any(|m| m == current) {
+            opts.insert(0, (current.to_string(), nest(path, json!(current)), true));
+        }
+        select(label, opts)
+    };
+    // mullion types by their size; one that is none of these shows as Custom
+    let presets: Vec<(&str, Option<MullionSpec>)> = vec![
+        ("None", None),
+        ("Rectangular 50 x 150", Some(MullionSpec::rectangular(50.0, 150.0))),
+        ("Rectangular 50 x 100", Some(MullionSpec::rectangular(50.0, 100.0))),
+        ("Rectangular 30 x 50", Some(MullionSpec::rectangular(30.0, 50.0))),
+        ("Circular 50 Diameter", Some(MullionSpec { shape: MullionShape::Circular { radius_mm: 25.0 }, offset_mm: 0.0, material: "Aluminium".into() })),
+    ];
+    let mullion = |label: &str, key: &str, cur: &Option<MullionSpec>| {
+        let same = |p: &Option<MullionSpec>| match (p, cur) {
+            (None, None) => true,
+            (Some(a), Some(b)) => a.shape == b.shape,
+            _ => false,
+        };
+        let mut opts: Vec<(String, Value, bool)> = presets.iter().map(|(l, p)| (l.to_string(), nest(&format!("curtain.{key}"), json!(p)), same(p))).collect();
+        if !presets.iter().any(|(_, p)| same(p)) {
+            opts.insert(0, ("Custom".into(), nest(&format!("curtain.{key}"), json!(cur)), true));
+        }
+        select(label, opts)
+    };
+    vec![
+        grid("u", "Vertical Grid", &c.u),
+        grid("v", "Horizontal Grid", &c.v),
+        group("Panel", vec![
+            enum_select("Panel", "curtain.panel.kind", &name_of(&c.panel.kind), &[("glazed", "System Panel: Glazed"), ("solid", "System Panel: Solid"), ("empty", "Empty System Panel")]),
+            num("Thickness", "curtain.panel.thickness_mm", c.panel.thickness_mm, true),
+            num("Offset", "curtain.panel.offset_mm", c.panel.offset_mm, true),
+            material_row("Material", "curtain.panel.material", &c.panel.material),
+        ]),
+        group("Vertical Mullions", vec![mullion("Interior Type", "u_interior", &c.u_interior), mullion("Border 1 Type", "u_border1", &c.u_border1), mullion("Border 2 Type", "u_border2", &c.u_border2)]),
+        group("Horizontal Mullions", vec![mullion("Interior Type", "v_interior", &c.v_interior), mullion("Border 1 Type", "v_border1", &c.v_border1), mullion("Border 2 Type", "v_border2", &c.v_border2)]),
+    ]
 }
 
 /// Properties of several selected elements together. A row shows when every element has it with

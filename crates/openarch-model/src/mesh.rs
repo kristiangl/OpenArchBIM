@@ -71,6 +71,18 @@ fn prism_sides(out: &mut Vec<f32>, poly: &[Point], z0: f64, z1: f64) {
     }
 }
 
+/// A convex footprint swept from `z0` to `z1` (a curtain wall's panel or mullion), as triangles.
+pub fn solid_mesh(ring: &[Point], z0: f64, z1: f64) -> Vec<f32> {
+    let mut ring = ring.to_vec();
+    if crate::geom::signed_area(&ring) < 0.0 {
+        ring.reverse();
+    }
+    let tris: Vec<[usize; 3]> = (1..ring.len().saturating_sub(1)).map(|i| [0, i, i + 1]).collect();
+    let mut out = vec![];
+    prism(&mut out, &ring, &tris, z0, z1);
+    out
+}
+
 /// Mesh for a wall. `outline` is its joined plan outline (see
 /// `Document::wall_outlines`); `openings` are the holes cut by hosted doors and
 /// windows (see `Document::wall_openings`).
