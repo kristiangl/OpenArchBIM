@@ -203,6 +203,16 @@ pub enum JoinCondition {
     BorderAndHorizontal,
 }
 
+/// Grid lines placed on one curtain wall (by hand, or read from a file): along its length from its start, and up
+/// its height from its base. They add to the lines the type lays out.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+pub struct CurtainLines {
+    #[serde(default)]
+    pub u: Vec<f64>,
+    #[serde(default)]
+    pub v: Vec<f64>,
+}
+
 /// What makes a wall type a curtain wall type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
 pub struct CurtainSpec {
@@ -327,13 +337,16 @@ impl Document {
         if len < 1.0 || h < 1.0 {
             return None;
         }
-        let mut us = vec![0.0];
-        us.extend(spec.u.positions(len));
-        us.push(len);
-        let mut vs = vec![0.0];
-        vs.extend(spec.v.positions(h));
-        vs.push(h);
-        Some((us, vs))
+        // the type's lines and the wall's own, inside its ends
+        let merge = |rule: Vec<f64>, own: &[f64], end: f64| {
+            let mut all: Vec<f64> = rule.into_iter().chain(own.iter().copied()).filter(|p| *p > 1.0 && *p < end - 1.0).collect();
+            all.sort_by(f64::total_cmp);
+            all.dedup_by(|a, b| (*a - *b).abs() < 1.0);
+            std::iter::once(0.0).chain(all).chain(std::iter::once(end)).collect::<Vec<f64>>()
+        };
+        let none = CurtainLines::default();
+        let own = w.curtain_lines.as_ref().unwrap_or(&none);
+        Some((merge(spec.u.positions(len), &own.u, len), merge(spec.v.positions(h), &own.v, h)))
     }
 
     /// The pieces of a curtain wall: its panels and mullions as plan footprints swept between heights.

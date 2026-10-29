@@ -1,5 +1,6 @@
-//! IFC import: an IFC2x3 or IFC4 file read into a fresh project. Storeys become levels; straight walls, flat floors
-//! (with their holes) and the doors and windows in the walls come in as OpenArch elements, each measured from its
+//! IFC import: an IFC2x3 or IFC4 file read into a fresh project. Storeys become levels; straight walls, straight
+//! curtain walls (their grid, mullions and panels measured from their parts), flat floors (with their holes) and the
+//! doors and windows in the walls come in as OpenArch elements, each measured from its
 //! geometry (an extruded profile, a B-rep or a triangle mesh alike), so how a file describes an element does not
 //! matter. Wall and floor types are matched by name and thickness, or made; door and window types by size.
 //! What has no OpenArch element yet, or cannot be read, is left out and listed.
@@ -659,6 +660,7 @@ fn units(f: &File) -> Result<(f64, f64), String> {
 struct Links {
     within: HashMap<u64, u64>,
     whole: HashMap<u64, u64>,
+    parts: HashMap<u64, Vec<u64>>,
     host: HashMap<u64, u64>,
     fills: HashMap<u64, u64>,
     type_name: HashMap<u64, String>,
@@ -679,6 +681,7 @@ impl Links {
                     if let Some(w) = reference(a(4)) {
                         for x in refs(a(5)) {
                             l.whole.insert(x, w);
+                            l.parts.entry(w).or_default().push(x);
                         }
                     }
                 }
@@ -710,9 +713,57 @@ const SLABS: &[&str] = &["IFCSLAB", "IFCSLABSTANDARDCASE", "IFCSLABELEMENTEDCASE
 /// Products that have no OpenArch element yet: listed as left out.
 const OTHERS: &[&str] = &[
     "IFCROOF", "IFCCOLUMN", "IFCBEAM", "IFCMEMBER", "IFCPLATE", "IFCSTAIR", "IFCSTAIRFLIGHT", "IFCRAMP", "IFCRAMPFLIGHT", "IFCRAILING", "IFCCOVERING",
-    "IFCCURTAINWALL", "IFCFURNISHINGELEMENT", "IFCFURNITURE", "IFCBUILDINGELEMENTPROXY", "IFCSPACE", "IFCFOOTING", "IFCPILE", "IFCSANITARYTERMINAL",
+    "IFCFURNISHINGELEMENT", "IFCFURNITURE", "IFCBUILDINGELEMENTPROXY", "IFCSPACE", "IFCFOOTING", "IFCPILE", "IFCSANITARYTERMINAL",
     "IFCLIGHTFIXTURE", "IFCFLOWTERMINAL", "IFCGRID",
 ];
+
+/// Two curtain make-ups read from a file as one when their sizes agree to the millimetre; a mullion one of them has no
+/// need for comes from the other. None when they differ.
+fn curtain_merge(a: &crate::curtain::CurtainSpec, b: &crate::curtain::CurtainSpec) -> Option<crate::curtain::CurtainSpec> {
+    use crate::curtain::MullionSpec;
+    let near = |x: f64, y: f64| (x - y).abs() <= 1.0;
+    let slot = |x: &Option<MullionSpec>, y: &Option<MullionSpec>| -> Option<Option<MullionSpec>> {
+        match (x, y) {
+            (Some(p), Some(q)) => {
+                let (pw, qw) = (p.widths().0 + p.widths().1, q.widths().0 + q.widths().1);
+                (near(pw, qw) && near(p.depth(), q.depth()) && near(p.offset_mm, q.offset_mm)).then(|| x.clone())
+            }
+            _ => Some(x.clone().or_else(|| y.clone())),
+        }
+    };
+    let (pa, pb) = (&a.panel, &b.panel);
+    if a.u != b.u || a.v != b.v || a.join != b.join || pa.kind != pb.kind || !near(pa.thickness_mm, pb.thickness_mm) || !near(pa.offset_mm, pb.offset_mm) {
+        return None;
+    }
+    Some(crate::curtain::CurtainSpec {
+        u_interior: slot(&a.u_interior, &b.u_interior)?,
+        u_border1: slot(&a.u_border1, &b.u_border1)?,
+        u_border2: slot(&a.u_border2, &b.u_border2)?,
+        v_interior: slot(&a.v_interior, &b.v_interior)?,
+        v_border1: slot(&a.v_border1, &b.v_border1)?,
+        v_border2: slot(&a.v_border2, &b.v_border2)?,
+        ..a.clone()
+    })
+}
+
+/// A curtain make-up seen from its other face: offsets the other side of the line, the border mullions swapped.
+fn curtain_turned(c: &crate::curtain::CurtainSpec) -> crate::curtain::CurtainSpec {
+    let flip = |m: &Option<crate::curtain::MullionSpec>| {
+        m.clone().map(|mut m| {
+            m.offset_mm = -m.offset_mm;
+            m
+        })
+    };
+    let mut t = c.clone();
+    t.panel.offset_mm = -c.panel.offset_mm;
+    t.u_interior = flip(&c.u_interior);
+    t.u_border1 = flip(&c.u_border2);
+    t.u_border2 = flip(&c.u_border1);
+    t.v_interior = flip(&c.v_interior);
+    t.v_border1 = flip(&c.v_border1);
+    t.v_border2 = flip(&c.v_border2);
+    t
+}
 
 /// A wall measured from the file, before the walls are joined.
 struct RawWall {
@@ -905,7 +956,7 @@ impl Document {
             if let Some(id) = wall_types.get(&key) {
                 return Ok(*id);
             }
-            let (_, tpl) = d.wall_types().into_iter().find(|(_, wt)| wt.layers.len() == 1).or_else(|| d.wall_types().into_iter().next()).ok_or("the template has no wall types")?;
+            let (_, tpl) = d.wall_types().into_iter().filter(|(_, wt)| wt.curtain.is_none()).find(|(_, wt)| wt.layers.len() == 1).or_else(|| d.wall_types().into_iter().find(|(_, wt)| wt.curtain.is_none())).ok_or("the template has no wall types")?;
             let mut nt = tpl.clone();
             let material = nt.layers.iter().find(|x| x.core).or(nt.layers.first()).map(|x| x.material.clone()).unwrap_or_default();
             nt.layers = vec![Layer::new(&material, t, LayerFunction::Structure, true)];
@@ -1006,6 +1057,175 @@ impl Document {
         }
         out.counts.insert("walls", walls.len());
 
+        // curtain walls: the line their parts run along, how tall they stand, the grid their mullions sit on, and
+        // how big the mullions and panels are; on a curtain type of those sizes, with the grid as the wall's own lines
+        let mut curtains = 0;
+        let mut curtain_doors: BTreeSet<u64> = BTreeSet::new();
+        let mut taken: BTreeSet<u64> = BTreeSet::new();
+        for id in named(&["IFCCURTAINWALL"]) {
+            let Some(cw) = e(id) else { continue };
+            let parts: Vec<u64> = l.parts.get(&id).cloned().unwrap_or_default();
+            let kind = |pid: u64| e(pid).map_or("", |x| x.name.as_str());
+            for pid in &parts {
+                if kind(*pid).starts_with("IFCDOOR") || kind(*pid).starts_with("IFCWINDOW") {
+                    curtain_doors.insert(*pid);
+                }
+            }
+            let bodies: Vec<(u64, Vec<P3>)> = if parts.is_empty() {
+                vec![(id, r.body(cw).into_iter().flatten().collect())]
+            } else {
+                parts.iter().filter_map(|pid| e(*pid).map(|x| (*pid, r.body(x).into_iter().flatten().collect::<Vec<P3>>()))).filter(|(_, pts)| !pts.is_empty()).collect()
+            };
+            let all: Vec<Point> = bodies.iter().flat_map(|(_, pts)| pts.iter().map(|p| r.flat(*p))).collect();
+            let (Some((z0, z1)), true) = (span(bodies.iter().flat_map(|(_, pts)| pts.iter().map(|p| p[2]))), all.len() >= 4) else {
+                out.skipped.push(format!("{}: it has no body OpenArch can read", who(id)));
+                continue;
+            };
+            // the direction its plan points spread furthest in
+            let n = all.len() as f64;
+            let (cx, cy) = (all.iter().map(|p| p.x).sum::<f64>() / n, all.iter().map(|p| p.y).sum::<f64>() / n);
+            let (sxx, syy, sxy) = all.iter().fold((0.0, 0.0, 0.0), |(a, b, c), p| (a + (p.x - cx).powi(2), b + (p.y - cy).powi(2), c + (p.x - cx) * (p.y - cy)));
+            let t = 0.5 * (2.0 * sxy).atan2(sxx - syy);
+            // run the way the file placed it, so its outside stays outside
+            let mut u = Point::new(t.cos(), t.sin());
+            let fx = r.frame(cw).x;
+            let way = u.x * fx[0] + u.y * fx[1];
+            if way < -1e-6 || (way.abs() <= 1e-6 && (u.x < -1e-9 || (u.x.abs() <= 1e-9 && u.y < 0.0))) {
+                u = Point::new(-u.x, -u.y);
+            }
+            let nrm = Point::new(-u.y, u.x);
+            let along = |p: &Point| (p.x - cx) * u.x + (p.y - cy) * u.y;
+            let across = |p: &Point| (p.x - cx) * nrm.x + (p.y - cy) * nrm.y;
+            let (Some((u0, u1)), Some((c0, c1))) = (span(all.iter().map(along)), span(all.iter().map(across))) else { continue };
+            let len = u1 - u0;
+            if len < 10.0 || z1 - z0 < 10.0 {
+                out.skipped.push(format!("{}: it has no length or height OpenArch can read", who(id)));
+                continue;
+            }
+            // each mullion: vertical or horizontal, where it sits, how wide and deep it is, how far off the line
+            let mid = (c0 + c1) / 2.0;
+            let mut verticals: Vec<(f64, f64, f64, f64)> = vec![]; // (along, width, depth, offset)
+            let mut horizontals: Vec<(f64, f64, f64, f64)> = vec![]; // (height, width, depth, offset)
+            let mut plates: Vec<(f64, f64)> = vec![]; // (thickness, offset)
+            for (pid, pts) in &bodies {
+                let flat: Vec<Point> = pts.iter().map(|p| r.flat(*p)).collect();
+                let (Some((a0, a1)), Some((b0, b1)), Some((h0, h1))) = (span(flat.iter().map(along)), span(flat.iter().map(across)), span(pts.iter().map(|p| p[2]))) else { continue };
+                match kind(*pid) {
+                    "IFCMEMBER" | "IFCMEMBERSTANDARDCASE" => {
+                        let off = (b0 + b1) / 2.0 - mid;
+                        if h1 - h0 > 2.0 * (a1 - a0) {
+                            verticals.push(((a0 + a1) / 2.0 - u0, a1 - a0, b1 - b0, off));
+                        } else {
+                            horizontals.push(((h0 + h1) / 2.0 - z0, h1 - h0, b1 - b0, off));
+                        }
+                    }
+                    "IFCPLATE" | "IFCPLATESTANDARDCASE" => plates.push((b1 - b0, (b0 + b1) / 2.0 - mid)),
+                    _ => {}
+                }
+            }
+            // a curve shows as glass spread far across the line
+            let depth_most = verticals.iter().chain(&horizontals).map(|m| m.2).chain(plates.iter().map(|p| p.0)).fold(0.0, f64::max);
+            if c1 - c0 > (3.0 * depth_most).max(400.0) {
+                out.skipped.push(format!("{}: curved curtain walls are not imported yet", who(id)));
+                continue;
+            }
+            let median = |mut v: Vec<f64>| -> f64 {
+                v.sort_by(f64::total_cmp);
+                v.get(v.len() / 2).copied().unwrap_or(0.0)
+            };
+            // mullions at the ends are borders; the rest stand on grid lines (a mullion broken into pieces counts once)
+            let lines = |ms: &[(f64, f64, f64, f64)], end: f64| -> (Vec<f64>, Vec<(f64, f64, f64, f64)>, Vec<(f64, f64, f64, f64)>, Vec<(f64, f64, f64, f64)>) {
+                let (mut inner, mut b1, mut b2, mut at) = (vec![], vec![], vec![], vec![]);
+                for m in ms {
+                    if m.0 <= m.1 + 1.0 {
+                        b1.push(*m);
+                    } else if m.0 >= end - m.1 - 1.0 {
+                        b2.push(*m);
+                    } else {
+                        inner.push(*m);
+                        if !at.iter().any(|a: &f64| (a - m.0).abs() < 1.0) {
+                            at.push(mm(m.0));
+                        }
+                    }
+                }
+                at.sort_by(f64::total_cmp);
+                (at, inner, b1, b2)
+            };
+            let spec_of = |ms: &[(f64, f64, f64, f64)]| -> Option<crate::curtain::MullionSpec> {
+                if ms.is_empty() {
+                    return None;
+                }
+                let w = mm(median(ms.iter().map(|m| m.1).collect()));
+                let mut sp = crate::curtain::MullionSpec::rectangular(w, mm(median(ms.iter().map(|m| m.2).collect())));
+                sp.offset_mm = mm(median(ms.iter().map(|m| m.3).collect()));
+                Some(sp)
+            };
+            let (u_lines, ui, ub1, ub2) = lines(&verticals, len);
+            let (v_lines, vi, vb1, vb2) = lines(&horizontals, z1 - z0);
+            let mut spec = crate::curtain::CurtainSpec { auto_embed: true, ..Default::default() };
+            spec.u_interior = spec_of(&ui);
+            spec.u_border1 = spec_of(&ub1);
+            spec.u_border2 = spec_of(&ub2);
+            spec.v_interior = spec_of(&vi);
+            spec.v_border1 = spec_of(&vb1);
+            spec.v_border2 = spec_of(&vb2);
+            if !plates.is_empty() {
+                spec.panel.thickness_mm = mm(median(plates.iter().map(|p| p.0).collect()).max(1.0));
+                spec.panel.offset_mm = mm(median(plates.iter().map(|p| p.1).collect()));
+            } else if bodies.len() > 1 || !verticals.is_empty() {
+                spec.panel.kind = crate::curtain::PanelKind::Empty;
+            }
+            // the type: the file's name for it, taken up by one of that name and make-up or made
+            let base = label(id).unwrap_or_else(|| "Imported Curtain Wall".into());
+            // (a copy placed mirrored measures as the same make-up turned round, and is turned back to match)
+            let turned = curtain_turned(&spec);
+            let same = d.wall_types().into_iter().filter(|(_, t)| t.name == base || t.name.starts_with(&format!("{base} "))).find_map(|(tid, t)| {
+                let c = t.curtain.as_ref()?;
+                let (merged, flip) = curtain_merge(c, &spec).map(|m| (m, false)).or_else(|| curtain_merge(c, &turned).map(|m| (m, true)))?;
+                Some((tid, t.clone(), merged, flip))
+            });
+            let flip = same.as_ref().is_some_and(|s| s.3);
+            let tid = match same {
+                Some((tid, t, merged, _)) => {
+                    if t.curtain.as_ref() != Some(&merged) {
+                        let nt = WallType { layers: vec![merged.layer()], curtain: Some(merged), ..t };
+                        d.transact("Import IFC", |tx| tx.update(tid, Element::WallType(nt)))?;
+                    }
+                    tid
+                }
+                None => {
+                    let mut name = base.clone();
+                    let mut k = 2;
+                    while d.wall_types().iter().any(|(_, t)| t.name == name) {
+                        name = format!("{base} {k}");
+                        k += 1;
+                    }
+                    let tpl = d.wall_types().into_iter().find(|(_, t)| t.curtain.is_some()).map(|(_, t)| t.clone()).ok_or("the template has no curtain wall type")?;
+                    let nt = WallType { name, layers: vec![spec.layer()], curtain: Some(spec.clone()), ..tpl };
+                    d.transact("Import IFC", |tx| Ok(tx.add(Element::WallType(nt))))?
+                }
+            };
+            let level = level_for(id, z0);
+            let mut start = Point::new(cx + u.x * u0 + nrm.x * mid, cy + u.y * u0 + nrm.y * mid);
+            let mut end = Point::new(cx + u.x * u1 + nrm.x * mid, cy + u.y * u1 + nrm.y * mid);
+            let mut u_lines = u_lines;
+            if flip {
+                std::mem::swap(&mut start, &mut end);
+                u_lines = u_lines.iter().rev().map(|x| mm(len - x)).collect();
+            }
+            let mut nw = Wall::new(tid, level, start, end, mm(z1 - z0));
+            nw.base_offset_mm = mm(z0 - elevation(level));
+            nw.curtain_lines = Some(crate::curtain::CurtainLines { u: u_lines, v: v_lines });
+            let g = guid_of(id);
+            if valid_guid(&g) {
+                nw.ifc.guid = g;
+            }
+            d.transact("Import IFC", |tx| Ok(tx.add(Element::Wall(nw))))?;
+            curtains += 1;
+            taken.extend(parts.iter().copied());
+        }
+        out.counts.insert("curtain_walls", curtains);
+
         // floors: their top outline and the holes in it, and how thick they are below it
         let mut floor_types: BTreeMap<String, Id> = BTreeMap::new();
         let mut floors = 0;
@@ -1077,7 +1297,14 @@ impl Document {
             let is_door = o.name.starts_with("IFCDOOR");
             let opening = l.fills.get(&id).copied();
             let Some(&(host, a, b, _)) = opening.and_then(|op| l.host.get(&op)).and_then(|h| walls.get(h)) else {
-                out.skipped.push(format!("{}: {}", who(id), if opening.is_some() { "its wall was left out" } else { "it is not in a wall" }));
+                let why = if curtain_doors.contains(&id) {
+                    "a door in a curtain wall comes in with curtain wall doors (later); its cell is glazed meanwhile"
+                } else if opening.is_some() {
+                    "its wall was left out"
+                } else {
+                    "it is not in a wall"
+                };
+                out.skipped.push(format!("{}: {why}", who(id)));
                 continue;
             };
             let mut faces = opening.and_then(e).map(|op| r.body(op)).unwrap_or_default();
@@ -1136,6 +1363,9 @@ impl Document {
         // what has no OpenArch element yet
         let mut others: BTreeMap<&str, usize> = BTreeMap::new();
         for id in named(OTHERS) {
+            if taken.contains(&id) {
+                continue;
+            }
             if let Some(x) = e(id) {
                 *others.entry(x.name.as_str()).or_default() += 1;
             }
@@ -1293,5 +1523,74 @@ ENDSEC;\nEND-ISO-10303-21;\n";
         assert!(fl.offset_mm.abs() < 0.01);
         assert!(report.skipped.iter().any(|s| s.contains("IFCCOLUMN")), "{:?}", report.skipped);
         assert!(Document::from_ifc(b"not a file").is_err());
+    }
+
+    #[test]
+    fn a_curtain_wall_comes_in_from_its_mullions_and_panels() {
+        // 3 m long and 2.4 m tall along x: border mullions 50 x 100 at the ends, top and bottom, one interior mullion
+        // each way at 1.5 m and 1.2 m, a 20 mm glass panel, and a door in a cell
+        let mut f = String::from("ISO-10303-21;\nHEADER;\nFILE_DESCRIPTION((''),'2;1');\nFILE_NAME('x','',(''),(''),'','','');\nFILE_SCHEMA(('IFC2X3'));\nENDSEC;\nDATA;\n\
+#1=IFCPROJECT('0aaaaaaaaaaaaaaaaaaaaa',$,'Metres',$,$,$,$,(#2),#3);\n\
+#2=IFCGEOMETRICREPRESENTATIONCONTEXT($,'Model',3,1.E-05,#10,$);\n\
+#3=IFCUNITASSIGNMENT((#4));\n#4=IFCSIUNIT(*,.LENGTHUNIT.,$,.METRE.);\n\
+#10=IFCAXIS2PLACEMENT3D(#11,$,$);\n#11=IFCCARTESIANPOINT((0.,0.,0.));\n#12=IFCDIRECTION((0.,0.,1.));\n#13=IFCAXIS2PLACEMENT2D(#11,$);\n\
+#20=IFCBUILDINGSTOREY('0bbbbbbbbbbbbbbbbbbbbb',$,'GF',$,$,#21,$,$,.ELEMENT.,0.);\n#21=IFCLOCALPLACEMENT($,#10);\n\
+#30=IFCCURTAINWALL('0ddddddddddddddddddddd',$,'CW-1',$,'Shopfront',#21,$,$);\n\
+#31=IFCDOOR('0eeeeeeeeeeeeeeeeeeeee',$,'Cell door',$,$,#21,$,$,2.,1.);\n");
+        // (x, y, z) of the box's centre at its base, its x and y sizes, and its height
+        let boxes = [
+            ("IFCMEMBER", 0.025, 0.0, 0.0, 0.05, 0.1, 2.4),
+            ("IFCMEMBER", 1.5, 0.0, 0.0, 0.05, 0.1, 2.4),
+            ("IFCMEMBER", 2.975, 0.0, 0.0, 0.05, 0.1, 2.4),
+            ("IFCMEMBER", 1.5, 0.0, 0.0, 3.0, 0.1, 0.05),
+            ("IFCMEMBER", 1.5, 0.0, 1.175, 3.0, 0.1, 0.05),
+            ("IFCMEMBER", 1.5, 0.0, 2.35, 3.0, 0.1, 0.05),
+            ("IFCPLATE", 0.7625, 0.0, 0.05, 1.425, 0.02, 1.125),
+        ];
+        let mut parts = vec!["#31".to_string()];
+        for (i, (kind, x, y, z, dx, dy, h)) in boxes.iter().enumerate() {
+            let k = 100 + i * 10;
+            f += &format!(
+                "#{k}={kind}('0{:0>21}',$,'Part',$,$,#{},#{},$);\n#{}=IFCLOCALPLACEMENT(#21,#{});\n#{}=IFCAXIS2PLACEMENT3D(#{},$,$);\n#{}=IFCCARTESIANPOINT(({x},{y},{z}));\n\
+#{}=IFCPRODUCTDEFINITIONSHAPE($,$,(#{}));\n#{}=IFCSHAPEREPRESENTATION(#2,'Body','SweptSolid',(#{}));\n#{}=IFCEXTRUDEDAREASOLID(#{},#10,#12,{h});\n\
+#{}=IFCRECTANGLEPROFILEDEF(.AREA.,$,#13,{dx},{dy});\n",
+                k,
+                k + 1,
+                k + 4,
+                k + 1,
+                k + 2,
+                k + 2,
+                k + 3,
+                k + 3,
+                k + 4,
+                k + 5,
+                k + 5,
+                k + 6,
+                k + 6,
+                k + 7,
+                k + 7
+            );
+            parts.push(format!("#{k}"));
+        }
+        f += &format!("#90=IFCRELAGGREGATES('0fffffffffffffffffffff',$,$,$,#30,({}));\n", parts.join(","));
+        f += "#91=IFCRELCONTAINEDINSPATIALSTRUCTURE('0ggggggggggggggggggggg',$,$,$,(#30,#31),#20);\nENDSEC;\nEND-ISO-10303-21;\n";
+        let (n, report) = Document::from_ifc(f.as_bytes()).unwrap();
+        assert_eq!(report.counts.get("curtain_walls"), Some(&1), "{:?}", report.skipped);
+        let w = n.iter().find_map(|(_, e)| if let Element::Wall(w) = e { Some(w.clone()) } else { None }).expect("the curtain wall");
+        assert!(w.start.dist(&Point::new(0.0, 0.0)) < 0.5 && w.end.dist(&Point::new(3000.0, 0.0)) < 0.5, "{w:?}");
+        assert!((w.height_mm - 2400.0).abs() < 0.5);
+        let spec = n.wall_type(w.wall_type).and_then(|t| t.curtain.clone()).expect("a curtain type");
+        assert_eq!(n.wall_type(w.wall_type).unwrap().name, "Shopfront");
+        for m in [&spec.u_border1, &spec.u_interior, &spec.u_border2, &spec.v_border1, &spec.v_interior, &spec.v_border2] {
+            let m = m.as_ref().expect("a mullion");
+            assert!((m.widths().0 + m.widths().1 - 50.0).abs() < 0.5 && (m.depth() - 100.0).abs() < 0.5, "{m:?}");
+        }
+        assert!((spec.panel.thickness_mm - 20.0).abs() < 0.5);
+        let (us, vs) = n.curtain_grid(&w).unwrap();
+        assert_eq!(us.iter().map(|u| u.round()).collect::<Vec<f64>>(), vec![0.0, 1500.0, 3000.0]);
+        assert_eq!(vs.iter().map(|v| v.round()).collect::<Vec<f64>>(), vec![0.0, 1200.0, 2400.0]);
+        // the parts are not also left over, and the door says why it waits
+        assert!(!report.skipped.iter().any(|s| s.contains("IFCMEMBER") || s.contains("IFCPLATE")), "{:?}", report.skipped);
+        assert!(report.skipped.iter().any(|s| s.contains("curtain wall doors")), "{:?}", report.skipped);
     }
 }

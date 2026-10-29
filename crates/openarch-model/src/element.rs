@@ -495,6 +495,9 @@ pub struct Wall {
     /// Pinned elements refuse move, delete and flip until unpinned.
     #[serde(default)]
     pub pinned: bool,
+    /// A curtain wall's own grid lines, beside those its type lays out.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curtain_lines: Option<crate::curtain::CurtainLines>,
 }
 
 impl Wall {
@@ -526,6 +529,7 @@ impl Wall {
             ifc: IfcParams { guid: new_ifc_guid(), ..IfcParams::default() },
             flipped: false,
             pinned: false,
+            curtain_lines: None,
         }
     }
 }
