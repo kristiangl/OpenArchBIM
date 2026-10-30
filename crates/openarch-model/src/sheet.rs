@@ -365,6 +365,9 @@ impl Document {
         if v.view_kind == ViewKind::ThreeD {
             return Err("3D views go on sheets in a later step.".into());
         }
+        if v.view_kind == ViewKind::Schedule {
+            return Err("Schedules go on sheets in the next step.".into());
+        }
         if v.view_kind != ViewKind::Legend {
             if let Some((other, _)) = self.sheet_of_view(view) {
                 let s = self.sheet(other).map_or(String::new(), |s| format!("{} - {}", s.number, s.name));

@@ -257,10 +257,14 @@ fn kind_label(k: ViewKind) -> &'static str {
         ViewKind::Drafting => "Drafting View",
         ViewKind::Legend => "Legend",
         ViewKind::ThreeD => "3D View",
+        ViewKind::Schedule => "Schedule",
     }
 }
 
 pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
+    if let Some(s) = &v.schedule {
+        return schedule_props(id, v, s);
+    }
     let eff = d.effective_settings(id).unwrap_or_else(|| v.settings.clone());
     let tpl = v.template.and_then(|t| d.view_template(t));
     let inc = |p: TemplateProp| tpl.is_some_and(|t| t.included.contains(&p));
@@ -1461,6 +1465,26 @@ pub fn viewport_props(d: &Document, id: Id, v: &openarch_model::sheet::Viewport)
             group("Graphics", vec![
                 select("Rotation on Sheet", vec![rot(0, "None"), rot(90, "90 Counterclockwise"), rot(270, "90 Clockwise")]),
                 select("View Anchor", vec![anchor(A::Centre, "Centre"), anchor(A::TopLeft, "Top Left"), anchor(A::TopRight, "Top Right"), anchor(A::BottomLeft, "Bottom Left"), anchor(A::BottomRight, "Bottom Right")]),
+            ]),
+        ],
+    })
+}
+
+/// A schedule: its name and category, and the Schedule Properties tabs.
+fn schedule_props(id: Id, v: &View, s: &openarch_model::schedule::ScheduleDef) -> Value {
+    let n = |k: usize, what: &str| if k == 0 { "Edit...".to_string() } else { format!("Edit... ({k} {what}{})", if k == 1 { "" } else { "s" }) };
+    json!({
+        "id": id, "kind": "Schedule",
+        "title": format!("Schedule: {}", v.name),
+        "target": { "method": "patch_view", "id": id },
+        "groups": [
+            group("Identity Data", vec![text("View Name", "name", &v.name), ro("Category", s.category.clone())]),
+            group("Other", vec![
+                dialog("Fields", "schedule_fields", &n(s.fields.len(), "field")),
+                dialog("Filter", "schedule_filter", &n(s.filters.len(), "filter")),
+                dialog("Sorting/Grouping", "schedule_sorting", &n(s.sort.len(), "key")),
+                dialog("Formatting", "schedule_formatting", "Edit..."),
+                dialog("Appearance", "schedule_appearance", "Edit..."),
             ]),
         ],
     })

@@ -35,6 +35,7 @@ pub mod join;
 pub mod layers;
 pub mod mesh;
 pub mod roof;
+pub mod schedule;
 pub mod section;
 pub mod sharedparams;
 pub mod sheet;

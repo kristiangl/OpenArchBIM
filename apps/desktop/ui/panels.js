@@ -66,7 +66,8 @@ function rowCells(r, target) {
     const b = document.createElement("button");
     b.textContent = r.value;
     b.className = "edit-btn";
-    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange })[r.dialog]?.());
+    const sched = (tab) => () => Sched.edit(target.id, tab);
+    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange, schedule_fields: sched("fields"), schedule_filter: sched("filter"), schedule_sorting: sched("sorting"), schedule_formatting: sched("formatting"), schedule_appearance: sched("appearance") })[r.dialog]?.());
     val.append(dis(b));
   } else {
     val.textContent = r.value;
@@ -105,7 +106,7 @@ async function renderProperties() {
   else if (!app.selection.length && app.browserSel != null && viewById(app.browserSel)) d = await run("describe", { id: app.browserSel });
   // the view's own tool: a plan's, or an elevation's or section's
   const tool = app.view.kind === "elevation" ? Elev.tool : Plan.tool;
-  if (!app.selection.length && !d && tool === "select" && app.view.kind !== "schedule" && app.view.kind !== "sheet" && curView()) d = await run("describe", { id: curView().id });
+  if (!app.selection.length && !d && tool === "select" && !(app.view.kind === "schedule" && app.view.viewId == null) && app.view.kind !== "sheet" && curView()) d = await run("describe", { id: curView().id });
   // an open sheet with nothing on it selected shows the sheet's own properties
   if (!app.selection.length && !d && app.view.kind === "sheet") d = await run("describe", { id: app.view.viewId });
   if (token !== propsRender) return; // a newer render started while this one waited

@@ -94,6 +94,7 @@ const COMMANDS = {
   gp: () => createGroup(),
   "export-ifc": () => exportIfc(),
   "v-sheet": () => newSheetDialog(),
+  "v-sched": () => Sched.newSchedule(),
   export: () => ExportFlow.start(),
   "project-info": () => projectInfoDialog(),
   "model-group": () => placeGroupCommand("model"),
@@ -603,7 +604,7 @@ function wallTopParams(levelId) {
   return top ? { top_level_id: top.id, top_offset_mm: 0, height_mm: top.elevation_mm - app.info.levels.find((l) => l.id === levelId).elevation_mm } : { height_mm: app.height };
 }
 // section views are drawn by the elevation viewer
-const viewerOf = (k) => (k === "three_d" ? "3d" : k === "elevation" || k === "section" ? "elevation" : "plan");
+const viewerOf = (k) => (k === "three_d" ? "3d" : k === "elevation" || k === "section" ? "elevation" : k === "schedule" ? "schedule" : "plan");
 const curLevelId = () => (curView() && curView().level_id) || app.info.levels[0].id;
 
 function renderTree() {
@@ -614,7 +615,7 @@ function renderTree() {
   const v = app.view;
   const leaf = (name, active, onopen, viewId) => ({ name, active, onopen, viewId });
   const ofKind = (k) => app.info.views.filter((x) => x.view_kind === k);
-  const viewLeaf = (x) => leaf(x.name, v.kind !== "schedule" && v.viewId === x.id, () => openView(viewerOf(x.view_kind), x.id), x.id);
+  const viewLeaf = (x) => leaf(x.name, v.viewId === x.id, () => openView(viewerOf(x.view_kind), x.id), x.id);
   const nodes = [
     { name: "Views (all)", children: [
       { name: "Floor Plans", children: ofKind("floor_plan").map(viewLeaf) },
@@ -624,7 +625,17 @@ function renderTree() {
       { name: "Sections", children: ofKind("section").map(viewLeaf) },
       { name: "Drafting Views", children: [] },
       { name: "Legends", children: [] },
-      { name: "Schedules / Quantities", children: [leaf("Wall and Floor Quantities", v.kind === "schedule", () => openView("schedule"))] },
+      { name: "Schedules / Quantities", menu: [{ label: "New Schedule/Quantities...", run: () => Sched.newSchedule() }], children: [
+        ...ofKind("schedule").map((x) => ({ ...viewLeaf(x), menu: [
+          { label: "Open", run: () => openView("schedule", x.id) },
+          { label: "Schedule Properties...", run: () => Sched.edit(x.id, "fields") },
+          { label: "Duplicate", run: async () => { const r = await run("duplicate_view", { id: x.id }); if (r) { await refresh(); await openView("schedule", r.id); } } },
+          { sep: true },
+          { label: "New Schedule/Quantities...", run: () => Sched.newSchedule() },
+          { label: "Delete", run: async () => { if (confirm(`Delete the schedule ${x.name}?`) && (await run("delete", { ids: [x.id] }))) { if (app.view.viewId === x.id) await openView("plan", app.lastPlanId); await refresh(); } } },
+        ] })),
+        leaf("Wall and Floor Quantities", v.kind === "schedule" && v.viewId == null, () => openView("schedule", null)),
+      ] },
       { name: "Sheets", menu: sheetsMenu(null), children: (() => {
         // the sheet collections with their sheets, then the sheets in none; a placeholder says so
         const sheetLeaf = (s) => ({
@@ -778,7 +789,7 @@ async function openView(kind, viewId, opt = {}) {
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
   // only re-frame the camera when the view actually changes
   const firstOf = (k) => (app.info.views.find((x) => x.view_kind === k) || {}).id;
-  const target = kind === "schedule" ? app.view.viewId : kind === "sheet" ? viewId : (viewId ?? (kind === "plan" && curView() && curView().level_id ? app.view.viewId : firstOf(kind === "3d" ? "three_d" : kind === "elevation" ? "elevation" : "floor_plan")));
+  const target = kind === "schedule" ? viewId ?? null : kind === "sheet" ? viewId : (viewId ?? (kind === "plan" && curView() && curView().level_id ? app.view.viewId : firstOf(kind === "3d" ? "three_d" : kind === "elevation" ? "elevation" : "floor_plan")));
   const changed = app.view.kind !== kind || target !== app.view.viewId;
   if (changed) saveCamera();
   app.view = { kind, viewId: target };
@@ -800,7 +811,7 @@ async function openView(kind, viewId, opt = {}) {
 }
 
 // ---- tabs of the open views, and the camera each view keeps --------------------------
-const viewKey = (v) => (v.kind === "schedule" ? "schedule" : `${v.kind}:${v.viewId}`);
+const viewKey = (v) => `${v.kind}:${v.viewId}`;
 function saveCamera() {
   const k = app.view.kind;
   const c = k === "plan" ? Plan.getCamera() : k === "elevation" ? Elev.getCamera() : k === "3d" ? app.vp?.getCamera() : k === "sheet" ? SheetView.getCamera() : null;
@@ -822,14 +833,14 @@ function ensureTab() {
 }
 const sheetById = (id) => (app.info.sheets || []).find((s) => s.id === id);
 function tabName(t) {
-  if (t.kind === "schedule") return "Wall and Floor Quantities";
+  if (t.kind === "schedule" && t.viewId == null) return "Wall and Floor Quantities";
   if (t.kind === "sheet") { const s = sheetById(t.viewId); return s ? `${s.number} - ${s.name}` : ""; }
   const v = viewById(t.viewId);
   return v ? v.name : "";
 }
 function renderViewTabs() {
   // views that no longer exist lose their tab
-  app.tabs = app.tabs.filter((t) => t.kind === "schedule" || (t.kind === "sheet" ? sheetById(t.viewId) : viewById(t.viewId)));
+  app.tabs = app.tabs.filter((t) => (t.kind === "schedule" && t.viewId == null) || (t.kind === "sheet" ? sheetById(t.viewId) : viewById(t.viewId)));
   const bar = $("#view-tabs");
   if (!bar) return;
   const here = app.activation ? `sheet:${app.activation.sheet}` : viewKey(app.view);
@@ -913,7 +924,8 @@ async function refreshView(force) {
     app.vp.setStyle(app.sceneStyle || "shaded");
     app.vp.poke();
   } else if (k === "schedule") {
-    await renderSchedule();
+    if (app.view.viewId != null) await Sched.render(app.view.viewId);
+    else await renderSchedule();
   }
 }
 
@@ -959,7 +971,7 @@ function updateTitle() {
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
   if (app.activation) { const s = sheetById(app.activation.sheet); $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - Sheet: ${s ? `${s.number} - ${s.name}` : ""} (${v ? v.name : "view"} activated)`; updateUndoButtons(); return; }
-  const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : "Schedule: Wall and Floor Quantities";
+  const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : `Schedule: ${tabName(app.view)}`;
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
   updateUndoButtons();
@@ -976,7 +988,7 @@ async function refresh(force = false) {
   if (!app.wallTypeId || !info.wall_types.some((t) => t.id === app.wallTypeId)) app.wallTypeId = (info.wall_types.find((t) => t.name === "Brick Veneer") || info.wall_types[0]).id;
   if (!app.floorTypeId || !info.floor_types.some((t) => t.id === app.floorTypeId)) app.floorTypeId = info.floor_types[0].id;
   if (!app.roofTypeId || !info.roof_types.some((t) => t.id === app.roofTypeId)) app.roofTypeId = info.roof_types[0].id;
-  if (app.view.kind !== "schedule" && !(app.view.kind === "sheet" ? sheetById(app.view.viewId) : viewById(app.view.viewId))) {
+  if (!(app.view.kind === "schedule" && app.view.viewId == null) && !(app.view.kind === "sheet" ? sheetById(app.view.viewId) : viewById(app.view.viewId))) {
     const first = info.views.find((x) => x.view_kind === "floor_plan") || info.views[0];
     app.view = { kind: viewerOf(first.view_kind), viewId: first.id };
     $("#viewport-wrap").className = "v-" + app.view.kind;

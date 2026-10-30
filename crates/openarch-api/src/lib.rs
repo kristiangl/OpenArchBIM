@@ -18,6 +18,7 @@ use openarch_model::{mesh, symbol, Document, Element, EndJoin, FamilyCategory, I
 
 mod graphics;
 mod props;
+mod schedule;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -1749,6 +1750,33 @@ impl Session {
                 let how = serde_json::from_value(p.get("how").cloned().unwrap_or(json!("empty"))).map_err(|e| format!("bad duplicate option: {e}"))?;
                 Ok(json!({ "id": self.doc.duplicate_sheet(id_of(p, "id")?, how)? }))
             }
+            // ---- schedules (schedule.rs)
+            // the categories a schedule can list, with how many elements each has now
+            "schedule_categories" => {
+                let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+                for (id, _) in self.doc.iter() {
+                    if let Some(c) = self.schedule_category(id) {
+                        *counts.entry(c).or_default() += 1;
+                    }
+                }
+                let mut cats: Vec<String> = openarch_model::view::MODEL_CATEGORIES.iter().map(|c| c.to_string()).collect();
+                cats.retain(|c| !openarch_model::view::SITE_POINT_CATEGORIES.contains(&c.as_str()));
+                Ok(json!(cats.iter().map(|c| json!({ "name": c, "count": counts.get(c).copied().unwrap_or(0) })).collect::<Vec<_>>()))
+            }
+            "add_schedule" => {
+                let category = p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?;
+                let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| format!("{} Schedule", category.trim_end_matches('s')));
+                Ok(json!({ "id": self.doc.add_schedule(category, &name)? }))
+            }
+            "schedule_table" => self.schedule_table(id_of(p, "id")?),
+            "schedule_fields" => Ok(self.schedule_fields(p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?)),
+            "set_schedule" => {
+                let id = id_of(p, "id")?;
+                let def: openarch_model::schedule::ScheduleDef = serde_json::from_value(p.get("def").cloned().ok_or("missing def")?).map_err(|e| format!("bad schedule: {e}"))?;
+                let units = self.schedule_param_units(&def.category);
+                self.doc.set_schedule(id, def, &|f| units.get(&f.name).copied().unwrap_or(openarch_model::schedule::Unit::Text))?;
+                Ok(json!({}))
+            }
             "next_sheet_number" => Ok(json!({ "number": self.doc.next_sheet_number(p.get("collection").and_then(|v| v.as_u64())) })),
             "add_sheet_collection" => Ok(json!({ "id": self.doc.add_sheet_collection(p.get("name").and_then(|v| v.as_str()).unwrap_or(""))? })),
             "patch_sheet_collection" => {
@@ -3208,6 +3236,80 @@ mod tests {
                 (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
             })
             .sum()
+    }
+
+    #[test]
+    fn a_door_schedule_filters_sorts_groups_totals_and_writes_back() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let lvl = info["levels"][0]["id"].as_u64().unwrap();
+        let wt = info["wall_types"][0]["id"].as_u64().unwrap();
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [12000, 0], "height_mm": 2700}))["id"].as_u64().unwrap();
+        let ty = |label: &str| info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == label).unwrap()["id"].as_u64().unwrap();
+        let (narrow, wide) = (ty("Single-Flush: 720 x 2040"), ty("Single-Flush: 820 x 2040"));
+        let mut doors = vec![];
+        for (k, t) in [narrow, wide, wide, narrow, wide].into_iter().enumerate() {
+            let d = call(&mut s, "place_instance", json!({"type_id": t, "host_id": w, "point": [1000.0 + 2000.0 * k as f64, 0]}))["id"].as_u64().unwrap();
+            call(&mut s, "patch_instance", json!({"id": d, "patch": {"mark": format!("D{}", k + 1)}}));
+            doors.push(d);
+        }
+        let cats = call(&mut s, "schedule_categories", json!({}));
+        assert_eq!(cats.as_array().unwrap().iter().find(|c| c["name"] == "Doors").unwrap()["count"], 5);
+        let id = call(&mut s, "add_schedule", json!({"category": "Doors"}))["id"].as_u64().unwrap();
+        let fields = call(&mut s, "schedule_fields", json!({"category": "Doors"}));
+        let unit = |n: &str| fields.as_array().unwrap().iter().find(|f| f["name"] == n).map(|f| (f["kind"].clone(), f["unit"].clone()));
+        assert_eq!(unit("Mark"), Some((json!("instance"), json!("text"))));
+        assert_eq!(unit("Width"), Some((json!("type"), json!("length"))));
+        assert_eq!(unit("Type").unwrap().0, json!("type"));
+        let f = |name: &str, kind: &str| json!({"name": name, "kind": kind});
+        let mut def = json!({
+            "category": "Doors",
+            "fields": [f("Mark", "instance"), f("Type", "type"), f("Width", "type"), f("Height", "type"), f("Count", "count"),
+                {"name": "Opening", "kind": "formula", "formula": "[Width] * [Height]", "unit": "area", "totals": "totals"},
+                {"name": "Share", "kind": "percentage", "of": "Opening"},
+                {"name": "Size", "kind": "combined", "parts": [{"field": "Width", "separator": " x "}, {"field": "Height", "suffix": " mm"}]}],
+            "sort": [{"field": "Type", "header": true, "footer": true, "blank_line": true}, {"field": "Mark", "descending": true}],
+            "grand_totals": true,
+        });
+        // a formula that gives the wrong unit is refused
+        let mut bad = def.clone();
+        bad["fields"][5]["unit"] = json!("length");
+        assert!(s.handle("set_schedule", &json!({"id": id, "def": bad})).unwrap_err().contains("an Area, not Length"));
+        call(&mut s, "set_schedule", json!({"id": id, "def": def}));
+        let t = call(&mut s, "schedule_table", json!({"id": id}));
+        let rows = t["rows"].as_array().unwrap();
+        let kinds: Vec<&str> = rows.iter().map(|r| r["kind"].as_str().unwrap()).collect();
+        assert_eq!(kinds, vec!["header", "item", "item", "footer", "blank", "header", "item", "item", "item", "footer", "blank", "grand"]);
+        let text = |r: usize, c: usize| rows[r]["cells"][c]["text"].as_str().unwrap().to_string();
+        assert_eq!((text(0, 0), text(1, 0), text(2, 0)), ("720 x 2040".into(), "D4".into(), "D1".into()), "grouped by type, marks descending");
+        assert_eq!((text(1, 2), text(1, 5), text(1, 7)), ("720".into(), "1.47 m²".into(), "720 x 2040 mm".into()));
+        assert_eq!(text(3, 0), "720 x 2040:", "the footer's title");
+        assert_eq!((text(3, 4), text(3, 5)), ("2".into(), "2.94 m²".into()), "the footer counts and totals its group");
+        assert_eq!((text(11, 4), text(11, 5)), ("5".into(), "7.96 m²".into()));
+        // the share of the total opening area
+        assert_eq!(text(1, 6), format!("{:.1}%", 1.4688 / 7.956 * 100.0));
+        // filtered to the wide doors, not itemised: one row of three
+        def["filters"] = json!([{"field": "Width", "op": "greater", "value": "800"}]);
+        def["itemize"] = json!(false);
+        def["sort"] = json!([{"field": "Type"}]);
+        call(&mut s, "set_schedule", json!({"id": id, "def": def}));
+        let t = call(&mut s, "schedule_table", json!({"id": id}));
+        let rows = t["rows"].as_array().unwrap();
+        assert_eq!(rows.len(), 2, "one compressed row and the grand total");
+        assert_eq!((rows[0]["cells"][0]["text"].as_str(), rows[0]["cells"][4]["text"].as_str(), rows[0]["ids"].as_array().unwrap().len()), (Some(""), Some("3"), 3), "marks differ, so blank");
+        // an edit through a cell's target changes the element: a mark in an itemised schedule
+        def["itemize"] = json!(true);
+        call(&mut s, "set_schedule", json!({"id": id, "def": def}));
+        let t = call(&mut s, "schedule_table", json!({"id": id}));
+        let cell = &t["rows"][0]["cells"][0];
+        assert_eq!(cell["row"]["path"], "mark");
+        let target = &cell["targets"][0];
+        call(&mut s, target["method"].as_str().unwrap(), json!({"id": target["id"], "patch": {"mark": "W1"}}));
+        let t = call(&mut s, "schedule_table", json!({"id": id}));
+        assert_eq!(t["rows"][0]["cells"][0]["text"], "W1");
+        // the schedule is a view, with its properties
+        let props = call(&mut s, "describe", json!({"id": id}));
+        assert_eq!(props["kind"], "Schedule");
     }
 
     #[test]

@@ -190,6 +190,37 @@ table.sched th, table.sched td { border: 1px solid var(--line); padding: 3px 8px
 table.sched th { background: var(--panel-2); font-weight: 600; }
 table.sched .calc { background: var(--accent-soft); }
 table.sched td.num { text-align: right; font-variant-numeric: tabular-nums; }
+/* schedule views: the table, its rows by kind, the row commands */
+.sched-live { max-width: none; }
+.sched-bar { display: flex; gap: 6px; align-items: center; margin-bottom: 8px; }
+table.sched2 { border-collapse: collapse; background: var(--panel); min-width: 420px; }
+table.sched2 th, table.sched2 td { border: 1px solid var(--line); padding: 3px 8px; white-space: nowrap; }
+table.sched2 .s-title th { font-size: 14px; padding: 6px 8px; text-align: center; }
+table.sched2 .s-head th { background: var(--panel-2); font-weight: 600; }
+table.sched2 .s-group td { font-weight: 600; background: var(--panel-2); }
+table.sched2 .s-footer td { font-style: italic; font-weight: 600; }
+table.sched2 .s-grand td { font-weight: 700; border-top: 2px solid var(--text); }
+table.sched2 .s-blank td { border-left: none; border-right: none; height: 10px; }
+table.sched2 .s-item { cursor: pointer; }
+table.sched2 .s-item:hover td { background: var(--accent-soft); }
+table.sched2 .picked td { background: var(--accent-soft); outline: 1px solid var(--accent); }
+table.sched2 td.editable { cursor: text; }
+table.sched2 td input, table.sched2 td select { width: 100%; box-sizing: border-box; font: inherit; }
+table.sched2 .a-right { text-align: right; font-variant-numeric: tabular-nums; }
+table.sched2 .a-centre { text-align: center; }
+.sched-count { color: var(--muted); margin-top: 6px; font-size: 11px; }
+.sched-cats { width: 320px; }
+.sched-props .ex-tab { min-height: 380px; }
+.sched-fields { display: grid; grid-template-columns: 1fr auto 1fr auto; gap: 8px; align-items: start; }
+.sched-fields.two { grid-template-columns: 220px 1fr; }
+.sched-fields input[type="search"] { width: 100%; box-sizing: border-box; margin-bottom: 4px; }
+.sched-list { width: 100%; min-width: 180px; }
+.sched-mid { display: flex; flex-direction: column; gap: 6px; padding-top: 24px; }
+.sched-rule { display: grid; grid-template-columns: 70px 1fr 1fr 1fr; gap: 6px; align-items: center; margin: 3px 0; }
+.sched-rule.sub { margin-bottom: 8px; }
+.sched-format .new-row { margin-bottom: 6px; }
+.sched-parts { margin: 6px 0; }
+.sched-part { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr auto; gap: 4px; margin: 2px 0; }
 table.sched tfoot td { font-weight: 600; background: var(--panel-2); }
 table.sched td.empty { color: var(--muted); text-align: center; }
 .grand { margin-top: 18px; font-size: 13px; }

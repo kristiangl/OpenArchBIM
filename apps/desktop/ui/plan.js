@@ -2802,6 +2802,17 @@ const Plan = (() => {
       cam = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, s: Math.min(size().w / ((x1 - x0) * 1.3 + 2000), size().h / ((y1 - y0) * 1.3 + 2000)) };
       render();
     },
+    // zoom to some elements (a schedule's Highlight in Model); false when none of them is in this view
+    frame(ids) {
+      const want = new Set(ids);
+      const pts = elements().filter((e) => want.has(e.id)).flatMap((e) => [...(e.ring || []), ...(e.rings || []).flat()]);
+      if (!pts.length) return false;
+      const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+      const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+      cam = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, s: Math.min(size().w / ((x1 - x0) * 1.5 + 3000), size().h / ((y1 - y0) * 1.5 + 3000)) };
+      render();
+      return true;
+    },
     // test hooks: where a model point appears on screen (relative to the canvas), and the snap under the cursor
     screenOf(x, y) { return toScreen({ x, y }); },
     hoverSnap: () => hover,

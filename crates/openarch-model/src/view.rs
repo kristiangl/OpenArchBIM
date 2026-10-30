@@ -29,6 +29,8 @@ pub enum ViewKind {
     Drafting,
     Legend,
     ThreeD,
+    /// A table of elements (schedule.rs).
+    Schedule,
 }
 
 impl ViewKind {
@@ -636,6 +638,9 @@ pub struct View {
     /// The view type it was made from (Floor Plan, Ceiling Plan and so on), when it has one.
     #[serde(default)]
     pub view_type: Option<Id>,
+    /// What a schedule lists and how.
+    #[serde(default)]
+    pub schedule: Option<crate::schedule::ScheduleDef>,
 }
 
 /// A view type: what the New Plan dialog's Type list offers. Each kind of plan has at least one, and a type can
@@ -705,6 +710,7 @@ impl View {
             elevation: None,
             section: None,
             view_type: None,
+            schedule: None,
         }
     }
 
