@@ -612,6 +612,7 @@ impl Document {
                 dash: self.line_pattern(&st.pattern).map(|p| p.dash_array()).unwrap_or_default(),
                 line: line.map(|i| i as usize),
                 region: region.map(|i| i as usize),
+                style: style.to_string(),
                 hidden: false,
             })
         };

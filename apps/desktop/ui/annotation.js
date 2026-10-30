@@ -18,6 +18,9 @@ const Ann = (() => {
   function pattern(ctx, f, name, colour, trace, m, o, pats, modelScale) {
     const def = (pats || {})[name];
     if (!def || def.solid) { trace(); ctx.fillStyle = colour; ctx.fill("evenodd"); return; }
+    // CAD export keeps the pattern as a hatch
+    const rings = f.rings.map((r) => r.map((q) => { const s = m(q); return [s.x, s.y]; }));
+    if (ctx.oaHatch && ctx.oaHatch({ rings, evenodd: true, name, colour, lines: def.lines, unit: def.model ? 1 / (modelScale || 1) : 1, map: m, width: Math.max(0.6, f.pen_mm * o.k) })) return;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const r of f.rings) for (const [x, y] of r) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
     const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
@@ -58,6 +61,7 @@ const Ann = (() => {
     ctx.lineJoin = "round"; ctx.lineCap = "round";
     for (const f of p.fills || []) {
       if (!keep(f)) continue;
+      if (opt.detail && ctx.oaTag) ctx.oaTag({ cat: "Detail Items", sub: null, kind: "pattern" });
       const trace = () => {
         ctx.beginPath();
         for (const r of f.rings) { r.forEach((q, i) => { const s = m(q); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
@@ -70,6 +74,7 @@ const Ann = (() => {
     ctx.globalAlpha = 1;
     for (const s of p.strokes || []) {
       if (!keep(s) || s.pts.length < 2) continue;
+      if (opt.detail && ctx.oaTag) ctx.oaTag({ cat: "Lines", sub: s.style || null, kind: "projection" });
       ctx.beginPath();
       s.pts.forEach((q, i) => { const a = m(q); i ? ctx.lineTo(a.x, a.y) : ctx.moveTo(a.x, a.y); });
       if (s.closed) ctx.closePath();

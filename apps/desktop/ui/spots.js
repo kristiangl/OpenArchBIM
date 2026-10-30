@@ -279,7 +279,11 @@ function makeSpots() {
       const selected = sel.has(sp.id), hov = hovered && hovered.includes(sp.id);
       const base = sp.style && sp.style.line ? sp.style.line.color : "#000000";
       const col = selected || hov ? accent : sp.invalid ? "#c0392b" : base === "#000000" ? text : base;
+      const c = H.ctx();
+      c.save();
+      if (c.oaTag) c.oaTag({ cat: sp.category || "Spot Elevations", sub: null, kind: "dims" });
       drawOne(sp, { col, selected, live: true });
+      c.restore();
     }
   }
 

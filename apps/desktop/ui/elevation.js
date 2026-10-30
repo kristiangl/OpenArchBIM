@@ -483,6 +483,7 @@ const Elev = (() => {
   function drawCut(it, vstyle, viewBg, col, selected, pass) {
     const st = it.style || { line: { color: "#000000", width_mm: 0.5 }, fill: { visible: false } };
     ctx.save();
+    if (ctx.oaTag) ctx.oaTag({ cat: it.category, sub: null, kind: pass === "line" ? "cut" : "pattern" });
     if (pass === "line") {
       cutPath(it);
       ctx.strokeStyle = selected ? col : st.line.color; ctx.lineWidth = selected ? 2.5 : Math.max(1.2, st.line.width_mm * k()); ctx.lineJoin = "miter"; ctx.stroke();
@@ -492,7 +493,16 @@ const Elev = (() => {
     cutPath(it);
     if (vstyle === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill("evenodd"); }
     else if (vstyle !== "wireframe") { ctx.fillStyle = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`; ctx.fill("evenodd"); }
-    if (vstyle !== "wireframe" && st.fill && st.fill.visible) {
+    if (vstyle !== "wireframe" && st.fill && st.fill.visible && ctx.semantic) {
+      // CAD export: the background and the pattern as hatches of the cut shape
+      const def = (data.fill_patterns || {})[st.fill.pattern];
+      if (st.fill.background) { cutPath(it); ctx.fillStyle = st.fill.background; ctx.fill("evenodd"); }
+      if (!def || def.solid) { cutPath(it); ctx.fillStyle = st.fill.color; ctx.fill("evenodd"); }
+      else {
+        const ring = (r) => r.map(([u, z]) => { const s = toScreen(u, z); return [s.x, s.y]; });
+        ctx.oaHatch({ rings: [...it.polys, ...(it.holes || [])].map(ring), evenodd: true, name: st.fill.pattern, colour: st.fill.color, lines: def.lines, unit: def.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
+      }
+    } else if (vstyle !== "wireframe" && st.fill && st.fill.visible) {
       ctx.save();
       cutPath(it); ctx.clip("evenodd");
       if (st.fill.background) { ctx.fillStyle = st.fill.background; const { w, h } = size(); ctx.fillRect(0, 0, w, h); }
@@ -507,12 +517,15 @@ const Elev = (() => {
     const { a, b } = levelParts(l);
     const col = mode === "sel" ? accent : mode === "hover" ? accent : text;
     ctx.save();
+    if (ctx.oaTag) ctx.oaTag({ cat: "Levels", sub: null, kind: "projection" });
     ctx.strokeStyle = col; ctx.lineWidth = mode === "sel" ? 1.8 : 1;
     ctx.setLineDash([14, 4, 3, 4]);
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();
     // the head family at each end that shows one: Name and elevation as its labels say
+    ctx.save();
+    if (ctx.oaTag) ctx.oaTag({ cat: "Levels", sub: null, kind: "iden" });
     for (const end of [0, 1]) {
       if (!l.bubbles[end]) continue;
       const p = end === 0 ? a : b;
@@ -520,6 +533,7 @@ const Elev = (() => {
     }
     // the name beside the line when no head carries it
     if (!l.bubbles[0] && !l.bubbles[1]) label(l.name, a.x + 6, a.y - 9, col);
+    ctx.restore();
     if (mode === "sel") {
       ctx.fillStyle = accent;
       for (const p of [a, b]) { ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fill(); }
@@ -537,13 +551,16 @@ const Elev = (() => {
       const a = toScreen(g.u, g.z1), b = toScreen(g.u, g.z0);
       const on = sel.has(g.id) || hoverGrid === g.id, col = on ? accent : text;
       ctx.save();
+      if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "projection" });
       ctx.strokeStyle = col; ctx.lineWidth = sel.has(g.id) ? 1.8 : 1; ctx.setLineDash([14, 4, 3, 4]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.setLineDash([]);
+      if (ctx.oaTag) ctx.oaTag({ kind: "iden" });
       const R = gridR(g);
       ctx.beginPath(); ctx.arc(a.x, a.y - R, R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
-      ctx.restore();
+      if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "iden" });
       label(g.name, a.x, a.y - R, col, "center", true);
+      ctx.restore();
     }
   }
 
@@ -895,6 +912,8 @@ const Elev = (() => {
     const text = css("--text"), accent = css("--accent");
     // ground
     const ground = toScreen(0, datum());
+    const tag = (t) => { if (ctx.oaTag) ctx.oaTag(t); };
+    tag({ cat: "Topography", sub: null, kind: "projection" });
     ctx.strokeStyle = css("--line"); ctx.lineWidth = 1;
     ctx.beginPath(); ctx.moveTo(0, ground.y + 0.5); ctx.lineTo(w, ground.y + 0.5); ctx.stroke();
     // Hidden Line draws every surface in the page colour with black linework, so what is behind shows nothing; Wireframe draws the
@@ -906,6 +925,7 @@ const Elev = (() => {
       if (it.cut) continue; // cuts are drawn after everything else, below
       // depth cueing: the model has worked out how far toward the background this item fades
       const f = it.fade == null ? 1 : it.fade, ink = f < 1 ? mix(text, viewBg, f) : text, fill = `rgb(${it.fill[0]},${it.fill[1]},${it.fill[2]})`;
+      tag({ cat: it.category, sub: null, kind: "projection" });
       for (const poly of it.polys) {
         polyPath(poly);
         // holes (the openings in a wall's edited profile) go through the fill and are outlined with it
@@ -924,6 +944,7 @@ const Elev = (() => {
     const cuts = data.items.filter((it) => it.cut), cutCol = (it) => (selD.has(it.id) || selD.has(it.part) ? accent : hovD.has(it.id) || hovD.has(it.part) ? accent : text);
     for (const it of [...cuts.filter((i) => i.category !== "Walls"), ...cuts.filter((i) => i.category === "Walls")]) drawCut(it, style, viewBg, cutCol(it), selD.has(it.id), "fill");
     for (const it of cuts) drawCut(it, style, viewBg, cutCol(it), selD.has(it.id), "line");
+    tag(null);
     // a jogged section unrolls its runs side by side: a light fold line marks each jog
     for (const u of data.folds || []) {
       const a = toScreen(u, data.frame.z_max), b = toScreen(u, data.frame.z_min);

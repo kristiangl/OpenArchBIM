@@ -36,8 +36,10 @@ const SheetView = (() => {
       if (v.rotation) c.rotate((-v.rotation * Math.PI) / 180);
       c.translate(-uw / 2, -uh / 2);
       const s2 = k / v.scale;
+      if (c.oaViewport) c.oaViewport({ view: v.view, kind: v.drawing, scale: v.scale, rotation: v.rotation || 0, centre: v.centre, paper_size: v.paper_size, title: v.title, local: { s: s2, cx: v.view_centre[0], cy: v.view_centre[1], w: uw, h: uh } });
       if (d && v.drawing === "plan") Plan.renderTo(c, { data: d, cam: { x: v.view_centre[0], y: v.view_centre[1], s: s2 }, w: uw, h: uh });
       else if (d) Elev.renderTo(c, { data: d, cam: { u: v.view_centre[0], z: v.view_centre[1], s: s2 }, w: uw, h: uh });
+      if (c.oaViewport) c.oaViewport(null);
       c.restore();
       label(c, v, at, k);
       if (opt.selected && opt.selected.has(v.id)) {
@@ -45,7 +47,13 @@ const SheetView = (() => {
         c.strokeRect(ctr.x - w / 2, ctr.y - h / 2, w, h); c.restore();
       }
     }
-    if (s.title_block) Ann.draw(c, s.title_block, { x: at(0, 0).x, y: at(0, 0).y, k }, null, "#ffffff", { own: true });
+    if (s.title_block) {
+      const o0 = at(0, 0), o1 = at(1, 0);
+      if (c.oaTag) c.oaTag({ cat: "Title Blocks", sub: null, kind: "projection" });
+      if (c.oaBlock) c.oaBlock({ name: s.title_block.name || "Title Block", at: o0, dir: { x: o1.x - o0.x, y: o1.y - o0.y } });
+      Ann.draw(c, s.title_block, { x: o0.x, y: o0.y, k }, null, "#ffffff", { own: true });
+      if (c.oaBlock) c.oaBlock(null);
+    }
     c.restore();
   }
 
@@ -55,6 +63,7 @@ const SheetView = (() => {
     const r = 4, cx = left + r + 1, cy = bottom - 8;
     const p = at(cx, cy);
     c.save();
+    if (c.oaTag) c.oaTag({ cat: "View Titles", sub: null, kind: "text" });
     c.strokeStyle = "#000"; c.fillStyle = "#000"; c.lineWidth = Math.max(0.5, 0.25 * k);
     c.beginPath(); c.arc(p.x, p.y, r * k, 0, Math.PI * 2); c.stroke();
     c.textAlign = "center"; c.textBaseline = "middle"; c.font = `600 ${3.5 * k}px system-ui, sans-serif`;

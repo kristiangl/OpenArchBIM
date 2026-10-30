@@ -738,6 +738,8 @@ pub struct PathStroke {
     /// The line it draws, or the region whose edge it is.
     pub line: Option<usize>,
     pub region: Option<usize>,
+    /// Its line style (a subcategory), empty for the category's own; CAD export names layers from it.
+    pub style: String,
     /// Not drawn in a project (a line that is not visible, or has invisible lines for its style); the family
     /// editor shows it greyed.
     pub hidden: bool,
@@ -998,6 +1000,7 @@ impl Document {
                 dash,
                 line,
                 region,
+                style: if sub == INVISIBLE_LINES { String::new() } else { sub.to_string() },
                 hidden,
             })
         };

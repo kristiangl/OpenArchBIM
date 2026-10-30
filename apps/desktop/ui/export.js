@@ -4,8 +4,8 @@
 //
 // Drawing: a sheet is drawn by SheetView.draw (the views on it by Plan.renderTo and Elev.renderTo) onto a recording
 // context, a stand-in for a canvas that keeps what is drawn as paths, clips and text in page units. The PDF writer
-// turns that into page content (vector lines, fills and Helvetica text); the DXF writer into R12 polylines, lines and
-// text on paper in millimetres.
+// turns that into page content (vector lines, fills and Helvetica text); dxf.js into a CAD drawing, from the same
+// drawing tagged by the viewers with what each line belongs to.
 const ExportFlow = (() => {
   const PT = 72 / 25.4; // PDF points in a millimetre
   // The viewers draw no line thinner than one unit, so pages are drawn finely and scaled back: a PDF page at four units
@@ -19,7 +19,7 @@ const ExportFlow = (() => {
     pdfName: "{ProjectNumber}_{ProjectName}_{Date}",
     pdfCombine: true, pdfPaper: "default", pdfOrientation: "landscape", pdfZoom: "fit", pdfColour: "colour",
     dxfName: "{ProjectNumber}_{ProjectName}_DXF_{Date}_{SheetNumber}_{SheetName}",
-    dxfColours: "index",
+    dxfSpace: "model", dxfLayers: null, dxfStatus: null,
     ifcName: "{ProjectNumber}_{ProjectName}_IFC_{Date}",
   };
   const load = () => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem("openarch.export") || "{}") }; } catch { return { ...DEFAULTS }; } };
@@ -51,6 +51,54 @@ const ExportFlow = (() => {
       this.st = { m: [1, 0, 0, 1, 0, 0], fillStyle: "#000", strokeStyle: "#000", lineWidth: 1, dash: [], font: "10px sans-serif", textAlign: "start", textBaseline: "alphabetic", globalAlpha: 1, lineCap: "butt", lineJoin: "miter", lineDashOffset: 0 };
       this.stack = [];
       this.path = [];
+      // what the viewers say about what they draw, for the DXF: the current tag ({ cat, sub, kind }), the block,
+      // viewport and dimension being drawn (indexes into blocks, vps and dims)
+      this.blocks = []; this.vps = []; this.dims = [];
+      this.blk = null; this.vp = null; this.dim = null;
+    }
+    mark(op) { op.tag = this.st.tag || null; op.vp = this.vp; op.blk = this.blk; op.dim = this.dim; this.ops.push(op); }
+    vec(x, y) { const [a, b, c, d] = this.st.m; return [a * x + c * y, b * x + d * y]; }
+    oaTag(t) { this.st.tag = t === null ? null : { ...(this.st.tag || {}), ...t }; }
+    // a family drawn as a block: its name, insertion point and the direction its x axis runs (canvas units); null ends it
+    oaBlock(b) {
+      if (!b) { this.blk = null; return; }
+      if (this.blk != null) return;
+      this.blocks.push({ name: b.name, at: this.pt(b.at.x, b.at.y), dir: this.vec(b.dir.x, b.dir.y), tag: this.st.tag || null, vp: this.vp });
+      this.blk = this.blocks.length - 1;
+    }
+    // a view on a sheet: where the model goes on the page. `local` is the viewer's camera ({ s, cx, cy, w, h }) under
+    // the transform in force now; null ends it
+    oaViewport(v) {
+      if (!v) { this.vp = null; return; }
+      this.vps.push({ ...v, m: [...this.st.m] });
+      this.vp = this.vps.length - 1;
+    }
+    // a dimension segment: its definition points (canvas units), measured value and text; null ends it
+    oaDim(d) {
+      if (!d) { this.dim = null; return; }
+      const P = (p) => this.pt(p.x, p.y);
+      this.dims.push({ ...d, p10: P(d.p10), p11: P(d.p11), p13: P(d.p13), p14: P(d.p14), dir: this.vec(d.dir.x, d.dir.y), tag: this.st.tag || null, vp: this.vp });
+      this.dim = this.dims.length - 1;
+    }
+    // a pattern over regions, kept as a hatch: rings (canvas units), the pattern's lines (angle in degrees, origin,
+    // spacing, shift and dashes in pattern units), `map` from pattern units to canvas units. Only the DXF recording
+    // keeps hatches; the others draw the lines.
+    oaHatch(h) {
+      if (!this.semantic) return false;
+      const c = parseColour(h.colour, this.st.globalAlpha);
+      if (!c) return true;
+      const P = (q) => { const s = h.map(q); return this.pt(s.x, s.y); };
+      const lines = h.lines.map((L) => {
+        const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), u = h.unit;
+        const o = [L.origin[0] * u, L.origin[1] * u], o2 = P(o), d2 = P([o[0] + dx, o[1] + dy]);
+        const sh = (L.shift || 0) * u, sp = L.spacing * u;
+        const f = P([o[0] + dx * sh - dy * sp, o[1] + dy * sh + dx * sp]);
+        const dv = [d2[0] - o2[0], d2[1] - o2[1]], len = Math.hypot(dv[0], dv[1]) || 1;
+        return { o: o2, d: [dv[0] / len, dv[1] / len], off: [f[0] - o2[0], f[1] - o2[1]], dashes: (L.dashes || []).map((x, i) => (i % 2 ? -1 : 1) * x * u * len) };
+      });
+      const subs = h.rings.map((r) => ({ pts: r.map((q) => this.pt(q[0], q[1])), closed: true }));
+      this.mark({ t: "hatch", subs, evenodd: !!h.evenodd, colour: c, lines, name: h.name, width: (h.width || 1) * this.k });
+      return true;
     }
     // state
     save() { this.stack.push({ ...this.st, m: [...this.st.m], dash: [...this.st.dash] }); this.ops.push({ t: "save" }); }
@@ -110,10 +158,10 @@ const ExportFlow = (() => {
       }
     }
     subpaths() { return this.path.filter((s) => s.pts.length > 1).map((s) => ({ pts: s.pts.map((p) => [...p]), closed: s.closed })); }
-    fill(rule) { const c = parseColour(this.st.fillStyle, this.st.globalAlpha); if (c) this.ops.push({ t: "fill", subs: this.subpaths(), colour: c, evenodd: rule === "evenodd" }); }
+    fill(rule) { const c = parseColour(this.st.fillStyle, this.st.globalAlpha); if (c) this.mark({ t: "fill", subs: this.subpaths(), colour: c, evenodd: rule === "evenodd" }); }
     stroke() {
       const c = parseColour(this.st.strokeStyle, this.st.globalAlpha);
-      if (c) this.ops.push({ t: "stroke", subs: this.subpaths(), colour: c, width: this.st.lineWidth * this.k, dash: this.st.dash.map((x) => x * this.k), cap: this.st.lineCap, join: this.st.lineJoin });
+      if (c) this.mark({ t: "stroke", subs: this.subpaths(), colour: c, width: this.st.lineWidth * this.k, dash: this.st.dash.map((x) => x * this.k), cap: this.st.lineCap, join: this.st.lineJoin });
     }
     clip(rule) { this.ops.push({ t: "clip", subs: this.subpaths(), evenodd: rule === "evenodd" }); }
     fillRect(x, y, w, h) { const keep = this.path; this.beginPath(); this.rect(x, y, w, h); this.fill(); this.path = keep; }
@@ -133,15 +181,16 @@ const ExportFlow = (() => {
       const [a, b, cc, d] = this.st.m;
       const o = this.pt(x + dx, y + dy);
       const sx = Math.hypot(a, b), sy = Math.hypot(cc, d);
-      this.ops.push({ t: "text", text: String(text), x: o[0], y: o[1], size: size * sy, stretch: sy ? sx / sy : 1, angle: Math.atan2(b, a), bold, italic, colour: c, width: w * sx });
+      this.mark({ t: "text", text: String(text), x: o[0], y: o[1], size: size * sy, stretch: sy ? sx / sy : 1, angle: Math.atan2(b, a), bold, italic, colour: c, width: w * sx, align: al });
     }
     strokeText(text, x, y) { this.fillText(text, x, y); }
     createPattern() { return null; }
     drawImage() {}
   }
 
-  // the sheets or views as pages: { name, number, paper:[w,h] mm, ops (page points, y down) }
-  async function pageOf(item, k) {
+  // the sheets or views as pages: { paper:[w,h] mm, ops (page units, y down) }, and for the DXF (`semantic`) what the
+  // viewers said about the drawing: its viewports, blocks and dimensions, and the line patterns by name
+  async function pageOf(item, k, semantic) {
     const s = item.kind === "sheet" ? await Backend.call("sheet", { id: item.id }) : await Backend.call("view_print", { view_id: item.id });
     const data = new Map();
     for (const v of s.views) {
@@ -149,8 +198,12 @@ const ExportFlow = (() => {
     }
     const [pw, ph] = s.paper;
     const rec = new Recorder(pw * k, ph * k);
+    rec.semantic = !!semantic;
     SheetView.draw(rec, s, data, (x, y) => ({ x: x * k, y: (ph - y) * k }), k);
-    return { paper: s.paper, ops: rec.ops };
+    const patterns = {};
+    for (const d of data.values()) Object.assign(patterns, d.line_patterns || {});
+    const name = item.kind === "sheet" ? `${item.number} - ${item.name}` : item.name;
+    return { paper: s.paper, ops: rec.ops, vps: rec.vps, blocks: rec.blocks, dims: rec.dims, K: k, name, patterns };
   }
 
   // ---- PDF -----------------------------------------------------------------------------------------------------------
@@ -237,77 +290,8 @@ const ExportFlow = (() => {
     return Math.min(W / paper[0], H / paper[1]);
   }
 
-  // ---- DXF (R12, millimetres on paper) -------------------------------------------------------------------------------
-  const ACI = [[1, [255, 0, 0]], [2, [255, 255, 0]], [3, [0, 255, 0]], [4, [0, 255, 255]], [5, [0, 0, 255]], [6, [255, 0, 255]], [8, [128, 128, 128]], [9, [192, 192, 192]], [7, [0, 0, 0]]];
-  const aci = (c) => { const l = 0.3 * c[0] + 0.59 * c[1] + 0.11 * c[2]; if (l < 60) return 7; let best = 7, bd = Infinity; for (const [i, q] of ACI) { const d = (c[0] - q[0]) ** 2 + (c[1] - q[1]) ** 2 + (c[2] - q[2]) ** 2; if (d < bd) { bd = d; best = i; } } return best; };
-  // a polyline cut to a rectangle (the viewport it is drawn in): its pieces inside
-  function clipPolyline(pts, r) {
-    if (!r) return [pts];
-    const out = []; let cur = [];
-    const inside = (p) => p[0] >= r[0] - 1e-6 && p[0] <= r[2] + 1e-6 && p[1] >= r[1] - 1e-6 && p[1] <= r[3] + 1e-6;
-    for (let i = 0; i + 1 < pts.length; i++) {
-      let [x0, y0] = pts[i], [x1, y1] = pts[i + 1];
-      let t0 = 0, t1 = 1; const dx = x1 - x0, dy = y1 - y0;
-      let ok = true;
-      for (const [p, q] of [[-dx, x0 - r[0]], [dx, r[2] - x0], [-dy, y0 - r[1]], [dy, r[3] - y0]]) {
-        if (Math.abs(p) < 1e-12) { if (q < 0) { ok = false; break; } continue; }
-        const t = q / p;
-        if (p < 0) { if (t > t1) { ok = false; break; } if (t > t0) t0 = t; } else { if (t < t0) { ok = false; break; } if (t < t1) t1 = t; }
-      }
-      if (!ok) { if (cur.length > 1) out.push(cur); cur = []; continue; }
-      const a = [x0 + dx * t0, y0 + dy * t0], b = [x0 + dx * t1, y0 + dy * t1];
-      if (!cur.length || t0 > 1e-9) { if (cur.length > 1) out.push(cur); cur = [a]; }
-      cur.push(b);
-      if (t1 < 1 - 1e-9) { out.push(cur); cur = []; }
-    }
-    if (cur.length > 1) out.push(cur);
-    return out.filter((c) => inside(c[0]) || c.length > 1);
-  }
-  function dxf(page, set) {
-    const H = page.paper[1];
-    const L = [];
-    const g = (code, v) => L.push(String(code), String(v));
-    // page units (DXF_K to the millimetre, y down) to paper millimetres, y up
-    const X = (p) => [Math.round((p[0] / DXF_K) * 1000) / 1000, Math.round((H - p[1] / DXF_K) * 1000) / 1000];
-    // the clip rectangles in force (axis-aligned boxes of the clip paths), as a stack with save and restore
-    const clips = [null];
-    const box = (subs) => { const ps = subs.flatMap((s) => s.pts); return [Math.min(...ps.map((p) => p[0])), Math.min(...ps.map((p) => p[1])), Math.max(...ps.map((p) => p[0])), Math.max(...ps.map((p) => p[1]))]; };
-    const meet = (a, b) => (!a ? b : !b ? a : [Math.max(a[0], b[0]), Math.max(a[1], b[1]), Math.min(a[2], b[2]), Math.min(a[3], b[3])]);
-    g(0, "SECTION"); g(2, "HEADER"); g(9, "$ACADVER"); g(1, "AC1009"); g(9, "$INSUNITS"); g(70, 4); g(9, "$EXTMIN"); g(10, 0); g(20, 0); g(9, "$EXTMAX"); g(10, page.paper[0]); g(20, H); g(0, "ENDSEC");
-    g(0, "SECTION"); g(2, "TABLES"); g(0, "TABLE"); g(2, "LAYER"); g(70, 2);
-    for (const [name, col] of [["OA-LINES", 7], ["OA-TEXT", 7]]) { g(0, "LAYER"); g(2, name); g(70, 0); g(62, col); g(6, "CONTINUOUS"); }
-    g(0, "ENDTAB"); g(0, "ENDSEC");
-    g(0, "SECTION"); g(2, "ENTITIES");
-    for (const o of page.ops) {
-      if (o.t === "save") clips.push(clips[clips.length - 1]);
-      else if (o.t === "restore") { if (clips.length > 1) clips.pop(); }
-      else if (o.t === "clip") clips[clips.length - 1] = meet(clips[clips.length - 1], o.subs.length ? box(o.subs) : null);
-      else if (o.t === "stroke") {
-        const col = aci(o.colour);
-        for (const s of o.subs) {
-          const pts = s.closed ? [...s.pts, s.pts[0]] : s.pts;
-          for (const piece of clipPolyline(pts, clips[clips.length - 1])) {
-            const ps = piece.map(X), wmm = o.width / DXF_K;
-            if (ps.length === 2) { g(0, "LINE"); g(8, "OA-LINES"); g(62, col); g(10, ps[0][0]); g(20, ps[0][1]); g(11, ps[1][0]); g(21, ps[1][1]); continue; }
-            g(0, "POLYLINE"); g(8, "OA-LINES"); g(62, col); g(66, 1); g(10, 0); g(20, 0); g(70, 0);
-            if (wmm >= 0.25) { g(40, Math.round(wmm * 100) / 100); g(41, Math.round(wmm * 100) / 100); }
-            for (const p of ps) { g(0, "VERTEX"); g(8, "OA-LINES"); g(10, p[0]); g(20, p[1]); }
-            g(0, "SEQEND"); g(8, "OA-LINES");
-          }
-        }
-      } else if (o.t === "text") {
-        const r = clips[clips.length - 1];
-        if (r && (o.x < r[0] || o.x > r[2] || o.y < r[1] || o.y > r[3])) continue;
-        const p = X([o.x, o.y]), h = o.size / DXF_K;
-        g(0, "TEXT"); g(8, "OA-TEXT"); g(62, aci(o.colour)); g(10, p[0]); g(20, p[1]); g(40, Math.round(h * 1000) / 1000); g(1, o.text.replace(/[\r\n]/g, " "));
-        const ang = (-o.angle * 180) / Math.PI;
-        if (Math.abs(ang) > 0.01) g(50, Math.round(ang * 100) / 100);
-        if (Math.abs(o.stretch - 1) > 0.01) g(41, Math.round(o.stretch * 1000) / 1000);
-      }
-    }
-    g(0, "ENDSEC"); g(0, "EOF");
-    return L.join("\r\n") + "\r\n";
-  }
+  // ---- DXF (dxf.js) -------------------------------------------------------------------------------------------------
+  const dxf = (page, set) => Dxf.write(Dxf.build(page, { space: set.dxfSpace, layers: set.dxfLayers, status: set.dxfStatus }));
 
   // ---- templates -----------------------------------------------------------------------------------------------------
   const clean = (s) => String(s || "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "_").trim();
@@ -342,7 +326,7 @@ const ExportFlow = (() => {
     const pages = [];
     for (const [i, it] of items.entries()) {
       report(`Drawing ${it.number ? `${it.number} ` : ""}${it.name} (${i + 1} of ${items.length})...`);
-      pages.push({ item: it, pdf: set.pdf ? await pageOf(it, PDF_K) : null, dxf: set.dxf ? await pageOf(it, DXF_K) : null });
+      pages.push({ item: it, pdf: set.pdf ? await pageOf(it, PDF_K) : null, dxf: set.dxf ? await pageOf(it, DXF_K, true) : null });
     }
     if (set.pdf) {
       report("Writing PDF...");
@@ -406,6 +390,29 @@ const ExportFlow = (() => {
     }, { wide: true });
   }
 
+  // the layer table: a row per category (and subcategory), its layer stem, a status that overrides the one from what
+  // the line shows, its colour and its patterns' colour (index colours); then the status codes
+  function layersWindow(set, done) {
+    const d = Dxf.defaults();
+    let rows = (set.dxfLayers || d.layers).map((r) => ({ ...r }));
+    const status = { ...d.status, ...(set.dxfStatus || {}) };
+    openModal("DWG/DXF Layers", (body, foot, close) => {
+      body.classList.add("ex-body");
+      const list = el("div", { className: "ex-list ex-layers" });
+      const cell = (r, k, w, num) => { const i = el("input", { type: num ? "number" : "text", value: r[k] ?? "", style: `width:${w}px` }); if (num) { i.min = 1; i.max = 255; } i.oninput = () => { r[k] = num ? Number(i.value) : i.value; }; return i; };
+      const draw = () => {
+        list.replaceChildren(el("div", { className: "ex-lrow ex-head" }, ["Category", "Subcategory", "Layer", "Status", "Colour", "Pattern"].map((t) => el("span", { textContent: t }))),
+          ...rows.map((r) => el("div", { className: "ex-lrow" }, [el("span", { textContent: r.cat }), cell(r, "sub", 110), cell(r, "layer", 120), cell(r, "status", 54), cell(r, "colour", 54, true), cell(r, "pattern", 54, true)])));
+      };
+      const codes = el("div", { className: "ex-codes" }, Object.keys(status).map((k) => { const i = el("input", { type: "text", value: status[k], style: "width:54px" }); i.oninput = () => { status[k] = i.value; }; return el("label", {}, [`${k[0].toUpperCase()}${k.slice(1)} `, i]); }));
+      draw();
+      body.append(el("div", { className: "ex-note", style: "margin-left:0", textContent: "A layer is the stem and a status: Walls cut through go on A-WALL-____-MCUT. A row's own status (detail line styles) wins over the status from what the line shows." }), list,
+        el("div", { className: "ex-h", textContent: "Status codes" }), codes);
+      foot.append(button("Reset to Defaults", () => { rows = d.layers.map((r) => ({ ...r })); Object.assign(status, d.status); codes.querySelectorAll("input").forEach((i, n) => { i.value = Object.values(d.status)[n]; }); draw(); }), el("span", { className: "spacer" }),
+        button("OK", () => { set.dxfLayers = rows; set.dxfStatus = { ...status }; close(); if (done) done(); }, true), button("Cancel", close));
+    }, { wide: true });
+  }
+
   function settingsWindow(items, onDone) {
     const set = load();
     openModal("Export Settings", (body, foot, close) => {
@@ -448,8 +455,10 @@ const ExportFlow = (() => {
           );
         } else if (tab === "dxf") tabBody.replaceChildren(
           row("Filename template:", inp("dxfName")), dxfPrev,
-          el("div", { className: "ex-note", textContent: "One file per sheet, paper space in millimetres (DXF R12, which every CAD program opens). Line weights are kept as polyline widths; fills are left out." }),
-          row("Colours:", sel("dxfColours", [["index", "Index colours"]])),
+          el("div", { className: "ex-note", textContent: "Tags: {ProjectNumber} {ProjectName} {Date} {SheetNumber} {SheetName}" }),
+          row("Drawing:", sel("dxfSpace", [["model", "Views at full size in model space, the sheet as a layout"], ["paper", "The sheet only, in paper millimetres"]])),
+          row("Layers:", el("span", { className: "ex-radios" }, [button("Layers...", () => layersWindow(set, tabsDraw)), el("span", { className: "ex-count", textContent: set.dxfLayers ? "Edited" : "Defaults" })])),
+          el("div", { className: "ex-note", textContent: "One DXF 2013 file per sheet, in millimetres. Layers by category and what a line shows (cut, projection, pattern), with colours, line weights and line types by layer. Families as blocks, dimensions as dimensions, fills and patterns as hatches. Opens in any CAD program that reads DWG." }),
         );
         else tabBody.replaceChildren(
           row("Filename template:", inp("ifcName")), ifcPrev,

@@ -199,7 +199,11 @@ const Sections = (() => {
   function draw(list, sel, hovered) {
     boxes = [];
     const selected = new Set(sel);
+    const c = H.ctx();
+    c.save();
+    if (c.oaTag) c.oaTag({ cat: "Sections", sub: null, kind: "symb" });
     for (const s of list || []) drawOne(s, selected.has(s.id) && !split, hovered && hovered.includes(s.id));
+    c.restore();
     drawGrips();
     if (split && split.at) {
       // where the line splits

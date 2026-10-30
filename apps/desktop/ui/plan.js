@@ -892,6 +892,7 @@ const Plan = (() => {
       const col = selected || hovered ? accent : base === "#000000" ? text : base;
       const dashArr = (((data.line_patterns || {})[g.style.line.pattern]) || []).map((v) => Math.max(v * paperPx, 0.8));
       ctx.save();
+      if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "projection" });
       ctx.strokeStyle = col; ctx.lineWidth = (thin ? 1 : Math.max(1, g.style.line.width_mm * paperPx)) + (selected ? 0.8 : 0); ctx.lineJoin = "round";
       if (g.centre_segment === "none") { ctx.setLineDash(dashArr); strokePoly(pts); }
       else {
@@ -903,7 +904,10 @@ const Plan = (() => {
       ctx.restore();
       for (const end of [0, 1]) {
         if (g.bubbles[end]) {
+          ctx.save();
+          if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "iden" });
           const h = drawGridHead(g, pts, end, col, selected);
+          ctx.restore();
           gbubbles.push({ id: g.id, end, x: h.c.x, y: h.c.y, r: h.R });
         }
         if (selected) {
@@ -967,6 +971,7 @@ const Plan = (() => {
       const c = ghost ? toScreen(ghost) : toScreen({ x: m.x, y: m.y });
       const hot = selected || hovered || ghost ? accent : null;
       ctx.save();
+      if (ctx.oaTag) ctx.oaTag({ cat: "Elevations", sub: null, kind: "symb" });
       const fam = m.family, denom = (data.view && data.view.scale) || 100, kk = denom * cam.s, pats = data.fill_patterns;
       // the body and a pointer for each view come from the marker's annotation family, at paper size
       if (fam) Ann.paths(ctx, fam.body, { x: c.x, y: c.y, k: kk, rot: m.rotation_deg }, hot, bg, { pats, widen: selected ? 1.6 : 1 });
@@ -1028,6 +1033,49 @@ const Plan = (() => {
     return (((Math.round((ang - 270) / 90) * 90) % 360) + 360) % 360;
   }
 
+  // The outline of walls drawn as one shape, for CAD: each piece's edges less the parts that run inside another piece or
+  // along another piece's edge, where walls meet. Model mm, as [a, b] pairs.
+  function outlineEdges(pieces) {
+    const tol = 0.5;
+    const box = (q) => { let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (const [x, y] of q) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); } return [x0 - tol, y0 - tol, x1 + tol, y1 + tol]; };
+    const boxes = pieces.map(box);
+    const near = (x, y, a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1], l = dx * dx + dy * dy; const t = l ? Math.max(0, Math.min(1, ((x - a[0]) * dx + (y - a[1]) * dy) / l)) : 0; return Math.hypot(x - a[0] - t * dx, y - a[1] - t * dy); };
+    const inside = (q, x, y) => { let c = false; for (let i = 0, j = q.length - 1; i < q.length; j = i++) { const [xi, yi] = q[i], [xj, yj] = q[j]; if (yi > y !== yj > y && x < ((xj - xi) * (y - yi)) / (yj - yi) + xi) c = !c; } return c; };
+    const onEdge = (q, x, y) => { for (let i = 0, j = q.length - 1; i < q.length; j = i++) if (near(x, y, q[j], q[i]) < tol) return true; return false; };
+    const out = [];
+    pieces.forEach((P, pi) => {
+      for (let i = 0; i < P.length; i++) {
+        const a = P[i], b = P[(i + 1) % P.length], dx = b[0] - a[0], dy = b[1] - a[1], ll = dx * dx + dy * dy;
+        if (ll < 1e-9) continue;
+        const sb = box([a, b]);
+        const others = pieces.filter((_, k) => k !== pi && boxes[k][0] <= sb[2] && sb[0] <= boxes[k][2] && boxes[k][1] <= sb[3] && sb[1] <= boxes[k][3]);
+        const ts = [0, 1];
+        for (const Q of others) for (let k = 0; k < Q.length; k++) {
+          const c = Q[k], e = Q[(k + 1) % Q.length], ex = e[0] - c[0], ey = e[1] - c[1], den = dx * ey - dy * ex;
+          if (Math.abs(den) < 1e-9) {
+            // parallel: where the other edge's ends fall on this one
+            for (const q of [c, e]) { const t = ((q[0] - a[0]) * dx + (q[1] - a[1]) * dy) / ll; if (t > 0 && t < 1 && near(q[0], q[1], a, b) < tol) ts.push(t); }
+            continue;
+          }
+          const t = ((c[0] - a[0]) * ey - (c[1] - a[1]) * ex) / den, u = ((c[0] - a[0]) * dy - (c[1] - a[1]) * dx) / den;
+          if (t > 0 && t < 1 && u >= 0 && u <= 1) ts.push(t);
+        }
+        ts.sort((x, y) => x - y);
+        let run = null;
+        for (let k = 0; k + 1 < ts.length; k++) {
+          const t0 = ts[k], t1 = ts[k + 1];
+          if (t1 - t0 < 1e-9) continue;
+          const m = (t0 + t1) / 2, x = a[0] + dx * m, y = a[1] + dy * m;
+          if (others.some((Q) => onEdge(Q, x, y) || inside(Q, x, y))) { if (run) { out.push(run); run = null; } continue; }
+          const p1 = [a[0] + dx * t1, a[1] + dy * t1];
+          if (run) run[1] = p1; else run = [[a[0] + dx * t0, a[1] + dy * t0], p1];
+        }
+        if (run) out.push(run);
+      }
+    });
+    return out;
+  }
+
   function render() {
     if (!printing) resize();
     tdimUI = [];
@@ -1081,6 +1129,10 @@ const Plan = (() => {
     };
     const colour = (st, hex) => (st.halftone ? mix(hex, 0.55) : hex);
     const alpha = (st) => 1 - (st.transparency || 0) / 100;
+    // what CAD export (dxf.js) is told about each piece: its category and what it shows. `vector` is that export's
+    // drawing, which wants each outline once rather than the screen's way of joining walls.
+    const tag = (t) => { if (ctx.oaTag) ctx.oaTag(t); };
+    const vector = !!ctx.semantic;
     const dash = (st) => {
       const a = (data.line_patterns || {})[st.line.pattern];
       return a && a.length ? a.map((v) => Math.max(v * paperPx, 0.8)) : [];
@@ -1096,6 +1148,7 @@ const Plan = (() => {
       const col = colour(st, f.color);
       ctx.save();
       ctx.globalAlpha = alpha(st);
+      tag({ kind: "pattern" });
       const addRing = (q) => {
         q.forEach((pt, i) => { const s2 = toScreen({ x: pt[0], y: pt[1] }); i ? ctx.lineTo(s2.x, s2.y) : ctx.moveTo(s2.x, s2.y); });
         ctx.closePath();
@@ -1109,6 +1162,8 @@ const Plan = (() => {
       if (f.background && !skipBackground) solid(colour(st, f.background));
       if (!def || def.solid) { solid(col); ctx.restore(); return; }
       if (flat) { ctx.restore(); return; } // hatch lines belong to cut material only
+      const screenRing = (q) => q.map(([x, y]) => { const s2 = toScreen({ x, y }); return [s2.x, s2.y]; });
+      if (ctx.oaHatch && ctx.oaHatch({ rings: polys.map(screenRing), evenodd, name: f.pattern, colour: col, lines: def.lines, unit: def.model ? 1 : denom, map: ([x, y]) => toScreen({ x, y }), width: 1 })) { ctx.restore(); return; }
       ctx.beginPath();
       for (const q of polys) addRing(q);
       ctx.clip(evenodd ? "evenodd" : "nonzero");
@@ -1154,6 +1209,7 @@ const Plan = (() => {
     for (const f of [...data.floors].sort((a, b) => order[a.display] - order[b.display])) {
       if (f.id === Sketch.editingId) continue; // its sketch is drawn instead
       const st = f.style;
+      tag({ cat: "Floors", sub: null, kind: f.display });
       fillShapes(f.rings, st, false, true);
       ctx.strokeStyle = colour(st, st.line.color); ctx.lineWidth = lw(st); ctx.setLineDash(dash(st));
       for (const r of f.rings) { polyPath(r); ctx.stroke(); }
@@ -1175,6 +1231,17 @@ const Plan = (() => {
     for (const group of groups.values()) {
       const st = group[0].style, line = colour(st, st.line.color), w1 = lw(st);
       ctx.lineJoin = "round";
+      tag({ cat: "Walls", sub: null, kind: group[0].display });
+      if (vector) {
+        // the fill, then the outline once round walls that join
+        const pieces = group.flatMap((wl) => wl.pieces);
+        if (st.fill.visible) fillShapes(pieces, st);
+        ctx.strokeStyle = line; ctx.lineWidth = w1; ctx.setLineDash(dash(st));
+        ctx.beginPath();
+        for (const [a, b] of outlineEdges(pieces)) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); }
+        ctx.stroke(); ctx.setLineDash([]);
+        continue;
+      }
       if (st.fill.visible && !dash(st).length) {
         ctx.strokeStyle = line; ctx.lineWidth = 2 * w1 + 1;
         for (const wl of group) for (const q of wl.pieces) { polyPath(q); ctx.stroke(); }
@@ -1197,6 +1264,7 @@ const Plan = (() => {
     for (const c of [...(data.curtains || [])].sort((a, b) => order[a.display] - order[b.display])) {
       const st = c.style, w1 = lw(st);
       ctx.strokeStyle = colour(st, st.line.color); ctx.setLineDash(dash(st)); ctx.lineJoin = "miter";
+      tag({ cat: "Curtain Panels", sub: null, kind: c.display });
       if (c.coarse) {
         ctx.lineWidth = w1; ctx.beginPath();
         c.line.forEach((q, i) => { const s2 = toScreen({ x: q[0], y: q[1] }); i ? ctx.lineTo(s2.x, s2.y) : ctx.moveTo(s2.x, s2.y); });
@@ -1205,9 +1273,12 @@ const Plan = (() => {
       }
       // transoms below the cut plane, seen from above
       ctx.lineWidth = 1;
+      tag({ cat: "Curtain Wall Mullions", kind: "projection" });
       for (const q of c.below || []) { polyPath(q); ctx.stroke(); }
       ctx.lineWidth = Math.max(1, w1 * 0.5);
+      tag({ cat: "Curtain Panels", kind: c.display });
       for (const q of c.panels) { polyPath(q); ctx.stroke(); }
+      tag({ cat: "Curtain Wall Mullions" });
       ctx.lineWidth = w1; ctx.fillStyle = bg;
       for (const q of c.mullions) { polyPath(q); ctx.fill(); ctx.stroke(); }
       ctx.setLineDash([]);
@@ -1216,6 +1287,7 @@ const Plan = (() => {
     for (const r of [...(data.roofs || [])].sort((a, b) => order[a.display] - order[b.display])) {
       if (r.id === Sketch.editingId) continue; // its sketch is drawn instead
       const st = r.style;
+      tag({ cat: "Roofs", sub: null, kind: r.display });
       if (st.fill && st.fill.visible) fillShapes(r.rings, st, false, true);
       ctx.strokeStyle = colour(st, st.line.color); ctx.lineWidth = lw(st); ctx.setLineDash(dash(st));
       for (const q of r.rings) { polyPath(q); ctx.stroke(); }
@@ -1225,6 +1297,7 @@ const Plan = (() => {
     }
     // walls drawn layer by layer: material fills, thin lines between materials, then the heavy outline
     for (const g of [...(data.wall_groups || [])].sort((a, b) => order[a.display] - order[b.display])) {
+      tag({ cat: "Walls", sub: null, kind: g.display });
       for (const f of g.fills) {
         if (!f.style || !f.style.fill || !f.style.fill.visible) continue;
         fillShapes(f.shapes.flat(), { fill: f.style.fill, transparency: f.style.transparency, halftone: f.style.halftone, line: g.line }, false, true, g.display !== "cut");
@@ -1232,10 +1305,12 @@ const Plan = (() => {
       ctx.lineJoin = "round";
       if (g.edge) {
         const est = { line: g.edge, halftone: g.halftone };
+        tag({ sub: "Common Edges" });
         ctx.strokeStyle = colour(est, est.line.color); ctx.lineWidth = lw(est); ctx.setLineDash(dash(est));
         for (const f of g.fills) for (const shape of f.shapes) for (const ring of shape) { polyPath(ring); ctx.stroke(); }
       }
       const ost = { line: g.line, halftone: g.halftone };
+      tag({ sub: null });
       ctx.strokeStyle = colour(ost, g.line.color); ctx.lineWidth = lw(ost); ctx.setLineDash(dash(ost));
       for (const shape of g.outline) for (const ring of shape) { polyPath(ring); ctx.stroke(); }
       ctx.setLineDash([]);
@@ -1307,10 +1382,16 @@ const Plan = (() => {
     for (const ins of [...data.inserts].sort((a, b) => order[a.display] - order[b.display])) {
       const sub = (name) => (ins.sub_styles && ins.sub_styles[name]) || ins.style;
       const pen = (st) => { ctx.strokeStyle = colour(st, st.line.color); ctx.lineWidth = lw(st); ctx.setLineDash(dash(st)); ctx.lineJoin = "round"; };
+      tag({ cat: ins.category, sub: null, kind: ins.display });
+      if (ctx.oaBlock && ins.at) {
+        const o = toScreen({ x: ins.at[0], y: ins.at[1] }), x1 = toScreen({ x: ins.at[0] + ins.dir[0], y: ins.at[1] + ins.dir[1] });
+        ctx.oaBlock({ name: ins.name, at: o, dir: { x: x1.x - o.x, y: x1.y - o.y } });
+      }
       // a family with a stored body: the cut through its solids and its plan symbols, each in its subcategory's style
       for (const part of ins.parts || []) {
         const ps = sub(part.sub);
         pen(ps);
+        tag({ sub: part.sub || null });
         if (part.masking) { polyPath(part.rings[0]); ctx.fillStyle = "#ffffff"; ctx.fill(); }
         if (part.filled) fillShapes(part.rings, ps, false, true, !part.cut);
         for (const ring of part.rings) {
@@ -1322,9 +1403,11 @@ const Plan = (() => {
       }
       let st = sub("Panel");
       pen(st);
+      tag({ sub: "Panel" });
       for (const q of ins.polys) { fillShapes([q], st); polyPath(q); ctx.stroke(); }
       st = sub("Frame/Mullion");
       pen(st);
+      tag({ sub: "Frame/Mullion" });
       // the frame in section: its outline at Medium, the steel solid at Fine
       for (const q of ins.frame || []) {
         polyPath(q);
@@ -1337,17 +1420,20 @@ const Plan = (() => {
       }
       st = sub("Glass");
       pen(st);
+      tag({ sub: "Glass" });
       for (const [a, b] of ins.glass || []) {
         const sa = toScreen({ x: a[0], y: a[1] }), sb = toScreen({ x: b[0], y: b[1] });
         ctx.beginPath(); ctx.moveTo(sa.x, sa.y); ctx.lineTo(sb.x, sb.y); ctx.stroke();
       }
       st = sub("Plan Swing");
       pen(st);
+      tag({ sub: "Plan Swing" });
       for (const a of ins.arcs) {
         const c = toScreen({ x: a.c[0], y: a.c[1] });
         ctx.beginPath(); ctx.arc(c.x, c.y, a.r * cam.s, (-a.from * Math.PI) / 180, (-a.to * Math.PI) / 180, true); ctx.stroke();
       }
       ctx.setLineDash([]);
+      if (ctx.oaBlock) ctx.oaBlock(null);
       if (sel.has(ins.id)) {
         polyPath(ins.footprint);
         ctx.fillStyle = "rgba(46,111,158,0.35)"; ctx.fill();
@@ -1377,6 +1463,7 @@ const Plan = (() => {
       ctx.lineWidth = 1.5;
       for (const [a, b] of rf.ridges) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
     }
+    tag(null);
     drawGroups();
     const hov = new Set(tool === "select" && selHover ? selHover : []);
     Det.drawItems(sel, hov, accent, tool === "select");

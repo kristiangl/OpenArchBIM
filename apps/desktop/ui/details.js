@@ -142,7 +142,7 @@ function makeDetails(host) {
     const shown = (x) => !host.held(x) && !(x.line != null && moving.has(x.line));
     // in Edit Group what is not in the group is drawn faint
     const faded = (x) => !!host.faded && host.faded(x.line != null ? x.line : x.region);
-    Ann.paths(c, det, b, null, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: (x) => shown(x) && !faded(x) });
+    Ann.paths(c, det, b, null, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, detail: true, only: (x) => shown(x) && !faded(x) });
     if (host.faded) Ann.paths(c, det, b, FADED, host.css("--view-bg"), { pats: data().fill_patterns, modelScale: ds(), thin, only: (x) => shown(x) && faded(x) });
     // selected regions show as floors do; selected and hovered lines in the accent or the hover colour
     for (const f of det.fills) {
@@ -228,6 +228,7 @@ function makeDetails(host) {
       if (n0.id === editing) continue;
       const n = drag && drag.id === n0.id ? drag.n : n0;
       c.save();
+      if (c.oaTag) c.oaTag({ cat: "Text Notes", sub: null, kind: "text" });
       const col = sel.has(n.id) || (leaderFor && leaderFor.id === n.id) ? accent : hov.has(n.id) ? "#d4572f" : host.faded && host.faded(n.id) ? FADED : null;
       // the text is laid out upright and turned about its anchor
       const rot = ((n.rotation_deg || 0) * Math.PI) / 180, anchor = m([n.text.x, n.text.y]);

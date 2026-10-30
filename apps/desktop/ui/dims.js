@@ -401,6 +401,7 @@ function makeDims() {
     const len = Math.hypot(last.x - first.x, last.y - first.y);
     if (len < 1) return;
     const e = { x: (last.x - first.x) / len, y: (last.y - first.y) / len }, n = { x: e.y, y: -e.x };
+    if (ctx.semantic && ctx.oaDim) { drawForCad(d, o, e, n); return; }
     ctx.save();
     ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
     ctx.lineWidth = (H.thin() ? 1 : Math.max(1, d.style.line.width_mm * k)) + (o.selected ? 0.8 : 0);
@@ -465,9 +466,44 @@ function makeDims() {
     if (o.live && o.selected) boxes.push({ type: "line", id: d.id, a: first, b: last });
   }
 
+  // For CAD export: each segment of a chain a dimension of its own (its witness lines, its stretch of the line, its
+  // ticks and its text), with the points a CAD program measures from.
+  function drawForCad(d, o, e, n) {
+    const ctx = H.ctx(), k = H.paperPx(), ty = d.type || tdef, col = o.col;
+    const S = (p) => H.toScreen({ x: p[0], y: p[1] });
+    const gap = ty.witness_gap_mm * k, ext = ty.witness_extension_mm * k;
+    const refAt = (p) => d.refs.reduce((best, r) => (!best || Math.hypot(r.at[0] - p[0], r.at[1] - p[1]) < Math.hypot(best.at[0] - p[0], best.at[1] - p[1]) ? r : best), null);
+    const witness = (r) => {
+      const A = S(r.anchor), B = S(r.at), l = Math.hypot(B.x - A.x, B.y - A.y);
+      if (l <= gap + 0.5) return;
+      const w = { x: (B.x - A.x) / l, y: (B.y - A.y) / l };
+      ctx.beginPath(); ctx.moveTo(A.x + w.x * gap, A.y + w.y * gap); ctx.lineTo(B.x + w.x * ext, B.y + w.y * ext); ctx.stroke();
+    };
+    for (const s of d.segments) {
+      const ra = refAt(s.a), rb = refAt(s.b);
+      if (!ra || !rb) continue;
+      const f = frame(d, s, k, ctx), A = S(s.a), B = S(s.b);
+      const shown = s.text ? `${s.prefix}${s.text}${s.suffix}` : "";
+      ctx.oaDim({ p13: S(ra.anchor), p14: S(rb.anchor), p10: B, p11: f.c, dir: e, value: s.value_mm, text: shown === String(Math.round(s.value_mm)) ? "" : shown || " ", txt: ty.text_size_mm, tick: ty.tick, gap: ty.witness_gap_mm, ext: ty.witness_extension_mm });
+      ctx.save();
+      ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
+      ctx.lineWidth = H.thin() ? 1 : Math.max(1, d.style.line.width_mm * k);
+      witness(ra); witness(rb);
+      ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
+      if (ty.tick === "arrow") { tick(ctx, ty, k, A, e, n, col, 1); tick(ctx, ty, k, B, e, n, col, -1); }
+      else if (ty.tick !== "none") { tick(ctx, ty, k, A, e, n, col, 0); tick(ctx, ty, k, B, e, n, col, 0); }
+      ctx.restore();
+      paintSegText(d, s, o, k, col);
+      ctx.oaDim(null);
+    }
+  }
+
   function draw(list, sel, hovered) {
     boxes = [];
     const accent = H.css("--accent"), text = H.css("--text");
+    const c = H.ctx();
+    c.save();
+    if (c.oaTag) c.oaTag({ cat: "Dimensions", sub: null, kind: "dims" });
     for (const d0 of list || []) {
       let d = d0;
       if (drag && (drag.type === "line" || drag.type === "arc") && drag.moved && drag.id === d.id && !d.invalid) {
@@ -479,6 +515,7 @@ function makeDims() {
       const col = selected || hov ? accent : d.invalid ? "#c0392b" : base === "#000000" ? text : base;
       drawOne(d, { col, selected, live: true });
     }
+    c.restore();
   }
 
   // the picks so far, the line under the cursor and the dimension as it would be placed

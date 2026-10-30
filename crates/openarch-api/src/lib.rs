@@ -1769,7 +1769,7 @@ impl Session {
                     Some(Element::AnnotationFamily(f)) => Some(f),
                     _ => None,
                 });
-                let title_block = tb.map(|f| json!({ "paths": d.symbol_drawing(f, false).body, "labels": d.symbol_texts(f, &|q| d.sheet_param(id, q), false) }));
+                let title_block = tb.map(|f| json!({ "name": f.name, "paths": d.symbol_drawing(f, false).body, "labels": d.symbol_texts(f, &|q| d.sheet_param(id, q), false) }));
                 Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id) }))
             }
             "floor_sketch" => {
@@ -2343,7 +2343,7 @@ impl Session {
                     }));
                 }
                 Element::FamilyInstance(inst) => {
-                    let Some((fam, _)) = d.instance_family(inst) else { continue };
+                    let Some((fam, typ)) = d.instance_family(inst) else { continue };
                     let door_detail = settings.overrides.model.get(fam.category.label()).and_then(|c| c.detail_level).unwrap_or(settings.detail_level);
                     let Some(frame) = d.instance_frame(id) else { continue };
                     let display = match range.classify_category(fam.category.label(), frame.z0, frame.z1) {
@@ -2371,6 +2371,8 @@ impl Session {
                     }
                     inserts.push(json!({
                         "id": id, "category": cat, "display": display, "style": style, "sub_styles": subs, "mark": inst.mark, "pinned": inst.pinned,
+                        // the family and type, and the frame it is drawn in (a block in CAD export)
+                        "name": format!("{} - {}", fam.name, typ.name), "at": pt(&frame.origin), "dir": [frame.dir.x, frame.dir.y],
                         "parts": sym.parts.iter().map(|p| json!({ "sub": p.subcategory, "rings": p.rings.iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "closed": p.closed, "filled": p.filled, "cut": p.cut, "masking": p.masking })).collect::<Vec<_>>(),
                         "glass": sym.glass.iter().map(|l| json!([pt(&l[0]), pt(&l[1])])).collect::<Vec<_>>(),
                         "footprint": sym.footprint.iter().map(pt).collect::<Vec<_>>(),
@@ -4275,6 +4277,10 @@ mod tests {
         let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
         let i = call(&mut s, "place_instance", json!({ "type_id": win, "host_id": long, "point": [1000, 5000] }))["id"].as_u64().unwrap();
         let n = |s: &mut Session| call(s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().len();
+        // each insert names its family and type and the frame it is drawn in, for CAD blocks
+        let ins = call(&mut s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().iter().find(|x| x["id"] == i).unwrap().clone();
+        assert_eq!(ins["name"], "Fixed - 1200 x 1200");
+        assert_eq!((ins["at"][0].as_f64().unwrap(), ins["at"][1].as_f64().unwrap(), ins["dir"][0].as_f64().unwrap()), (1000.0, 5000.0, 1.0));
         let before = n(&mut s);
         assert!(s.handle("array", &json!({ "ids": [i], "kind": "linear", "dx": 1500, "dy": 0, "count": 4 })).is_err());
         assert_eq!(n(&mut s), before);
