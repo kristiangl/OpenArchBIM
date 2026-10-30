@@ -831,6 +831,36 @@ impl Document {
             if hidden(id) {
                 continue;
             }
+            // a curtain wall: each panel and mullion where the plane passes through it, rather than the wall as one solid
+            if self.curtain_of(w).is_some() {
+                let wl = w.start.dist(&w.end).max(1e-9);
+                let along = |p: Point| ((p.x - w.start.x) * (w.end.x - w.start.x) + (p.y - w.start.y) * (w.end.y - w.start.y)) / wl;
+                for s in self.curtain_solids(id) {
+                    let part = Some(crate::curtain::part_id(id, s.at));
+                    // a mullion is drawn over the glass it frames
+                    let depth = if s.part == crate::curtain::CurtainPart::Panel { -1.0 + 0.0005 } else { -1.0 + 0.0006 };
+                    for cut in sl.cuts(&[s.ring.as_slice()], sl.plane + PLANE_EPS) {
+                        let polys: Vec<Vec<[f64; 2]>> = match &s.face {
+                            None => vec![rect(cut.u0, cut.u1, s.z0, s.z1)],
+                            // a piece cut to an edited profile: across the wall, the heights its shape reaches there;
+                            // along it, the shape over that stretch
+                            Some(f) => {
+                                let (a0, a1) = (along(cut.p0), along(cut.p1));
+                                if (a1 - a0).abs() < 1.0 {
+                                    crate::wallprofile::column(std::slice::from_ref(&f.shape), (a0 + a1) / 2.0).into_iter().map(|(h0, h1)| rect(cut.u0, cut.u1, h0, h1)).collect()
+                                } else {
+                                    let to_u = |x: f64| cut.u0 + (x - a0) / (a1 - a0) * (cut.u1 - cut.u0);
+                                    f.shape.first().map(|r| crate::site::clip_x(r, a0.min(a1), a0.max(a1))).filter(|r| r.len() >= 3).map(|r| vec![r.iter().map(|p| [to_u(p.x), p.y]).collect()]).unwrap_or_default()
+                                }
+                            }
+                        };
+                        for poly in polys {
+                            out.push(ElevItem { id, category: "Walls", depth, polys: vec![poly], fill: shade(&s.material), cut: true, material: Some(s.material.clone()), part, ..Default::default() });
+                        }
+                    }
+                }
+                continue;
+            }
             let (z0, z1) = self.wall_extent(w);
             // openings of the doors and windows in this wall, as stretches of the plane
             let mut openings: Vec<(f64, f64, f64, f64)> = vec![];
@@ -1084,6 +1114,27 @@ mod tests {
         let g = d.elevation_frame(v).unwrap();
         assert!((g.look[0] - 1.0).abs() < 1e-9);
         assert!((g.origin[1] - 7000.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn a_section_cuts_a_curtain_wall_into_its_panels_and_mullions() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 3000.0).unwrap();
+        // across the wall, through the middle of the first bay, looking east
+        let s = d.add_section(lvl, Point::new(600.0, 1000.0), Point::new(600.0, -1000.0), false).unwrap();
+        let v = d.section(s).unwrap().view.unwrap();
+        let data = d.elevation_data(v).unwrap();
+        let cuts: Vec<_> = data.items.iter().filter(|i| i.cut && i.id == w).collect();
+        // the glass between the transoms, and each transom, not one solid the wall's height
+        assert!(cuts.len() >= 3, "{} cut pieces", cuts.len());
+        assert!(cuts.iter().all(|i| i.part.is_some()));
+        let full = cuts.iter().any(|i| {
+            let zs: Vec<f64> = i.polys[0].iter().map(|p| p[1]).collect();
+            zs.iter().cloned().fold(f64::INFINITY, f64::min) <= 1.0 && zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) >= 2999.0
+        });
+        assert!(!full, "no piece runs the whole height");
     }
 
     #[test]
