@@ -406,17 +406,35 @@ impl Document {
                 let part_at = w.place(Some(at), (0.0, 0.0, 0.0), None);
                 let mut parts = vec![];
                 for (pid, solids) in by_part {
-                    let swept: Vec<(u64, f64, f64)> = solids
+                    // a swept piece its footprint swept up; a piece cut to an edited profile its shape in the wall's face,
+                    // swept across the wall
+                    let items: Vec<u64> = solids
                         .iter()
-                        .map(|sol| {
-                            let mut ring = sol.ring.clone();
-                            if crate::geom::signed_area(&ring) < 0.0 {
-                                ring.reverse();
+                        .map(|sol| match &sol.face {
+                            Some(f) => {
+                                let len = wl.start.dist(&wl.end).max(1e-9);
+                                let d = Point::new((wl.end.x - wl.start.x) / len, (wl.end.y - wl.start.y) / len);
+                                let o = w.add(format!("IFCCARTESIANPOINT(({},{},0.))", real(wl.start.x - d.y * f.c1), real(wl.start.y + d.x * f.c1)));
+                                let zdir = w.add(format!("IFCDIRECTION(({},{},0.))", ratio(d.y), ratio(-d.x)));
+                                let xdir = w.add(format!("IFCDIRECTION(({},{},0.))", ratio(d.x), ratio(d.y)));
+                                let place = w.add(format!("IFCAXIS2PLACEMENT3D(#{o},#{zdir},#{xdir})"));
+                                let shape: Vec<Vec<Point>> = f.shape.iter().map(|r| r.iter().map(|p| Point::new(p.x, p.y - z0)).collect()).collect();
+                                let p = w.profile(&shape[0], &shape[1..]);
+                                w.add(format!("IFCEXTRUDEDAREASOLID(#{p},#{place},#{},{})", w.z, real(f.c1 - f.c0)))
                             }
-                            (w.profile(&ring, &[]), sol.z0 - z0, sol.z1 - sol.z0)
+                            None => {
+                                let mut ring = sol.ring.clone();
+                                if crate::geom::signed_area(&ring) < 0.0 {
+                                    ring.reverse();
+                                }
+                                let p = w.profile(&ring, &[]);
+                                let at = if sol.z0 == z0 { w.world } else { w.axes((0.0, 0.0, sol.z0 - z0), None) };
+                                w.add(format!("IFCEXTRUDEDAREASOLID(#{p},#{at},#{},{})", w.z, real(sol.z1 - sol.z0)))
+                            }
                         })
                         .collect();
-                    let body = w.swept(&swept, &[]);
+                    let rep = w.add(format!("IFCSHAPEREPRESENTATION(#{},'Body','SweptSolid',({}))", w.body, refs(&items)));
+                    let body = w.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{rep}))"));
                     let guid = s(&derived(CURTAIN_PART, pid));
                     let part = match solids[0].part {
                         crate::curtain::CurtainPart::Panel => w.add(format!("IFCPLATE({guid},$,'Curtain Panel',$,{},#{part_at},#{body},$,.CURTAIN_PANEL.)", s(&solids[0].material))),

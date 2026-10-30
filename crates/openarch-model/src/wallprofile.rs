@@ -71,7 +71,7 @@ impl Document {
         let Some(shapes) = self.wall_profile_shapes(w) else { return vec![] };
         let (z0, _) = self.wall_extent(w);
         let len = w.length();
-        let covered = merge(shapes.iter().flat_map(|s| crossings(s, z - z0)).collect());
+        let covered = row(&shapes, z - z0);
         let mut gaps = vec![];
         let mut at = 0.0;
         for (a, b) in covered {
@@ -92,8 +92,7 @@ impl Document {
     pub fn wall_profile_column(&self, w: &Wall, along: f64) -> Option<Vec<(f64, f64)>> {
         let shapes = self.wall_profile_shapes(w)?;
         let (z0, _) = self.wall_extent(w);
-        let turned: Vec<Shape> = shapes.iter().map(|s| s.iter().map(|r| r.iter().map(|p| Point::new(p.y, p.x)).collect()).collect()).collect();
-        Some(merge(turned.iter().flat_map(|s| crossings(s, along)).map(|(a, b)| (z0 + a, z0 + b)).collect()))
+        Some(column(&shapes, along).into_iter().map(|(a, b)| (z0 + a, z0 + b)).collect())
     }
 
     /// Where a plan cut at `cut` opens a wall: its doors and windows spanning that height and the gaps in its outline,
@@ -117,9 +116,6 @@ impl Document {
         let Some(Element::Wall(w)) = self.get(id).cloned() else { return Err("not a wall".into()) };
         if w.curve.is_some() {
             return Err("Edit Profile works on straight walls.".into());
-        }
-        if self.curtain_of(&w).is_some() {
-            return Err("Edit Profile for curtain walls comes next.".into());
         }
         let f = self.elevation_frame(view).ok_or("Edit Profile works in an elevation or section view.")?;
         let a = Across { origin: Point::new(f.origin[0], f.origin[1]), right: Point::new(f.right[0], f.right[1]) };
@@ -216,6 +212,17 @@ fn moved_points(c: &Curve, f: impl Fn(Point) -> Point) -> Curve {
         }
         other => other.clone(),
     }
+}
+
+/// Where shapes cover the horizontal line at height `y`: sorted stretches of x, run together.
+pub(crate) fn row(shapes: &[Shape], y: f64) -> Vec<(f64, f64)> {
+    merge(shapes.iter().flat_map(|s| crossings(s, y)).collect())
+}
+
+/// Where shapes cover the upright line at `x`: sorted stretches of y, run together.
+pub(crate) fn column(shapes: &[Shape], x: f64) -> Vec<(f64, f64)> {
+    let turned: Vec<Shape> = shapes.iter().map(|s| s.iter().map(|r| r.iter().map(|p| Point::new(p.y, p.x)).collect()).collect()).collect();
+    row(&turned, x)
 }
 
 /// Where a shape (outer ring and holes) covers the horizontal line at height `y`: sorted stretches of x.

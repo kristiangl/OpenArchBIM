@@ -2164,12 +2164,12 @@ impl Session {
                     // its glazing units
                     if let Some(spec) = d.curtain_of(w) {
                         let solids = if wall_detail == DetailLevel::Fine { d.curtain_solids_fine(id) } else { d.curtain_solids(id) };
-                        let cut = |s: &&openarch_model::curtain::CurtainSolid| display != "cut" || (s.z0 <= range.cut + 1e-6 && s.z1 >= range.cut - 1e-6);
+                        let cut = (display == "cut").then_some(range.cut);
                         let rings = |mullion: bool| -> Vec<Vec<Value>> {
-                            solids.iter().filter(|s| matches!(s.part, openarch_model::curtain::CurtainPart::Mullion { .. }) == mullion).filter(cut).map(|s| s.ring.iter().map(pt).collect()).collect()
+                            solids.iter().filter(|s| matches!(s.part, openarch_model::curtain::CurtainPart::Mullion { .. }) == mullion).flat_map(|s| s.plan_rings(w, cut)).map(|r| r.iter().map(pt).collect()).collect()
                         };
                         let below: Vec<Vec<Value>> = if display == "cut" {
-                            solids.iter().filter(|s| s.part == openarch_model::curtain::CurtainPart::Mullion { vertical: false } && s.z1 < range.cut - 1e-6 && s.z1 >= range.bottom - 1e-6).map(|s| s.ring.iter().map(pt).collect()).collect()
+                            solids.iter().filter(|s| s.face.is_none() && s.part == openarch_model::curtain::CurtainPart::Mullion { vertical: false } && s.z1 < range.cut - 1e-6 && s.z1 >= range.bottom - 1e-6).map(|s| s.ring.iter().map(pt).collect()).collect()
                         } else {
                             vec![]
                         };
@@ -2500,7 +2500,10 @@ impl Session {
                 if d.curtain_of(w).is_some() {
                     if shown("Walls") {
                         for s in d.curtain_solids(id) {
-                            let verts = mesh::solid_mesh(&s.ring, s.z0, s.z1);
+                            let verts = match &s.face {
+                                Some(f) => mesh::face_mesh(w, f),
+                                None => mesh::solid_mesh(&s.ring, s.z0, s.z1),
+                            };
                             if s.glazed {
                                 meshes.push(json!({ "id": id, "kind": "Glass", "verts": verts }));
                             } else {
@@ -2829,10 +2832,10 @@ impl Session {
             "columns": ["Curtain Wall", "Type", "Width", "Height", "Area", "Material", "U-Value"],
             "rows": panels.iter().map(|p| vec![
                 wall_name(p.wall), format!("{}: {}", p.family, p.name), format!("{:.0}", p.width), format!("{:.0}", p.height),
-                format!("{:.2}", p.width * p.height / 1e6), p.material.clone(), p.u_value.map_or(String::new(), |u| format!("{u:.2}")),
+                format!("{:.2}", p.area / 1e6), p.material.clone(), p.u_value.map_or(String::new(), |u| format!("{u:.2}")),
             ]).collect::<Vec<_>>(),
             "count": panels.len(),
-            "area": format!("{:.2}", panels.iter().map(|p| p.width * p.height).sum::<f64>() / 1e6),
+            "area": format!("{:.2}", panels.iter().map(|p| p.area).sum::<f64>() / 1e6),
         });
         let curtain_mullions = json!({
             "name": "Curtain Wall Mullions",

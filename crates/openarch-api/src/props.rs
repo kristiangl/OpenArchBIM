@@ -1370,6 +1370,26 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
                 ],
             }))
         }
+        CurtainRef::Mullion { vertical, k: 0, s } if s >= openarch_model::curtain::BORDER_EDGE => {
+            // a border mullion along an edge of an edited profile: it follows the outline
+            let e = lay.edge(s).ok_or("the mullion is gone")?;
+            let title = e.mullion.name();
+            Ok(json!({
+                "id": id, "kind": "Mullion", "wall": wall, "pinned": true,
+                "title": title, "type_label": title, "target": target,
+                "groups": [
+                    group("Constraints", vec![boolean("Pinned", "pinned", true, false)]),
+                    group("Dimensions", vec![num("Length", "", round(e.quad[0].dist(&e.quad[1])), false)]),
+                    group("Construction", vec![
+                        ro("Orientation", if vertical { "Vertical" } else { "Horizontal" }),
+                        ro("Position", "Border (profile)"),
+                        num("Offset", "", round(e.mullion.offset_mm), false),
+                    ]),
+                    group("Materials and Finishes", vec![ro("Material", e.mullion.material.clone())]),
+                    group("Identity Data", vec![ro("Category", "Curtain Wall Mullions")]),
+                ],
+            }))
+        }
         CurtainRef::Mullion { vertical, k, s } => {
             let run = lay.run_of(vertical, k, s).ok_or("the mullion is gone")?;
             let last = lay.lines(vertical).len() - 1;

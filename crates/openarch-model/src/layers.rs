@@ -109,6 +109,16 @@ pub fn subtract<'a>(subject: &Ring, clips: impl IntoIterator<Item = &'a Ring>) -
     shapes_from(subj.overlay(&clip, OverlayRule::Difference, FillRule::NonZero))
 }
 
+/// Where `a` and `b` overlap, each a set of shapes (outline and holes).
+pub fn intersect_shapes(a: &[Shape], b: &[Shape]) -> Vec<Shape> {
+    let rings = |v: &[Shape]| -> Vec<Vec<[f64; 2]>> { v.iter().flatten().filter(|r| r.len() >= 3).map(|r| r.iter().map(|p| [p.x, p.y]).collect()).collect() };
+    let (subj, clip) = (rings(a), rings(b));
+    if subj.is_empty() || clip.is_empty() {
+        return vec![];
+    }
+    shapes_from(subj.overlay(&clip, OverlayRule::Intersect, FillRule::EvenOdd))
+}
+
 /// Cut `shapes` by `clips` (each a ring).
 pub fn subtract_shapes(shapes: &[Shape], clips: &[Ring]) -> Vec<Shape> {
     if clips.is_empty() {

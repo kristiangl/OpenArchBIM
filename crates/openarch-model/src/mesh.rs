@@ -395,33 +395,56 @@ fn profile_prism(out: &mut Vec<f32>, w: &Wall, z0: f64, ring: &[Point], shapes: 
         let x = if q.x <= 1.0 { s } else if q.x >= len - 1.0 { e } else { q.x };
         [w.start.x + d.x * x + n.x * c, w.start.y + d.y * x + n.y * c, z0 + q.y]
     };
-    let (front, back) = ([n.x, n.y, 0.0], [-n.x, -n.y, 0.0]);
     for shape in shapes {
-        let Some(outer) = shape.first() else { continue };
-        let region = crate::geom::Region { outer: outer.clone(), holes: shape[1..].to_vec() };
-        if let Some((pts, tris)) = triangulate_region(&region) {
-            for t in tris {
-                tri_facing(out, at(pts[t[0]], 1), at(pts[t[1]], 1), at(pts[t[2]], 1), front);
-                tri_facing(out, at(pts[t[0]], 0), at(pts[t[1]], 0), at(pts[t[2]], 0), back);
-            }
+        extrude_face(out, shape, d, &at);
+    }
+}
+
+/// A curtain wall's piece cut to an edited profile: its shape in the face of straight wall `w`, extruded across it.
+pub fn face_mesh(w: &Wall, f: &crate::curtain::FacePiece) -> Vec<f32> {
+    let len = w.length();
+    let mut out = vec![];
+    if len < 1e-6 {
+        return out;
+    }
+    let d = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+    let at = |q: Point, side: usize| -> [f64; 3] {
+        let c = if side == 0 { f.c0 } else { f.c1 };
+        [w.start.x + d.x * q.x - d.y * c, w.start.y + d.y * q.x + d.x * c, q.y]
+    };
+    extrude_face(&mut out, &f.shape, d, &at);
+    out
+}
+
+/// A shape in a wall's face (outline then holes, along the wall `d` and up) extruded across it: `at(point, 0)` is a
+/// point on the back face, `at(point, 1)` on the front (the wall's left).
+fn extrude_face(out: &mut Vec<f32>, shape: &[Vec<Point>], d: Point, at: &dyn Fn(Point, usize) -> [f64; 3]) {
+    let n = Point::new(-d.y, d.x);
+    let (front, back) = ([n.x, n.y, 0.0], [-n.x, -n.y, 0.0]);
+    let Some(outer) = shape.first() else { return };
+    let region = crate::geom::Region { outer: outer.clone(), holes: shape[1..].to_vec() };
+    if let Some((pts, tris)) = triangulate_region(&region) {
+        for t in tris {
+            tri_facing(out, at(pts[t[0]], 1), at(pts[t[1]], 1), at(pts[t[2]], 1), front);
+            tri_facing(out, at(pts[t[0]], 0), at(pts[t[1]], 0), at(pts[t[2]], 0), back);
         }
-        // the edges round the outline and its holes, across the wall: each faces away from the solid
-        for (k, r) in shape.iter().enumerate() {
-            let mut r = r.clone();
-            if (signed_area(&r) > 0.0) != (k == 0) {
-                r.reverse();
+    }
+    // the edges round the outline and its holes, across the wall: each faces away from the solid
+    for (k, r) in shape.iter().enumerate() {
+        let mut r = r.clone();
+        if (signed_area(&r) > 0.0) != (k == 0) {
+            r.reverse();
+        }
+        for i in 0..r.len() {
+            let (p, q) = (r[i], r[(i + 1) % r.len()]);
+            let (ex, ey) = (q.x - p.x, q.y - p.y);
+            let l = ex.hypot(ey);
+            if l < 1e-9 {
+                continue;
             }
-            for i in 0..r.len() {
-                let (p, q) = (r[i], r[(i + 1) % r.len()]);
-                let (ex, ey) = (q.x - p.x, q.y - p.y);
-                let l = ex.hypot(ey);
-                if l < 1e-9 {
-                    continue;
-                }
-                let nrm = [d.x * ey / l, d.y * ey / l, -ex / l];
-                tri_facing(out, at(p, 0), at(q, 0), at(q, 1), nrm);
-                tri_facing(out, at(p, 0), at(q, 1), at(p, 1), nrm);
-            }
+            let nrm = [d.x * ey / l, d.y * ey / l, -ex / l];
+            tri_facing(out, at(p, 0), at(q, 0), at(q, 1), nrm);
+            tri_facing(out, at(p, 0), at(q, 1), at(p, 1), nrm);
         }
     }
 }

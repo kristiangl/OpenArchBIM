@@ -1291,14 +1291,35 @@ impl Document {
             let t = if b[0] - a[0] > 1e-9 { (d - a[0]) / (b[0] - a[0]) } else { 0.0 };
             a[1] + (b[1] - a[1]) * t
         };
+        // with an edited profile, each segment only as far as the outline reaches along it
+        let clip = |spans: Option<Vec<(f64, f64)>>, lo: f64, hi: f64| -> (f64, f64) {
+            let Some(spans) = spans else { return (lo, hi) };
+            let inside: Vec<(f64, f64)> = spans.iter().map(|(a, b)| (a.max(lo), b.min(hi))).filter(|(a, b)| b > a).collect();
+            match (inside.first(), inside.last()) {
+                (Some(f), Some(l)) => (f.0, l.1),
+                _ => (lo, lo),
+            }
+        };
         let mut lines = vec![];
         for (k, at) in lay.us.iter().enumerate() {
             let u = u_at(*at);
-            let segs = (0..lay.vs.len() - 1).map(|j| CurtainSeg { a: [u, zb + lay.vs[j]], b: [u, zb + lay.vs[j + 1]], on: lay.u_on[k][j] }).collect();
+            let col = lay.outline.as_ref().map(|o| crate::wallprofile::column(o, *at));
+            let segs = (0..lay.vs.len() - 1)
+                .map(|j| {
+                    let (a, b) = clip(col.clone(), lay.vs[j], lay.vs[j + 1]);
+                    CurtainSeg { a: [u, zb + a], b: [u, zb + b], on: lay.u_on[k][j] }
+                })
+                .collect();
             lines.push(CurtainGridLine { id: part_id(wid, CurtainRef::Line { vertical: true, k }), vertical: true, k, at: *at, typed: lay.u_typed[k], edge: k == 0 || k + 1 == lay.us.len(), segs });
         }
         for (j, at) in lay.vs.iter().enumerate() {
-            let segs = (0..lay.us.len() - 1).map(|i| CurtainSeg { a: [u_at(lay.us[i]), zb + at], b: [u_at(lay.us[i + 1]), zb + at], on: lay.v_on[j][i] }).collect();
+            let row = lay.outline.as_ref().map(|o| crate::wallprofile::row(o, *at));
+            let segs = (0..lay.us.len() - 1)
+                .map(|i| {
+                    let (a, b) = clip(row.clone(), lay.us[i], lay.us[i + 1]);
+                    CurtainSeg { a: [u_at(a), zb + at], b: [u_at(b), zb + at], on: lay.v_on[j][i] }
+                })
+                .collect();
             lines.push(CurtainGridLine { id: part_id(wid, CurtainRef::Line { vertical: false, k: j }), vertical: false, k: j, at: *at, typed: lay.v_typed[j], edge: j == 0 || j + 1 == lay.vs.len(), segs });
         }
         let mullions = lay
@@ -1476,6 +1497,11 @@ impl Document {
             }
             let face = self.embedded_in(id).iter().filter_map(|h| host_near.get(h)).cloned().fold(f64::INFINITY, f64::min);
             let solids = if fine { self.curtain_solids_fine(id) } else { self.curtain_solids(id) };
+            // a piece cut to an edited profile is its shape in the wall's face, over the stretch the view shows
+            let wl = w.start.dist(&w.end).max(1e-9);
+            let dir = Point::new((w.end.x - w.start.x) / wl, (w.end.y - w.start.y) / wl);
+            let along = |p: Point| (p.x - w.start.x) * dir.x + (p.y - w.start.y) * dir.y;
+            let (ua, us_per) = (u_of(w.start), dir.x * right.x + dir.y * right.y);
             for s in solids {
                 let clipped;
                 let ring = match &sl {
@@ -1502,7 +1528,24 @@ impl Document {
                 // a mullion stands in front of the glass it frames
                 let depth = if s.part == crate::curtain::CurtainPart::Panel { dmin + 0.25 } else { dmin };
                 let depth = if face.is_finite() { (face - 1.0).min(depth) + if s.part == crate::curtain::CurtainPart::Panel { 0.25 } else { 0.0 } } else { depth };
-                items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, s.z0, s.z1)], lines: vec![], fill, stroke: true, part: Some(crate::curtain::part_id(id, s.at)), ..Default::default() });
+                let part = Some(crate::curtain::part_id(id, s.at));
+                if let Some(f) = &s.face {
+                    let als: Vec<f64> = ring.iter().map(|p| along(*p)).collect();
+                    let (a0, a1) = (als.iter().cloned().fold(f64::INFINITY, f64::min), als.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                    let rs: Vec<Vec<Point>> = f.shape.iter().map(|r| clip_x(r, a0, a1)).filter(|r| r.len() >= 3).collect();
+                    if us_per.abs() < 0.2 {
+                        // end on or cut across: the heights it reaches there
+                        let (lo, hi) = rs.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| (l.min(p.y), h.max(p.y)));
+                        if hi > lo {
+                            items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, lo, hi)], lines: vec![], fill, stroke: true, part, ..Default::default() });
+                        }
+                    } else if let Some(outer) = rs.first() {
+                        let view = |r: &Vec<Point>| r.iter().map(|p| [ua + us_per * p.x, p.y]).collect::<Vec<[f64; 2]>>();
+                        items.push(ElevItem { id, category: "Walls", depth, polys: vec![view(outer)], holes: rs[1..].iter().map(view).collect(), lines: vec![], fill, stroke: true, part, ..Default::default() });
+                    }
+                    continue;
+                }
+                items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, s.z0, s.z1)], lines: vec![], fill, stroke: true, part, ..Default::default() });
             }
         }
         // doors and windows sit on the wall face

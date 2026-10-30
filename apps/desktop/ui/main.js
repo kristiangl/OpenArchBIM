@@ -2580,14 +2580,15 @@ async function leaveDetailLines() {
 }
 
 // ---- Edit Profile: a selected straight wall's outline, sketched in an elevation or section square to it ----
-// The sketch starts from the wall as it is: its bottom on the base constraint, its top on the top constraint.
+// The sketch starts from the wall as it is: its bottom on the base constraint, its top on the top constraint. A curtain
+// wall's grid, panels and mullions are cut to the outline, its edges taking the border mullions.
 function profileTarget() {
   if (app.selection.length !== 1 || Sketch.active) return null;
   const id = app.selection[0];
   let wall = false;
   if (app.view.kind === "plan" && Plan.tool === "select") wall = (Plan.selectionInfo().Walls || []).includes(id);
   else if (app.view.kind === "elevation" && Elev.tool === "select" && Elev.data) {
-    wall = Elev.data.items.some((i) => i.id === id && i.category === "Walls" && i.part == null) && !(Elev.data.curtains || []).some((c) => c.wall === id);
+    wall = Elev.data.items.some((i) => i.id === id && i.category === "Walls" && i.part == null) || (Elev.data.curtains || []).some((c) => c.wall === id);
   }
   return wall ? { id, profiled: (app.info.profiled_walls || []).includes(id) } : null;
 }

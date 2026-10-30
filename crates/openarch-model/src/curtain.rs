@@ -445,6 +445,10 @@ pub struct CurtainLayout {
     pub through: Vec<Vec<bool>>,
     /// The wall's start and end, where each meets another curtain wall with a corner mullion between them.
     pub corners: [Option<CornerEnd>; 2],
+    /// An edited profile's outline, along the wall and up from its base: the grid's panels and mullions are cut to it
+    /// and its edges take the border mullions.
+    pub outline: Option<Vec<crate::layers::Shape>>,
+    pub edges: Vec<BorderEdge>,
 }
 
 /// The end of a curtain wall that meets the end of another, with a corner mullion between them.
@@ -483,6 +487,21 @@ impl CurtainLayout {
     pub fn cell_at(&self, u: f64, v: f64) -> Option<(usize, usize)> {
         let inside = |p: f64, lines: &[f64]| p.clamp(lines[0] + 1e-6, lines[lines.len() - 1] - 1e-6);
         Some((seg_index(&self.us, inside(u, &self.us))?, seg_index(&self.vs, inside(v, &self.vs))?))
+    }
+
+    /// Panel `n` as shapes in the wall's face (outline then holes, along it and up from its base): its rectangles,
+    /// cut to an edited profile's outline.
+    pub fn panel_shapes(&self, n: usize) -> Vec<crate::layers::Shape> {
+        let rects: Vec<crate::layers::Shape> = self.panel_rects(n).into_iter().filter(|r| r.1 - r.0 >= 1.0 && r.3 - r.2 >= 1.0).map(|(a, b, c, d)| vec![vec![Point::new(a, c), Point::new(b, c), Point::new(b, d), Point::new(a, d)]]).collect();
+        match &self.outline {
+            Some(o) => crate::layers::intersect_shapes(&rects, o),
+            None => rects,
+        }
+    }
+
+    /// The border mullion along an edge of an edited profile's outline, by its segment number.
+    pub fn edge(&self, s: usize) -> Option<&BorderEdge> {
+        self.edges.iter().find(|e| e.s == s)
     }
 
     /// Panel `n` inside the mullions round it: along the wall from and to, and up it from and to. Cells that do not
@@ -643,6 +662,8 @@ pub struct CurtainPanelRow {
     pub name: String,
     pub width: f64,
     pub height: f64,
+    /// mm²: the width by the height, or less where an edited profile cuts the panel.
+    pub area: f64,
     pub material: String,
     pub u_value: Option<f64>,
 }
@@ -678,7 +699,35 @@ pub struct CurtainSolid {
     pub material: String,
     /// A glazed panel (see-through in 3D).
     pub glazed: bool,
+    /// On a curtain wall with an edited profile, a piece cut to the outline: its shape in the wall's face, extruded
+    /// across it. `ring`, `z0` and `z1` are then the box round it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub face: Option<FacePiece>,
 }
+
+/// A shape in a straight wall's face (along it from its start, and height), outline then holes, extruded from `c0`
+/// to `c1` across the wall (left positive).
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct FacePiece {
+    pub shape: Vec<Vec<Point>>,
+    pub c0: f64,
+    pub c1: f64,
+}
+
+/// A border mullion of a curtain wall with an edited profile, along one edge of its outline (or of an opening in
+/// it): the edge and the edge moved in by the mullion's width, along the wall and up from its base.
+#[derive(Debug, Clone)]
+pub struct BorderEdge {
+    /// Its part's segment number (its line is 0).
+    pub s: usize,
+    /// More upright than not: it takes the vertical border mullion type, else the horizontal one.
+    pub vertical: bool,
+    pub quad: [Point; 4],
+    pub mullion: MullionSpec,
+}
+
+/// Where border mullion parts start numbering, past any real segment.
+pub const BORDER_EDGE: usize = 2000;
 
 /// Distances along a wall path's points.
 fn cumulative(pts: &[Point]) -> Vec<f64> {
@@ -715,6 +764,100 @@ fn band(pts: &[Point], cum: &[f64], ua: f64, ub: f64, c0: f64, c1: f64) -> Vec<V
             vec![off(pa, c0), off(pb, c0), off(pb, c1), off(pa, c1)]
         })
         .collect()
+}
+
+impl CurtainSolid {
+    /// Its plan footprint where a plan cuts it at `cut`, or all of it seen from above (no cut): a swept piece its ring
+    /// when it spans the cut; a face piece, on straight wall `w`, the stretches its shape covers at that height.
+    pub fn plan_rings(&self, w: &Wall, cut: Option<f64>) -> Vec<Vec<Point>> {
+        let Some(f) = &self.face else {
+            return if cut.map_or(true, |c| self.z0 <= c + 1e-6 && self.z1 >= c - 1e-6) { vec![self.ring.clone()] } else { vec![] };
+        };
+        let len = w.start.dist(&w.end).max(1e-9);
+        let d = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+        let at = |x: f64, c: f64| Point::new(w.start.x + d.x * x - d.y * c, w.start.y + d.y * x + d.x * c);
+        let spans = match cut {
+            Some(z) => crate::wallprofile::row(&[f.shape.clone()], z),
+            None => {
+                let (a, b, _, _) = bounds(&f.shape);
+                vec![(a, b)]
+            }
+        };
+        spans.into_iter().filter(|(a, b)| b - a > 1e-6).map(|(a, b)| vec![at(a, f.c0), at(b, f.c0), at(b, f.c1), at(a, f.c1)]).collect()
+    }
+}
+
+/// The box round a shape: x from and to, y from and to.
+fn bounds(shape: &[Vec<Point>]) -> (f64, f64, f64, f64) {
+    shape.iter().flatten().fold((f64::INFINITY, f64::NEG_INFINITY, f64::INFINITY, f64::NEG_INFINITY), |(a, b, c, d), p| (a.min(p.x), b.max(p.x), c.min(p.y), d.max(p.y)))
+}
+
+/// The parts of `lo..hi` inside `spans`.
+fn clip_span(spans: &[(f64, f64)], lo: f64, hi: f64) -> Vec<(f64, f64)> {
+    spans.iter().map(|(a, b)| (a.max(lo), b.min(hi))).filter(|(a, b)| b - a > 1e-6).collect()
+}
+
+/// The border mullions round an edited profile's outline (`len` by `h`): one along each edge of each ring, moved in by
+/// its width and mitred to its neighbours. An upright edge takes the vertical border type (Border 1 in the wall's
+/// first half, Border 2 in its second), any other the horizontal one (Border 1 in the lower half). An edge whose type
+/// has none gets none.
+fn border_edges(outline: &[crate::layers::Shape], spec: &CurtainSpec, len: f64, h: f64) -> Vec<BorderEdge> {
+    let mut out = vec![];
+    for shape in outline {
+        for (k, ring) in shape.iter().enumerate() {
+            // the outline counter-clockwise and its holes clockwise, so the solid is to the left of every edge
+            let mut r = ring.clone();
+            if (crate::geom::signed_area(&r) > 0.0) != (k == 0) {
+                r.reverse();
+            }
+            let n = r.len();
+            if n < 3 {
+                continue;
+            }
+            let specs: Vec<Option<MullionSpec>> = (0..n)
+                .map(|i| {
+                    let (p, q) = (r[i], r[(i + 1) % n]);
+                    let (mx, my) = ((p.x + q.x) / 2.0, (p.y + q.y) / 2.0);
+                    let m = if (q.x - p.x).abs() < (q.y - p.y).abs() {
+                        if mx < len / 2.0 { &spec.u_border1 } else { &spec.u_border2 }
+                    } else if my < h / 2.0 {
+                        &spec.v_border1
+                    } else {
+                        &spec.v_border2
+                    };
+                    m.clone()
+                })
+                .collect();
+            let width = |i: usize| specs[i].as_ref().map_or(0.0, |m| { let (a, b) = m.widths(); a + b });
+            // edge i's line moved in by its width
+            let moved = |i: usize| -> (Point, Point) {
+                let (p, q) = (r[i], r[(i + 1) % n]);
+                let l = p.dist(&q).max(1e-9);
+                let inward = Point::new(-(q.y - p.y) / l, (q.x - p.x) / l);
+                let w = width(i);
+                (Point::new(p.x + inward.x * w, p.y + inward.y * w), Point::new(q.x - p.x, q.y - p.y))
+            };
+            // where the moved lines of edges i - 1 and i meet
+            let corner = |i: usize| -> Point {
+                let (a, da) = moved((i + n - 1) % n);
+                let (b, db) = moved(i);
+                let det = da.x * db.y - da.y * db.x;
+                if det.abs() < 1e-9 {
+                    return b;
+                }
+                let t = ((b.x - a.x) * db.y - (b.y - a.y) * db.x) / det;
+                Point::new(a.x + da.x * t, a.y + da.y * t)
+            };
+            let inner: Vec<Point> = (0..n).map(corner).collect();
+            for i in 0..n {
+                let Some(m) = specs[i].clone() else { continue };
+                let (p, q) = (r[i], r[(i + 1) % n]);
+                let vertical = (q.x - p.x).abs() < (q.y - p.y).abs();
+                out.push(BorderEdge { s: BORDER_EDGE + out.len(), vertical, quad: [p, q, inner[(i + 1) % n], inner[i]], mullion: m });
+            }
+        }
+    }
+    out
 }
 
 /// The stretch `ua..ub` of a path from `c0` to `c1` across it (left positive) as one counter-clockwise polygon,
@@ -772,6 +915,12 @@ impl Document {
         if len < 1.0 || h < 1.0 {
             return None;
         }
+        // an edited profile: the grid covers the box round its outline, whose edges take the border mullions
+        let outline = if w.curve.is_none() { self.wall_profile_shapes(w) } else { None };
+        let (len, h) = match &outline {
+            Some(o) => o.iter().flatten().flatten().fold((len, h), |(l, t), p| (l.max(p.x), t.max(p.y))),
+            None => (len, h),
+        };
         let none = CurtainLines::default();
         let own = w.curtain_lines.as_ref().unwrap_or(&none);
         let (ru, rv) = (spec.u.positions(len), spec.v.positions(h));
@@ -802,9 +951,10 @@ impl Document {
             }
         }
         // an end meeting another curtain wall takes the corner mullion between them
-        let corners = [self.curtain_corner(w, false), self.curtain_corner(w, true)];
+        let corners = if outline.is_some() { [None, None] } else { [self.curtain_corner(w, false), self.curtain_corner(w, true)] };
         let corner = |vertical: bool, k: usize, last: usize| if !vertical { None } else if k == 0 { corners[0].as_ref() } else if k == last { corners[1].as_ref() } else { None };
-        let mullion_on = |vertical: bool, k: usize, last: usize| corner(vertical, k, last).map(|c| &c.mullion).or(spec.mullion_on(vertical, k, last).as_ref());
+        let edge_line = |k: usize, last: usize| outline.is_some() && (k == 0 || k == last);
+        let mullion_on = |vertical: bool, k: usize, last: usize| if edge_line(k, last) { None } else { corner(vertical, k, last).map(|c| &c.mullion).or(spec.mullion_on(vertical, k, last).as_ref()) };
         let mut u_mull: Vec<Vec<bool>> = (0..=nu).map(|k| (0..nv).map(|j| u_on[k][j] && mullion_on(true, k, nu).is_some()).collect()).collect();
         let mut v_mull: Vec<Vec<bool>> = (0..=nv).map(|j| (0..nu).map(|i| v_on[j][i] && mullion_on(false, j, nv).is_some()).collect()).collect();
         for (vert, k, j) in own.deleted.iter().filter_map(find) {
@@ -952,7 +1102,8 @@ impl Document {
                 }
             }
         }
-        Some(CurtainLayout { len, height: h, us, vs, u_typed, v_typed, u_on, v_on, u_mull, v_mull, panels, cell_panel, runs, uspan, vspan, through, corners })
+        let edges = outline.as_ref().map_or(vec![], |o| border_edges(o, spec, len, h));
+        Some(CurtainLayout { len, height: h, us, vs, u_typed, v_typed, u_on, v_on, u_mull, v_mull, panels, cell_panel, runs, uspan, vspan, through, corners, outline, edges })
     }
 
     /// The corner a curtain wall's start (or end) makes with the end of another curtain wall, when a corner
@@ -1043,6 +1194,18 @@ impl Document {
                     continue;
                 }
                 let Some((l, r, lo, hi)) = lay.panel_rect(n) else { continue };
+                // cut to an edited profile: the box round what is left, and its area
+                let (width, height, area) = if lay.outline.is_some() {
+                    let shapes = lay.panel_shapes(n);
+                    if shapes.is_empty() {
+                        continue;
+                    }
+                    let (a, b, c, d) = bounds(&shapes.iter().flatten().cloned().collect::<Vec<_>>());
+                    let area: f64 = shapes.iter().map(|s| s.iter().enumerate().map(|(k, r)| if k == 0 { crate::geom::signed_area(r).abs() } else { -crate::geom::signed_area(r).abs() }).sum::<f64>()).sum();
+                    (b - a, d - c, area)
+                } else {
+                    (r - l, hi - lo, (r - l) * (hi - lo))
+                };
                 let (_, family, name) = self.curtain_panel_type(id, w, &lay, n);
                 let (_, panel) = self.curtain_panel_state(w, &lay, n);
                 let layers: Vec<(String, f64)> = match panel.kind {
@@ -1057,8 +1220,9 @@ impl Document {
                     part: part_id(id, CurtainRef::Panel { i, j }),
                     family,
                     name,
-                    width: r - l,
-                    height: hi - lo,
+                    width,
+                    height,
+                    area,
                     material: layers.first().map_or(String::new(), |l| l.0.clone()),
                     u_value: resistance.filter(|_| !layers.is_empty()).map(|r| 1.0 / (r + 0.17)),
                 });
@@ -1069,7 +1233,19 @@ impl Document {
                 if run.hi - run.lo < 1.0 || corner.is_some_and(|c| !c.draws) {
                     continue;
                 }
-                mullions.push(CurtainMullionRow { wall: id, part: part_id(id, CurtainRef::Mullion { vertical: run.vertical, k: run.k, s: run.s0 }), name: m.name(), length: run.hi - run.lo, material: m.material.clone() });
+                // cut to an edited profile's outline
+                let length = match &lay.outline {
+                    Some(o) if run.vertical => clip_span(&crate::wallprofile::column(o, lay.us[run.k]), run.lo, run.hi).iter().map(|(a, b)| b - a).sum(),
+                    Some(o) => clip_span(&crate::wallprofile::row(o, (lay.vspan[run.k].0 + lay.vspan[run.k].1) / 2.0), run.lo, run.hi).iter().map(|(a, b)| b - a).sum(),
+                    None => run.hi - run.lo,
+                };
+                if length < 1.0 {
+                    continue;
+                }
+                mullions.push(CurtainMullionRow { wall: id, part: part_id(id, CurtainRef::Mullion { vertical: run.vertical, k: run.k, s: run.s0 }), name: m.name(), length, material: m.material.clone() });
+            }
+            for e in &lay.edges {
+                mullions.push(CurtainMullionRow { wall: id, part: part_id(id, CurtainRef::Mullion { vertical: e.vertical, k: 0, s: e.s }), name: e.mullion.name(), length: e.quad[0].dist(&e.quad[1]), material: e.mullion.material.clone() });
             }
         }
         (panels, mullions)
@@ -1154,7 +1330,13 @@ impl Document {
             };
             let (i0, j0) = cells[0];
             let at = CurtainRef::Panel { i: i0, j: j0 };
-            for (ua, ub, za, zb2) in lay.panel_rects(n) {
+            // each piece: a rectangle swept up, or cut to an edited profile's outline, a shape in the wall's face
+            let pieces: Vec<(f64, f64, f64, f64, Option<crate::layers::Shape>)> = if lay.outline.is_some() {
+                lay.panel_shapes(n).into_iter().map(|s| { let (a, b, c, d) = bounds(&s); (a, b, c, d, Some(s)) }).collect()
+            } else {
+                lay.panel_rects(n).into_iter().map(|(a, b, c, d)| (a, b, c, d, None)).collect()
+            };
+            for (ua, ub, za, zb2, shape) in pieces {
                 if ub - ua < 1.0 || zb2 - za < 1.0 {
                     continue;
                 }
@@ -1163,11 +1345,25 @@ impl Document {
                     let c0 = c1 - t.max(0.0);
                     if c1 - c0 > 1e-6 && !material.is_empty() {
                         let ring = band_ring(&pts, &cum, ua, ub, c0, c1);
-                        out.push(CurtainSolid { part: CurtainPart::Panel, at, ring, z0: zb + za, z1: zb + zb2, material: material.clone(), glazed: panel.kind == PanelKind::Glazed });
+                        let face = shape.as_ref().map(|s| FacePiece { shape: s.iter().map(|r| r.iter().map(|p| Point::new(p.x, zb + p.y)).collect()).collect(), c0, c1 });
+                        out.push(CurtainSolid { part: CurtainPart::Panel, at, ring, z0: zb + za, z1: zb + zb2, material: material.clone(), glazed: panel.kind == PanelKind::Glazed, face });
                     }
                     c1 = c0;
                 }
             }
+        }
+        // an edited profile: a border mullion along each edge of the outline and of its openings
+        for e in &lay.edges {
+            let m = &e.mullion;
+            let (c0, c1) = (m.offset_mm - m.depth() / 2.0, m.offset_mm + m.depth() / 2.0);
+            let shape = vec![e.quad.iter().map(|p| Point::new(p.x, zb + p.y)).collect::<Vec<Point>>()];
+            let (ua, ub, za, zb2) = bounds(&shape);
+            if ub - ua < 1e-6 {
+                continue;
+            }
+            let ring = band_ring(&pts, &cum, ua, ub, c0, c1);
+            let at = CurtainRef::Mullion { vertical: e.vertical, k: 0, s: e.s };
+            out.push(CurtainSolid { part: CurtainPart::Mullion { vertical: e.vertical }, at, ring, z0: za, z1: zb2, material: m.material.clone(), glazed: false, face: Some(FacePiece { shape, c0, c1 }) });
         }
         // mullions: each run on its line; a corner mullion drawn by one of the two walls
         for r in &lay.runs {
@@ -1191,16 +1387,29 @@ impl Document {
                     }
                     (None, _) => vec![band_ring(&pts, &cum, ua, ub, c0, c1)],
                 };
+                // cut to an edited profile's outline where its line crosses it
+                let spans = match &lay.outline {
+                    Some(o) => clip_span(&crate::wallprofile::column(o, us[r.k]), r.lo, r.hi),
+                    None => vec![(r.lo, r.hi)],
+                };
                 for ring in rings {
-                    out.push(CurtainSolid { part, at, ring, z0: zb + r.lo, z1: zb + r.hi, material: m.material.clone(), glazed: false });
+                    for (lo, hi) in &spans {
+                        out.push(CurtainSolid { part, at, ring: ring.clone(), z0: zb + lo, z1: zb + hi, material: m.material.clone(), glazed: false, face: None });
+                    }
                 }
             } else {
                 let (za, zb2) = lay.vspan[r.k];
                 if zb2 - za < 1e-6 {
                     continue;
                 }
-                let ring = band_ring(&pts, &cum, r.lo, r.hi, c0, c1);
-                out.push(CurtainSolid { part, at, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false });
+                let spans = match &lay.outline {
+                    Some(o) => clip_span(&crate::wallprofile::row(o, (za + zb2) / 2.0), r.lo, r.hi),
+                    None => vec![(r.lo, r.hi)],
+                };
+                for (lo, hi) in spans {
+                    let ring = band_ring(&pts, &cum, lo, hi, c0, c1);
+                    out.push(CurtainSolid { part, at, ring, z0: zb + za, z1: zb + zb2, material: m.material.clone(), glazed: false, face: None });
+                }
             }
         }
         out
@@ -1945,5 +2154,66 @@ mod tests {
             let glazed = solids.iter().filter(|s| s.glazed).count();
             assert_eq!(d.curtain_solids_fine(w).iter().filter(|s| s.glazed).count(), 2 * glazed);
         }
+    }
+
+    #[test]
+    fn a_curtain_wall_follows_its_edited_profile() {
+        use crate::curve::Curve;
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 3000.0).unwrap();
+        // a gable rising to 4200 over the middle, with a small opening near the bottom of the first bay
+        let south = d.views().into_iter().find(|(_, v)| v.name == "South").unwrap().0;
+        let (curves, _, _) = d.wall_profile_sketch(w, south).unwrap();
+        let (u0, s) = (curves.iter().map(|c| c.start().x).fold(f64::INFINITY, f64::min), 1.0);
+        let f = d.elevation_frame(south).unwrap();
+        let s = if f.right[0] > 0.0 { s } else { -s };
+        let u0 = if s > 0.0 { u0 } else { curves.iter().map(|c| c.start().x).fold(f64::NEG_INFINITY, f64::max) };
+        let v = |x: f64, y: f64| Point::new(u0 + s * x, y);
+        let ring = |r: &[Point]| (0..r.len()).map(|i| Curve::line(r[i], r[(i + 1) % r.len()])).collect::<Vec<_>>();
+        let mut sketch = ring(&[v(0.0, 0.0), v(3600.0, 0.0), v(3600.0, 3000.0), v(1800.0, 4200.0), v(0.0, 3000.0)]);
+        sketch.extend(ring(&[v(300.0, 300.0), v(800.0, 300.0), v(800.0, 800.0), v(300.0, 800.0)]));
+        d.set_wall_profile(w, south, &sketch).unwrap();
+        let Some(Element::Wall(x)) = d.get(w).cloned() else { panic!() };
+        let lay = d.curtain_layout(&x).unwrap();
+        // the grid covers the gable: a transom at 2100 and the top at 4200
+        assert_eq!(lay.vs, vec![0.0, 2100.0, 4200.0]);
+        assert!(lay.outline.is_some());
+        // a border mullion along each edge of the outline and of the opening
+        assert_eq!(lay.edges.len(), 9);
+        assert_eq!(lay.edges.iter().filter(|e| e.vertical).count(), 4);
+        // the top panels are cut to the gable, the first lower panel round the opening
+        let solids = d.curtain_solids(w);
+        let top = solids.iter().find(|s| s.at == CurtainRef::Panel { i: 0, j: 1 }).unwrap();
+        let face = top.face.as_ref().unwrap();
+        assert!(face.shape[0].len() >= 4 && top.z1 > 3000.0 && top.z1 < 4200.0, "{:?}", face.shape);
+        let low = solids.iter().find(|s| s.at == CurtainRef::Panel { i: 0, j: 0 }).unwrap();
+        assert_eq!(low.face.as_ref().unwrap().shape.len(), 2, "the opening is a hole in it");
+        // no type border mullions; the interior verticals stop at the gable
+        assert!(lay.runs.iter().all(|r| !(r.vertical && (r.k == 0 || r.k + 1 == lay.us.len()))));
+        let mid = solids.iter().filter(|s| s.at == CurtainRef::Mullion { vertical: true, k: 1, s: 0 }).map(|s| s.z1).fold(0.0, f64::max);
+        assert!((mid - (3000.0 + 1200.0 * 1200.0 / 1800.0)).abs() < 1.0, "{mid}");
+        // plan at 3800: the gable spans 1200 to 2400 there, so only the middle bay's panel
+        let at_3800: usize = solids.iter().filter(|s| s.part == CurtainPart::Panel).map(|s| s.plan_rings(&x, Some(3800.0)).len()).sum();
+        assert_eq!(at_3800, 1);
+        // 3D, schedule and IFC see the cut pieces
+        assert!(!crate::mesh::face_mesh(&x, face).is_empty());
+        let (panels, mullions) = d.curtain_schedule();
+        let area: f64 = panels.iter().filter(|p| p.wall == w).map(|p| p.area).sum();
+        let outline = 3600.0 * 3000.0 + 3600.0 * 1200.0 / 2.0 - 500.0 * 500.0;
+        assert!(area < outline && area > 0.85 * outline, "{area} {outline}");
+        assert_eq!(mullions.iter().filter(|m| m.wall == w && m.name.starts_with("Rectangular")).count(), lay.runs.len() + 9);
+        let ifc = d.export_ifc("t");
+        assert_eq!(ifc.matches("=IFCPLATE(").count(), 6);
+        // the elevation's grid lines stop at the outline
+        let e = d.elevation_data(south).unwrap();
+        let cf = e.curtains.iter().find(|c| c.wall == w).unwrap();
+        let end = cf.lines.iter().find(|l| l.vertical && l.k == 1).unwrap().segs[1].b[1];
+        assert!((end - mid).abs() < 1.0, "{end}");
+        // reset: back to the rectangle
+        d.reset_wall_profile(w).unwrap();
+        let Some(Element::Wall(x)) = d.get(w).cloned() else { panic!() };
+        assert!(d.curtain_layout(&x).unwrap().outline.is_none() && d.curtain_solids(w).iter().all(|s| s.face.is_none()));
     }
 }
