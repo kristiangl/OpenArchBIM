@@ -93,6 +93,8 @@ const COMMANDS = {
   ar: () => startEditTool("array"),
   gp: () => createGroup(),
   "export-ifc": () => exportIfc(),
+  "v-sheet": () => newSheetDialog(),
+  "project-info": () => projectInfoDialog(),
   "model-group": () => placeGroupCommand("model"),
   "det-group": () => placeGroupCommand("detail"),
   pin: () => pinSelection(true),
@@ -622,7 +624,10 @@ function renderTree() {
       { name: "Drafting Views", children: [] },
       { name: "Legends", children: [] },
       { name: "Schedules / Quantities", children: [leaf("Wall and Floor Quantities", v.kind === "schedule", () => openView("schedule"))] },
-      { name: "Sheets", children: [] },
+      { name: "Sheets", menu: [{ label: "New Sheet...", run: () => newSheetDialog() }], children: (app.info.sheets || []).map((s) => ({
+        ...leaf(`${s.number} - ${s.name}`, v.kind === "sheet" && v.viewId === s.id, () => openView("sheet", s.id)),
+        menu: [{ label: "Open", run: () => openView("sheet", s.id) }, { label: "New Sheet...", run: () => newSheetDialog() }, { label: "Delete", run: () => deleteSheet(s) }],
+      })) },
     ] },
     { name: "Families", children: (() => {
       // every category that has a family, in name order, with the system families among them
@@ -664,6 +669,8 @@ function renderTree() {
         if (n.active) li.classList.add("sel");
         if (n.viewId != null && n.viewId === app.browserSel) li.classList.add("picked");
         if (n.onopen) span.ondblclick = n.onopen;
+        // a view can be dragged onto an open sheet
+        if (n.viewId != null) { span.draggable = true; span.ondragstart = (e) => { e.dataTransfer.setData("text/x-openarch-view", String(n.viewId)); e.dataTransfer.effectAllowed = "copy"; }; }
         // one click picks the view and shows its Properties without opening it
         if (n.viewId != null) span.onclick = () => { app.browserSel = n.viewId; app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]); renderTree(); renderProperties(); updateRibbonContext(); };
       }
@@ -722,7 +729,9 @@ function showMenu(x, y, items) {
   const away = (e) => { if (!menu.contains(e.target)) shut(); };
   const esc = (e) => { if (e.key === "Escape") { e.stopPropagation(); shut(); } };
   for (const it of items) {
+    if (it.sep) { menu.append(el("hr")); continue; }
     const b = el("button", { textContent: it.label, disabled: !!it.disabled, title: it.title || "" });
+    if (it.keys) b.append(el("span", { className: "keys", textContent: it.keys }));
     b.onclick = () => { shut(); it.run(); };
     menu.append(b);
   }
@@ -745,7 +754,7 @@ async function openView(kind, viewId) {
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
   // only re-frame the camera when the view actually changes
   const firstOf = (k) => (app.info.views.find((x) => x.view_kind === k) || {}).id;
-  const target = kind === "schedule" ? app.view.viewId : (viewId ?? (kind === "plan" && curView() && curView().level_id ? app.view.viewId : firstOf(kind === "3d" ? "three_d" : kind === "elevation" ? "elevation" : "floor_plan")));
+  const target = kind === "schedule" ? app.view.viewId : kind === "sheet" ? viewId : (viewId ?? (kind === "plan" && curView() && curView().level_id ? app.view.viewId : firstOf(kind === "3d" ? "three_d" : kind === "elevation" ? "elevation" : "floor_plan")));
   const changed = app.view.kind !== kind || target !== app.view.viewId;
   if (changed) saveCamera();
   app.view = { kind, viewId: target };
@@ -770,7 +779,7 @@ async function openView(kind, viewId) {
 const viewKey = (v) => (v.kind === "schedule" ? "schedule" : `${v.kind}:${v.viewId}`);
 function saveCamera() {
   const k = app.view.kind;
-  const c = k === "plan" ? Plan.getCamera() : k === "elevation" ? Elev.getCamera() : k === "3d" ? app.vp?.getCamera() : null;
+  const c = k === "plan" ? Plan.getCamera() : k === "elevation" ? Elev.getCamera() : k === "3d" ? app.vp?.getCamera() : k === "sheet" ? SheetView.getCamera() : null;
   if (c) app.cams[viewKey(app.view)] = c;
 }
 function restoreCamera() {
@@ -779,20 +788,23 @@ function restoreCamera() {
   if (k === "plan") Plan.setCamera(c.x, c.y, c.s);
   else if (k === "elevation") Elev.setCameraState(c);
   else if (k === "3d") app.vp?.setCameraState(c);
+  else if (k === "sheet") SheetView.setCamera(c);
 }
 function ensureTab() {
   const key = viewKey(app.view);
   if (!app.tabs.some((t) => viewKey(t) === key)) app.tabs.push({ kind: app.view.kind, viewId: app.view.viewId });
   renderViewTabs();
 }
+const sheetById = (id) => (app.info.sheets || []).find((s) => s.id === id);
 function tabName(t) {
   if (t.kind === "schedule") return "Wall and Floor Quantities";
+  if (t.kind === "sheet") { const s = sheetById(t.viewId); return s ? `${s.number} - ${s.name}` : ""; }
   const v = viewById(t.viewId);
   return v ? v.name : "";
 }
 function renderViewTabs() {
   // views that no longer exist lose their tab
-  app.tabs = app.tabs.filter((t) => t.kind === "schedule" || viewById(t.viewId));
+  app.tabs = app.tabs.filter((t) => t.kind === "schedule" || (t.kind === "sheet" ? sheetById(t.viewId) : viewById(t.viewId)));
   const bar = $("#view-tabs");
   if (!bar) return;
   const here = viewKey(app.view);
@@ -860,6 +872,8 @@ async function refreshView(force) {
   } else if (k === "elevation") {
     const data = await run("elevation", { view_id: app.view.viewId });
     if (data) Elev.setData(data, force);
+  } else if (k === "sheet") {
+    try { await SheetView.load(app.view.viewId, force); } catch (e) { setPrompt(String(e.message || e), true); }
   } else if (k === "3d") {
     if (!app.vp) return;
     if (force || app.sceneRevision !== app.info.revision) {
@@ -919,7 +933,7 @@ function updateTitle() {
   if (app.doc !== "project") return;
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
-  const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : "Schedule: Wall and Floor Quantities";
+  const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : "Schedule: Wall and Floor Quantities";
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
   updateUndoButtons();
@@ -936,7 +950,7 @@ async function refresh(force = false) {
   if (!app.wallTypeId || !info.wall_types.some((t) => t.id === app.wallTypeId)) app.wallTypeId = (info.wall_types.find((t) => t.name === "Brick Veneer") || info.wall_types[0]).id;
   if (!app.floorTypeId || !info.floor_types.some((t) => t.id === app.floorTypeId)) app.floorTypeId = info.floor_types[0].id;
   if (!app.roofTypeId || !info.roof_types.some((t) => t.id === app.roofTypeId)) app.roofTypeId = info.roof_types[0].id;
-  if (app.view.kind !== "schedule" && !viewById(app.view.viewId)) {
+  if (app.view.kind !== "schedule" && !(app.view.kind === "sheet" ? sheetById(app.view.viewId) : viewById(app.view.viewId))) {
     const first = info.views.find((x) => x.view_kind === "floor_plan") || info.views[0];
     app.view = { kind: viewerOf(first.view_kind), viewId: first.id };
     $("#viewport-wrap").className = "v-" + app.view.kind;
@@ -2182,6 +2196,57 @@ async function openProject() {
 }
 
 // Open IFC: the file becomes a new, unsaved project; a report says what came in and what was left out
+// ---- sheets ------------------------------------------------------------------------------------------------------------
+// New Sheet: a title block, a number (the next free one) and a name; the sheet opens.
+function newSheetDialog() {
+  openModal("New Sheet", (body, foot, close) => {
+    const tbs = app.info.title_blocks || [];
+    const tb = el("select", {}, tbs.map((t) => new Option(`${t.name}${t.paper ? ` (${t.paper[0]} x ${t.paper[1]})` : ""}`, t.id)));
+    const num = el("input", { type: "text", value: "" });
+    const name = el("input", { type: "text", value: "Unnamed" });
+    const msg = el("div", { className: "modal-msg" });
+    const row = (l, c) => el("label", { className: "new-row" }, [el("span", { textContent: l }), c]);
+    body.append(row("Title Block", tb), row("Sheet Number", num), row("Sheet Name", name), msg);
+    num.placeholder = "next free number";
+    const ok = async () => {
+      try {
+        const r = await Backend.call("add_sheet", { ...(num.value.trim() ? { number: num.value.trim() } : {}), name: name.value.trim() || "Unnamed", title_block: Number(tb.value) || null });
+        close(); await refresh(); await openView("sheet", r.id);
+        setPrompt("Drag views from the Project Browser onto the sheet to place them.");
+      } catch (e) { msg.textContent = String(e.message || e); }
+    };
+    foot.append(button("Cancel", close), button("OK", ok, true));
+    name.focus(); name.select();
+  });
+}
+async function deleteSheet(s) {
+  if (!confirm(`Delete sheet ${s.number} - ${s.name}? The views on it stay in the project.`)) return;
+  if (await run("delete", { ids: [s.id] })) { if (app.view.kind === "sheet" && app.view.viewId === s.id) await openView("plan", app.lastPlanId); await refresh(); }
+}
+SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); };
+SheetView.callbacks.openView = (viewId) => { const v = viewById(viewId); if (v) openView(viewerOf(v.view_kind), viewId); };
+SheetView.callbacks.moveViewport = async (id, centre) => { if (await run("patch_viewport", { id, patch: { centre } })) await refresh(); };
+SheetView.callbacks.placeView = async (sheet, view, centre) => {
+  const r = await run("place_view", { sheet, view, centre });
+  if (r) { await refresh(); app.selection = [r.id]; SheetView.setSelection([r.id]); renderProperties(); setPrompt("View placed. Drag it to move it; double-click opens the view."); }
+};
+
+// Project Information: the project's name, number, client, address and status, which every title block reads
+function projectInfoDialog() {
+  openModal("Project Information", (body, foot, close) => {
+    const p = app.info.project || {};
+    const fields = [["Project Name", "name"], ["Project Number", "number"], ["Client Name", "client"], ["Project Address", "address"], ["Project Status", "status"], ["Author", "author"]];
+    const inputs = {};
+    for (const [label, key] of fields) { inputs[key] = el("input", { type: "text", value: p[key] || "" }); body.append(el("label", { className: "new-row" }, [el("span", { textContent: label }), inputs[key]])); }
+    const ok = async () => {
+      const info = Object.fromEntries(fields.map(([, k]) => [k, inputs[k].value]));
+      if (await run("set_project_info", { info })) { close(); await refresh(); }
+    };
+    foot.append(button("Cancel", close), button("OK", ok, true));
+    inputs.name.focus();
+  });
+}
+
 async function openIfc(path) {
   if (app.info.dirty && !confirm("Discard unsaved changes?")) return;
   setPrompt(`Reading ${path}...`);
@@ -2264,6 +2329,49 @@ $("#qa-open").onclick = openProject;
 $("#qa-save").onclick = () => save(false);
 $("#qa-undo").onclick = undo;
 $("#qa-redo").onclick = redo;
+$("#qa-export").onclick = () => runCommand("export");
+
+// The File menu: under the File button at the left of the top bar
+$("#file-btn").onclick = () => {
+  const b = $("#file-btn"), r = b.getBoundingClientRect();
+  b.classList.add("open");
+  showMenu(r.left, r.bottom + 2, [
+    { label: "New...", run: newDocument },
+    { label: "Open...", keys: "Ctrl+O", run: openProject },
+    { label: "Save", keys: "Ctrl+S", run: () => save(false) },
+    { label: "Save As...", keys: "Ctrl+Shift+S", run: () => save(true) },
+    { sep: true },
+    { label: "Export...", title: "Sheets and views to PDF, DWG/DXF and IFC", run: () => runCommand("export") },
+    { label: "Export IFC...", run: () => runCommand("export-ifc") },
+    { sep: true },
+    { label: "Project Information...", run: () => runCommand("project-info") },
+    { sep: true },
+    { label: "Close", run: () => closeWindow() },
+  ]);
+  const unmark = () => { if (!document.querySelector(".ctx-menu")) { b.classList.remove("open"); document.removeEventListener("mouseup", unmark, true); } };
+  document.addEventListener("mouseup", unmark, true);
+};
+
+// The window's own buttons, in the top bar (the desktop app draws no title bar of its own). macOS keeps its native
+// buttons over the bar's left end; a browser shows none.
+const appWindow = window.__TAURI__ && window.__TAURI__.window && window.__TAURI__.window.getCurrentWindow ? window.__TAURI__.window.getCurrentWindow() : null;
+function closeWindow() { if (appWindow) appWindow.close(); else window.close(); }
+if (appWindow) {
+  if (/Mac/.test(navigator.platform)) $("#titlebar").classList.add("mac");
+  else {
+    $("#win-ctl").hidden = false;
+    $("#win-min").onclick = () => appWindow.minimize();
+    $("#win-max").onclick = () => appWindow.toggleMaximize();
+    $("#win-close").onclick = () => appWindow.close();
+    const syncMax = async () => {
+      const max = await appWindow.isMaximized();
+      $("#win-max").title = max ? "Restore" : "Maximise";
+      $("#win-max").innerHTML = max ? '<svg viewBox="0 0 10 10"><rect x="0.5" y="2.5" width="7" height="7"/><path d="M2.5 2.5v-2h7v7h-2"/></svg>' : '<svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9"/></svg>';
+    };
+    appWindow.onResized(syncMax);
+    syncMax();
+  }
+}
 
 let keyBuf = "", keyTimer = null;
 document.addEventListener("keydown", (e) => {
@@ -2274,6 +2382,7 @@ document.addEventListener("keydown", (e) => {
     if (k === "z" && !e.shiftKey) { e.preventDefault(); undo(); return; }
     if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); return; }
     if (k === "s") { e.preventDefault(); save(e.shiftKey); return; }
+    if (k === "o") { e.preventDefault(); openProject(); return; }
   }
   if (typing) return;
   if (app.view.kind === "elevation" && Elev.key(e)) { e.preventDefault(); return; }

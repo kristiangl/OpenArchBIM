@@ -130,6 +130,8 @@ const RIBBON = {
     { label: "Graphics", items: [
       { id: "v-vg", label: "Visibility / Graphics", big: true }, { id: "v-filters", label: "Filters", big: true },
       { id: "v-template", label: "View Templates", big: true } ] },
+    { label: "Export", items: [
+      { id: "export", label: "Export", big: true } ] },
   ],
   Manage: [
     { label: "Settings", items: [
@@ -142,8 +144,8 @@ const RIBBON = {
       { id: "m-lineweights", label: "Line Weights", big: true }, { id: "m-linepatterns", label: "Line Patterns", big: true },
       { id: "m-fillpatterns", label: "Fill Patterns", big: true }, { id: "m-tempdim", label: "Temporary Dimensions", big: true },
       { id: "m-families", label: "Families", big: true } ] },
-    { label: "Export", items: [
-      { id: "m-sheets", label: "Sheet Exporter", big: true } ] },
+    { label: "Project", items: [
+      { id: "project-info", label: "Project Information", big: true } ] },
   ],
   Modify: MODIFY_TAB,
   Help: [

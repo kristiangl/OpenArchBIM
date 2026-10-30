@@ -37,6 +37,7 @@ pub mod mesh;
 pub mod roof;
 pub mod section;
 pub mod sharedparams;
+pub mod sheet;
 pub mod site;
 pub mod skeleton;
 pub mod sketch;

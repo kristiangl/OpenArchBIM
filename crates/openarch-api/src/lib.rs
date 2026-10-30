@@ -1703,6 +1703,48 @@ impl Session {
                 self.doc.reset_wall_profile(id_of(p, "id")?)?;
                 Ok(json!({}))
             }
+            // ---- sheets (openarch_model::sheet) ----
+            "set_project_info" => {
+                let info = serde_json::from_value(p.get("info").cloned().ok_or("missing info")?).map_err(|e| format!("bad project information: {e}"))?;
+                self.doc.set_project_info(info)?;
+                Ok(json!({}))
+            }
+            "add_sheet" => {
+                let number = p.get("number").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| self.doc.next_sheet_number());
+                let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed");
+                let tb = p.get("title_block").and_then(|v| v.as_u64());
+                Ok(json!({ "id": self.doc.add_sheet(&number, name, tb)? }))
+            }
+            "patch_sheet" => {
+                let id = id_of(p, "id")?;
+                let s = self.doc.sheet(id).ok_or("not a sheet")?.clone();
+                let s = openarch_model::doc::apply_patch(&s, p.get("patch").ok_or("missing patch")?)?;
+                self.doc.set_sheet(id, s)?;
+                Ok(json!({}))
+            }
+            "place_view" => {
+                let c = p.get("centre").and_then(|v| serde_json::from_value::<[f64; 2]>(v.clone()).ok()).ok_or("missing centre")?;
+                Ok(json!({ "id": self.doc.place_view(id_of(p, "sheet")?, id_of(p, "view")?, c)? }))
+            }
+            "patch_viewport" => {
+                let id = id_of(p, "id")?;
+                let Some(Element::Viewport(vp)) = self.doc.get(id).cloned() else { return Err("not a viewport".into()) };
+                let vp = openarch_model::doc::apply_patch(&vp, p.get("patch").ok_or("missing patch")?)?;
+                self.doc.set_viewport(id, vp)?;
+                Ok(json!({}))
+            }
+            "sheet" => {
+                // the paper, its title block drawn with the sheet's values, and the views on it
+                let id = id_of(p, "id")?;
+                let d = &self.doc;
+                let s = d.sheet(id).ok_or("not a sheet")?;
+                let tb = s.title_block.and_then(|t| match d.get(t) {
+                    Some(Element::AnnotationFamily(f)) => Some(f),
+                    _ => None,
+                });
+                let title_block = tb.map(|f| json!({ "paths": d.symbol_drawing(f, false).body, "labels": d.symbol_texts(f, &|q| d.sheet_param(id, q), false) }));
+                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id) }))
+            }
             "floor_sketch" => {
                 let id = id_of(p, "id")?;
                 let Some(Element::Floor(f)) = self.doc.get(id) else { return Err("not a floor".into()) };
@@ -1948,6 +1990,10 @@ impl Session {
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "dimension_types": d.dimension_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "text_note_types": d.text_note_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "style": d.text_style(Some(t)) })).collect::<Vec<_>>(),
+            "sheets": d.sheets().iter().map(|(id, s)| json!({ "id": id, "number": s.number, "name": s.name, "appears_in_list": s.appears_in_list, "title_block": s.title_block })).collect::<Vec<_>>(),
+            "title_blocks": d.annotation_families().iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::TitleBlock).map(|(id, f)| json!({ "id": id, "name": f.name, "paper": f.paper_mm })).collect::<Vec<_>>(),
+            "placed_views": d.viewports().iter().map(|(_, v)| json!([v.view, v.sheet])).collect::<Vec<_>>(),
+            "project": d.project_info(),
             "annotation_families": d.annotation_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name, "label": f.name, "kind": f.kind, "category": f.kind.category(), "in_use": d.annotation_family_in_use(*id) })).collect::<Vec<_>>(),
             "view_templates": d.view_templates().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind })).collect::<Vec<_>>(),
             "model_categories": MODEL_CATEGORIES,
@@ -2606,6 +2652,8 @@ impl Session {
             Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
             Element::TextNote(t) => Ok(props::text_note_props(d, id, t)),
             Element::GroupInstance(g) => Ok(props::group_props(d, id, g)),
+            Element::Sheet(s) => Ok(props::sheet_props(d, id, s)),
+            Element::Viewport(v) => Ok(props::viewport_props(d, id, v)),
             _ => Err("nothing to show".into()),
         }
     }

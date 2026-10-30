@@ -267,6 +267,12 @@ fn main() {
                 .unwrap_or_else(|_| std::env::temp_dir().join("openarch-logs"));
             app.manage(Log::open(dir));
             watch_slow_calls(app.handle().clone());
+            // the page draws the one top bar; macOS keeps its own window buttons, over the bar's left end
+            #[cfg(target_os = "macos")]
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.set_decorations(true);
+                let _ = w.set_title_bar_style(tauri::TitleBarStyle::Overlay);
+            }
             Ok(())
         })
         // Closing the window asks the page first, which offers to save unsaved work. A page that has not answered

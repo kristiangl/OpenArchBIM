@@ -36,6 +36,8 @@ pub enum AnnotationKind {
     LevelHead,
     ElevationMarker,
     SectionMarker,
+    /// A sheet's border and title panel; its paper size is the family's `paper_mm`.
+    TitleBlock,
 }
 
 impl AnnotationKind {
@@ -44,6 +46,7 @@ impl AnnotationKind {
             AnnotationKind::LevelHead => "Level Head",
             AnnotationKind::ElevationMarker => "Elevation Marker",
             AnnotationKind::SectionMarker => "Section Marker",
+            AnnotationKind::TitleBlock => "Title Block",
         }
     }
 
@@ -53,6 +56,7 @@ impl AnnotationKind {
             AnnotationKind::LevelHead => "Level Heads",
             AnnotationKind::ElevationMarker => "Elevation Marks",
             AnnotationKind::SectionMarker => "Section Marks",
+            AnnotationKind::TitleBlock => "Title Blocks",
         }
     }
 
@@ -62,6 +66,7 @@ impl AnnotationKind {
             AnnotationKind::LevelHead => LEVEL_PARAMS,
             AnnotationKind::ElevationMarker => VIEW_PARAMS,
             AnnotationKind::SectionMarker => SECTION_PARAMS,
+            AnnotationKind::TitleBlock => TITLE_BLOCK_PARAMS,
         }
     }
 }
@@ -69,6 +74,10 @@ impl AnnotationKind {
 pub const LEVEL_PARAMS: &[&str] = &["Name", "Elevation", "Survey Elevation", "Project Elevation", "Level Number"];
 pub const VIEW_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number"];
 pub const SECTION_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number", "Reference Label"];
+pub const TITLE_BLOCK_PARAMS: &[&str] = &[
+    "Sheet Number", "Sheet Name", "Scale", "Sheet Issue Date", "Drawn By", "Checked By", "Designed By", "Approved By", "Current Revision",
+    "Project Name", "Project Number", "Client Name", "Project Address", "Project Status", "Author",
+];
 
 /// A line of an annotation family's drawing.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -402,6 +411,9 @@ pub struct AnnotationFamily {
     pub old_shapes: Vec<AnnShape>,
     #[serde(default, rename = "pointer", skip_serializing)]
     pub old_pointer: Vec<AnnShape>,
+    /// A title block: the paper's width and height, mm (its origin is the paper's bottom left).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub paper_mm: Option<[f64; 2]>,
 }
 
 fn reference_label() -> String {
@@ -456,6 +468,7 @@ impl AnnotationFamily {
             reference_label: reference_label(),
             old_shapes: shapes,
             old_pointer: pointer,
+            paper_mm: None,
         };
         f.read_old_drawing();
         f
@@ -484,6 +497,85 @@ impl AnnotationFamily {
             vec![AnnShape::Polygon { pts: vec![[6.65, 0.0], [3.5, 2.17], [3.5, -2.17]], filled: true }],
             vec![],
         )
+    }
+
+    /// A title block for `paper` (width and height, mm): a border inside the paper (wider on the left for binding) and
+    /// a title panel down its right side with the project, the sheet and its number. `k` scales the text.
+    pub fn title_block(name: &str, paper: [f64; 2], panel: f64, k: f64) -> AnnotationFamily {
+        let [w, h] = paper;
+        let (l, m) = (20.0, 10.0);
+        let (x1, x0) = (w - m, w - m - panel);
+        let mut f = AnnotationFamily::drawn_with(name, AnnotationKind::TitleBlock, vec![], vec![], vec![]);
+        f.paper_mm = Some(paper);
+        let size = |n: &str, mm: f64, bold: bool| TextType::new(n, mm, bold);
+        f.label_types = vec![size("Small", 2.5 * k, false), size("Value", 3.5 * k, false), size("Name", 5.0 * k, true), size("Number", 10.0 * k, true)];
+        f.text_types = vec![size("Heading", 2.0 * k, false)];
+        let mut add = |a: [f64; 2], b: [f64; 2]| f.lines.push(AnnLine { curve: Curve::line(pt(a), pt(b)), subcategory: String::new(), visible: true, pointer: false });
+        // the paper's edge, the border, the panel
+        for (a, b) in [([0.0, 0.0], [w, 0.0]), ([w, 0.0], [w, h]), ([w, h], [0.0, h]), ([0.0, h], [0.0, 0.0])] {
+            add(a, b);
+        }
+        for (a, b) in [([l, m], [x1, m]), ([x1, m], [x1, h - m]), ([x1, h - m], [l, h - m]), ([l, h - m], [l, m]), ([x0, m], [x0, h - m])] {
+            add(a, b);
+        }
+        // panel rows from the bottom: number, name, scale/date, drawn/checked, project, revisions above
+        let rows = [m + 28.0 * k, m + 52.0 * k, m + 64.0 * k, m + 76.0 * k, m + 118.0 * k];
+        for y in rows {
+            add([x0, y], [x1, y]);
+        }
+        let half = (x0 + x1) / 2.0;
+        for (y0, y1) in [(rows[1], rows[2]), (rows[2], rows[3])] {
+            add([half, y0], [half, y1]);
+        }
+        let pad = 2.5 * k;
+        let lp = |param: &str, sample: &str| LabelParam { param: param.into(), spaces: 1, prefix: String::new(), suffix: String::new(), sample: sample.into(), brk: false };
+        let label = |x: f64, y: f64, ty: &str, width: f64, params: Vec<LabelParam>| AnnLabel::new(x, y, HAlign::Left, VAlign::Top, ty, width, params);
+        let text = |x: f64, y: f64, t: &str| AnnText { x, y, text: t.into(), text_type: "Heading".into(), halign: HAlign::Left, valign: VAlign::Top, width_mm: 0.0, keep_readable: true, visible: true };
+        let inner = panel - 2.0 * pad;
+        let col = half - x0 - 2.0 * pad;
+        f.texts.push(text(x0 + pad, rows[0] - pad, "SHEET"));
+        f.labels.push(label(x0 + pad, rows[0] - pad - 4.0 * k, "Number", inner, vec![lp("Sheet Number", "A1.01")]));
+        f.texts.push(text(x0 + pad, rows[1] - pad, "DRAWING"));
+        f.labels.push(label(x0 + pad, rows[1] - pad - 4.0 * k, "Name", inner, vec![lp("Sheet Name", "Floor Plan")]));
+        f.texts.push(text(x0 + pad, rows[2] - pad, "SCALE"));
+        f.labels.push(label(x0 + pad, rows[2] - pad - 3.5 * k, "Value", col, vec![lp("Scale", "1 : 100")]));
+        f.texts.push(text(half + pad, rows[2] - pad, "DATE"));
+        f.labels.push(label(half + pad, rows[2] - pad - 3.5 * k, "Value", col, vec![lp("Sheet Issue Date", "30.10.26")]));
+        f.texts.push(text(x0 + pad, rows[3] - pad, "DRAWN"));
+        f.labels.push(label(x0 + pad, rows[3] - pad - 3.5 * k, "Value", col, vec![lp("Drawn By", "KL")]));
+        f.texts.push(text(half + pad, rows[3] - pad, "CHECKED"));
+        f.labels.push(label(half + pad, rows[3] - pad - 3.5 * k, "Value", col, vec![lp("Checked By", "KL")]));
+        f.texts.push(text(x0 + pad, rows[4] - pad, "PROJECT"));
+        let mut project = vec![lp("Project Number", "367"), lp("Project Name", "Cornish House"), lp("Project Address", "1 Example St, Perth WA"), lp("Client Name", "Client")];
+        for p in project.iter_mut().take(3) {
+            p.brk = true;
+        }
+        f.labels.push(label(x0 + pad, rows[4] - pad - 3.5 * k, "Value", inner, project));
+        f.texts.push(text(x0 + pad, h - m - pad, "REVISION"));
+        f.labels.push(label(x0 + pad, h - m - pad - 3.5 * k, "Value", inner, vec![lp("Current Revision", "A")]));
+        // to the hundredth of a millimetre, so the family saves and reads back exactly
+        let r = |v: &mut f64| *v = (*v * 100.0).round() / 100.0;
+        for l in &mut f.labels {
+            r(&mut l.x);
+            r(&mut l.y);
+            r(&mut l.width_mm);
+        }
+        for t in &mut f.texts {
+            r(&mut t.x);
+            r(&mut t.y);
+        }
+        for t in f.label_types.iter_mut().chain(f.text_types.iter_mut()) {
+            r(&mut t.size_mm);
+        }
+        for l in &mut f.lines {
+            if let Curve::Line { a, b } = &mut l.curve {
+                for q in [a, b] {
+                    r(&mut q.x);
+                    r(&mut q.y);
+                }
+            }
+        }
+        f
     }
 
     /// A line head with a pointer along the view direction.
@@ -947,7 +1039,8 @@ impl Document {
     pub fn ensure_annotation_defaults(&mut self) {
         self.upgrade_section_markers();
         self.upgrade_annotation_drawings();
-        if !self.annotation_families().is_empty() && !self.level_types().is_empty() {
+        let title_blocks = self.annotation_families().iter().any(|(_, f)| f.kind == AnnotationKind::TitleBlock);
+        if !self.annotation_families().is_empty() && !self.level_types().is_empty() && title_blocks {
             return;
         }
         let _ = self.transact("Annotation defaults", |tx| {
@@ -962,6 +1055,10 @@ impl Document {
             }
             if !have(tx, AnnotationKind::SectionMarker) {
                 tx.add(Element::AnnotationFamily(AnnotationFamily::section_marker("Section Marker")));
+            }
+            if !have(tx, AnnotationKind::TitleBlock) {
+                tx.add(Element::AnnotationFamily(AnnotationFamily::title_block("A1 Title Block", [841.0, 594.0], 150.0, 1.0)));
+                tx.add(Element::AnnotationFamily(AnnotationFamily::title_block("A3 Title Block", [420.0, 297.0], 80.0, 0.6)));
             }
             if tx.doc_ref().level_types().is_empty() {
                 tx.add(Element::LevelType(LevelType { name: "Level".into(), head, end_default: end_default() }));

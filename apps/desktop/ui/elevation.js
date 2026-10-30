@@ -5,7 +5,9 @@
 // session (sketch.js) is hosted here while Detail Line or a region is drawn in the view.
 const Elev = (() => {
   const canvas = document.getElementById("elev");
-  const ctx = canvas.getContext("2d");
+  let ctx = canvas.getContext("2d");
+  // renderTo: drawing a view onto a sheet or a page, at another size, with nothing selected and no tool showing
+  let printing = false, printSize = null;
   const cb = {
     select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
@@ -227,7 +229,7 @@ const Elev = (() => {
     return rgbCache.get(col);
   }
   const mix = (col, bg, f) => { const a = rgbOf(col), b = rgbOf(bg); return `rgb(${a.map((x, i) => Math.round(b[i] + (x - b[i]) * f)).join(",")})`; };
-  const size = () => ({ w: canvas.clientWidth, h: canvas.clientHeight });
+  const size = () => printSize || { w: canvas.clientWidth, h: canvas.clientHeight };
   const toScreen = (u, z) => { const { w, h } = size(); return { x: (u - cam.u) * cam.s + w / 2, y: h / 2 - (z - cam.z) * cam.s }; };
   const toWorld = (sx, sy) => { const { w, h } = size(); return { u: (sx - w / 2) / cam.s + cam.u, z: (h / 2 - sy) / cam.s + cam.z }; };
   // annotation is drawn at its paper size: pixels in a paper millimetre are the view scale times the zoom
@@ -421,7 +423,7 @@ const Elev = (() => {
   let cropBoxes = [], cropDrag = null; // grips in screen pixels; { side, v, moved } while one is dragged
   function drawCrop() {
     cropBoxes = [];
-    if (!data || !data.section) return;
+    if (!data || !data.section || printing) return;
     const f = data.frame, accent = css("--accent");
     let u0 = 0, u1 = f.right_mm, z0 = f.z_min, z1 = f.z_max;
     if (cropDrag && cropDrag.moved) { if (cropDrag.side === "left") u0 = cropDrag.v; else if (cropDrag.side === "right") u1 = cropDrag.v; else if (cropDrag.side === "bottom") z0 = cropDrag.v; else z1 = cropDrag.v; }
@@ -883,10 +885,12 @@ const Elev = (() => {
   }
 
   function render() {
-    resize();
+    if (!printing) resize();
     const { w, h } = size();
-    ctx.fillStyle = css("--view-bg");
-    ctx.fillRect(0, 0, w, h);
+    if (!printing) {
+      ctx.fillStyle = css("--view-bg");
+      ctx.fillRect(0, 0, w, h);
+    }
     if (!data) return;
     const text = css("--text"), accent = css("--accent");
     // ground
@@ -1001,7 +1005,7 @@ const Elev = (() => {
       ctx.fillRect(s2.x + 10, s2.y + 8, tw + 8, 16); ctx.strokeRect(s2.x + 10.5, s2.y + 8.5, tw + 8, 16);
       ctx.fillStyle = "#222"; ctx.textAlign = "left"; ctx.textBaseline = "alphabetic"; ctx.fillText(hover.label, s2.x + 14, s2.y + 20);
     }
-    label(data.name, 10, 14, css("--muted"), "left", true);
+    if (!printing) label(data.name, 10, 14, css("--muted"), "left", true);
   }
 
   // The opening about to be placed: its width centred on the cursor; a window's sill at the cursor, a door standing on
@@ -1524,7 +1528,21 @@ const Elev = (() => {
     if (!(cam.s > 0)) cam.s = 0.1;
   }
 
+  // Draw an elevation or section's data onto another canvas context (a sheet, a page): `o` is { data, cam, w, h }, the
+  // camera along the view and up (mm) and pixels per mm. Nothing selected, no tool, no crop frame.
+  function renderTo(target, o) {
+    const keep = { ctx, data, cam, sel, hoverIds, tool, drag, mouse, hover, band };
+    ctx = target; data = o.data; cam = o.cam; printSize = { w: o.w, h: o.h }; printing = true;
+    sel = new Set(); hoverIds = null; tool = "select"; drag = null; mouse = null; hover = null; band = null;
+    try { target.save(); render(); } finally {
+      target.restore();
+      ({ ctx, data, cam, sel, hoverIds, tool, drag, mouse, hover, band } = keep);
+      printing = false; printSize = null;
+    }
+  }
+
   return {
+    renderTo,
     callbacks: cb,
     get tool() { return tool; },
     setTool,

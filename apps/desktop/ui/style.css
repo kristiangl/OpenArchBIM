@@ -36,7 +36,20 @@ body { background: var(--bg); color: var(--text); font: 12px/1.35 system-ui, "Se
 .spacer { flex: 1; }
 button, select { font: inherit; color: inherit; }
 
-#titlebar { display: flex; align-items: center; gap: 12px; padding: 0 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); }
+#titlebar { display: flex; align-items: center; gap: 12px; padding: 0 0 0 10px; background: var(--panel-2); border-bottom: 1px solid var(--line); user-select: none; }
+/* macOS keeps its own window buttons, drawn over the bar's left end */
+#titlebar.mac { padding-left: 78px; }
+#file-btn { padding: 1px 12px; border: 1px solid var(--accent); border-radius: 3px; background: var(--accent); color: #fff; cursor: pointer; font-weight: 600; }
+#file-btn:hover, #file-btn.open { filter: brightness(1.1); }
+#win-ctl { display: flex; align-self: stretch; margin-left: 4px; }
+#win-ctl[hidden] { display: none; }
+#win-ctl button { width: 46px; border: none; background: none; color: inherit; cursor: pointer; display: grid; place-items: center; }
+#win-ctl button:hover { background: var(--accent-soft); }
+#win-ctl #win-close:hover { background: #c42b1c; color: #fff; }
+#win-ctl svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+.ctx-menu hr { border: none; border-top: 1px solid var(--line); margin: 3px 2px; }
+.ctx-menu .keys { float: right; margin-left: 24px; color: var(--muted); }
+.ctx-menu button:hover .keys { color: inherit; }
 .logo { font-weight: 700; letter-spacing: .02em; }
 .doc { color: var(--muted); }
 .pill { padding: 1px 8px; border: 1px solid var(--line); border-radius: 10px; color: var(--muted); }
@@ -133,9 +146,10 @@ table.props input { width: 100%; padding: 1px 4px; background: var(--panel); bor
 #viewport-wrap > canvas, #viewport-wrap > #schedule-view { position: absolute; inset: 0; width: 100%; height: 100%; display: none; }
 #viewport-wrap.v-plan > #plan { display: block; }
 #viewport-wrap.v-elevation > #elev { display: block; }
+#viewport-wrap.v-sheet > #sheet { display: block; }
 #viewport-wrap.v-3d > #viewport { display: block; }
 #viewport-wrap.v-schedule > #schedule-view { display: block; overflow: auto; }
-#viewport-wrap.v-plan #hud, #viewport-wrap.v-elevation #hud, #viewport-wrap.v-schedule #hud { display: none; }
+#viewport-wrap.v-plan #hud, #viewport-wrap.v-elevation #hud, #viewport-wrap.v-schedule #hud, #viewport-wrap.v-sheet #hud { display: none; }
 
 .sched-wrap { padding: 18px 24px; max-width: 980px; }
 .sched-wrap h2 { margin: 0 0 4px; font-size: 16px; }

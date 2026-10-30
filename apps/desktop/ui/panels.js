@@ -105,7 +105,9 @@ async function renderProperties() {
   else if (!app.selection.length && app.browserSel != null && viewById(app.browserSel)) d = await run("describe", { id: app.browserSel });
   // the view's own tool: a plan's, or an elevation's or section's
   const tool = app.view.kind === "elevation" ? Elev.tool : Plan.tool;
-  if (!app.selection.length && !d && tool === "select" && app.view.kind !== "schedule" && curView()) d = await run("describe", { id: curView().id });
+  if (!app.selection.length && !d && tool === "select" && app.view.kind !== "schedule" && app.view.kind !== "sheet" && curView()) d = await run("describe", { id: curView().id });
+  // an open sheet with nothing on it selected shows the sheet's own properties
+  if (!app.selection.length && !d && app.view.kind === "sheet") d = await run("describe", { id: app.view.viewId });
   if (token !== propsRender) return; // a newer render started while this one waited
 
   let types = null, current = null, onType = null, title = "No selection";

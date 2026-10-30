@@ -1413,3 +1413,48 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
         }
     }
 }
+
+/// A sheet: its number and name, who drew and checked it, its issue date and revision, its title block, and whether
+/// it is listed in the drawing register.
+pub fn sheet_props(d: &Document, id: Id, s: &openarch_model::sheet::Sheet) -> Value {
+    let tbs: Vec<(String, Value, bool)> = d
+        .annotation_families()
+        .into_iter()
+        .filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::TitleBlock)
+        .map(|(tid, f)| (f.name.clone(), json!({ "title_block": tid }), s.title_block == Some(tid)))
+        .collect();
+    json!({
+        "id": id, "kind": "Sheet",
+        "title": format!("Sheet: {} - {}", s.number, s.name),
+        "target": { "method": "patch_sheet", "id": id },
+        "groups": [
+            group("Identity Data", vec![
+                text("Sheet Number", "number", &s.number),
+                text("Sheet Name", "name", &s.name),
+                boolean("Appears In Sheet List", "appears_in_list", s.appears_in_list, true),
+                text("Sheet Issue Date", "issue_date", &s.issue_date),
+                text("Current Revision", "current_revision", &s.current_revision),
+                text("Drawn By", "drawn_by", &s.drawn_by),
+                text("Checked By", "checked_by", &s.checked_by),
+                text("Designed By", "designed_by", &s.designed_by),
+                text("Approved By", "approved_by", &s.approved_by),
+            ]),
+            group("Graphics", vec![select("Title Block", tbs), ro("Scale", d.sheet_scale(id))]),
+        ],
+    })
+}
+
+/// A viewport: the view it shows, its detail number and how it turns on the sheet.
+pub fn viewport_props(d: &Document, id: Id, v: &openarch_model::sheet::Viewport) -> Value {
+    let view = d.view(v.view).map_or(String::new(), |x| x.name.clone());
+    let rot = |deg: i32, label: &str| (label.to_string(), json!({ "rotation": deg }), v.rotation == deg);
+    json!({
+        "id": id, "kind": "Viewport",
+        "title": format!("Viewport: {view}"),
+        "target": { "method": "patch_viewport", "id": id },
+        "groups": [
+            group("Identity Data", vec![ro("View Name", view), text("Detail Number", "detail_number", &v.detail_number)]),
+            group("Graphics", vec![select("Rotation on Sheet", vec![rot(0, "None"), rot(90, "90 Counterclockwise"), rot(270, "90 Clockwise")])]),
+        ],
+    })
+}

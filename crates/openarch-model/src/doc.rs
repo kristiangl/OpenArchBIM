@@ -678,7 +678,8 @@ impl Document {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
-                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views and view templates can be deleted for now".into()),
+                Some(Element::Sheet(_)) | Some(Element::Viewport(_)) => {}
+                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views, view templates, sheets and viewports can be deleted for now".into()),
                 None => return Err(format!("no element {id}")),
             }
         }
@@ -694,6 +695,12 @@ impl Document {
             };
             if view.is_some_and(|v| views.contains(&v)) && !ids.contains(&i) {
                 ids.push(i);
+            }
+            // a viewport goes with its view and with its sheet
+            if let Element::Viewport(vp) = e {
+                if (views.contains(&vp.view) || ids.contains(&vp.sheet)) && !ids.contains(&i) {
+                    ids.push(i);
+                }
             }
         }
         for h in self.hosted_in(&ids.clone()) {
@@ -1360,7 +1367,7 @@ fn check_depth_cue(s: &ViewSettings) -> Result<(), String> {
 }
 
 /// Serialise `value`, merge `patch` into it (RFC 7396), and read it back.
-pub(crate) fn apply_patch<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T, patch: &serde_json::Value) -> Result<T, String> {
+pub fn apply_patch<T: serde::Serialize + serde::de::DeserializeOwned>(value: &T, patch: &serde_json::Value) -> Result<T, String> {
     fn merge(target: &mut serde_json::Value, patch: &serde_json::Value) {
         use serde_json::Value;
         if let Value::Object(p) = patch {

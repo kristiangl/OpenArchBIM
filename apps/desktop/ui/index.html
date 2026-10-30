@@ -9,20 +9,28 @@
 </head>
 <body>
 <div id="app">
-  <header id="titlebar">
-    <span class="logo"><img src="app-icon.svg" alt="" class="logo-mark">OpenArch BIM</span>
+  <!-- the window's one top bar: the empty parts drag the window (double-click maximises) -->
+  <header id="titlebar" data-tauri-drag-region>
+    <span class="logo" data-tauri-drag-region><img src="app-icon.svg" alt="" class="logo-mark" data-tauri-drag-region>OpenArch BIM</span>
+    <button id="file-btn" title="File: new, open, save, export">File</button>
     <span class="qa">
       <button id="qa-new" title="New project or family">New</button>
       <button id="qa-open" title="Open project">Open</button>
       <button id="qa-save" title="Save (Ctrl+S)">Save</button>
       <button id="qa-undo" title="Undo (Ctrl+Z)">Undo</button>
       <button id="qa-redo" title="Redo (Ctrl+Y)">Redo</button>
+      <button id="qa-export" title="Export sheets and views to PDF, DWG/DXF and IFC">Export</button>
     </span>
     <span id="doc-tabs" hidden></span>
-    <span class="doc" id="doc-title">Untitled project</span>
-    <span class="spacer"></span>
+    <span class="doc" id="doc-title" data-tauri-drag-region>Untitled project</span>
+    <span class="spacer" data-tauri-drag-region></span>
     <span id="core-status" class="pill">core: ...</span>
     <span id="gpu-status" class="pill">GPU: ...</span>
+    <span id="win-ctl" hidden>
+      <button id="win-min" title="Minimise"><svg viewBox="0 0 10 10"><path d="M0 5.5h10"/></svg></button>
+      <button id="win-max" title="Maximise"><svg viewBox="0 0 10 10"><rect x="0.5" y="0.5" width="9" height="9"/></svg></button>
+      <button id="win-close" title="Close"><svg viewBox="0 0 10 10"><path d="M0 0l10 10M10 0L0 10"/></svg></button>
+    </span>
   </header>
 
   <nav id="tabs"></nav>
@@ -85,6 +93,7 @@
         </div>
         <canvas id="plan"></canvas>
         <canvas id="elev"></canvas>
+        <canvas id="sheet"></canvas>
         <canvas id="viewport"></canvas>
         <canvas id="vp-over"></canvas>
         <div id="schedule-view"></div>
@@ -153,6 +162,7 @@
 <script src="details.js"></script>
 <script src="plan.js"></script>
 <script src="elevation.js"></script>
+<script src="sheetview.js"></script>
 <script src="viewport.js"></script>
 <script src="panels.js"></script>
 <script src="globals.js"></script>

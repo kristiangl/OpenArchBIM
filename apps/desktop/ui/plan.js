@@ -4,7 +4,9 @@
 
 const Plan = (() => {
   const canvas = document.getElementById("plan");
-  const ctx = canvas.getContext("2d");
+  let ctx = canvas.getContext("2d");
+  // renderTo: drawing a view onto a sheet or a page, at another size, with nothing selected and no tool showing
+  let printing = false, printSize = null;
   const cb = { editGroup() {}, groupPick() {}, placeGroup() {}, addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, array() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
 
   let cam = { x: 3000, y: 2000, s: 0.1 }; // centre in mm, pixels per mm
@@ -138,7 +140,7 @@ const Plan = (() => {
   let tdimInput = null; // the input box over a dimension being edited
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
-  const size = () => ({ w: canvas.clientWidth, h: canvas.clientHeight });
+  const size = () => printSize || { w: canvas.clientWidth, h: canvas.clientHeight };
   const toScreen = (p) => { const { w, h } = size(); return { x: (p.x - cam.x) * cam.s + w / 2, y: h / 2 - (p.y - cam.y) * cam.s }; };
   const toWorld = (sx, sy) => { const { w, h } = size(); return { x: (sx - w / 2) / cam.s + cam.x, y: (h / 2 - sy) / cam.s + cam.y }; };
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
@@ -1027,25 +1029,27 @@ const Plan = (() => {
   }
 
   function render() {
-    resize();
+    if (!printing) resize();
     tdimUI = [];
     wgrips = [];
     const { w, h } = size();
     const text = css("--text"), accent = css("--accent"), line = css("--line");
-    ctx.fillStyle = css("--view-bg");
-    ctx.fillRect(0, 0, w, h);
+    if (!printing) {
+      ctx.fillStyle = css("--view-bg");
+      ctx.fillRect(0, 0, w, h);
+    }
 
     // work plane grid (Work Plane > Show). Off by default.
     const g = gridStep();
     const tl = toWorld(0, 0), br = toWorld(w, h);
     ctx.lineWidth = 1;
-    if (showWorkGrid) for (let x = Math.floor(tl.x / g) * g; x <= br.x; x += g) {
+    if (showWorkGrid && !printing) for (let x = Math.floor(tl.x / g) * g; x <= br.x; x += g) {
       const major = Math.round(x / g) % 5 === 0;
       ctx.strokeStyle = major ? line : css("--panel-2");
       const sx = Math.round(toScreen({ x, y: 0 }).x) + 0.5;
       ctx.beginPath(); ctx.moveTo(sx, 0); ctx.lineTo(sx, h); ctx.stroke();
     }
-    if (showWorkGrid) for (let y = Math.floor(br.y / g) * g; y <= tl.y; y += g) {
+    if (showWorkGrid && !printing) for (let y = Math.floor(br.y / g) * g; y <= tl.y; y += g) {
       const major = Math.round(y / g) % 5 === 0;
       ctx.strokeStyle = major ? line : css("--panel-2");
       const sy = Math.round(toScreen({ x: 0, y }).y) + 0.5;
@@ -1054,7 +1058,7 @@ const Plan = (() => {
     // origin
     const o = toScreen({ x: 0, y: 0 });
     ctx.strokeStyle = accent; ctx.lineWidth = 1.5;
-    ctx.beginPath(); ctx.moveTo(o.x - 8, o.y); ctx.lineTo(o.x + 8, o.y); ctx.moveTo(o.x, o.y - 8); ctx.lineTo(o.x, o.y + 8); ctx.stroke();
+    if (!printing) { ctx.beginPath(); ctx.moveTo(o.x - 8, o.y); ctx.lineTo(o.x + 8, o.y); ctx.moveTo(o.x, o.y - 8); ctx.lineTo(o.x, o.y + 8); ctx.stroke(); }
 
     // crop region: clip the model to it and optionally draw its edge
     const crop = data.crop || {};
@@ -1385,7 +1389,7 @@ const Plan = (() => {
     drawGridAlign();
 
     // crop region outline (not clipped)
-    if (crop.enabled && crop.visible && crop.region) {
+    if (crop.enabled && crop.visible && crop.region && !printing) {
       const [c0, c1] = crop.region;
       const a = toScreen({ x: c0[0], y: c1[1] }), b = toScreen({ x: c1[0], y: c0[1] });
       ctx.strokeStyle = "#7a3fa0"; ctx.lineWidth = 1.2; ctx.setLineDash([8, 4]);
@@ -2498,7 +2502,21 @@ const Plan = (() => {
   };
   Sketch.attach(planHost);
 
+  // Draw a plan view's data onto another canvas context (a sheet, a page): `o` is { data, cam, w, h } with the camera in
+  // model mm and pixels per mm. Nothing selected, no tool, no work grid or crop frame; the context is left as found.
+  function renderTo(target, o) {
+    const keep = { ctx, data, cam, sel, selHover, hover, draw, band, tdims, placeDims, tool, groupEdit, thin };
+    ctx = target; data = o.data; cam = o.cam; printSize = { w: o.w, h: o.h }; printing = true;
+    sel = new Set(); selHover = null; hover = null; draw = null; band = null; tdims = []; placeDims = []; tool = "select"; groupEdit = null; thin = false;
+    try { target.save(); render(); } finally {
+      target.restore();
+      ({ ctx, data, cam, sel, selHover, hover, draw, band, tdims, placeDims, tool, groupEdit, thin } = keep);
+      printing = false; printSize = null;
+    }
+  }
+
   return {
+    renderTo,
     callbacks: cb,
     setTool,
     get tool() { return tool; },

@@ -764,7 +764,7 @@ pub const ANNOTATION_CATEGORIES: &[&str] = &[
 
 /// The categories of annotation families (level heads, elevation and section marks): Object Styles rows whose
 /// subcategories are the line styles those families draw with.
-pub const SYMBOL_CATEGORIES: &[&str] = &["Level Heads", "Elevation Marks", "Section Marks"];
+pub const SYMBOL_CATEGORIES: &[&str] = &["Level Heads", "Elevation Marks", "Section Marks", "Title Blocks"];
 
 #[cfg(test)]
 mod tests {

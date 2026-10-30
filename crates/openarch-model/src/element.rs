@@ -673,6 +673,9 @@ pub enum Element {
     GroupType(crate::group::GroupType),
     GroupInstance(crate::group::GroupInstance),
     GroupArray(crate::array::GroupArray),
+    ProjectInfo(crate::sheet::ProjectInfo),
+    Sheet(crate::sheet::Sheet),
+    Viewport(crate::sheet::Viewport),
 }
 
 impl Element {
@@ -716,6 +719,9 @@ impl Element {
             Element::GroupType(_) => "GroupType",
             Element::GroupInstance(_) => "GroupInstance",
             Element::GroupArray(_) => "GroupArray",
+            Element::ProjectInfo(_) => "ProjectInfo",
+            Element::Sheet(_) => "Sheet",
+            Element::Viewport(_) => "Viewport",
         }
     }
 }

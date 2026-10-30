@@ -167,6 +167,7 @@ const ICONS = {
   tempDim: '<path d="M4 8v10M20 8v10"/><path class="a2" d="M4 13h16" stroke-dasharray="3 2"/><rect x="9" y="4" width="6" height="5" rx="1"/>',
   annFamily: '<circle cx="12" cy="9" r="6"/><path d="M6 9h12"/><path class="a2" d="M12 15v6"/>',
   families: '<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="3" width="8" height="8" rx="1"/><rect x="3" y="13" width="8" height="8" rx="1"/><rect class="af" x="13" y="13" width="8" height="8" rx="1"/>',
+  projectInfo: '<rect x="4" y="3" width="16" height="18" rx="1"/><path d="M8 8h8M8 12h8M8 16h5"/><circle class="af" cx="17" cy="17" r="3"/>',
   exportSheets: '<rect x="3" y="6" width="13" height="15" rx="1"/><path d="M7 3h11a1 1 0 0 1 1 1v6"/><path class="a2" d="M10 14h11M18 11l3 3-3 3"/>',
 
   // ---- modify ----
@@ -288,7 +289,7 @@ const ICON_ALIAS = {
   // manage
   "m-materials": "materials", "m-units": "units", "m-params": "params", "m-globals": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases",
   "m-revisions": "revisions", "m-snaps": "snaps", "m-linestyles": "lineStyles", "m-lineweights": "lineWeights", "m-linepatterns": "linePatterns", "m-fillpatterns": "fillPatterns",
-  "m-tempdim": "tempDim", "m-annfam": "annFamily", "m-families": "families", "m-sheets": "exportSheets",
+  "m-tempdim": "tempDim", "m-annfam": "annFamily", "m-families": "families", export: "exportSheets", "project-info": "projectInfo",
   // help
   "open-log": "openLog",
   // modify
