@@ -306,9 +306,10 @@ const ExportFlow = (() => {
       .replace(/\{ProjectNumber\}/g, clean(pr.number || "Project"))
       .replace(/\{ProjectName\}/g, clean(pr.name || "Untitled"))
       .replace(/\{Date\}/g, date(set.dateFormat));
-    if (item) s = s.replace(/\{SheetNumber\}/g, clean(item.number)).replace(/\{SheetName\}/g, clean(item.name));
-    return s.replace(/\{SheetNumber\}|\{SheetName\}/g, "");
+    if (item) s = s.replace(/\{SheetNumber\}/g, clean(item.number)).replace(/\{SheetName\}/g, clean(item.name)).replace(/\{SheetCollection\}/g, clean(item.collection || ""));
+    return s.replace(/\{SheetNumber\}|\{SheetName\}|\{SheetCollection\}/g, "");
   }
+  const collectionName = (id) => { const c = (app.info.sheet_collections || []).find((x) => x.id === id); return c ? c.name : ""; };
   const join = (dir, name) => (/[\\/]$/.test(dir) ? dir + name : `${dir}${dir.includes("/") && !dir.includes("\\") ? "/" : "\\"}${name}`);
   async function projectDir() {
     const p = app.info.path;
@@ -356,7 +357,7 @@ const ExportFlow = (() => {
       const table = el("div", { className: "ex-list" });
       const count = el("span", { className: "ex-count" });
       const items = () => mode === "sheets"
-        ? (app.info.sheets || []).filter((s) => !listOnly.checked || s.appears_in_list).map((s) => ({ kind: "sheet", id: s.id, number: s.number, name: s.name }))
+        ? (app.info.sheets || []).filter((s) => !s.placeholder && (!listOnly.checked || s.appears_in_list)).map((s) => ({ kind: "sheet", id: s.id, number: s.number, name: s.name, collection: collectionName(s.collection) }))
         : app.info.views.filter((v) => ["floor_plan", "ceiling_plan", "elevation", "section"].includes(v.view_kind)).map((v) => ({ kind: "view", id: v.id, number: "", name: v.name, type: v.view_kind.replace("_", " ") }));
       const shown = () => { const q = search.value.trim().toLowerCase(); return items().filter((i) => !q || `${i.number} ${i.name}`.toLowerCase().includes(q)); };
       const key = (i) => `${i.kind}:${i.id}`;
@@ -367,7 +368,7 @@ const ExportFlow = (() => {
         table.replaceChildren(head, ...shown().map((i) => {
           const cb = el("input", { type: "checkbox", checked: picked.has(key(i)) });
           cb.onchange = () => { if (cb.checked) picked.add(key(i)); else picked.delete(key(i)); draw(); };
-          const row = el("label", { className: "ex-row" }, [cb, el("span", { textContent: mode === "sheets" ? i.number : i.type }), el("span", { textContent: i.name })]);
+          const row = el("label", { className: "ex-row" }, [cb, el("span", { textContent: mode === "sheets" ? i.number : i.type }), el("span", { textContent: i.collection ? `${i.name} (${i.collection})` : i.name })]);
           return row;
         }));
         const n = items().filter((i) => picked.has(key(i))).length;
@@ -445,7 +446,7 @@ const ExportFlow = (() => {
           const combine = el("span", { className: "ex-radios" }, [[true, "Combined into a single file"], [false, "Create separate files"]].map(([v, l]) => { const r = el("input", { type: "radio", name: "ex-combine", checked: set.pdfCombine === v }); r.onchange = () => { set.pdfCombine = v; }; return el("label", {}, [r, ` ${l}`]); }));
           tabBody.replaceChildren(
             row("Filename template:", inp("pdfName")), pdfPrev,
-            el("div", { className: "ex-note", textContent: "Tags: {ProjectNumber} {ProjectName} {Date} {SheetNumber} {SheetName}" }),
+            el("div", { className: "ex-note", textContent: "Tags: {ProjectNumber} {ProjectName} {Date} {SheetNumber} {SheetName} {SheetCollection}" }),
             row("File:", combine),
             row("Paper size:", sel("pdfPaper", [["default", "Default (sheet size)"], ["A0", "A0"], ["A1", "A1"], ["A2", "A2"], ["A3", "A3"], ["A4", "A4"]])),
             row("Orientation:", radio("pdfOrientation", [["portrait", "Portrait"], ["landscape", "Landscape"]])),
@@ -455,7 +456,7 @@ const ExportFlow = (() => {
           );
         } else if (tab === "dxf") tabBody.replaceChildren(
           row("Filename template:", inp("dxfName")), dxfPrev,
-          el("div", { className: "ex-note", textContent: "Tags: {ProjectNumber} {ProjectName} {Date} {SheetNumber} {SheetName}" }),
+          el("div", { className: "ex-note", textContent: "Tags: {ProjectNumber} {ProjectName} {Date} {SheetNumber} {SheetName} {SheetCollection}" }),
           row("Drawing:", sel("dxfSpace", [["model", "Views at full size in model space, the sheet as a layout"], ["paper", "The sheet only, in paper millimetres"]])),
           row("Layers:", el("span", { className: "ex-radios" }, [button("Layers...", () => layersWindow(set, tabsDraw)), el("span", { className: "ex-count", textContent: set.dxfLayers ? "Edited" : "Defaults" })])),
           el("div", { className: "ex-note", textContent: "One DXF 2013 file per sheet, in millimetres. Layers by category and what a line shows (cut, projection, pattern), with colours, line weights and line types by layer. Families as blocks, dimensions as dimensions, fills and patterns as hatches. Opens in any CAD program that reads DWG." }),

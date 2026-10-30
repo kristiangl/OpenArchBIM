@@ -2,16 +2,19 @@
 // sheet's values (annotation.js), and each placed view drawn by its own viewer (Plan.renderTo, Elev.renderTo) inside its
 // box at its scale, with its label below. `draw` paints a sheet onto any 2D context at `k` pixels per paper mm, which
 // is what the screen, the PDF and the DXF writers use. Views are placed by dragging them from the Project Browser.
+// Activate View (a double-click on a viewport): the view's own viewer works over the viewport's box (main.js places
+// it there), and the rest of the sheet is dimmed and still until it is deactivated.
 const SheetView = (() => {
   const canvas = document.getElementById("sheet");
   const ctx = canvas.getContext("2d");
-  const cb = { select() {}, openView() {}, moveViewport() {}, placeView() {}, prompt() {} };
+  const cb = { select() {}, openView() {}, moveViewport() {}, placeView() {}, prompt() {}, activate() {}, deactivate() {}, menu() {}, activeBox() {} };
   let sheet = null; // the `sheet` call's answer
   let views = new Map(); // view id -> its plan or elevation data
   let cam = { x: 420, y: 297, s: 1 }; // paper mm at the centre, pixels per paper mm
   let sel = new Set();
   let drag = null; // { id, x0, y0, dx, dy, moved }
   let pan = null;
+  let active = null; // the activated viewport
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   const size = () => ({ w: canvas.clientWidth, h: canvas.clientHeight });
@@ -93,7 +96,25 @@ const SheetView = (() => {
     const o = toScreen(0, sheet.paper[1]);
     ctx.fillStyle = "rgba(0,0,0,0.12)";
     ctx.fillRect(o.x + 3, o.y + 3, sheet.paper[0] * cam.s, sheet.paper[1] * cam.s);
-    draw(ctx, shown, views, toScreen, cam.s, { selected: sel, accent: css("--accent") });
+    draw(ctx, shown, views, toScreen, cam.s, { selected: active ? new Set() : sel, accent: css("--accent") });
+    // an activated view: everything else on the sheet fades behind it
+    const b = active && screenBox(active);
+    if (b) {
+      ctx.save();
+      ctx.beginPath(); ctx.rect(0, 0, size().w, size().h); ctx.rect(b.x, b.y, b.w, b.h);
+      ctx.fillStyle = "rgba(236,238,241,0.62)"; ctx.fill("evenodd");
+      ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.5; ctx.strokeRect(b.x - 1, b.y - 1, b.w + 2, b.h + 2);
+      ctx.restore();
+      cb.activeBox(b);
+    }
+  }
+
+  // a viewport's box on the screen (CSS pixels in the canvas)
+  function screenBox(id) {
+    const v = sheet && sheet.views.find((x) => x.id === id);
+    if (!v) return null;
+    const a = toScreen(v.centre[0] - v.paper_size[0] / 2, v.centre[1] + v.paper_size[1] / 2);
+    return { x: a.x, y: a.y, w: v.paper_size[0] * cam.s, h: v.paper_size[1] * cam.s };
   }
 
   function fit() {
@@ -124,6 +145,7 @@ const SheetView = (() => {
 
   canvas.addEventListener("wheel", (e) => {
     e.preventDefault();
+    if (active) return; // the sheet stays still while a view is activated
     const before = toPaper(e.offsetX, e.offsetY);
     cam.s *= Math.exp(-e.deltaY * 0.0015);
     const after = toPaper(e.offsetX, e.offsetY);
@@ -131,6 +153,7 @@ const SheetView = (() => {
     render();
   }, { passive: false });
   canvas.addEventListener("mousedown", (e) => {
+    if (active) return;
     if (e.button === 1 || e.button === 2) { pan = { x: e.offsetX, y: e.offsetY, cx: cam.x, cy: cam.y }; e.preventDefault(); return; }
     if (e.button !== 0) return;
     const v = viewportAt(e.offsetX, e.offsetY);
@@ -155,8 +178,18 @@ const SheetView = (() => {
     if (d.moved && v) cb.moveViewport(d.id, [Math.round((v.centre[0] + d.dx) * 10) / 10, Math.round((v.centre[1] + d.dy) * 10) / 10]);
     render();
   });
-  canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-  canvas.addEventListener("dblclick", (e) => { const v = viewportAt(e.offsetX, e.offsetY); if (v) cb.openView(v.view); });
+  canvas.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    if (active || (pan && (pan.x !== e.offsetX || pan.y !== e.offsetY))) return;
+    const v = viewportAt(e.offsetX, e.offsetY);
+    if (v) { sel = new Set([v.id]); cb.select([v.id]); render(); cb.menu(v, e.clientX, e.clientY); }
+  });
+  // a double-click on a viewport activates its view; on the dimmed sheet, it deactivates it
+  canvas.addEventListener("dblclick", (e) => {
+    if (active) { cb.deactivate(); return; }
+    const v = viewportAt(e.offsetX, e.offsetY);
+    if (v) cb.activate(v.id);
+  });
   // a view dragged from the Project Browser goes where it is dropped
   canvas.addEventListener("dragover", (e) => { if (sheet && e.dataTransfer.types.includes("text/x-openarch-view")) { e.preventDefault(); e.dataTransfer.dropEffect = "copy"; } });
   canvas.addEventListener("drop", (e) => {
@@ -180,5 +213,9 @@ const SheetView = (() => {
     selection: () => [...sel],
     getCamera: () => ({ ...cam }),
     setCamera(c) { cam = { ...c }; render(); },
+    setActive(id) { active = id; if (id) { sel = new Set(); drag = null; } render(); },
+    get active() { return active; },
+    placed: (id) => (sheet && sheet.views.find((x) => x.id === id)) || null,
+    screenBox,
   };
 })();

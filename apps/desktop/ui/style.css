@@ -170,6 +170,11 @@ table.props input { width: 100%; padding: 1px 4px; background: var(--panel); bor
 #viewport-wrap.v-elevation > #elev { display: block; }
 #viewport-wrap.v-sheet > #sheet { display: block; }
 #viewport-wrap.v-3d > #viewport { display: block; }
+/* Activate View: the sheet under the view's own viewer, which sits over the viewport's box */
+#viewport-wrap.activated > #sheet { display: block; }
+#viewport-wrap.activated > #plan, #viewport-wrap.activated > #elev { z-index: 2; box-shadow: 0 0 0 1px var(--accent); }
+#activation-bar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 10px; padding: 4px 6px 4px 12px; background: var(--panel); border: 1px solid var(--accent); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
+#activation-bar[hidden] { display: none; }
 #viewport-wrap.v-schedule > #schedule-view { display: block; overflow: auto; }
 #viewport-wrap.v-plan #hud, #viewport-wrap.v-elevation #hud, #viewport-wrap.v-schedule #hud, #viewport-wrap.v-sheet #hud { display: none; }
 
@@ -212,6 +217,7 @@ table.props select { width: 100%; padding: 1px 2px; background: var(--panel); bo
 .modal-foot button, .popover button { padding: 3px 16px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
 .modal-foot button.primary, .popover button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
 .modal-msg { min-height: 16px; margin-top: 6px; color: #a33; }
+.modal-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
 .modal-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
 .modal-tabs button { padding: 3px 12px; border: 1px solid transparent; border-bottom: none; background: none; border-radius: 4px 4px 0 0; cursor: pointer; }
 .modal-tabs button.active { background: var(--panel-2); border-color: var(--line); font-weight: 600; }

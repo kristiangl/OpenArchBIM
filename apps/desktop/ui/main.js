@@ -625,10 +625,31 @@ function renderTree() {
       { name: "Drafting Views", children: [] },
       { name: "Legends", children: [] },
       { name: "Schedules / Quantities", children: [leaf("Wall and Floor Quantities", v.kind === "schedule", () => openView("schedule"))] },
-      { name: "Sheets", menu: [{ label: "New Sheet...", run: () => newSheetDialog() }], children: (app.info.sheets || []).map((s) => ({
-        ...leaf(`${s.number} - ${s.name}`, v.kind === "sheet" && v.viewId === s.id, () => openView("sheet", s.id)),
-        menu: [{ label: "Open", run: () => openView("sheet", s.id) }, { label: "New Sheet...", run: () => newSheetDialog() }, { label: "Delete", run: () => deleteSheet(s) }],
-      })) },
+      { name: "Sheets", menu: sheetsMenu(null), children: (() => {
+        // the sheet collections with their sheets, then the sheets in none; a placeholder says so
+        const sheetLeaf = (s) => ({
+          ...leaf(`${s.number} - ${s.name}${s.placeholder ? " (placeholder)" : ""}`, v.kind === "sheet" && v.viewId === s.id, () => openView("sheet", s.id)),
+          menu: [
+            { label: "Open", run: () => openView("sheet", s.id) },
+            { sep: true },
+            { label: "Duplicate Empty Sheet", run: () => duplicateSheet(s, "empty") },
+            { label: "Duplicate with Views", run: () => duplicateSheet(s, "with_views") },
+            { label: "Duplicate with Views & Detailing", run: () => duplicateSheet(s, "with_detailing") },
+            { sep: true },
+            ...sheetsMenu(s.collection),
+            { label: "Delete", run: () => deleteSheet(s) },
+          ],
+        });
+        const sheets = app.info.sheets || [];
+        return [
+          ...(app.info.sheet_collections || []).map((c) => ({
+            name: c.name,
+            menu: [...sheetsMenu(c.id), { sep: true }, { label: "Properties", run: () => { app.selection = [c.id]; renderProperties(); } }, { label: "Delete Collection", run: () => deleteCollection(c) }],
+            children: sheets.filter((s) => s.collection === c.id).map(sheetLeaf),
+          })),
+          ...sheets.filter((s) => s.collection == null).map(sheetLeaf),
+        ];
+      })() },
     ] },
     { name: "Families", children: (() => {
       // every category that has a family, in name order, with the system families among them
@@ -749,7 +770,9 @@ function currentLevel() {
   return app.info.levels.find((l) => l.id === curLevelId()) || app.info.levels[0];
 }
 
-async function openView(kind, viewId) {
+async function openView(kind, viewId, opt = {}) {
+  // going anywhere else ends Activate View
+  if (app.activation && !opt.activation) clearActivation();
   // Detail Line has no Finish: its lines are in the model already, so another view just leaves it
   if (Sketch.active && Sketch.kind === "detail") await leaveDetailLines();
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
@@ -792,6 +815,7 @@ function restoreCamera() {
   else if (k === "sheet") SheetView.setCamera(c);
 }
 function ensureTab() {
+  if (app.activation) { renderViewTabs(); return; } // an activated view works in its sheet's tab
   const key = viewKey(app.view);
   if (!app.tabs.some((t) => viewKey(t) === key)) app.tabs.push({ kind: app.view.kind, viewId: app.view.viewId });
   renderViewTabs();
@@ -808,7 +832,7 @@ function renderViewTabs() {
   app.tabs = app.tabs.filter((t) => t.kind === "schedule" || (t.kind === "sheet" ? sheetById(t.viewId) : viewById(t.viewId)));
   const bar = $("#view-tabs");
   if (!bar) return;
-  const here = viewKey(app.view);
+  const here = app.activation ? `sheet:${app.activation.sheet}` : viewKey(app.view);
   bar.replaceChildren(...app.tabs.map((t) => {
     const x = el("span", { className: "x", textContent: "\u00d7", title: "Close (middle-click also closes)" });
     const tab = el("div", { className: "vtab" + (viewKey(t) === here ? " active" : "") + (app.tabs.length === 1 ? " only" : ""), title: tabName(t) }, [el("span", { textContent: tabName(t) }), x]);
@@ -934,6 +958,7 @@ function updateTitle() {
   if (app.doc !== "project") return;
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
+  if (app.activation) { const s = sheetById(app.activation.sheet); $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - Sheet: ${s ? `${s.number} - ${s.name}` : ""} (${v ? v.name : "view"} activated)`; updateUndoButtons(); return; }
   const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : "Schedule: Wall and Floor Quantities";
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
@@ -959,6 +984,8 @@ async function refresh(force = false) {
   }
   updatePlanExtents();
   await refreshView(force);
+  // an activated view: the sheet behind it too (its box can move when the view's crop changes)
+  if (app.activation) await SheetView.load(app.activation.sheet);
   ensureTab();
   await renderProperties();
   renderTree();
@@ -2198,21 +2225,34 @@ async function openProject() {
 
 // Open IFC: the file becomes a new, unsaved project; a report says what came in and what was left out
 // ---- sheets ------------------------------------------------------------------------------------------------------------
-// New Sheet: a title block, a number (the next free one) and a name; the sheet opens.
-function newSheetDialog() {
-  openModal("New Sheet", (body, foot, close) => {
+// The Project Browser's sheet commands, for the sheets in a collection (or in none)
+const sheetsMenu = (collection) => [
+  { label: "New Sheet...", run: () => newSheetDialog({ collection }) },
+  { label: "New Placeholder Sheet...", run: () => newSheetDialog({ collection, placeholder: true }) },
+  { label: "New Sheet Collection...", run: () => newCollectionDialog() },
+];
+// New Sheet: a title block, a collection, a number (the next free one there) and a name; a placeholder or a sheet to
+// draw on, which opens.
+function newSheetDialog(opt = {}) {
+  openModal(opt.placeholder ? "New Placeholder Sheet" : "New Sheet", (body, foot, close) => {
     const tbs = app.info.title_blocks || [];
     const tb = el("select", {}, tbs.map((t) => new Option(`${t.name}${t.paper ? ` (${t.paper[0]} x ${t.paper[1]})` : ""}`, t.id)));
+    const cols = app.info.sheet_collections || [];
+    const col = el("select", {}, [new Option("<None>", ""), ...cols.map((c) => new Option(c.name, c.id, false, c.id === opt.collection))]);
     const num = el("input", { type: "text", value: "" });
     const name = el("input", { type: "text", value: "Unnamed" });
+    const ph = el("input", { type: "checkbox", checked: !!opt.placeholder });
     const msg = el("div", { className: "modal-msg" });
     const row = (l, c) => el("label", { className: "new-row" }, [el("span", { textContent: l }), c]);
-    body.append(row("Title Block", tb), row("Sheet Number", num), row("Sheet Name", name), msg);
-    num.placeholder = "next free number";
+    body.append(row("Title Block", tb), row("Sheet Collection", col), row("Sheet Number", num), row("Sheet Name", name), row("Placeholder", ph), msg);
+    const hint = async () => { try { num.placeholder = (await Backend.call("next_sheet_number", { collection: Number(col.value) || null })).number; } catch { num.placeholder = "next free number"; } };
+    col.onchange = hint; hint();
     const ok = async () => {
       try {
-        const r = await Backend.call("add_sheet", { ...(num.value.trim() ? { number: num.value.trim() } : {}), name: name.value.trim() || "Unnamed", title_block: Number(tb.value) || null });
-        close(); await refresh(); await openView("sheet", r.id);
+        const r = await Backend.call("add_sheet", { ...(num.value.trim() ? { number: num.value.trim() } : {}), name: name.value.trim() || "Unnamed", title_block: Number(tb.value) || null, collection: Number(col.value) || null, placeholder: ph.checked });
+        close(); await refresh();
+        if (ph.checked) { setPrompt("Placeholder sheet added to the register. Clear Placeholder in its properties to draw on it."); return; }
+        await openView("sheet", r.id);
         setPrompt("Drag views from the Project Browser onto the sheet to place them.");
       } catch (e) { msg.textContent = String(e.message || e); }
     };
@@ -2220,11 +2260,83 @@ function newSheetDialog() {
     name.focus(); name.select();
   });
 }
+function newCollectionDialog() {
+  openModal("New Sheet Collection", (body, foot, close) => {
+    const name = el("input", { type: "text", value: "" });
+    const msg = el("div", { className: "modal-msg" });
+    body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), el("div", { className: "modal-note", textContent: "Sheet numbers need only be unique inside a collection." }), msg);
+    const ok = async () => {
+      try { await Backend.call("add_sheet_collection", { name: name.value.trim() }); close(); await refresh(); } catch (e) { msg.textContent = String(e.message || e); }
+    };
+    foot.append(button("Cancel", close), button("OK", ok, true));
+    name.focus();
+  });
+}
+async function deleteCollection(c) {
+  if (!confirm(`Delete the sheet collection ${c.name}? Its sheets stay in the project, in no collection.`)) return;
+  if (await run("delete", { ids: [c.id] })) await refresh();
+}
+// Duplicate Sheet: the sheet only, its views as new views, or the views with their detailing; the copy opens
+async function duplicateSheet(s, how) {
+  const r = await run("duplicate_sheet", { id: s.id, how });
+  if (!r) return;
+  await refresh(); await openView("sheet", r.id);
+  const t = sheetById(r.id);
+  setPrompt(`Duplicated ${s.number} as ${t ? `${t.number} - ${t.name}` : "a new sheet"}.`);
+}
 async function deleteSheet(s) {
   if (!confirm(`Delete sheet ${s.number} - ${s.name}? The views on it stay in the project.`)) return;
   if (await run("delete", { ids: [s.id] })) { if (app.view.kind === "sheet" && app.view.viewId === s.id) await openView("plan", app.lastPlanId); await refresh(); }
 }
 SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); };
+// ---- Activate View: the view's own viewer over its viewport, at the sheet's zoom; the sheet dims behind it -------
+SheetView.callbacks.activate = (id) => activateViewport(id);
+SheetView.callbacks.deactivate = () => deactivateViewport();
+SheetView.callbacks.menu = (v, x, y) => showMenu(x, y, [
+  { label: "Activate View", run: () => activateViewport(v.id) },
+  { label: "Open View", run: () => SheetView.callbacks.openView(v.view) },
+  { sep: true },
+  { label: "Delete", run: async () => { if (await run("delete", { ids: [v.id] })) await refresh(); } },
+]);
+SheetView.callbacks.activeBox = (b) => {
+  if (!app.activation) return;
+  const cv = app.activation.kind === "plan" ? $("#plan") : $("#elev");
+  Object.assign(cv.style, { left: `${b.x}px`, top: `${b.y}px`, width: `${b.w}px`, height: `${b.h}px`, right: "auto", bottom: "auto" });
+};
+async function activateViewport(id) {
+  const v = SheetView.placed(id), view = v && viewById(v.view);
+  if (!view) return;
+  if (v.rotation) { setPrompt("A turned viewport can't be activated yet: set its Rotation on Sheet to None first.", true); return; }
+  const kind = viewerOf(view.view_kind);
+  app.activation = { sheet: app.view.viewId, vp: id, view: v.view, kind };
+  await openView(kind, v.view, { activation: true });
+  $("#viewport-wrap").classList.add("activated");
+  SheetView.setActive(id);
+  // the view at the sheet's zoom, its crop where the viewport shows it
+  const s = SheetView.getCamera().s / v.scale;
+  if (kind === "plan") Plan.setCamera(v.view_centre[0], v.view_centre[1], s);
+  else Elev.setCameraState({ ...Elev.getCamera(), u: v.view_centre[0], z: v.view_centre[1], s });
+  const bar = $("#activation-bar");
+  bar.querySelector("span").textContent = `${view.name} activated`;
+  bar.hidden = false;
+  setPrompt("Editing the view on its sheet. Double-click the sheet outside it, or Deactivate View, to return.");
+}
+function clearActivation() {
+  if (!app.activation) return;
+  app.activation = null;
+  for (const c of [$("#plan"), $("#elev")]) for (const k of ["left", "top", "width", "height", "right", "bottom"]) c.style[k] = "";
+  $("#viewport-wrap").classList.remove("activated");
+  $("#activation-bar").hidden = true;
+  SheetView.setActive(null);
+}
+async function deactivateViewport() {
+  const a = app.activation;
+  if (!a) return;
+  clearActivation();
+  await openView("sheet", a.sheet);
+  setPrompt("");
+}
+$("#activation-bar button").onclick = () => deactivateViewport();
 SheetView.callbacks.openView = (viewId) => { const v = viewById(viewId); if (v) openView(viewerOf(v.view_kind), viewId); };
 SheetView.callbacks.moveViewport = async (id, centre) => { if (await run("patch_viewport", { id, patch: { centre } })) await refresh(); };
 SheetView.callbacks.placeView = async (sheet, view, centre) => {

@@ -1737,10 +1737,26 @@ impl Session {
                 Ok(json!({}))
             }
             "add_sheet" => {
-                let number = p.get("number").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| self.doc.next_sheet_number());
+                let collection = p.get("collection").and_then(|v| v.as_u64());
+                let number = p.get("number").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| self.doc.next_sheet_number(collection));
                 let name = p.get("name").and_then(|v| v.as_str()).unwrap_or("Unnamed");
                 let tb = p.get("title_block").and_then(|v| v.as_u64());
-                Ok(json!({ "id": self.doc.add_sheet(&number, name, tb)? }))
+                let placeholder = p.get("placeholder").and_then(|v| v.as_bool()).unwrap_or(false);
+                Ok(json!({ "id": self.doc.add_sheet_to(&number, name, tb, collection, placeholder)? }))
+            }
+            // { id, how: "empty" | "with_views" | "with_detailing" }
+            "duplicate_sheet" => {
+                let how = serde_json::from_value(p.get("how").cloned().unwrap_or(json!("empty"))).map_err(|e| format!("bad duplicate option: {e}"))?;
+                Ok(json!({ "id": self.doc.duplicate_sheet(id_of(p, "id")?, how)? }))
+            }
+            "next_sheet_number" => Ok(json!({ "number": self.doc.next_sheet_number(p.get("collection").and_then(|v| v.as_u64())) })),
+            "add_sheet_collection" => Ok(json!({ "id": self.doc.add_sheet_collection(p.get("name").and_then(|v| v.as_str()).unwrap_or(""))? })),
+            "patch_sheet_collection" => {
+                let id = id_of(p, "id")?;
+                let Some(Element::SheetCollection(c)) = self.doc.get(id).cloned() else { return Err("not a sheet collection".into()) };
+                let c = openarch_model::doc::apply_patch(&c, p.get("patch").ok_or("missing patch")?)?;
+                self.doc.set_sheet_collection(id, c)?;
+                Ok(json!({}))
             }
             "patch_sheet" => {
                 let id = id_of(p, "id")?;
@@ -2017,7 +2033,8 @@ impl Session {
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "dimension_types": d.dimension_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
             "text_note_types": d.text_note_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "style": d.text_style(Some(t)) })).collect::<Vec<_>>(),
-            "sheets": d.sheets().iter().map(|(id, s)| json!({ "id": id, "number": s.number, "name": s.name, "appears_in_list": s.appears_in_list, "title_block": s.title_block })).collect::<Vec<_>>(),
+            "sheets": d.sheets().iter().map(|(id, s)| json!({ "id": id, "number": s.number, "name": s.name, "appears_in_list": s.appears_in_list, "title_block": s.title_block, "placeholder": s.placeholder, "collection": s.collection })).collect::<Vec<_>>(),
+            "sheet_collections": d.sheet_collections().iter().map(|(id, c)| json!({ "id": id, "name": c.name })).collect::<Vec<_>>(),
             "title_blocks": d.annotation_families().iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::TitleBlock).map(|(id, f)| json!({ "id": id, "name": f.name, "paper": f.paper_mm })).collect::<Vec<_>>(),
             "placed_views": d.viewports().iter().map(|(_, v)| json!([v.view, v.sheet])).collect::<Vec<_>>(),
             "project": d.project_info(),
@@ -2683,6 +2700,7 @@ impl Session {
             Element::GroupInstance(g) => Ok(props::group_props(d, id, g)),
             Element::Sheet(s) => Ok(props::sheet_props(d, id, s)),
             Element::Viewport(v) => Ok(props::viewport_props(d, id, v)),
+            Element::SheetCollection(c) => Ok(props::sheet_collection_props(id, c)),
             _ => Err("nothing to show".into()),
         }
     }

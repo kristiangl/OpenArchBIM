@@ -1431,6 +1431,8 @@ pub fn sheet_props(d: &Document, id: Id, s: &openarch_model::sheet::Sheet) -> Va
             group("Identity Data", vec![
                 text("Sheet Number", "number", &s.number),
                 text("Sheet Name", "name", &s.name),
+                select("Sheet Collection", std::iter::once(("<None>".to_string(), json!({ "collection": null }), s.collection.is_none())).chain(d.sheet_collections().into_iter().map(|(cid, c)| (c.name.clone(), json!({ "collection": cid }), s.collection == Some(cid)))).collect()),
+                boolean("Placeholder", "placeholder", s.placeholder, true),
                 boolean("Appears In Sheet List", "appears_in_list", s.appears_in_list, true),
                 text("Sheet Issue Date", "issue_date", &s.issue_date),
                 text("Current Revision", "current_revision", &s.current_revision),
@@ -1448,13 +1450,28 @@ pub fn sheet_props(d: &Document, id: Id, s: &openarch_model::sheet::Sheet) -> Va
 pub fn viewport_props(d: &Document, id: Id, v: &openarch_model::sheet::Viewport) -> Value {
     let view = d.view(v.view).map_or(String::new(), |x| x.name.clone());
     let rot = |deg: i32, label: &str| (label.to_string(), json!({ "rotation": deg }), v.rotation == deg);
+    use openarch_model::sheet::ViewAnchor as A;
+    let anchor = |a: A, label: &str| (label.to_string(), json!({ "anchor": a }), v.anchor == a);
     json!({
         "id": id, "kind": "Viewport",
         "title": format!("Viewport: {view}"),
         "target": { "method": "patch_viewport", "id": id },
         "groups": [
             group("Identity Data", vec![ro("View Name", view), text("Detail Number", "detail_number", &v.detail_number)]),
-            group("Graphics", vec![select("Rotation on Sheet", vec![rot(0, "None"), rot(90, "90 Counterclockwise"), rot(270, "90 Clockwise")])]),
+            group("Graphics", vec![
+                select("Rotation on Sheet", vec![rot(0, "None"), rot(90, "90 Counterclockwise"), rot(270, "90 Clockwise")]),
+                select("View Anchor", vec![anchor(A::Centre, "Centre"), anchor(A::TopLeft, "Top Left"), anchor(A::TopRight, "Top Right"), anchor(A::BottomLeft, "Bottom Left"), anchor(A::BottomRight, "Bottom Right")]),
+            ]),
         ],
+    })
+}
+
+/// A sheet collection: its name.
+pub fn sheet_collection_props(id: Id, c: &openarch_model::sheet::SheetCollection) -> Value {
+    json!({
+        "id": id, "kind": "SheetCollection",
+        "title": format!("Sheet Collection: {}", c.name),
+        "target": { "method": "patch_sheet_collection", "id": id },
+        "groups": [group("Identity Data", vec![text("Name", "name", &c.name)])],
     })
 }

@@ -679,7 +679,8 @@ impl Document {
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) => {}
-                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views, view templates, sheets and viewports can be deleted for now".into()),
+                Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
+                Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views, view templates, sheets, sheet collections and viewports can be deleted for now".into()),
                 None => return Err(format!("no element {id}")),
             }
         }
@@ -717,11 +718,16 @@ impl Document {
             .filter(|(_, v)| v.template.is_some_and(|t| ids.contains(&t)))
             .map(|(i, v)| (i, v.clone()))
             .collect();
+        // sheets in a deleted collection leave it
+        let loose: Vec<(Id, crate::sheet::Sheet)> = self.sheets().into_iter().filter(|(i, s)| !ids.contains(i) && s.collection.is_some_and(|c| ids.contains(&c))).map(|(i, s)| (i, s.clone())).collect();
         self.transact(name, |tx| {
             for (vid, v) in orphans {
                 if !ids.contains(&vid) {
                     tx.update(vid, Element::View(View { template: None, ..v }))?;
                 }
+            }
+            for (sid, s) in loose {
+                tx.update(sid, Element::Sheet(crate::sheet::Sheet { collection: None, ..s }))?;
             }
             for id in ids {
                 tx.remove(*id)?;
@@ -840,7 +846,7 @@ impl Document {
     }
 
     /// View names are unique within a kind of view: a floor plan and a ceiling plan can both be called "Level 1".
-    fn view_name_taken(&self, name: &str, kind: ViewKind, except: Option<Id>) -> bool {
+    pub(crate) fn view_name_taken(&self, name: &str, kind: ViewKind, except: Option<Id>) -> bool {
         self.views().iter().any(|(id, v)| v.name == name && v.view_kind == kind && Some(*id) != except)
     }
 
