@@ -94,6 +94,7 @@ const COMMANDS = {
   gp: () => createGroup(),
   "export-ifc": () => exportIfc(),
   "v-sheet": () => newSheetDialog(),
+  export: () => ExportFlow.start(),
   "project-info": () => projectInfoDialog(),
   "model-group": () => placeGroupCommand("model"),
   "det-group": () => placeGroupCommand("detail"),

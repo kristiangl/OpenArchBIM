@@ -1703,6 +1703,33 @@ impl Session {
                 self.doc.reset_wall_profile(id_of(p, "id")?)?;
                 Ok(json!({}))
             }
+            // ---- export: files the page writes (PDF, DXF, settings), and where they go by default ----
+            "write_file" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let bytes = match (p.get("base64").and_then(|v| v.as_str()), p.get("text").and_then(|v| v.as_str())) {
+                    (Some(b), _) => base64_decode(b).ok_or("bad base64")?,
+                    (None, Some(t)) => t.as_bytes().to_vec(),
+                    _ => return Err("missing base64 or text".into()),
+                };
+                if let Some(dir) = path.parent() {
+                    std::fs::create_dir_all(dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
+                }
+                std::fs::write(&path, &bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+                Ok(json!({ "path": path.to_string_lossy(), "bytes": bytes.len() }))
+            }
+            "read_file" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                Ok(json!({ "text": std::fs::read_to_string(&path).map_err(|e| format!("could not read {}: {e}", path.display()))? }))
+            }
+            "default_dir" => {
+                let home = std::env::var_os("USERPROFILE").or_else(|| std::env::var_os("HOME")).map(PathBuf::from).unwrap_or_else(std::env::temp_dir);
+                let docs = home.join("Documents");
+                Ok(json!({ "path": if docs.is_dir() { docs } else { home }.to_string_lossy() }))
+            }
+            "view_print" => {
+                let (v, paper) = self.doc.print_view(id_of(p, "view_id")?).ok_or("this view cannot be printed yet")?;
+                Ok(json!({ "paper": paper, "views": [v], "title_block": null }))
+            }
             // ---- sheets (openarch_model::sheet) ----
             "set_project_info" => {
                 let info = serde_json::from_value(p.get("info").cloned().ok_or("missing info")?).map_err(|e| format!("bad project information: {e}"))?;
@@ -2900,6 +2927,31 @@ impl Session {
     }
 }
 
+
+/// Standard base64 (RFC 4648, padding optional) to bytes.
+fn base64_decode(s: &str) -> Option<Vec<u8>> {
+    let val = |c: u8| -> Option<u32> {
+        Some(match c {
+            b'A'..=b'Z' => c - b'A',
+            b'a'..=b'z' => c - b'a' + 26,
+            b'0'..=b'9' => c - b'0' + 52,
+            b'+' => 62,
+            b'/' => 63,
+            _ => return None,
+        } as u32)
+    };
+    let clean: Vec<u8> = s.bytes().filter(|c| !c.is_ascii_whitespace() && *c != b'=').collect();
+    let mut out = Vec::with_capacity(clean.len() * 3 / 4);
+    for chunk in clean.chunks(4) {
+        let mut n = 0u32;
+        for (i, c) in chunk.iter().enumerate() {
+            n |= val(*c)? << (18 - 6 * i);
+        }
+        let bytes = [(n >> 16) as u8, (n >> 8) as u8, n as u8];
+        out.extend_from_slice(&bytes[..chunk.len().saturating_sub(1)]);
+    }
+    Some(out)
+}
 
 // ---- sketch helpers ----------------------------------------------------------------------
 

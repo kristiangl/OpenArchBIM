@@ -225,11 +225,22 @@ impl Document {
     /// How a viewport draws: the view's crop (or what the model covers) at its scale.
     pub fn placed_view(&self, id: Id) -> Option<PlacedView> {
         let Some(Element::Viewport(vp)) = self.get(id) else { return None };
-        let v = self.view(vp.view)?;
+        self.view_on_paper(vp.view, id, vp.centre, vp.rotation, &vp.detail_number)
+    }
+
+    /// A view printed on its own (Export's Views): on a page as big as it is at its scale and 10 mm round it.
+    pub fn print_view(&self, view: Id) -> Option<(PlacedView, [f64; 2])> {
+        let p = self.view_on_paper(view, 0, [0.0, 0.0], 0, "")?;
+        let paper = [p.paper_size[0] + 20.0, p.paper_size[1] + 20.0];
+        Some((PlacedView { centre: [paper[0] / 2.0, paper[1] / 2.0], ..p }, paper))
+    }
+
+    fn view_on_paper(&self, view: Id, id: Id, centre: [f64; 2], rotation: i32, detail_number: &str) -> Option<PlacedView> {
+        let v = self.view(view)?;
         let scale = v.settings.scale.max(1);
         let (drawing, c, size) = match v.view_kind {
             ViewKind::Elevation | ViewKind::Section => {
-                let f = self.elevation_frame(vp.view)?;
+                let f = self.elevation_frame(view)?;
                 // the view runs from -left_mm to right_mm along it
                 ("elevation", [(f.right_mm - f.left_mm) / 2.0, (f.z_min + f.z_max) / 2.0], [f.left_mm + f.right_mm, f.z_max - f.z_min])
             }
@@ -245,9 +256,9 @@ impl Document {
             }
         };
         let paper = [size[0] / scale as f64, size[1] / scale as f64];
-        let paper = if vp.rotation == 0 { paper } else { [paper[1], paper[0]] };
+        let paper = if rotation == 0 { paper } else { [paper[1], paper[0]] };
         let title = if v.title_on_sheet.trim().is_empty() { v.name.clone() } else { v.title_on_sheet.clone() };
-        Some(PlacedView { id, view: vp.view, drawing, title, detail_number: vp.detail_number.clone(), scale, rotation: vp.rotation, centre: vp.centre, view_centre: c, view_size: size, paper_size: paper })
+        Some(PlacedView { id, view, drawing, title, detail_number: detail_number.into(), scale, rotation, centre, view_centre: c, view_size: size, paper_size: paper })
     }
 
     /// The views placed on a sheet.

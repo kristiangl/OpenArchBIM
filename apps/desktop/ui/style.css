@@ -47,6 +47,24 @@ button, select { font: inherit; color: inherit; }
 #win-ctl button:hover { background: var(--accent-soft); }
 #win-ctl #win-close:hover { background: #c42b1c; color: #fff; }
 #win-ctl svg { width: 10px; height: 10px; fill: none; stroke: currentColor; stroke-width: 1; }
+/* Export: the select and settings windows */
+.ex-body { min-width: 560px; }
+.ex-bar { display: flex; align-items: center; gap: 10px; margin: 4px 0 6px; }
+.ex-bar input[type="search"] { flex: 1; }
+.ex-list { border: 1px solid var(--line); height: 300px; overflow: auto; background: var(--panel); }
+.ex-row { display: grid; grid-template-columns: 26px 120px 1fr; align-items: center; padding: 2px 6px; cursor: pointer; }
+.ex-row:hover { background: var(--accent-soft); }
+.ex-head { position: sticky; top: 0; background: var(--panel-2); font-weight: 600; cursor: default; border-bottom: 1px solid var(--line); }
+.ex-count { color: var(--muted); align-self: center; }
+.ex-h { font-weight: 600; margin: 8px 0 4px; }
+.ex-row2 { display: grid; grid-template-columns: 130px minmax(0, 1fr) auto; align-items: center; gap: 6px; margin: 3px 0; }
+.ex-row2 > input, .ex-row2 > select { width: 100%; min-width: 0; box-sizing: border-box; }
+.ex-preview, .ex-note { color: var(--muted); font-size: 11px; margin: 0 0 4px 136px; word-break: break-all; }
+.ex-radios { display: flex; gap: 14px; }
+.ex-tabs { display: flex; gap: 2px; margin-top: 10px; border-bottom: 1px solid var(--line); }
+.ex-tabs button { border: 1px solid var(--line); border-bottom: none; background: var(--panel-2); padding: 3px 10px; border-radius: 3px 3px 0 0; cursor: pointer; }
+.ex-tabs button.on { background: var(--panel); font-weight: 600; }
+.ex-tab { border: 1px solid var(--line); border-top: none; padding: 8px; min-height: 200px; box-sizing: border-box; overflow: hidden; }
 .ctx-menu hr { border: none; border-top: 1px solid var(--line); margin: 3px 2px; }
 .ctx-menu .keys { float: right; margin-left: 24px; color: var(--muted); }
 .ctx-menu button:hover .keys { color: inherit; }

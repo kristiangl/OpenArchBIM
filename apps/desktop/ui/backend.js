@@ -85,6 +85,19 @@ const Backend = {
     return window.prompt("Export lookup table as (file path)", current || "table.csv");
   },
 
+  async pickFolder() {
+    if (this.isDesktop && window.__TAURI__.dialog) return window.__TAURI__.dialog.open({ directory: true, multiple: false });
+    return window.prompt("Output folder");
+  },
+  async pickSaveJson(current) {
+    if (this.isDesktop && window.__TAURI__.dialog) return window.__TAURI__.dialog.save({ defaultPath: current, filters: [{ name: "Export settings", extensions: ["json"] }] });
+    return window.prompt("Save settings as (file path)", current);
+  },
+  async pickOpenJson() {
+    if (this.isDesktop && window.__TAURI__.dialog) return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "Export settings", extensions: ["json"] }] });
+    return window.prompt("Load settings (file path)");
+  },
+
   async pickOpenFamily() {
     if (this.isDesktop && window.__TAURI__.dialog) {
       return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }] });
