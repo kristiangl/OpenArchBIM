@@ -221,6 +221,9 @@ table.sched2 .a-centre { text-align: center; }
 .sched-format .new-row { margin-bottom: 6px; }
 .sched-parts { margin: 6px 0; }
 .sched-part { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr auto; gap: 4px; margin: 2px 0; }
+.sched-hl { display: grid; grid-template-columns: 1.2fr 1.4fr 1fr 48px auto; gap: 4px; margin: 2px 0; align-items: center; }
+.sched-hl input[type=color] { width: 44px; height: 24px; padding: 0 2px; }
+.sched-val > * { width: 100%; box-sizing: border-box; }
 table.sched tfoot td { font-weight: 600; background: var(--panel-2); }
 table.sched td.empty { color: var(--muted); text-align: center; }
 .grand { margin-top: 18px; font-size: 13px; }

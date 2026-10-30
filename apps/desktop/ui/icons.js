@@ -284,7 +284,7 @@ const ICON_ALIAS = {
   parking: "parking", linemark: "lineMark", kerb: "kerb", "kerb-ramp": "kerbRamp",
   // view
   "v-plan": "planView", "v-floorplan": "planView", "v-ceilingplan": "ceilingPlan", "v-3d": "view3d", "v-section": "section", "v-elev": "elevation",
-  "v-draft": "drafting", "v-legend": "legend", "v-sched": "schedule", "v-sheet": "sheet", "v-dup": "dupView", "v-vg": "visibility",
+  "v-draft": "drafting", "v-legend": "legend", "v-sched": "schedule", "v-sched-qty": "schedule", "v-sched-mto": "schedule", "v-sched-sheets": "sheet", "v-sched-views": "schedule", "v-sheet": "sheet", "v-dup": "dupView", "v-vg": "visibility",
   "v-filters": "filters", "v-template": "template",
   // manage
   "m-materials": "materials", "m-units": "units", "m-params": "params", "m-globals": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases",

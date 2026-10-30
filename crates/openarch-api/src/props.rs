@@ -369,13 +369,14 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
             tpl_opts.push((t.name.clone(), nest("template", json!(tid)), v.template == Some(tid)));
         }
     }
+    let on_sheet = d.viewports().into_iter().find(|(_, vp)| vp.view == id).and_then(|(_, vp)| d.sheet(vp.sheet));
     groups.push(group("Identity Data", vec![
         select("View Template", tpl_opts),
         text("View Name", "name", &v.name),
         ro("Dependency", if v.parent.is_some() { "Dependent" } else { "Independent" }),
         text("Title on Sheet", "title_on_sheet", &v.title_on_sheet),
-        ro("Sheet Number", "<None>"),
-        ro("Sheet Name", "<None>"),
+        ro("Sheet Number", on_sheet.map_or(String::new(), |s| s.number.clone())),
+        ro("Sheet Name", on_sheet.map_or(String::new(), |s| s.name.clone())),
     ]));
     groups.push(group("Phasing", vec![ro("Phase Filter", "Show All"), ro("Phase", "New Construction")]));
     json!({
@@ -1478,7 +1479,7 @@ fn schedule_props(id: Id, v: &View, s: &openarch_model::schedule::ScheduleDef) -
         "title": format!("Schedule: {}", v.name),
         "target": { "method": "patch_view", "id": id },
         "groups": [
-            group("Identity Data", vec![text("View Name", "name", &v.name), ro("Category", s.category.clone())]),
+            group("Identity Data", vec![text("View Name", "name", &v.name), ro("Category", if s.takeoff { format!("{} (Material Takeoff)", s.category) } else { s.category.clone() })]),
             group("Other", vec![
                 dialog("Fields", "schedule_fields", &n(s.fields.len(), "field")),
                 dialog("Filter", "schedule_filter", &n(s.filters.len(), "filter")),

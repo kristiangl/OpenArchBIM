@@ -2,8 +2,10 @@
 //! Properties palette reads it (its own parameters and its type's), filtered, sorted and grouped, compressed when
 //! not itemised, with formulas, percentages, combined fields and totals. A cell that the palette could edit carries
 //! the same row and target, so an edit in the schedule changes the element (or its type) in the model.
+//! Sheet and view lists read sheets and views the same way; a material takeoff gives each element a row for every
+//! material in its type's layers.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use openarch_model::element::{Element, Id};
 use openarch_model::schedule::*;
@@ -12,24 +14,36 @@ use serde_json::{json, Value};
 use crate::{Res, Session};
 
 /// A value as a schedule cell holds it: its text, its number in display units (mm, m², m³), what it measures,
-/// and how it is edited (the palette's row and the targets that take the patch).
+/// and how it is edited (the palette's row and the targets that take the patch); whether the element has the
+/// parameter at all, and the global parameter that sets it.
 #[derive(Clone, Debug)]
 struct Cell {
     text: String,
     num: Option<f64>,
     unit: Unit,
     edit: Option<(Value, Vec<Value>)>,
+    present: bool,
+    global: Option<String>,
 }
 
 impl Cell {
     fn text(s: impl Into<String>) -> Cell {
-        Cell { text: s.into(), num: None, unit: Unit::Text, edit: None }
+        Cell { text: s.into(), num: None, unit: Unit::Text, edit: None, present: true, global: None }
     }
     fn blank() -> Cell {
         Cell::text("")
     }
+    /// A parameter the element doesn't have.
+    fn missing() -> Cell {
+        Cell { present: false, ..Cell::blank() }
+    }
     fn num(n: f64, unit: Unit) -> Cell {
-        Cell { text: show(n, unit), num: Some(n), unit, edit: None }
+        Cell { text: show(n, unit), num: Some(n), unit, edit: None, present: true, global: None }
+    }
+
+    /// Whether the cell passes a filter or a highlight's test.
+    fn passes(&self, op: FilterOp, against: &str) -> bool {
+        op.test_cell(&self.text, self.num, self.present, self.global.as_deref(), against)
     }
 }
 
@@ -67,7 +81,7 @@ fn cell_of(row: &Value, target: &Value) -> Option<Cell> {
     let path = row["path"].as_str().unwrap_or("");
     let label = row["label"].as_str().unwrap_or("");
     let mut c = match (kind, assoc) {
-        ("bool", _) => Cell { text: text.clone(), num: Some(if row["raw"].as_bool().unwrap_or(false) { 1.0 } else { 0.0 }), unit: Unit::YesNo, edit: None },
+        ("bool", _) => Cell { num: Some(if row["raw"].as_bool().unwrap_or(false) { 1.0 } else { 0.0 }), unit: Unit::YesNo, ..Cell::text(text.clone()) },
         (_, "length") => Cell { num: raw.or_else(|| text.parse().ok()), unit: Unit::Length, ..Cell::text(text.clone()) },
         (_, "area") => Cell { num: raw, unit: Unit::Area, ..Cell::text(text.clone()) },
         (_, "volume") => Cell { num: raw, unit: Unit::Volume, ..Cell::text(text.clone()) },
@@ -88,7 +102,7 @@ fn cell_of(row: &Value, target: &Value) -> Option<Cell> {
                 (n, if n.is_some() && (path.ends_with("_mm") || lengthy(label)) { Unit::Length } else if n.is_some() { Unit::Number } else { Unit::Text })
             };
             match n {
-                Some(n) if unit != Unit::Text => Cell { text: text.clone(), num: Some(n), unit, edit: None },
+                Some(n) if unit != Unit::Text => Cell { num: Some(n), unit, ..Cell::text(text.clone()) },
                 _ => Cell::text(text.clone()),
             }
         }
@@ -99,7 +113,15 @@ fn cell_of(row: &Value, target: &Value) -> Option<Cell> {
         }
     }
     c.edit = edit;
+    c.global = row["global"]["name"].as_str().map(str::to_string);
     Some(c)
+}
+
+/// The model categories a schedule can list.
+pub(crate) fn model_categories() -> Vec<String> {
+    let mut cats: Vec<String> = openarch_model::view::MODEL_CATEGORIES.iter().map(|c| c.to_string()).collect();
+    cats.retain(|c| !openarch_model::view::SITE_POINT_CATEGORIES.contains(&c.as_str()));
+    cats
 }
 
 /// An element's parameters and its type's, by name.
@@ -152,7 +174,13 @@ impl Session {
     fn params(&self, id: Id, types: &mut BTreeMap<Id, BTreeMap<String, Cell>>) -> Params {
         let mut instance = BTreeMap::new();
         let mut of_type = BTreeMap::new();
+        if let Some(c) = self.schedule_category(id) {
+            instance.insert("Category".to_string(), Cell::text(c));
+        }
         if let Ok(v) = self.describe(id) {
+            if let (Some(Element::View(_)), Some(t)) = (self.doc.get(id), v["type_label"].as_str()) {
+                instance.insert("View Type".to_string(), Cell::text(t));
+            }
             let target = v["target"].clone();
             for row in v["groups"].as_array().into_iter().flatten().flat_map(|g| g["rows"].as_array().into_iter().flatten()) {
                 if let (Some(label), Some(c)) = (row["label"].as_str(), cell_of(row, &target)) {
@@ -166,13 +194,97 @@ impl Session {
         Params { instance, of_type }
     }
 
-    /// The elements a schedule of a category lists, in the model's order.
+    /// The elements a schedule of a category lists, in the model's order: every model element for Multi-Category,
+    /// the sheets that appear in sheet lists, the views (but schedules).
     fn category_elements(&self, category: &str) -> Vec<Id> {
-        self.doc.iter().map(|(id, _)| id).filter(|id| self.schedule_category(*id).as_deref() == Some(category)).collect()
+        let d = &self.doc;
+        match category {
+            MULTI_CATEGORY => d.iter().map(|(id, _)| id).filter(|id| self.schedule_category(*id).is_some()).collect(),
+            SHEETS => d.sheets().into_iter().filter(|(_, s)| s.appears_in_list).map(|(id, _)| id).collect(),
+            VIEWS => d.views().into_iter().filter(|(_, v)| v.view_kind != openarch_model::view::ViewKind::Schedule).map(|(id, _)| id).collect(),
+            c => d.iter().map(|(id, _)| id).filter(|id| self.schedule_category(*id).as_deref() == Some(c)).collect(),
+        }
     }
 
-    /// The fields a category offers: its elements' parameters and its types', with what they measure.
-    pub(crate) fn schedule_fields(&self, category: &str) -> Value {
+    /// An element's materials, from its type's layers (not the voids): each material's thickness, and its area and
+    /// volume (the element's area for each layer of it, and that times the layer's thickness).
+    fn materials_of(&self, id: Id, area_m2: f64) -> Vec<(String, f64, f64, f64)> {
+        let d = &self.doc;
+        let layers = match d.get(id) {
+            Some(Element::Wall(w)) => d.wall_type(w.wall_type).map(|t| t.layers.clone()),
+            Some(Element::Floor(f)) => d.floor_type(f.floor_type).map(|t| t.layers.clone()),
+            Some(Element::Roof(r)) => d.roof_type(r.roof_type).map(|t| t.layers.clone()),
+            _ => None,
+        };
+        let mut out: Vec<(String, f64, f64, f64)> = vec![];
+        for l in layers.unwrap_or_default().iter().filter(|l| !l.is_void && !l.material.trim().is_empty()) {
+            let v = area_m2 * l.thickness_mm / 1000.0;
+            match out.iter_mut().find(|m| m.0 == l.material) {
+                Some(m) => {
+                    m.1 += l.thickness_mm;
+                    m.2 += area_m2;
+                    m.3 += v;
+                }
+                None => out.push((l.material.clone(), l.thickness_mm, area_m2, v)),
+            }
+        }
+        out
+    }
+
+    /// A material field's value.
+    fn material_cell(&self, field: &str, m: &(String, f64, f64, f64)) -> Cell {
+        let mat = self.doc.material(&m.0);
+        let id = |f: fn(&openarch_model::styles::MaterialIdentity) -> &String| Cell::text(mat.map_or(String::new(), |x| f(&x.identity).clone()));
+        match field {
+            "Material: Name" => Cell::text(m.0.clone()),
+            "Material: Thickness" => Cell::num(m.1, Unit::Length),
+            "Material: Area" => Cell::num(m.2, Unit::Area),
+            "Material: Volume" => Cell::num(m.3, Unit::Volume),
+            "Material: Class" => Cell::text(mat.map_or(String::new(), |x| x.class.clone())),
+            "Material: Description" => id(|i| &i.description),
+            "Material: Comments" => id(|i| &i.comments),
+            "Material: Manufacturer" => id(|i| &i.manufacturer),
+            "Material: Model" => id(|i| &i.model),
+            "Material: Mark" => id(|i| &i.mark),
+            "Material: Keynote" => id(|i| &i.keynote),
+            "Material: Cost" => mat.map_or_else(Cell::blank, |x| Cell::num(x.identity.cost, Unit::Currency)),
+            _ => Cell::missing(),
+        }
+    }
+
+    /// The fields a category offers: its elements' parameters and its types', with what they measure. Multi-Category
+    /// offers the parameters two or more categories share, and the category; a material takeoff adds the material's.
+    pub(crate) fn schedule_fields(&self, category: &str, takeoff: bool) -> Value {
+        let mut out = if category == MULTI_CATEGORY { self.shared_fields() } else { self.own_fields(category) };
+        if takeoff {
+            out.extend(MATERIAL_FIELDS.iter().map(|(n, u)| json!({ "name": n, "kind": "material", "unit": u })));
+        }
+        json!(out)
+    }
+
+    fn shared_fields(&self) -> Vec<Value> {
+        let mut seen: BTreeMap<String, (Unit, BTreeSet<String>)> = BTreeMap::new();
+        let mut types = BTreeMap::new();
+        for id in self.category_elements(MULTI_CATEGORY) {
+            let Some(cat) = self.schedule_category(id) else { continue };
+            let p = self.params(id, &mut types);
+            for (k, c) in p.instance.into_iter().chain(p.of_type) {
+                seen.entry(k).or_insert((c.unit, BTreeSet::new())).1.insert(cat.clone());
+            }
+        }
+        for cat in model_categories() {
+            for t in self.category_types(&cat) {
+                for (k, c) in self.type_params(t) {
+                    seen.entry(k).or_insert((c.unit, BTreeSet::new())).1.insert(cat.clone());
+                }
+            }
+        }
+        let mut out = vec![json!({ "name": "Category", "kind": "instance", "unit": Unit::Text })];
+        out.extend(seen.iter().filter(|(k, (_, cats))| cats.len() >= 2 && k.as_str() != "Category").map(|(k, (u, _))| json!({ "name": k, "kind": "instance", "unit": u })));
+        out
+    }
+
+    fn own_fields(&self, category: &str) -> Vec<Value> {
         let mut types = BTreeMap::new();
         let mut inst: BTreeMap<String, Unit> = BTreeMap::new();
         for id in self.category_elements(category) {
@@ -188,13 +300,14 @@ impl Session {
         }
         let mut out: Vec<Value> = inst.iter().filter(|(k, _)| !typ.contains_key(*k)).map(|(k, u)| json!({ "name": k, "kind": "instance", "unit": u })).collect();
         out.extend(typ.iter().map(|(k, u)| json!({ "name": k, "kind": "type", "unit": u })));
+        out.retain(|f| f["name"] != "Category");
         out.sort_by(|a, b| a["name"].as_str().cmp(&b["name"].as_str()));
-        json!(out)
+        out
     }
 
     /// What a parameter field of a schedule measures, from the category's elements and types.
     pub(crate) fn schedule_param_units(&self, category: &str) -> BTreeMap<String, Unit> {
-        let f = self.schedule_fields(category);
+        let f = self.schedule_fields(category, false);
         f.as_array().into_iter().flatten().filter_map(|x| Some((x["name"].as_str()?.to_string(), serde_json::from_value(x["unit"].clone()).ok()?))).collect()
     }
 
@@ -241,6 +354,8 @@ impl Session {
     pub(crate) fn schedule_table_for(&self, view: Id, only: Option<&HashSet<Id>>) -> Res {
         let v = self.doc.view(view).ok_or("not a view")?;
         let def = v.schedule.as_ref().ok_or("not a schedule")?;
+        // sheets and views aren't shown by a sheet's views
+        let only = only.filter(|_| !matches!(def.category.as_str(), SHEETS | VIEWS));
         let units = self.schedule_param_units(&def.category);
         let unit_of = |f: &SchedField| def.unit_of(f, &|g: &SchedField| units.get(&g.name).copied().unwrap_or(Unit::Text));
         // every element: its fields' values
@@ -248,39 +363,51 @@ impl Session {
         let mut rows: Vec<(Vec<Id>, Vec<Cell>)> = vec![];
         for id in self.category_elements(&def.category).into_iter().filter(|id| only.is_none_or(|o| o.contains(id))) {
             let p = self.params(id, &mut types);
-            let mut cells: Vec<Cell> = def
+            let base: Vec<Cell> = def
                 .fields
                 .iter()
                 .map(|f| match f.kind {
-                    FieldKind::Instance => p.instance.get(&f.name).or_else(|| p.of_type.get(&f.name)).cloned().unwrap_or_else(Cell::blank),
-                    FieldKind::Type => p.of_type.get(&f.name).or_else(|| p.instance.get(&f.name)).cloned().unwrap_or_else(Cell::blank),
+                    FieldKind::Instance => p.instance.get(&f.name).or_else(|| p.of_type.get(&f.name)).cloned().unwrap_or_else(Cell::missing),
+                    FieldKind::Type => p.of_type.get(&f.name).or_else(|| p.instance.get(&f.name)).cloned().unwrap_or_else(Cell::missing),
                     FieldKind::Count => Cell::num(1.0, Unit::Integer),
                     _ => Cell::blank(),
                 })
                 .collect();
-            for (i, f) in def.fields.iter().enumerate() {
-                if f.kind == FieldKind::Formula {
-                    cells[i] = formula(def, f, &cells, &unit_of, 0);
-                }
-            }
-            for (i, f) in def.fields.iter().enumerate() {
-                if f.kind == FieldKind::Combined {
-                    let mut s = String::new();
-                    for (k, part) in f.parts.iter().enumerate() {
-                        let t = def.fields.iter().position(|g| g.name == part.field).map(|j| cells[j].text.clone()).unwrap_or_default();
-                        s.push_str(&format!("{}{}{}", part.prefix, t, part.suffix));
-                        if k + 1 < f.parts.len() {
-                            s.push_str(&part.separator);
-                        }
+            // a takeoff: a row for each material, with the material's fields
+            let each: Vec<Vec<Cell>> = if def.takeoff {
+                let area = p.instance.get("Area").and_then(|c| c.num.filter(|_| c.unit == Unit::Area)).unwrap_or(0.0);
+                self.materials_of(id, area)
+                    .iter()
+                    .map(|m| def.fields.iter().zip(&base).map(|(f, c)| if f.kind == FieldKind::Material { self.material_cell(&f.name, m) } else { c.clone() }).collect())
+                    .collect()
+            } else {
+                vec![base]
+            };
+            for mut cells in each {
+                for (i, f) in def.fields.iter().enumerate() {
+                    if f.kind == FieldKind::Formula {
+                        cells[i] = formula(def, f, &cells, &unit_of, 0);
                     }
-                    cells[i] = Cell::text(s);
                 }
+                for (i, f) in def.fields.iter().enumerate() {
+                    if f.kind == FieldKind::Combined {
+                        let mut s = String::new();
+                        for (k, part) in f.parts.iter().enumerate() {
+                            let t = def.fields.iter().position(|g| g.name == part.field).map(|j| cells[j].text.clone()).unwrap_or_default();
+                            s.push_str(&format!("{}{}{}", part.prefix, t, part.suffix));
+                            if k + 1 < f.parts.len() {
+                                s.push_str(&part.separator);
+                            }
+                        }
+                        cells[i] = Cell::text(s);
+                    }
+                }
+                rows.push((vec![id], cells));
             }
-            rows.push((vec![id], cells));
         }
         let col = |name: &str| def.fields.iter().position(|f| f.name == name);
         // filters
-        rows.retain(|(_, cells)| def.filters.iter().all(|flt| col(&flt.field).is_some_and(|i| flt.op.test(&cells[i].text, cells[i].num, &flt.value))));
+        rows.retain(|(_, cells)| def.filters.iter().all(|flt| col(&flt.field).is_some_and(|i| cells[i].passes(flt.op, &flt.value))));
         // percentages: each row's share of the column's total
         for (i, f) in def.fields.iter().enumerate() {
             if f.kind != FieldKind::Percentage {
@@ -290,7 +417,7 @@ impl Session {
             let total: f64 = rows.iter().filter_map(|(_, c)| c[j].num).sum();
             for (_, cells) in rows.iter_mut() {
                 cells[i] = match cells[j].num {
-                    Some(n) if total.abs() > 1e-12 => Cell { text: format!("{:.1}%", n / total * 100.0), num: Some(n / total * 100.0), unit: Unit::Number, edit: None },
+                    Some(n) if total.abs() > 1e-12 => Cell { num: Some(n / total * 100.0), unit: Unit::Number, ..Cell::text(format!("{:.1}%", n / total * 100.0)) },
                     _ => Cell::blank(),
                 };
             }
@@ -380,13 +507,21 @@ impl Session {
             }
             json!({ "kind": kind, "ids": rs.iter().flat_map(|(ids, _)| ids.clone()).collect::<Vec<_>>(), "cells": cells })
         };
+        // conditional formatting: the first rule the row passes colours the cell
+        let bg = |i: usize, cells: &Vec<Cell>| -> Option<String> {
+            def.fields[i].highlights.iter().find(|h| (if h.field.is_empty() { Some(i) } else { col(&h.field) }).is_some_and(|j| cells[j].passes(h.op, &h.value))).map(|h| format!("#{:02x}{:02x}{:02x}", h.colour[0], h.colour[1], h.colour[2]))
+        };
         let item = |ids: &Vec<Id>, cells: &Vec<Cell>| -> Value {
             json!({ "kind": "item", "ids": ids, "cells": shown.iter().map(|&i| {
                 let c = &cells[i];
-                match &c.edit {
+                let mut v = match &c.edit {
                     Some((row, targets)) => json!({ "text": c.text, "row": row, "targets": targets }),
                     None => json!({ "text": c.text }),
+                };
+                if let Some(b) = bg(i, cells) {
+                    v["bg"] = json!(b);
                 }
+                v
             }).collect::<Vec<_>>() })
         };
         let mut out: Vec<Value> = vec![];
@@ -429,7 +564,7 @@ impl Session {
         if def.grand_totals {
             out.push(totals_row("grand", format!("{}:", def.grand_title), &rows));
         }
-        let columns: Vec<Value> = shown.iter().map(|&i| { let f = &def.fields[i]; json!({ "name": f.name, "heading": f.heading(), "align": f.align, "unit": unit_of(f) }) }).collect();
+        let columns: Vec<Value> = shown.iter().map(|&i| { let f = &def.fields[i]; json!({ "name": f.name, "heading": f.heading(), "align": f.align, "unit": unit_of(f), "highlight_on_sheets": f.highlight_on_sheets }) }).collect();
         Ok(json!({
             "id": view, "name": v.name, "category": def.category, "title": v.name, "show_title": def.show_title, "show_headers": def.show_headers,
             "columns": columns, "rows": out, "count": count_of(&rows), "def": def,

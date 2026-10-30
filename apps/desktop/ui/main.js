@@ -95,6 +95,10 @@ const COMMANDS = {
   "export-ifc": () => exportIfc(),
   "v-sheet": () => newSheetDialog(),
   "v-sched": () => Sched.newSchedule(),
+  "v-sched-qty": () => Sched.newSchedule("schedule"),
+  "v-sched-mto": () => Sched.newSchedule("takeoff"),
+  "v-sched-sheets": () => Sched.newSchedule("sheets"),
+  "v-sched-views": () => Sched.newSchedule("views"),
   export: () => ExportFlow.start(),
   "project-info": () => projectInfoDialog(),
   "model-group": () => placeGroupCommand("model"),
@@ -625,13 +629,13 @@ function renderTree() {
       { name: "Sections", children: ofKind("section").map(viewLeaf) },
       { name: "Drafting Views", children: [] },
       { name: "Legends", children: [] },
-      { name: "Schedules / Quantities", menu: [{ label: "New Schedule/Quantities...", run: () => Sched.newSchedule() }], children: [
+      { name: "Schedules / Quantities", menu: newScheduleMenu, children: [
         ...ofKind("schedule").map((x) => ({ ...viewLeaf(x), menu: [
           { label: "Open", run: () => openView("schedule", x.id) },
           { label: "Schedule Properties...", run: () => Sched.edit(x.id, "fields") },
           { label: "Duplicate", run: async () => { const r = await run("duplicate_view", { id: x.id }); if (r) { await refresh(); await openView("schedule", r.id); } } },
           { sep: true },
-          { label: "New Schedule/Quantities...", run: () => Sched.newSchedule() },
+          ...newScheduleMenu,
           { label: "Delete", run: async () => { if (confirm(`Delete the schedule ${x.name}?`) && (await run("delete", { ids: [x.id] }))) { if (app.view.viewId === x.id) await openView("plan", app.lastPlanId); await refresh(); } } },
         ] })),
         leaf("Wall and Floor Quantities", v.kind === "schedule" && v.viewId == null, () => openView("schedule", null)),
@@ -780,6 +784,13 @@ function showMenu(x, y, items) {
 function currentLevel() {
   return app.info.levels.find((l) => l.id === curLevelId()) || app.info.levels[0];
 }
+
+const newScheduleMenu = [
+  { label: "New Schedule/Quantities...", run: () => Sched.newSchedule("schedule") },
+  { label: "New Material Takeoff...", run: () => Sched.newSchedule("takeoff") },
+  { label: "New Sheet List...", run: () => Sched.newSchedule("sheets") },
+  { label: "New View List...", run: () => Sched.newSchedule("views") },
+];
 
 async function openView(kind, viewId, opt = {}) {
   // going anywhere else ends Activate View

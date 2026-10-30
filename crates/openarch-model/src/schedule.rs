@@ -5,8 +5,10 @@
 //! table itself is worked out from the live model each time it is shown (openarch-api), and edits to its cells go
 //! back to the elements.
 //!
-//! From Kristian's Schedules and Tabular Reporting specification (30 Oct). This step is single-category schedules;
-//! schedules on sheets, multi-category, material takeoff, key, sheet and view list schedules come later.
+//! From Kristian's Schedules and Tabular Reporting specification (30 Oct). Besides a single category, a schedule
+//! lists every model category (Multi-Category: the parameters they share), the sheets (a sheet list) or the views
+//! (a view list); a material takeoff lists each element once for every material in its layers. Key schedules come
+//! later.
 
 use serde::{Deserialize, Serialize};
 
@@ -18,10 +20,37 @@ use crate::view::{View, ViewKind};
 pub const MAX_FILTERS: usize = 8;
 pub const MAX_SORT: usize = 4;
 
+/// The categories that aren't a model category.
+pub const MULTI_CATEGORY: &str = "Multi-Category";
+pub const SHEETS: &str = "Sheets";
+pub const VIEWS: &str = "Views";
+
+/// What a material takeoff adds to the element's fields: the material's own values and its share of the element.
+pub const MATERIAL_FIELDS: [(&str, Unit); 12] = [
+    ("Material: Name", Unit::Text),
+    ("Material: Area", Unit::Area),
+    ("Material: Volume", Unit::Volume),
+    ("Material: Thickness", Unit::Length),
+    ("Material: Class", Unit::Text),
+    ("Material: Description", Unit::Text),
+    ("Material: Comments", Unit::Text),
+    ("Material: Manufacturer", Unit::Text),
+    ("Material: Model", Unit::Text),
+    ("Material: Cost", Unit::Currency),
+    ("Material: Mark", Unit::Text),
+    ("Material: Keynote", Unit::Text),
+];
+
+/// The categories a material takeoff can list: those built of layers.
+pub const TAKEOFF_CATEGORIES: [&str; 4] = ["Walls", "Floors", "Roofs", MULTI_CATEGORY];
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ScheduleDef {
-    /// The category listed (Doors, Walls, ...).
+    /// The category listed (Doors, Walls, ...), Multi-Category, Sheets or Views.
     pub category: String,
+    /// A material takeoff: a row for each material of each element.
+    #[serde(default)]
+    pub takeoff: bool,
     #[serde(default)]
     pub fields: Vec<SchedField>,
     #[serde(default)]
@@ -80,6 +109,24 @@ pub struct SchedField {
     /// A combined field's parts, joined in order.
     #[serde(default)]
     pub parts: Vec<CombinedPart>,
+    /// Conditional formatting: the first rule a row passes colours this field's cell.
+    #[serde(default)]
+    pub highlights: Vec<Highlight>,
+    /// The colours on sheets as well as in the schedule view.
+    #[serde(default)]
+    pub highlight_on_sheets: bool,
+}
+
+/// A conditional format: a cell's background when a field of its row passes a test.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Highlight {
+    /// The field tested; empty for the field itself.
+    #[serde(default)]
+    pub field: String,
+    pub op: FilterOp,
+    #[serde(default)]
+    pub value: String,
+    pub colour: crate::view::Color,
 }
 
 impl SchedField {
@@ -105,6 +152,8 @@ pub enum FieldKind {
     Formula,
     Percentage,
     Combined,
+    /// A material takeoff's value of the row's material (MATERIAL_FIELDS).
+    Material,
 }
 
 /// What a footer and the grand total show for a numeric field.
@@ -208,10 +257,15 @@ pub enum FilterOp {
     NotEndsWith,
     HasValue,
     HasNoValue,
+    /// The element has the parameter at all (in a multi-category schedule, not every element does).
+    HasParameter,
+    /// The value is set by a global parameter: the one named, or any when no name is given.
+    AssociatedWithGlobal,
+    NotAssociatedWithGlobal,
 }
 
 impl FilterOp {
-    pub const ALL: [FilterOp; 14] = [
+    pub const ALL: [FilterOp; 17] = [
         FilterOp::Equal,
         FilterOp::NotEqual,
         FilterOp::Greater,
@@ -226,6 +280,9 @@ impl FilterOp {
         FilterOp::NotEndsWith,
         FilterOp::HasValue,
         FilterOp::HasNoValue,
+        FilterOp::HasParameter,
+        FilterOp::AssociatedWithGlobal,
+        FilterOp::NotAssociatedWithGlobal,
     ];
 
     pub fn label(self) -> &'static str {
@@ -244,6 +301,21 @@ impl FilterOp {
             FilterOp::NotEndsWith => "does not end with",
             FilterOp::HasValue => "has a value",
             FilterOp::HasNoValue => "has no value",
+            FilterOp::HasParameter => "has parameter",
+            FilterOp::AssociatedWithGlobal => "is associated with global parameter",
+            FilterOp::NotAssociatedWithGlobal => "is not associated with global parameter",
+        }
+    }
+
+    /// Whether a cell passes, knowing whether its element has the parameter and which global parameter, if any,
+    /// sets it.
+    pub fn test_cell(self, value: &str, num: Option<f64>, present: bool, global: Option<&str>, against: &str) -> bool {
+        let named = |g: &str| against.trim().is_empty() || g.trim().eq_ignore_ascii_case(against.trim());
+        match self {
+            FilterOp::HasParameter => present,
+            FilterOp::AssociatedWithGlobal => global.is_some_and(named),
+            FilterOp::NotAssociatedWithGlobal => !global.is_some_and(named),
+            _ => self.test(value, num, against),
         }
     }
 
@@ -272,6 +344,8 @@ impl FilterOp {
             FilterOp::NotEndsWith => !a.ends_with(&b),
             FilterOp::HasValue => !a.is_empty(),
             FilterOp::HasNoValue => a.is_empty(),
+            FilterOp::HasParameter => true,
+            FilterOp::AssociatedWithGlobal | FilterOp::NotAssociatedWithGlobal => false,
         }
     }
 }
@@ -296,6 +370,7 @@ impl ScheduleDef {
     pub fn new(category: &str) -> ScheduleDef {
         ScheduleDef {
             category: category.into(),
+            takeoff: false,
             fields: vec![],
             filters: vec![],
             sort: vec![],
@@ -329,7 +404,11 @@ impl ScheduleDef {
         if self.sort.len() > MAX_SORT {
             return Err(format!("A schedule sorts by up to {MAX_SORT} fields."));
         }
-        for name in self.filters.iter().map(|f| &f.field).chain(self.sort.iter().map(|s| &s.field)) {
+        if self.takeoff && !TAKEOFF_CATEGORIES.contains(&self.category.as_str()) {
+            return Err(format!("A material takeoff lists walls, floors or roofs, not {}.", self.category.to_lowercase()));
+        }
+        let highlighted = self.fields.iter().flat_map(|f| f.highlights.iter().filter(|h| !h.field.is_empty()).map(|h| &h.field));
+        for name in self.filters.iter().map(|f| &f.field).chain(self.sort.iter().map(|s| &s.field)).chain(highlighted) {
             if self.field(name).is_none() {
                 return Err(format!("{name} is not a field of the schedule: add it (hidden if need be) to filter or sort by it."));
             }
@@ -367,6 +446,9 @@ impl ScheduleDef {
                         return Err(format!("{}: {} is not a field of the schedule.", f.name, p.field));
                     }
                 }
+                FieldKind::Material if !self.takeoff || material_unit(&f.name).is_none() => {
+                    return Err(format!("{} is a field of material takeoffs.", f.name));
+                }
                 _ => {}
             }
         }
@@ -381,8 +463,14 @@ impl ScheduleDef {
             FieldKind::Formula => f.unit,
             FieldKind::Percentage => Unit::Number,
             FieldKind::Combined => Unit::Text,
+            FieldKind::Material => material_unit(&f.name).unwrap_or(Unit::Text),
         }
     }
+}
+
+/// What a material field measures.
+pub fn material_unit(name: &str) -> Option<Unit> {
+    MATERIAL_FIELDS.iter().find(|(n, _)| *n == name).map(|(_, u)| *u)
 }
 
 fn dims_label(d: i32) -> String {
@@ -453,8 +541,8 @@ impl Document {
         self.view(id).and_then(|v| v.schedule.as_ref())
     }
 
-    /// A new schedule of a category (one undo step); the name must be new among schedules.
-    pub fn add_schedule(&mut self, category: &str, name: &str) -> Result<Id, String> {
+    /// A new schedule of a category, or material takeoff (one undo step); the name must be new among schedules.
+    pub fn add_schedule(&mut self, category: &str, name: &str, takeoff: bool) -> Result<Id, String> {
         let name = name.trim();
         if name.is_empty() || self.schedules().iter().any(|(_, v)| v.name == name) {
             return Err("A schedule needs a name of its own.".into());
@@ -465,7 +553,9 @@ impl Document {
         let mut v = View::floor_plan(name, 0);
         v.view_kind = ViewKind::Schedule;
         v.level = None;
-        v.schedule = Some(ScheduleDef::new(category));
+        let def = ScheduleDef { takeoff, ..ScheduleDef::new(category) };
+        def.check(&|_| Unit::Text)?;
+        v.schedule = Some(def);
         self.transact("New Schedule", |tx| Ok(tx.add(Element::View(v))))
     }
 
@@ -485,7 +575,7 @@ mod tests {
     use super::*;
 
     fn f(name: &str, kind: FieldKind) -> SchedField {
-        SchedField { name: name.into(), kind, heading: String::new(), hidden: false, totals: Totals::None, align: Align::Left, formula: String::new(), unit: Unit::Number, of: String::new(), parts: vec![] }
+        SchedField { name: name.into(), kind, heading: String::new(), hidden: false, totals: Totals::None, align: Align::Left, formula: String::new(), unit: Unit::Number, of: String::new(), parts: vec![], highlights: vec![], highlight_on_sheets: false }
     }
 
     #[test]
@@ -527,5 +617,27 @@ mod tests {
         assert!(FilterOp::Equal.test("Single-Flush", None, "single-flush"));
         assert!(FilterOp::BeginsWith.test("D01", None, "d"));
         assert!(FilterOp::HasNoValue.test("  ", None, ""));
+        assert!(!FilterOp::HasParameter.test_cell("", None, false, None, ""));
+        assert!(FilterOp::AssociatedWithGlobal.test_cell("900", Some(900.0), true, Some("Door Width"), "door width"));
+        assert!(FilterOp::AssociatedWithGlobal.test_cell("900", Some(900.0), true, Some("Door Width"), ""), "no name: any global");
+        assert!(FilterOp::NotAssociatedWithGlobal.test_cell("900", Some(900.0), true, Some("Door Width"), "Sill"));
+        assert!(!FilterOp::NotAssociatedWithGlobal.test_cell("900", Some(900.0), true, Some("Door Width"), ""));
+    }
+
+    #[test]
+    fn takeoffs_are_of_layered_categories_and_material_fields_are_theirs() {
+        let units = |_: &SchedField| Unit::Text;
+        let mut s = ScheduleDef { takeoff: true, ..ScheduleDef::new("Doors") };
+        assert!(s.check(&units).unwrap_err().contains("walls, floors or roofs"));
+        s.category = "Walls".into();
+        s.fields = vec![f("Material: Area", FieldKind::Material), f("Type", FieldKind::Type)];
+        assert!(s.check(&units).is_ok());
+        assert_eq!(s.unit_of(&s.fields[0], &units), Unit::Area);
+        s.takeoff = false;
+        assert!(s.check(&units).unwrap_err().contains("material takeoffs"));
+        // a highlight tests a field of the schedule
+        s.takeoff = true;
+        s.fields[1].highlights.push(Highlight { field: "Width".into(), op: FilterOp::Less, value: "15".into(), colour: [255, 200, 200] });
+        assert!(s.check(&units).unwrap_err().contains("Width is not a field"));
     }
 }

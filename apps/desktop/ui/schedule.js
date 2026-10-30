@@ -1,12 +1,19 @@
 // Schedules: the table a schedule view shows (worked out by the core from the live model each time), its cells
 // edited in place (an edit goes to the element, or to its type, as the Properties palette would send it), the rows'
-// commands (Highlight in Model, Delete Row), export to CSV or tab-separated text, New Schedule and the Schedule
-// Properties dialog (Fields, Filter, Sorting/Grouping, Formatting, Appearance).
+// commands (Highlight in Model, Delete Row), export to CSV or tab-separated text, New Schedule (a category or
+// Multi-Category, a material takeoff, a sheet list or a view list) and the Schedule Properties dialog (Fields, Filter,
+// Sorting/Grouping, Formatting with conditional formats, Appearance).
 const Sched = (() => {
   let table = null; // the schedule_table answer
   let picked = new Set(); // index of the selected rows
   const TABS = [["fields", "Fields"], ["filter", "Filter"], ["sorting", "Sorting/Grouping"], ["formatting", "Formatting"], ["appearance", "Appearance"]];
-  const OPS = [["equal", "equals"], ["not_equal", "does not equal"], ["greater", "is greater than"], ["greater_or_equal", "is greater than or equal to"], ["less", "is less than"], ["less_or_equal", "is less than or equal to"], ["contains", "contains"], ["not_contains", "does not contain"], ["begins_with", "begins with"], ["not_begins_with", "does not begin with"], ["ends_with", "ends with"], ["not_ends_with", "does not end with"], ["has_value", "has a value"], ["has_no_value", "has no value"]];
+  const OPS = [["equal", "equals"], ["not_equal", "does not equal"], ["greater", "is greater than"], ["greater_or_equal", "is greater than or equal to"], ["less", "is less than"], ["less_or_equal", "is less than or equal to"], ["contains", "contains"], ["not_contains", "does not contain"], ["begins_with", "begins with"], ["not_begins_with", "does not begin with"], ["ends_with", "ends with"], ["not_ends_with", "does not end with"], ["has_value", "has a value"], ["has_no_value", "has no value"], ["has_parameter", "has parameter"], ["associated_with_global", "is associated with global parameter"], ["not_associated_with_global", "is not associated with global parameter"]];
+  const GLOBAL_OPS = ["associated_with_global", "not_associated_with_global"];
+  const NO_VALUE = ["has_value", "has_no_value", "has_parameter"];
+  // what a schedule's rows are, for the count under the table
+  const noun = (t) => (t.def && t.def.takeoff ? "material rows" : t.category === "Multi-Category" ? "elements" : t.category.toLowerCase());
+  const hex = (c) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
+  const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
   const UNITS = [["number", "Number"], ["integer", "Integer"], ["length", "Length"], ["area", "Area"], ["volume", "Volume"], ["angle", "Angle"], ["currency", "Currency"], ["text", "Text"], ["yes_no", "Yes/No"]];
   const TOTALS = [["none", "No calculation"], ["totals", "Calculate totals"], ["min", "Calculate minimum"], ["max", "Calculate maximum"], ["min_max", "Calculate minimum and maximum"]];
   const numeric = (u) => !["text", "yes_no"].includes(u);
@@ -34,14 +41,15 @@ const Sched = (() => {
       if (r.kind === "blank") { tbl.append(el("tr", { className: "s-blank" }, [el("td", { colSpan: n, innerHTML: "&nbsp;" })])); return; }
       const tr = el("tr", { className: `s-${r.kind}${picked.has(i) ? " picked" : ""}` }, r.cells.map((c, k) => {
         const td = el("td", { textContent: c.text, className: `a-${cols[k] ? cols[k].align : "left"}${c.row ? " editable" : ""}` });
+        if (c.bg) td.style.background = c.bg;
         if (c.row) td.ondblclick = (e) => { e.stopPropagation(); editCell(td, c); };
         return td;
       }));
       if (r.kind === "item") tr.onclick = (e) => pick(i, e.ctrlKey || e.shiftKey);
       tbl.append(tr);
     });
-    if (!t.rows.length) tbl.append(el("tr", {}, [el("td", { colSpan: n, className: "empty", textContent: cols.length ? `No ${t.category.toLowerCase()} to list.` : "No fields yet: add some in Schedule Properties." })]));
-    const wrap = el("div", { className: "sched-wrap sched-live" }, [bar, tbl, el("div", { className: "sched-count", textContent: `${t.count} ${t.category.toLowerCase()}` })]);
+    if (!t.rows.length) tbl.append(el("tr", {}, [el("td", { colSpan: n, className: "empty", textContent: cols.length ? `No ${noun(t)} to list.` : "No fields yet: add some in Schedule Properties." })]));
+    const wrap = el("div", { className: "sched-wrap sched-live" }, [bar, tbl, el("div", { className: "sched-count", textContent: `${t.count} ${noun(t)}` })]);
     host.replaceChildren(wrap);
   }
 
@@ -82,10 +90,13 @@ const Sched = (() => {
     if (inp.select) inp.select();
   }
 
-  // Highlight in Model: a plan showing the picked elements, zoomed to them and with them selected
+  // Highlight in Model: a plan showing the picked elements, zoomed to them and with them selected; a sheet or view
+  // list opens the sheet or view
   async function highlight() {
     const ids = pickedIds();
     if (!ids.length) { setPrompt("Pick a row first.", true); return; }
+    if (table.category === "Sheets") { await openView("sheet", ids[0]); return; }
+    if (table.category === "Views") { const v = app.info.views.find((x) => x.id === ids[0]); if (v) await openView(viewerOf(v.view_kind), v.id); return; }
     const plans = app.info.views.filter((v) => v.view_kind === "floor_plan");
     const order = [app.lastPlanId, ...plans.map((v) => v.id)].filter((x, i, a) => x != null && a.indexOf(x) === i);
     for (const vid of order) {
@@ -98,7 +109,8 @@ const Sched = (() => {
   async function deleteRows() {
     const ids = pickedIds();
     if (!ids.length) { setPrompt("Pick a row first.", true); return; }
-    if (!confirm(`Delete ${ids.length} element${ids.length === 1 ? "" : "s"} from the model?`)) return;
+    const what = table.category === "Sheets" ? "sheet" : table.category === "Views" ? "view" : "element";
+    if (!confirm(`Delete ${ids.length} ${what}${ids.length === 1 ? "" : "s"} from the model?`)) return;
     if (await run("delete", { ids })) { picked = new Set(); app.selection = []; await refresh(); }
   }
 
@@ -138,25 +150,33 @@ const Sched = (() => {
   }
 
   // ---- New Schedule ------------------------------------------------------------------------------------------------
-  async function newSchedule() {
-    const cats = await run("schedule_categories", {});
+  // kind: "schedule" (a category or Multi-Category), "takeoff" (a material takeoff), "sheets" or "views" (a list)
+  async function newSchedule(kind = "schedule") {
+    const list = kind === "sheets" || kind === "views";
+    let cats = list ? [] : await run("schedule_categories", {});
     if (!cats) return;
-    openModal("New Schedule", (body, foot, close) => {
-      const list = el("select", { size: 14, className: "sched-cats" }, cats.map((c) => new Option(`${c.name}${c.count ? `  (${c.count})` : ""}`, c.name)));
-      const first = cats.find((c) => c.count) || cats[0];
-      list.value = first.name;
-      const name = el("input", { type: "text", value: `${first.name.replace(/s$/, "")} Schedule` });
-      list.onchange = () => { name.value = `${list.value.replace(/s$/, "")} Schedule`; };
+    if (kind === "takeoff") cats = cats.filter((c) => c.takeoff);
+    const title = { schedule: "New Schedule", takeoff: "New Material Takeoff", sheets: "New Sheet List", views: "New View List" }[kind];
+    const nameFor = (c) => (kind === "takeoff" ? `${c.replace(/s$/, "")} Material Takeoff` : `${c.replace(/s$/, "")} Schedule`);
+    openModal(title, (body, foot, close) => {
+      const pick = el("select", { size: 14, className: "sched-cats" }, cats.map((c) => new Option(`${c.name === "Multi-Category" ? "<Multi-Category>" : c.name}${c.count ? `  (${c.count})` : ""}`, c.name)));
+      const first = cats.find((c) => c.count && c.name !== "Multi-Category") || cats[0];
+      if (first) pick.value = first.name;
+      const name = el("input", { type: "text", value: list ? (kind === "sheets" ? "Sheet List" : "View List") : nameFor(first.name) });
+      pick.onchange = () => { name.value = nameFor(pick.value); };
       const msg = el("div", { className: "modal-msg" });
-      body.append(el("div", { className: "new-row" }, [el("span", { textContent: "Category" }), list]), el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), msg);
+      if (!list) body.append(el("div", { className: "new-row" }, [el("span", { textContent: "Category" }), pick]));
+      body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), msg);
       const ok = async () => {
         try {
-          const r = await Backend.call("add_schedule", { category: list.value, name: name.value.trim() });
+          const category = kind === "sheets" ? "Sheets" : kind === "views" ? "Views" : pick.value;
+          const r = await Backend.call("add_schedule", { category, name: name.value.trim(), takeoff: kind === "takeoff" });
           close(); await refresh(); await openView("schedule", r.id); edit(r.id, "fields");
         } catch (e) { msg.textContent = String(e.message || e); }
       };
-      list.ondblclick = ok;
+      pick.ondblclick = ok;
       foot.append(button("Cancel", close), button("OK", ok, true));
+      if (list) name.focus();
     });
   }
 
@@ -165,14 +185,35 @@ const Sched = (() => {
     const t = await run("schedule_table", { id });
     if (!t) return;
     const def = JSON.parse(JSON.stringify(t.def));
-    const avail = (await run("schedule_fields", { category: def.category })) || [];
+    const avail = (await run("schedule_fields", { category: def.category, takeoff: !!def.takeoff })) || [];
+    const globals = ((await run("global_params", {})) || { params: [] }).params.map((g) => g.name);
     const unitOf = (f) => (f.kind === "count" ? "integer" : f.kind === "formula" ? f.unit : f.kind === "percentage" ? "number" : f.kind === "combined" ? "text" : ((avail.find((a) => a.name === f.name) || {}).unit || "text"));
-    const blank = (name, kind) => ({ name, kind, heading: "", hidden: false, totals: "none", align: "left", formula: "", unit: "number", of: "", parts: [] });
+    const blank = (name, kind) => ({ name, kind, heading: "", hidden: false, totals: "none", align: "left", formula: "", unit: "number", of: "", parts: [], highlights: [], highlight_on_sheets: false });
+    // a filter's or highlight's value: a global parameter's name for the global tests, nothing for the presence
+    // tests, else text
+    const valueBox = (op, value, onchange) => {
+      const box = el("span", { className: "sched-val" });
+      const draw = (o) => {
+        if (GLOBAL_OPS.includes(o)) {
+          const s = el("select", {}, [new Option("(any)", "", false, !value), ...globals.map((g) => new Option(g, g, false, g === value))]);
+          s.onchange = () => { value = s.value; onchange(value); };
+          box.replaceChildren(s);
+        } else if (NO_VALUE.includes(o)) {
+          box.replaceChildren();
+        } else {
+          const i = el("input", { type: "text", value });
+          i.oninput = () => { value = i.value; onchange(value); };
+          box.replaceChildren(i);
+        }
+      };
+      draw(op);
+      return { box, redraw: (o) => { if (GLOBAL_OPS.includes(o) || NO_VALUE.includes(o)) { value = ""; onchange(value); } draw(o); } };
+    };
     openModal(`Schedule Properties: ${t.name}`, (body, foot, close) => {
       body.classList.add("ex-body", "sched-props");
       const bar = el("div", { className: "ex-tabs" }), pane = el("div", { className: "ex-tab" }), msg = el("div", { className: "modal-msg" });
       const opts = (pairs, cur) => pairs.map(([v, l]) => new Option(l, v, false, v === cur));
-      const fieldOpts = (cur, none) => [...(none ? [new Option("(none)", "", false, !cur)] : []), ...def.fields.map((f) => new Option(f.name, f.name, false, f.name === cur))];
+      const fieldOpts = (cur, none, noneLabel = "(none)") => [...(none ? [new Option(noneLabel, "", false, !cur)] : []), ...def.fields.map((f) => new Option(f.name, f.name, false, f.name === cur))];
       const draw = () => {
         bar.replaceChildren(...TABS.map(([k, l]) => { const b = el("button", { textContent: l, className: tab === k ? "on" : "" }); b.onclick = () => { tab = k; draw(); }; return b; }));
         pane.replaceChildren(...({ fields, filter, sorting, formatting, appearance })[tab]());
@@ -181,11 +222,12 @@ const Sched = (() => {
       let selAvail = null, selField = null;
       function fields() {
         const search = el("input", { type: "search", placeholder: "Search..." });
-        const left = el("select", { size: 16, className: "sched-list" }), right = el("select", { size: 16, className: "sched-list" });
+        const left = el("select", { size: 16, multiple: true, className: "sched-list" }), right = el("select", { size: 16, multiple: true, className: "sched-list" });
         const fillLeft = () => {
           const q = search.value.trim().toLowerCase();
           const all = [{ name: "Count", kind: "count", unit: "integer" }, ...avail];
-          left.replaceChildren(...all.filter((a) => !def.fields.some((f) => f.name === a.name) && (!q || a.name.toLowerCase().includes(q))).map((a) => new Option(`${a.name}${a.kind === "type" ? "  (type)" : ""}`, a.name, false, a.name === selAvail)));
+          const tag = (a) => (def.category === "Multi-Category" || a.kind !== "type" ? "" : "  (type)");
+          left.replaceChildren(...all.filter((a) => !def.fields.some((f) => f.name === a.name) && (!q || a.name.toLowerCase().includes(q))).map((a) => new Option(`${a.name}${tag(a)}`, a.name, false, a.name === selAvail)));
         };
         const fillRight = () => right.replaceChildren(...def.fields.map((f) => new Option(`${f.name}${f.kind === "formula" ? "  (formula)" : f.kind === "percentage" ? "  (percentage)" : f.kind === "combined" ? "  (combined)" : ""}`, f.name, false, f.name === selField)));
         search.oninput = fillLeft;
@@ -270,22 +312,49 @@ const Sched = (() => {
       // Filter: up to eight rules, all of which a row must pass
       function filter() {
         const rows = [];
+        const sync = () => {
+          const list = [];
+          rows.forEach((r) => { if (r.fs.value) list.push({ field: r.fs.value, op: r.op.value, value: r.value }); });
+          def.filters = list;
+        };
         for (let i = 0; i < 8; i++) {
           const fl = def.filters[i] || { field: "", op: "equal", value: "" };
-          const fs = el("select", {}, fieldOpts(fl.field, true)), op = el("select", {}, opts(OPS, fl.op)), val = el("input", { type: "text", value: fl.value });
-          const sync = () => {
-            const list = [];
-            rows.forEach(([a, b, c]) => { if (a.value) list.push({ field: a.value, op: b.value, value: c.value }); });
-            def.filters = list;
-          };
-          fs.onchange = op.onchange = val.oninput = sync;
-          rows.push([fs, op, val]);
+          const r = { fs: el("select", {}, fieldOpts(fl.field, true)), op: el("select", {}, opts(OPS, fl.op)), value: fl.value };
+          const v = valueBox(fl.op, fl.value, (x) => { r.value = x; sync(); });
+          r.box = v.box;
+          r.fs.onchange = sync;
+          r.op.onchange = () => { v.redraw(r.op.value); sync(); };
+          rows.push(r);
         }
+        const out = [el("div", { className: "modal-note", style: "margin:0 0 6px", textContent: "A row is listed when it passes every rule. Numbers compare in the field's units (mm, m²)." }), ...rows.map((r, i) => el("div", { className: "sched-rule" }, [el("span", { textContent: i ? "And:" : "Filter by:" }), r.fs, r.op, r.box]))];
+        if (def.category === "Sheets" || def.category === "Views") return out;
         const bySheet = el("input", { type: "checkbox", checked: !!def.filter_by_sheet });
         bySheet.onchange = () => { def.filter_by_sheet = bySheet.checked; };
-        return [el("div", { className: "modal-note", style: "margin:0 0 6px", textContent: "A row is listed when it passes every rule. Numbers compare in the field's units (mm, m²)." }), ...rows.map(([a, b, c], i) => el("div", { className: "sched-rule" }, [el("span", { textContent: i ? "And:" : "Filter by:" }), a, b, c])),
-          el("div", { className: "sched-rule" }, [el("span"), el("label", {}, [bySheet, " Filter by sheet"])]),
+        return [...out, el("div", { className: "sched-rule" }, [el("span"), el("label", {}, [bySheet, " Filter by sheet"])]),
           el("div", { className: "modal-note", textContent: "On a sheet, only the elements the sheet's views show are listed." })];
+      }
+      // Conditional Format: rules tested in order, the first a row passes colours the field's cell
+      function conditional(f, done) {
+        openModal(`Conditional Formatting: ${f.name}`, (b2, f2, close2) => {
+          const rules = JSON.parse(JSON.stringify(f.highlights || []));
+          const list = el("div", { className: "sched-parts" });
+          const drawRules = () => list.replaceChildren(el("div", { className: "sched-hl ex-head" }, ["Field", "Test", "Value", "Colour", ""].map((x) => el("span", { textContent: x }))), ...rules.map((h, i) => {
+            const fs = el("select", {}, fieldOpts(h.field, true, `(${f.name})`));
+            fs.onchange = () => { h.field = fs.value; };
+            const op = el("select", {}, opts(OPS, h.op));
+            const v = valueBox(h.op, h.value, (x) => { h.value = x; });
+            op.onchange = () => { h.op = op.value; v.redraw(h.op); };
+            const col = el("input", { type: "color", value: hex(h.colour) });
+            col.oninput = () => { h.colour = rgb(col.value); };
+            return el("div", { className: "sched-hl" }, [fs, op, v.box, col, button("×", () => { rules.splice(i, 1); drawRules(); })]);
+          }));
+          drawRules();
+          const onSheets = el("input", { type: "checkbox", checked: !!f.highlight_on_sheets });
+          b2.append(list, button("Add Rule", () => { rules.push({ field: "", op: "less", value: "", colour: [255, 205, 205] }); drawRules(); }),
+            el("div", { className: "modal-note", textContent: "Rules are tested in order; the first a row passes colours the cell. Numbers compare in the field's units." }),
+            el("div", { className: "new-row" }, [el("span"), el("label", {}, [onSheets, " Show conditional format on sheets"])]));
+          f2.append(button("Cancel", close2), button("OK", () => { f.highlights = rules; f.highlight_on_sheets = onSheets.checked; close2(); done(); }, true));
+        }, { wide: true });
       }
       // Sorting/Grouping: up to four keys, the grand totals and itemising
       function sorting() {
@@ -327,11 +396,14 @@ const Sched = (() => {
           const totals = el("select", {}, opts(TOTALS, f.totals));
           totals.onchange = () => { f.totals = totals.value; };
           totals.disabled = !numeric(unitOf(f)) || f.kind === "count";
+          const n = (f.highlights || []).length;
+          const cond = button(n ? `Conditional Format... (${n})` : "Conditional Format...", () => conditional(f, show));
           form.replaceChildren(
             el("label", { className: "new-row" }, [el("span", { textContent: "Heading" }), heading]),
             el("label", { className: "new-row" }, [el("span", { textContent: "Alignment" }), align]),
             el("label", { className: "new-row" }, [el("span", { textContent: "Hidden field" }), hidden]),
             el("label", { className: "new-row" }, [el("span", { textContent: "Totals" }), totals]),
+            el("div", { className: "new-row" }, [el("span", { textContent: "" }), cond]),
             el("div", { className: "modal-note", textContent: f.kind === "count" ? "Count always totals." : `Measures: ${(UNITS.find((u) => u[0] === unitOf(f)) || [0, "Text"])[1]}` }),
           );
         };

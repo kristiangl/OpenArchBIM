@@ -120,6 +120,13 @@ const SheetView = (() => {
       }
       for (const r of g.rows) {
         const top = y;
+        // conditional formats the schedule shows on sheets
+        if (r.kind === "item") r.cells.forEach((cell, i) => {
+          if (!cell.bg || !t.columns[i] || !t.columns[i].highlight_on_sheets) return;
+          let x = x0; for (let j = 0; j < i; j++) x += L.cols[j];
+          const a = at(x, top), b = at(x + L.cols[i], top - S.row);
+          c.save(); c.fillStyle = cell.bg; c.fillRect(a.x, a.y, b.x - a.x, b.y - a.y); c.restore();
+        });
         if (r.kind === "header") text(r.cells[0].text, x0 + S.pad + 3 * (r.level || 0), y, S.row, S.text, true, "left");
         else if (r.kind !== "blank") {
           r.cells.forEach((cell, i) => text(cell.text, x0 + cellX(i, t.columns[i] ? t.columns[i].align : "left"), y, S.row, S.text, r.kind !== "item", t.columns[i] ? t.columns[i].align : "left", r.kind === "footer"));

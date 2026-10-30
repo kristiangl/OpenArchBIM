@@ -1759,14 +1759,23 @@ impl Session {
                         *counts.entry(c).or_default() += 1;
                     }
                 }
-                let mut cats: Vec<String> = openarch_model::view::MODEL_CATEGORIES.iter().map(|c| c.to_string()).collect();
-                cats.retain(|c| !openarch_model::view::SITE_POINT_CATEGORIES.contains(&c.as_str()));
-                Ok(json!(cats.iter().map(|c| json!({ "name": c, "count": counts.get(c).copied().unwrap_or(0) })).collect::<Vec<_>>()))
+                // Multi-Category first, with every model element
+                use openarch_model::schedule::{MULTI_CATEGORY, TAKEOFF_CATEGORIES};
+                let all: usize = counts.values().sum();
+                let mut out = vec![json!({ "name": MULTI_CATEGORY, "count": all, "takeoff": true })];
+                out.extend(schedule::model_categories().iter().map(|c| json!({ "name": c, "count": counts.get(c).copied().unwrap_or(0), "takeoff": TAKEOFF_CATEGORIES.contains(&c.as_str()) })));
+                Ok(json!(out))
             }
             "add_schedule" => {
                 let category = p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?;
-                let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| format!("{} Schedule", category.trim_end_matches('s')));
-                Ok(json!({ "id": self.doc.add_schedule(category, &name)? }))
+                let takeoff = p.get("takeoff").and_then(|v| v.as_bool()).unwrap_or(false);
+                let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| match category {
+                    openarch_model::schedule::SHEETS => "Sheet List".into(),
+                    openarch_model::schedule::VIEWS => "View List".into(),
+                    c if takeoff => format!("{} Material Takeoff", c.trim_end_matches('s')),
+                    c => format!("{} Schedule", c.trim_end_matches('s')),
+                });
+                Ok(json!({ "id": self.doc.add_schedule(category, &name, takeoff)? }))
             }
             "schedule_table" => self.schedule_table(id_of(p, "id")?),
             // a few of a schedule's settings at once (Filter by Sheet from a placed schedule's properties)
@@ -1789,7 +1798,7 @@ impl Session {
                 self.doc.set_sheet_schedule(id, s)?;
                 Ok(json!({}))
             }
-            "schedule_fields" => Ok(self.schedule_fields(p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?)),
+            "schedule_fields" => Ok(self.schedule_fields(p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?, p.get("takeoff").and_then(|v| v.as_bool()).unwrap_or(false))),
             "set_schedule" => {
                 let id = id_of(p, "id")?;
                 let def: openarch_model::schedule::ScheduleDef = serde_json::from_value(p.get("def").cloned().ok_or("missing def")?).map_err(|e| format!("bad schedule: {e}"))?;
@@ -3342,6 +3351,97 @@ mod tests {
         // the schedule is a view, with its properties
         let props = call(&mut s, "describe", json!({"id": id}));
         assert_eq!(props["kind"], "Schedule");
+    }
+
+    #[test]
+    fn multi_category_takeoff_sheet_and_view_lists_with_global_filters_and_highlights() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let lvl = info["levels"][0]["id"].as_u64().unwrap();
+        let wt = info["wall_types"][0]["id"].as_u64().unwrap();
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [10000, 0], "height_mm": 3000}))["id"].as_u64().unwrap();
+        let ty = |label: &str| info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == label).unwrap()["id"].as_u64().unwrap();
+        let (narrow, wide) = (ty("Single-Flush: 720 x 2040"), ty("Single-Flush: 820 x 2040"));
+        for (k, t) in [narrow, wide].into_iter().enumerate() {
+            let d = call(&mut s, "place_instance", json!({"type_id": t, "host_id": w, "point": [2000.0 + 4000.0 * k as f64, 0]}))["id"].as_u64().unwrap();
+            call(&mut s, "patch_instance", json!({"id": d, "patch": {"mark": format!("D{}", k + 1)}}));
+        }
+        // Multi-Category: the parameters categories share, and the category
+        let cats = call(&mut s, "schedule_categories", json!({}));
+        assert_eq!(cats[0]["name"], "Multi-Category");
+        assert_eq!(cats[0]["count"], 3);
+        let fields = call(&mut s, "schedule_fields", json!({"category": "Multi-Category"}));
+        let names: Vec<&str> = fields.as_array().unwrap().iter().map(|f| f["name"].as_str().unwrap()).collect();
+        assert!(names.contains(&"Category") && names.contains(&"Mark") && names.contains(&"Type"), "{names:?}");
+        assert!(!names.contains(&"Unconnected Height"), "a wall's own parameter isn't shared");
+        let m = call(&mut s, "add_schedule", json!({"category": "Multi-Category"}))["id"].as_u64().unwrap();
+        let f = |name: &str| json!({"name": name, "kind": "instance"});
+        call(&mut s, "set_schedule", json!({"id": m, "def": {"category": "Multi-Category", "fields": [f("Category"), f("Mark"), f("Width")], "sort": [{"field": "Category"}, {"field": "Mark"}]}}));
+        let t = call(&mut s, "schedule_table", json!({"id": m}));
+        let col = |t: &Value, c: usize| t["rows"].as_array().unwrap().iter().map(|r| r["cells"][c]["text"].as_str().unwrap().to_string()).collect::<Vec<_>>();
+        assert_eq!(col(&t, 0), vec!["Doors", "Doors", "Walls"]);
+        // has parameter: the doors' height is a parameter walls don't have
+        call(&mut s, "set_schedule", json!({"id": m, "def": {"category": "Multi-Category", "fields": [f("Category"), f("Mark"), f("Height")], "filters": [{"field": "Height", "op": "has_parameter"}]}}));
+        assert_eq!(col(&call(&mut s, "schedule_table", json!({"id": m})), 0), vec!["Doors", "Doors"]);
+        // associated with a global parameter: the wide door's type width is set by one
+        let g = call(&mut s, "add_global_param", json!({"name": "Standard Door Width", "kind": "length", "value": 820}))["id"].as_u64().unwrap();
+        call(&mut s, "associate_global", json!({"id": wide, "param": "Width", "global": g}));
+        let d = call(&mut s, "add_schedule", json!({"category": "Doors"}))["id"].as_u64().unwrap();
+        let mut def = json!({"category": "Doors", "fields": [f("Mark"), {"name": "Width", "kind": "type"}], "filters": [{"field": "Width", "op": "associated_with_global", "value": "standard door width"}]});
+        call(&mut s, "set_schedule", json!({"id": d, "def": def}));
+        assert_eq!(col(&call(&mut s, "schedule_table", json!({"id": d})), 0), vec!["D2"]);
+        def["filters"][0]["op"] = json!("not_associated_with_global");
+        call(&mut s, "set_schedule", json!({"id": d, "def": def}));
+        assert_eq!(col(&call(&mut s, "schedule_table", json!({"id": d})), 0), vec!["D1"]);
+        // conditional formatting: the narrow door's mark coloured by its width
+        def["filters"] = json!([]);
+        def["fields"][0]["highlights"] = json!([{"field": "Width", "op": "less", "value": "800", "colour": [255, 200, 200]}]);
+        def["fields"][0]["highlight_on_sheets"] = json!(true);
+        call(&mut s, "set_schedule", json!({"id": d, "def": def}));
+        let t = call(&mut s, "schedule_table", json!({"id": d}));
+        assert_eq!((t["rows"][0]["cells"][0]["bg"].as_str(), t["rows"][1]["cells"][0]["bg"].as_str()), (Some("#ffc8c8"), None));
+        assert_eq!(t["columns"][0]["highlight_on_sheets"], true);
+        // a material takeoff: the wall once for each material of its type, area and volume from its own
+        assert!(s.handle("add_schedule", &json!({"category": "Doors", "takeoff": true})).unwrap_err().contains("walls, floors or roofs"));
+        let mto = call(&mut s, "add_schedule", json!({"category": "Walls", "takeoff": true}))["id"].as_u64().unwrap();
+        assert_eq!(s.doc.view(mto).unwrap().name, "Wall Material Takeoff");
+        let mf = call(&mut s, "schedule_fields", json!({"category": "Walls", "takeoff": true}));
+        assert!(mf.as_array().unwrap().iter().any(|x| x["name"] == "Material: Volume" && x["kind"] == "material" && x["unit"] == "volume"));
+        let mat = |n: &str| json!({"name": n, "kind": "material"});
+        call(&mut s, "set_schedule", json!({"id": mto, "def": {"category": "Walls", "takeoff": true, "fields": [mat("Material: Name"), mat("Material: Thickness"), mat("Material: Area"), {"name": "Material: Volume", "kind": "material", "totals": "totals"}, f("Area")], "grand_totals": true}}));
+        let t = call(&mut s, "schedule_table", json!({"id": mto}));
+        let layers: Vec<_> = s.doc.wall_type(wt).unwrap().layers.iter().filter(|l| !l.is_void && !l.material.is_empty()).cloned().collect();
+        let mut materials: Vec<String> = vec![];
+        for l in &layers {
+            if !materials.contains(&l.material) {
+                materials.push(l.material.clone());
+            }
+        }
+        let items: Vec<&Value> = t["rows"].as_array().unwrap().iter().filter(|r| r["kind"] == "item").collect();
+        assert_eq!(items.len(), materials.len(), "a row for each material");
+        let area: f64 = items[0]["cells"][4]["text"].as_str().unwrap().trim_end_matches(" m\u{b2}").parse().unwrap();
+        let volume: f64 = layers.iter().map(|l| area * l.thickness_mm / 1000.0).sum();
+        let grand = t["rows"].as_array().unwrap().last().unwrap();
+        assert_eq!(grand["cells"][3]["text"], format!("{volume:.2} m\u{b3}"), "the materials' volumes add up to the wall's");
+        // a sheet list: the sheets in the list, edited in place; a view list with the sheet a view is on
+        let tb = info["title_blocks"][0]["id"].as_u64().unwrap();
+        let a101 = call(&mut s, "add_sheet", json!({"number": "A101", "name": "Ground Floor", "title_block": tb}))["id"].as_u64().unwrap();
+        let a102 = call(&mut s, "add_sheet", json!({"number": "A102", "name": "Hidden", "title_block": tb}))["id"].as_u64().unwrap();
+        call(&mut s, "patch_sheet", json!({"id": a102, "patch": {"appears_in_list": false}}));
+        let ground = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Ground").unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "place_view", json!({"sheet": a101, "view": ground, "centre": [250, 400]}));
+        let sl = call(&mut s, "add_schedule", json!({"category": "Sheets"}))["id"].as_u64().unwrap();
+        assert_eq!(s.doc.view(sl).unwrap().name, "Sheet List");
+        call(&mut s, "set_schedule", json!({"id": sl, "def": {"category": "Sheets", "fields": [f("Sheet Number"), f("Sheet Name")]}}));
+        let t = call(&mut s, "schedule_table", json!({"id": sl}));
+        assert_eq!(col(&t, 0), vec!["A101"], "not the sheet left out of lists");
+        let cell = &t["rows"][0]["cells"][1];
+        call(&mut s, cell["targets"][0]["method"].as_str().unwrap(), json!({"id": cell["targets"][0]["id"], "patch": {"name": "Ground Floor Plan"}}));
+        assert_eq!(s.doc.sheet(a101).unwrap().name, "Ground Floor Plan");
+        let vl = call(&mut s, "add_schedule", json!({"category": "Views"}))["id"].as_u64().unwrap();
+        call(&mut s, "set_schedule", json!({"id": vl, "def": {"category": "Views", "fields": [f("View Name"), f("View Type"), f("Sheet Number")], "filters": [{"field": "Sheet Number", "op": "has_value"}]}}));
+        let t = call(&mut s, "schedule_table", json!({"id": vl}));
+        assert_eq!((col(&t, 0), col(&t, 1), col(&t, 2)), (vec!["Ground".to_string()], vec!["Floor Plan".to_string()], vec!["A101".to_string()]));
     }
 
     #[test]
