@@ -3,7 +3,7 @@
 //! not itemised, with formulas, percentages, combined fields and totals. A cell that the palette could edit carries
 //! the same row and target, so an edit in the schedule changes the element (or its type) in the model.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use openarch_model::element::{Element, Id};
 use openarch_model::schedule::*;
@@ -198,9 +198,47 @@ impl Session {
         f.as_array().into_iter().flatten().filter_map(|x| Some((x["name"].as_str()?.to_string(), serde_json::from_value(x["unit"].clone()).ok()?))).collect()
     }
 
+    /// What the views on a sheet show, for Filter by Sheet: a plan's elements inside its crop, an elevation's or
+    /// section's items.
+    pub(crate) fn sheet_visible_ids(&self, sheet: Id) -> HashSet<Id> {
+        let mut out = HashSet::new();
+        for (_, vp) in self.doc.viewports().into_iter().filter(|(_, v)| v.sheet == sheet) {
+            let Some(v) = self.doc.view(vp.view) else { continue };
+            if v.view_kind.is_plan() {
+                let Ok(data) = self.plan(&json!({ "view_id": vp.view })) else { continue };
+                let crop = if v.crop.enabled { v.crop.region } else { None };
+                for (key, pts) in [("walls", "corners"), ("inserts", "footprint"), ("floors", "points"), ("roofs", "points"), ("curtains", "line")] {
+                    for item in data[key].as_array().into_iter().flatten() {
+                        let Some(id) = item["id"].as_u64() else { continue };
+                        let xy: Vec<(f64, f64)> = item[pts].as_array().into_iter().flatten().filter_map(|p| Some((p[0].as_f64()?, p[1].as_f64()?))).collect();
+                        let inside = match crop {
+                            Some((lo, hi)) if !xy.is_empty() => {
+                                let (x0, x1) = xy.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.0), b.max(p.0)));
+                                let (y0, y1) = xy.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
+                                x1 >= lo.x && x0 <= hi.x && y1 >= lo.y && y0 <= hi.y
+                            }
+                            _ => true,
+                        };
+                        if inside {
+                            out.insert(id);
+                        }
+                    }
+                }
+            } else if let Ok(e) = self.doc.elevation_data(vp.view) {
+                out.extend(e.items.iter().map(|it| it.id));
+            }
+        }
+        out
+    }
+
     /// The schedule as a table: { id, name, category, title, columns, rows: [{ kind, ids, cells }], count }.
     /// Row kinds: "header", "item", "footer", "blank", "grand".
     pub(crate) fn schedule_table(&self, view: Id) -> Res {
+        self.schedule_table_for(view, None)
+    }
+
+    /// The table of only some elements (what a sheet's views show).
+    pub(crate) fn schedule_table_for(&self, view: Id, only: Option<&HashSet<Id>>) -> Res {
         let v = self.doc.view(view).ok_or("not a view")?;
         let def = v.schedule.as_ref().ok_or("not a schedule")?;
         let units = self.schedule_param_units(&def.category);
@@ -208,7 +246,7 @@ impl Session {
         // every element: its fields' values
         let mut types = BTreeMap::new();
         let mut rows: Vec<(Vec<Id>, Vec<Cell>)> = vec![];
-        for id in self.category_elements(&def.category) {
+        for id in self.category_elements(&def.category).into_iter().filter(|id| only.is_none_or(|o| o.contains(id))) {
             let p = self.params(id, &mut types);
             let mut cells: Vec<Cell> = def
                 .fields

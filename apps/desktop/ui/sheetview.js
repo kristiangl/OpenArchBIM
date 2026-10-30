@@ -4,15 +4,17 @@
 // is what the screen, the PDF and the DXF writers use. Views are placed by dragging them from the Project Browser.
 // Activate View (a double-click on a viewport): the view's own viewer works over the viewport's box (main.js places
 // it there), and the rest of the sheet is dimmed and still until it is deactivated.
+// Schedules on the sheet: each placed schedule drawn as a table in its segments side by side (schedLayout), the
+// rows flowing from one segment to the next; a segment drags to move, right-click splits or joins.
 const SheetView = (() => {
   const canvas = document.getElementById("sheet");
   const ctx = canvas.getContext("2d");
-  const cb = { select() {}, openView() {}, moveViewport() {}, placeView() {}, prompt() {}, activate() {}, deactivate() {}, menu() {}, activeBox() {} };
+  const cb = { select() {}, openView() {}, moveViewport() {}, placeView() {}, prompt() {}, activate() {}, deactivate() {}, menu() {}, activeBox() {}, moveSegment() {}, scheduleMenu() {}, openSchedule() {} };
   let sheet = null; // the `sheet` call's answer
   let views = new Map(); // view id -> its plan or elevation data
   let cam = { x: 420, y: 297, s: 1 }; // paper mm at the centre, pixels per paper mm
   let sel = new Set();
-  let drag = null; // { id, x0, y0, dx, dy, moved }
+  let drag = null; // { id, x0, y0, dx, dy, moved }, and seg for a schedule's segment
   let pan = null;
   let active = null; // the activated viewport
 
@@ -50,6 +52,7 @@ const SheetView = (() => {
         c.strokeRect(ctr.x - w / 2, ctr.y - h / 2, w, h); c.restore();
       }
     }
+    for (const p of s.schedules || []) drawSchedule(c, p, at, k, opt.selected && opt.selected.has(p.id) ? opt.accent || "#2f6fd6" : null);
     if (s.title_block) {
       const o0 = at(0, 0), o1 = at(1, 0);
       if (c.oaTag) c.oaTag({ cat: "Title Blocks", sub: null, kind: "projection" });
@@ -58,6 +61,97 @@ const SheetView = (() => {
       if (c.oaBlock) c.oaBlock(null);
     }
     c.restore();
+  }
+
+  // ---- schedules on the sheet ---------------------------------------------------------------------------------------
+  // Sizes in paper mm: the title, the headings, each row; text 2.5 mm (the title 3.5 mm), 1.5 mm in from the lines.
+  const S = { title: 8, head: 6.5, row: 5.5, text: 2.5, titleText: 3.5, pad: 1.5 };
+  const measurer = document.createElement("canvas").getContext("2d");
+  const textMm = (t, size, bold) => { measurer.font = `${bold ? "600 " : ""}${size * 10}px system-ui, sans-serif`; return measurer.measureText(String(t)).width / 10; };
+  // A placed schedule laid out: its columns' widths (the same in every segment) and each segment's place, size and
+  // rows. Segment i takes its number of rows, the last the rest.
+  function schedLayout(p) {
+    const t = p.table || { columns: [], rows: [], title: "", show_title: false, show_headers: false };
+    const cols = t.columns.map((c, i) => {
+      let w = textMm(c.heading, S.text, true);
+      for (const r of t.rows) if (r.kind !== "header" && r.cells[i]) w = Math.max(w, textMm(r.cells[i].text, S.text, r.kind !== "item"));
+      return Math.max(10, w + 2 * S.pad);
+    });
+    const total = cols.reduce((a, b) => a + b, 0);
+    const need = t.show_title ? textMm(t.title, S.titleText, true) + 2 * S.pad : 0;
+    if (cols.length && need > total) cols[cols.length - 1] += need - total;
+    const width = Math.max(cols.reduce((a, b) => a + b, 0), need, 20);
+    let cursor = 0;
+    const segs = p.segments.map((g, i) => {
+      const last = i === p.segments.length - 1;
+      const n = last ? Infinity : g.rows || 0;
+      const rows = t.rows.slice(cursor, cursor + n).map((r, j) => ({ ...r, index: cursor + j }));
+      const start = cursor;
+      cursor += rows.length;
+      const title = i === 0 && t.show_title, head = t.show_headers && (i === 0 || p.repeat_headers);
+      const h = (title ? S.title : 0) + (head ? S.head : 0) + rows.length * S.row;
+      return { i, x: g.at[0], top: g.at[1], w: width, h: Math.max(h, S.row), title, head, rows, start };
+    });
+    return { cols, segs, table: t };
+  }
+  function drawSchedule(c, p, at, k, accent) {
+    const L = schedLayout(p), t = L.table;
+    c.save();
+    if (c.oaTag) c.oaTag({ cat: "Schedules", sub: null, kind: "schd" });
+    c.strokeStyle = "#000"; c.fillStyle = "#000"; c.lineCap = "butt";
+    const line = (x0, y0, x1, y1, w) => { const a = at(x0, y0), b = at(x1, y1); c.lineWidth = Math.max(0.5, w * k); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); };
+    const text = (s, x, yTop, hRow, size, bold, align, italic) => {
+      if (s == null || s === "") return;
+      c.font = `${italic ? "italic " : ""}${bold ? "600 " : ""}${size * k}px system-ui, sans-serif`;
+      c.textAlign = align === "right" ? "right" : align === "centre" ? "center" : "left"; c.textBaseline = "middle";
+      const q = at(x, yTop - hRow / 2);
+      c.fillText(String(s), q.x, q.y);
+    };
+    const cellX = (i, align) => { let x = 0; for (let j = 0; j < i; j++) x += L.cols[j]; return align === "right" ? x + L.cols[i] - S.pad : align === "centre" ? x + L.cols[i] / 2 : x + S.pad; };
+    for (const g of L.segs) {
+      let y = g.top;
+      const x0 = g.x, x1 = g.x + g.w;
+      const verticals = (yTop, yBot) => { let x = x0; for (let j = 0; j + 1 < L.cols.length; j++) { x += L.cols[j]; line(x, yTop, x, yBot, 0.13); } };
+      if (g.title) { text(t.title, x0 + g.w / 2, y, S.title, S.titleText, true, "centre"); y -= S.title; line(x0, y, x1, y, 0.13); }
+      if (g.head) {
+        t.columns.forEach((col, i) => text(col.heading, x0 + cellX(i, "centre"), y, S.head, S.text, true, "centre"));
+        verticals(y, y - S.head);
+        y -= S.head; line(x0, y, x1, y, 0.25);
+      }
+      for (const r of g.rows) {
+        const top = y;
+        if (r.kind === "header") text(r.cells[0].text, x0 + S.pad + 3 * (r.level || 0), y, S.row, S.text, true, "left");
+        else if (r.kind !== "blank") {
+          r.cells.forEach((cell, i) => text(cell.text, x0 + cellX(i, t.columns[i] ? t.columns[i].align : "left"), y, S.row, S.text, r.kind !== "item", t.columns[i] ? t.columns[i].align : "left", r.kind === "footer"));
+          verticals(top, top - S.row);
+        }
+        y -= S.row;
+        line(x0, y, x1, y, r.kind === "grand" || (r.index + 1 < t.rows.length && t.rows[r.index + 1].kind === "grand") ? 0.25 : 0.13);
+      }
+      // the outline
+      const bottom = g.top - g.h;
+      line(x0, g.top, x1, g.top, 0.35); line(x0, bottom, x1, bottom, 0.35); line(x0, g.top, x0, bottom, 0.35); line(x1, g.top, x1, bottom, 0.35);
+      if (accent) {
+        const a = at(x0, g.top), b = at(x1, bottom);
+        c.save(); c.strokeStyle = accent; c.lineWidth = 1.5; c.setLineDash([6, 4]); c.strokeRect(a.x - 2, a.y - 2, b.x - a.x + 4, b.y - a.y + 4); c.restore();
+      }
+    }
+    c.restore();
+  }
+  // the placed schedule, segment and row under a point on the screen
+  function scheduleAt(sx, sy) {
+    if (!sheet) return null;
+    const q = toPaper(sx, sy);
+    for (const p of [...(sheet.schedules || [])].reverse()) {
+      const L = schedLayout(p);
+      for (const g of L.segs) {
+        if (q.x < g.x || q.x > g.x + g.w || q.y > g.top || q.y < g.top - g.h) continue;
+        const into = g.top - q.y - (g.title ? S.title : 0) - (g.head ? S.head : 0);
+        const row = into >= 0 ? g.rows[Math.floor(into / S.row)] : null;
+        return { p, seg: g.i, row: row ? row.index : null, layout: L };
+      }
+    }
+    return null;
   }
 
   // a view's label under its box: the detail number in a circle, the title on a line, the scale under the line
@@ -91,7 +185,10 @@ const SheetView = (() => {
     ctx.fillStyle = css("--panel-2") || "#e8e9ec";
     ctx.fillRect(0, 0, w, h);
     if (!sheet) return;
-    const shown = drag && drag.moved ? { ...sheet, views: sheet.views.map((v) => (v.id === drag.id ? { ...v, centre: [v.centre[0] + drag.dx, v.centre[1] + drag.dy] } : v)) } : sheet;
+    const moved = (p) => ({ ...p, segments: p.segments.map((g, i) => (i === drag.seg ? { ...g, at: [g.at[0] + drag.dx, g.at[1] + drag.dy] } : g)) });
+    const shown = drag && drag.moved
+      ? { ...sheet, views: sheet.views.map((v) => (v.id === drag.id && drag.seg == null ? { ...v, centre: [v.centre[0] + drag.dx, v.centre[1] + drag.dy] } : v)), schedules: (sheet.schedules || []).map((p) => (p.id === drag.id && drag.seg != null ? moved(p) : p)) }
+      : sheet;
     // a shadow under the paper
     const o = toScreen(0, sheet.paper[1]);
     ctx.fillStyle = "rgba(0,0,0,0.12)";
@@ -156,6 +253,13 @@ const SheetView = (() => {
     if (active) return;
     if (e.button === 1 || e.button === 2) { pan = { x: e.offsetX, y: e.offsetY, cx: cam.x, cy: cam.y }; e.preventDefault(); return; }
     if (e.button !== 0) return;
+    const hs = scheduleAt(e.offsetX, e.offsetY);
+    if (hs) {
+      sel = new Set([hs.p.id]); cb.select([hs.p.id]);
+      drag = { id: hs.p.id, seg: hs.seg, x0: e.offsetX, y0: e.offsetY, dx: 0, dy: 0, moved: false };
+      render();
+      return;
+    }
     const v = viewportAt(e.offsetX, e.offsetY);
     sel = new Set(v ? [v.id] : []);
     cb.select([...sel]);
@@ -174,6 +278,12 @@ const SheetView = (() => {
     pan = null;
     if (!drag) return;
     const d = drag; drag = null;
+    if (d.seg != null) {
+      const p = sheet && (sheet.schedules || []).find((x) => x.id === d.id);
+      if (d.moved && p) { const g = p.segments[d.seg]; cb.moveSegment(p, d.seg, [Math.round((g.at[0] + d.dx) * 10) / 10, Math.round((g.at[1] + d.dy) * 10) / 10]); }
+      render();
+      return;
+    }
     const v = sheet && sheet.views.find((x) => x.id === d.id);
     if (d.moved && v) cb.moveViewport(d.id, [Math.round((v.centre[0] + d.dx) * 10) / 10, Math.round((v.centre[1] + d.dy) * 10) / 10]);
     render();
@@ -181,12 +291,16 @@ const SheetView = (() => {
   canvas.addEventListener("contextmenu", (e) => {
     e.preventDefault();
     if (active || (pan && (pan.x !== e.offsetX || pan.y !== e.offsetY))) return;
+    const hs = scheduleAt(e.offsetX, e.offsetY);
+    if (hs) { sel = new Set([hs.p.id]); cb.select([hs.p.id]); render(); cb.scheduleMenu(hs, e.clientX, e.clientY); return; }
     const v = viewportAt(e.offsetX, e.offsetY);
     if (v) { sel = new Set([v.id]); cb.select([v.id]); render(); cb.menu(v, e.clientX, e.clientY); }
   });
   // a double-click on a viewport activates its view; on the dimmed sheet, it deactivates it
   canvas.addEventListener("dblclick", (e) => {
     if (active) { cb.deactivate(); return; }
+    const hs = scheduleAt(e.offsetX, e.offsetY);
+    if (hs) { cb.openSchedule(hs.p.schedule); return; }
     const v = viewportAt(e.offsetX, e.offsetY);
     if (v) cb.activate(v.id);
   });
@@ -217,5 +331,7 @@ const SheetView = (() => {
     get active() { return active; },
     placed: (id) => (sheet && sheet.views.find((x) => x.id === id)) || null,
     screenBox,
+    schedLayout,
+    scheduleAt,
   };
 })();

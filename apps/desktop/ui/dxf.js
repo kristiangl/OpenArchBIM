@@ -10,7 +10,7 @@ const Dxf = (() => {
   // ---- layers ------------------------------------------------------------------------------------------------------
   // A layer is a stem (discipline, major, minor) and a status. The status comes from what the piece shows, unless the
   // row gives its own. Colours are index colours; patterns (hatches) take the row's pattern colour.
-  const STATUS = { projection: "OTLN", cut: "MCUT", pattern: "PATT", beyond: "MBND", underlay: "OTLN", hidden: "HDLN", overhead: "OVHD", iden: "IDEN", text: "TEXT", dims: "DIMS", symb: "SYMB", nplt: "NPLT" };
+  const STATUS = { projection: "OTLN", cut: "MCUT", pattern: "PATT", beyond: "MBND", underlay: "OTLN", hidden: "HDLN", overhead: "OVHD", iden: "IDEN", text: "TEXT", dims: "DIMS", symb: "SYMB", nplt: "NPLT", schd: "SCHD" };
   const row = (cat, layer, colour, pattern, sub, status) => ({ cat, sub: sub || "", layer, status: status || "", colour, pattern: pattern == null ? colour : pattern });
   const LAYERS = [
     row("Walls", "A-WALL-____", 113, 111), row("Curtain Panels", "A-GLAZ-CURT", 52, 8), row("Curtain Systems", "A-GLAZ-CURT", 52, 8),
@@ -35,7 +35,7 @@ const Dxf = (() => {
     row("Revision Clouds", "G-ANNO-REVC", 1), row("Detail Items", "A-DETL-GENF", 92, 8), row("Lines", "A-DETL-____", 90),
     row("Lines", "A-DETL-____", 151, null, "Thin Lines", "THIN"), row("Lines", "A-DETL-____", 90, null, "Hidden Lines", "HDLN"),
     row("Lines", "A-DETL-DEMO", 6, null, "Demolished"), row("Lines", "A-DETL-____", 1, null, "Overhead", "OVHD"), row("Lines", "A-DETL-____", 90, null, "Beyond", "MBND"),
-    row("Title Blocks", "G-____-TTLB", 6), row("View Titles", "G-____-____", 231), row("Viewports", "G-____-____", 191),
+    row("Title Blocks", "G-____-TTLB", 6), row("View Titles", "G-____-____", 231), row("Viewports", "G-____-____", 191), row("Schedules", "G-____-____", 231),
   ];
   const defaults = () => ({ layers: LAYERS.map((r) => ({ ...r })), status: { ...STATUS } });
 

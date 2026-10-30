@@ -281,7 +281,11 @@ const Sched = (() => {
           fs.onchange = op.onchange = val.oninput = sync;
           rows.push([fs, op, val]);
         }
-        return [el("div", { className: "modal-note", style: "margin:0 0 6px", textContent: "A row is listed when it passes every rule. Numbers compare in the field's units (mm, m²)." }), ...rows.map(([a, b, c], i) => el("div", { className: "sched-rule" }, [el("span", { textContent: i ? "And:" : "Filter by:" }), a, b, c]))];
+        const bySheet = el("input", { type: "checkbox", checked: !!def.filter_by_sheet });
+        bySheet.onchange = () => { def.filter_by_sheet = bySheet.checked; };
+        return [el("div", { className: "modal-note", style: "margin:0 0 6px", textContent: "A row is listed when it passes every rule. Numbers compare in the field's units (mm, m²)." }), ...rows.map(([a, b, c], i) => el("div", { className: "sched-rule" }, [el("span", { textContent: i ? "And:" : "Filter by:" }), a, b, c])),
+          el("div", { className: "sched-rule" }, [el("span"), el("label", {}, [bySheet, " Filter by sheet"])]),
+          el("div", { className: "modal-note", textContent: "On a sheet, only the elements the sheet's views show are listed." })];
       }
       // Sorting/Grouping: up to four keys, the grand totals and itemising
       function sorting() {

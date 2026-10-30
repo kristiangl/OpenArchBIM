@@ -1490,6 +1490,25 @@ fn schedule_props(id: Id, v: &View, s: &openarch_model::schedule::ScheduleDef) -
     })
 }
 
+/// A schedule on a sheet: its segments and headings, and the schedule's Filter by Sheet.
+pub fn sheet_schedule_props(d: &Document, id: Id, s: &openarch_model::sheet::SheetSchedule) -> Value {
+    let name = d.view(s.schedule).map_or(String::new(), |v| v.name.clone());
+    let by_sheet = d.schedule(s.schedule).is_some_and(|x| x.filter_by_sheet);
+    // Filter by Sheet belongs to the schedule, so its row goes to the schedule
+    let mut of_schedule = group("Schedule", vec![boolean("Filter by Sheet", "filter_by_sheet", by_sheet, true)]);
+    of_schedule["target"] = json!({ "method": "patch_schedule", "id": s.schedule });
+    json!({
+        "id": id, "kind": "SheetSchedule",
+        "title": format!("Schedule on Sheet: {name}"),
+        "target": { "method": "patch_sheet_schedule", "id": id },
+        "groups": [
+            group("Identity Data", vec![ro("Schedule", name), ro("Segments", s.segments.len().to_string())]),
+            group("Graphics", vec![boolean("Repeat Headers", "repeat_headers", s.repeat_headers, true)]),
+            of_schedule,
+        ],
+    })
+}
+
 /// A sheet collection: its name.
 pub fn sheet_collection_props(id: Id, c: &openarch_model::sheet::SheetCollection) -> Value {
     json!({

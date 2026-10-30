@@ -1769,6 +1769,26 @@ impl Session {
                 Ok(json!({ "id": self.doc.add_schedule(category, &name)? }))
             }
             "schedule_table" => self.schedule_table(id_of(p, "id")?),
+            // a few of a schedule's settings at once (Filter by Sheet from a placed schedule's properties)
+            "patch_schedule" => {
+                let id = id_of(p, "id")?;
+                let def = self.doc.schedule(id).ok_or("not a schedule")?.clone();
+                let def = openarch_model::doc::apply_patch(&def, p.get("patch").ok_or("missing patch")?)?;
+                let units = self.schedule_param_units(&def.category);
+                self.doc.set_schedule(id, def, &|f| units.get(&f.name).copied().unwrap_or(openarch_model::schedule::Unit::Text))?;
+                Ok(json!({}))
+            }
+            "place_schedule" => {
+                let at = p.get("at").and_then(|v| serde_json::from_value::<[f64; 2]>(v.clone()).ok()).ok_or("missing at")?;
+                Ok(json!({ "id": self.doc.place_schedule(id_of(p, "sheet")?, id_of(p, "schedule")?, at)? }))
+            }
+            "patch_sheet_schedule" => {
+                let id = id_of(p, "id")?;
+                let Some(Element::SheetSchedule(s)) = self.doc.get(id).cloned() else { return Err("not a schedule on a sheet".into()) };
+                let s = openarch_model::doc::apply_patch(&s, p.get("patch").ok_or("missing patch")?)?;
+                self.doc.set_sheet_schedule(id, s)?;
+                Ok(json!({}))
+            }
             "schedule_fields" => Ok(self.schedule_fields(p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?)),
             "set_schedule" => {
                 let id = id_of(p, "id")?;
@@ -1814,7 +1834,18 @@ impl Session {
                     _ => None,
                 });
                 let title_block = tb.map(|f| json!({ "name": f.name, "paths": d.symbol_drawing(f, false).body, "labels": d.symbol_texts(f, &|q| d.sheet_param(id, q), false) }));
-                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id) }))
+                // its schedules, each as a table (only what the sheet's views show, for Filter by Sheet)
+                let mut visible = None;
+                let mut schedules = vec![];
+                for (sid, p) in d.sheet_schedules(id) {
+                    let by_sheet = d.schedule(p.schedule).is_some_and(|x| x.filter_by_sheet);
+                    if by_sheet && visible.is_none() {
+                        visible = Some(self.sheet_visible_ids(id));
+                    }
+                    let table = self.schedule_table_for(p.schedule, if by_sheet { visible.as_ref() } else { None }).unwrap_or(Value::Null);
+                    schedules.push(json!({ "id": sid, "schedule": p.schedule, "segments": p.segments, "repeat_headers": p.repeat_headers, "table": table }));
+                }
+                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules }))
             }
             "floor_sketch" => {
                 let id = id_of(p, "id")?;
@@ -2729,6 +2760,7 @@ impl Session {
             Element::Sheet(s) => Ok(props::sheet_props(d, id, s)),
             Element::Viewport(v) => Ok(props::viewport_props(d, id, v)),
             Element::SheetCollection(c) => Ok(props::sheet_collection_props(id, c)),
+            Element::SheetSchedule(s) => Ok(props::sheet_schedule_props(d, id, s)),
             _ => Err("nothing to show".into()),
         }
     }
@@ -3310,6 +3342,48 @@ mod tests {
         // the schedule is a view, with its properties
         let props = call(&mut s, "describe", json!({"id": id}));
         assert_eq!(props["kind"], "Schedule");
+    }
+
+    #[test]
+    fn a_schedule_on_two_sheets_lists_what_each_sheets_plan_shows() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let (l0, l1) = (info["levels"][0]["id"].as_u64().unwrap(), info["levels"][1]["id"].as_u64().unwrap());
+        let wt = info["wall_types"][0]["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        // three doors on the ground floor, two upstairs
+        for (lvl, n) in [(l0, 3), (l1, 2)] {
+            let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [10000, 0], "height_mm": 2700}))["id"].as_u64().unwrap();
+            for k in 0..n {
+                call(&mut s, "place_instance", json!({"type_id": door, "host_id": w, "point": [1000.0 + 2000.0 * k as f64, 0]}));
+            }
+        }
+        let sched = call(&mut s, "add_schedule", json!({"category": "Doors"}))["id"].as_u64().unwrap();
+        call(&mut s, "set_schedule", json!({"id": sched, "def": {"category": "Doors", "fields": [{"name": "Type", "kind": "type"}, {"name": "Count", "kind": "count"}], "grand_totals": true}}));
+        let tb = info["title_blocks"][0]["id"].as_u64().unwrap();
+        let views = info["views"].as_array().unwrap();
+        let plan = |name: &str| views.iter().find(|v| v["name"] == name && v["view_kind"] == "floor_plan").unwrap()["id"].as_u64().unwrap();
+        let mut sheets = vec![];
+        for (num, view) in [("A101", plan("Ground")), ("A102", plan("Level 1"))] {
+            let sh = call(&mut s, "add_sheet", json!({"number": num, "name": num, "title_block": tb}))["id"].as_u64().unwrap();
+            call(&mut s, "place_view", json!({"sheet": sh, "view": view, "centre": [300, 300]}));
+            let ps = call(&mut s, "place_schedule", json!({"sheet": sh, "schedule": sched, "at": [600, 500]}))["id"].as_u64().unwrap();
+            sheets.push((sh, ps));
+        }
+        let count = |s: &mut Session, sh: u64| call(s, "sheet", json!({"id": sh}))["schedules"][0]["table"]["count"].as_u64().unwrap();
+        assert_eq!((count(&mut s, sheets[0].0), count(&mut s, sheets[1].0)), (5, 5), "every door until Filter by Sheet");
+        call(&mut s, "patch_schedule", json!({"id": sched, "patch": {"filter_by_sheet": true}}));
+        assert_eq!((count(&mut s, sheets[0].0), count(&mut s, sheets[1].0)), (3, 2), "each sheet's level");
+        // segments: the first takes two rows, the rest flow into the second; one segment is refused none
+        let (sh, ps) = sheets[0];
+        call(&mut s, "patch_sheet_schedule", json!({"id": ps, "patch": {"segments": [{"at": [600, 500], "rows": 2}, {"at": [700, 500]}]}}));
+        let placed = call(&mut s, "sheet", json!({"id": sh}))["schedules"][0].clone();
+        assert_eq!(placed["segments"].as_array().unwrap().len(), 2);
+        assert!(s.handle("patch_sheet_schedule", &json!({"id": ps, "patch": {"segments": [{"at": [600, 500]}, {"at": [700, 500]}]}})).is_err());
+        assert_eq!(call(&mut s, "describe", json!({"id": ps}))["kind"], "SheetSchedule");
+        // deleting the schedule takes it off its sheets
+        call(&mut s, "delete", json!({"ids": [sched]}));
+        assert!(call(&mut s, "sheet", json!({"id": sh}))["schedules"].as_array().unwrap().is_empty());
     }
 
     #[test]

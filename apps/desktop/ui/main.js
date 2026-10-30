@@ -2301,6 +2301,38 @@ async function deleteSheet(s) {
   if (await run("delete", { ids: [s.id] })) { if (app.view.kind === "sheet" && app.view.viewId === s.id) await openView("plan", app.lastPlanId); await refresh(); }
 }
 SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); };
+// ---- schedules on a sheet: segments moved, split at a row, joined -------------------------------------------------
+const patchSegments = async (p, segments) => { if (await run("patch_sheet_schedule", { id: p.id, patch: { segments } })) await refresh(); };
+SheetView.callbacks.moveSegment = (p, i, at) => patchSegments(p, p.segments.map((g, k) => (k === i ? { ...g, at } : g)));
+SheetView.callbacks.openSchedule = (id) => openView("schedule", id);
+SheetView.callbacks.scheduleMenu = (hit, x, y) => {
+  const p = hit.p, L = hit.layout, g = L.segs[hit.seg];
+  // split: this segment ends before the row; the rest go to a new segment beside it
+  const split = () => {
+    const take = hit.row - g.start;
+    const segs = p.segments.map((s) => ({ ...s }));
+    const was = hit.seg < segs.length - 1 ? segs[hit.seg].rows : null;
+    segs[hit.seg].rows = take;
+    segs.splice(hit.seg + 1, 0, { at: [Math.round((g.x + g.w + 10) * 10) / 10, g.top], rows: was != null ? was - take : null });
+    patchSegments(p, segs);
+  };
+  // join: this segment takes the next one's rows
+  const join = () => {
+    const segs = p.segments.map((s) => ({ ...s }));
+    const next = segs[hit.seg + 1];
+    segs[hit.seg].rows = next.rows != null ? (segs[hit.seg].rows || 0) + next.rows : null;
+    segs.splice(hit.seg + 1, 1);
+    patchSegments(p, segs);
+  };
+  showMenu(x, y, [
+    { label: "Split Schedule Here", run: split, disabled: hit.row == null || hit.row <= g.start },
+    { label: "Join with Next Segment", run: join, disabled: hit.seg >= p.segments.length - 1 },
+    { label: "Join All Segments", run: () => patchSegments(p, [{ at: p.segments[0].at, rows: null }]), disabled: p.segments.length < 2 },
+    { sep: true },
+    { label: "Open Schedule", run: () => openView("schedule", p.schedule) },
+    { label: "Delete", run: async () => { if (await run("delete", { ids: [p.id] })) await refresh(); } },
+  ]);
+};
 // ---- Activate View: the view's own viewer over its viewport, at the sheet's zoom; the sheet dims behind it -------
 SheetView.callbacks.activate = (id) => activateViewport(id);
 SheetView.callbacks.deactivate = () => deactivateViewport();
@@ -2352,6 +2384,12 @@ $("#activation-bar button").onclick = () => deactivateViewport();
 SheetView.callbacks.openView = (viewId) => { const v = viewById(viewId); if (v) openView(viewerOf(v.view_kind), viewId); };
 SheetView.callbacks.moveViewport = async (id, centre) => { if (await run("patch_viewport", { id, patch: { centre } })) await refresh(); };
 SheetView.callbacks.placeView = async (sheet, view, centre) => {
+  // a schedule goes with its top left corner where it is dropped
+  if ((viewById(view) || {}).view_kind === "schedule") {
+    const r = await run("place_schedule", { sheet, schedule: view, at: centre });
+    if (r) { await refresh(); app.selection = [r.id]; SheetView.setSelection([r.id]); renderProperties(); setPrompt("Schedule placed. Right-click a row to split it into another segment there."); }
+    return;
+  }
   const r = await run("place_view", { sheet, view, centre });
   if (r) { await refresh(); app.selection = [r.id]; SheetView.setSelection([r.id]); renderProperties(); setPrompt("View placed. Drag it to move it; double-click opens the view."); }
 };

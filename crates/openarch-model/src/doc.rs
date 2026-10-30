@@ -678,7 +678,7 @@ impl Document {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
-                Some(Element::Sheet(_)) | Some(Element::Viewport(_)) => {}
+                Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
                 Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views, view templates, sheets, sheet collections and viewports can be deleted for now".into()),
                 None => return Err(format!("no element {id}")),
@@ -697,9 +697,14 @@ impl Document {
             if view.is_some_and(|v| views.contains(&v)) && !ids.contains(&i) {
                 ids.push(i);
             }
-            // a viewport goes with its view and with its sheet
+            // a viewport goes with its view and with its sheet; a schedule on a sheet with its schedule and its sheet
             if let Element::Viewport(vp) = e {
                 if (views.contains(&vp.view) || ids.contains(&vp.sheet)) && !ids.contains(&i) {
+                    ids.push(i);
+                }
+            }
+            if let Element::SheetSchedule(s) = e {
+                if (views.contains(&s.schedule) || ids.contains(&s.sheet)) && !ids.contains(&i) {
                     ids.push(i);
                 }
             }

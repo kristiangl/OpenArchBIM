@@ -677,6 +677,7 @@ pub enum Element {
     Sheet(crate::sheet::Sheet),
     Viewport(crate::sheet::Viewport),
     SheetCollection(crate::sheet::SheetCollection),
+    SheetSchedule(crate::sheet::SheetSchedule),
 }
 
 impl Element {
@@ -724,6 +725,7 @@ impl Element {
             Element::Sheet(_) => "Sheet",
             Element::Viewport(_) => "Viewport",
             Element::SheetCollection(_) => "SheetCollection",
+            Element::SheetSchedule(_) => "SheetSchedule",
         }
     }
 }

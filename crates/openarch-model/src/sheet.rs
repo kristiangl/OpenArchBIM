@@ -8,8 +8,12 @@
 //! placeholder sheet is in the register with no drawing. A viewport keeps its anchor (its middle or a corner) where
 //! it is on the paper when the view's crop changes size.
 //!
-//! From Kristian's Sheet Views and Document Composition specification (28 Oct). Revisions and schedules on sheets
-//! come later.
+//! A schedule goes on a sheet (on as many as wanted) as a placed schedule: one or more segments side by side, each
+//! taking up to its number of rows before the rest flow into the next, so rows move between them as elements come
+//! and go. The column headings can repeat at the top of each.
+//!
+//! From Kristian's Sheet Views and Document Composition specification (28 Oct) and Schedules and Tabular Reporting
+//! specification (30 Oct). Revisions come later.
 
 use serde::{Deserialize, Serialize};
 
@@ -64,6 +68,27 @@ pub struct Sheet {
     /// The sheet collection it belongs to; its number is unique inside it.
     #[serde(default)]
     pub collection: Option<Id>,
+}
+
+/// A schedule placed on a sheet.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SheetSchedule {
+    pub sheet: Id,
+    /// The schedule view.
+    pub schedule: Id,
+    /// Where each segment's top left corner sits on the paper (mm), and how many of the table's rows it takes; the
+    /// last takes the rest.
+    pub segments: Vec<Segment>,
+    /// The column headings at the top of every segment, not only the first.
+    #[serde(default = "yes")]
+    pub repeat_headers: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Segment {
+    pub at: [f64; 2],
+    #[serde(default)]
+    pub rows: Option<usize>,
 }
 
 /// A group of sheets (a building, a package) whose numbers are their own: A101 can be in two collections.
@@ -299,7 +324,7 @@ impl Document {
                 return Err("not a sheet collection".into());
             }
         }
-        if s.placeholder && self.viewports().iter().any(|(_, v)| v.sheet == id) {
+        if s.placeholder && (self.viewports().iter().any(|(_, v)| v.sheet == id) || !self.sheet_schedules(id).is_empty()) {
             return Err("A placeholder sheet has no views: take them off first.".into());
         }
         self.transact("Sheet", |tx| tx.update(id, Element::Sheet(s)))
@@ -338,8 +363,13 @@ impl Document {
         } else {
             vec![]
         };
+        let schedules: Vec<SheetSchedule> = if how == DuplicateSheet::Empty { vec![] } else { self.sheet_schedules(id).into_iter().map(|(_, p)| p.clone()).collect() };
         self.transact("Duplicate Sheet", |tx| {
             let sheet = tx.add(Element::Sheet(Sheet { number, ..s }));
+            // a schedule is placed again: it can be on many sheets
+            for p in schedules {
+                tx.add(Element::SheetSchedule(SheetSchedule { sheet, ..p }));
+            }
             for (vp, view) in copies {
                 let (old, new) = match view {
                     Some(v) => (vp.view, tx.add(Element::View(v))),
@@ -378,6 +408,41 @@ impl Document {
         let mut vp = Viewport { sheet, view, centre, rotation: 0, detail_number: n.to_string(), anchor: ViewAnchor::Centre, box_size: None };
         vp.box_size = self.view_on_paper(view, 0, centre, 0, "").map(|p| p.paper_size);
         self.transact("Place View", |tx| Ok(tx.add(Element::Viewport(vp))))
+    }
+
+    /// The schedules placed on a sheet.
+    pub fn sheet_schedules(&self, sheet: Id) -> Vec<(Id, &SheetSchedule)> {
+        self.iter().filter_map(|(id, e)| match e {
+            Element::SheetSchedule(s) if s.sheet == sheet => Some((id, s)),
+            _ => None,
+        }).collect()
+    }
+
+    /// Places a schedule on a sheet, its top left corner at `at` (one undo step). A schedule can go on many sheets.
+    pub fn place_schedule(&mut self, sheet: Id, schedule: Id, at: [f64; 2]) -> Result<Id, String> {
+        let Some(s) = self.sheet(sheet) else { return Err("not a sheet".into()) };
+        if s.placeholder {
+            return Err(format!("{} - {} is a placeholder: clear Placeholder in its properties to draw on it.", s.number, s.name));
+        }
+        if self.schedule(schedule).is_none() {
+            return Err("not a schedule".into());
+        }
+        let p = SheetSchedule { sheet, schedule, segments: vec![Segment { at, rows: None }], repeat_headers: true };
+        self.transact("Place Schedule", |tx| Ok(tx.add(Element::SheetSchedule(p))))
+    }
+
+    /// Moves, splits or joins a placed schedule's segments (one undo step).
+    pub fn set_sheet_schedule(&mut self, id: Id, s: SheetSchedule) -> Result<(), String> {
+        if !matches!(self.get(id), Some(Element::SheetSchedule(_))) {
+            return Err("not a schedule on a sheet".into());
+        }
+        if s.segments.is_empty() {
+            return Err("A placed schedule has at least one segment.".into());
+        }
+        if s.segments[..s.segments.len() - 1].iter().any(|g| g.rows.is_none_or(|n| n == 0)) {
+            return Err("Each segment but the last takes some rows.".into());
+        }
+        self.transact("Schedule on Sheet", |tx| tx.update(id, Element::SheetSchedule(s)))
     }
 
     /// Moves or changes a viewport (one undo step).
