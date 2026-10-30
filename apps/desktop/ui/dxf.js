@@ -2,7 +2,7 @@
 // plan at its true coordinates, the other views beside it), the sheet is a paper space layout with the title block and
 // a locked viewport onto each view at its scale. Lines sit on layers named from what they belong to and what they show
 // (the category's layer stem and a status: cut, projection, pattern, ...), with colours, line weights and line types by
-// layer; doors, windows and other families are blocks, dimensions are dimensions, fills and patterns are hatches.
+// layer (every entity takes its layer's colour); doors, windows and other families are blocks, dimensions are dimensions, fills and patterns are hatches.
 //
 // The drawing comes from the recording context in export.js, the same drawing the PDF gets, tagged by the viewers with
 // what each piece belongs to. Lines are cut to the clip regions in force and lose what later fills cover, as on paper.
@@ -120,7 +120,6 @@ const Dxf = (() => {
   const LW = [0, 5, 9, 13, 15, 18, 20, 25, 30, 35, 40, 50, 53, 60, 70, 80, 90, 100, 106, 120, 140, 158, 200, 211];
   const lineweight = (mm) => { const v = mm * 100; let best = 0; for (const w of LW) if (Math.abs(w - v) < Math.abs(best - v)) best = w; return best; };
   const isWhite = (c) => c[0] >= 245 && c[1] >= 245 && c[2] >= 245;
-  const isBlack = (c) => c[0] <= 12 && c[1] <= 12 && c[2] <= 12;
   const safeName = (s) => String(s).replace(/[<>/\\":;?*|,=`\x00-\x1f]/g, "_").trim().slice(0, 250) || "_";
 
   // ---- the drawing -------------------------------------------------------------------------------------------------
@@ -159,10 +158,12 @@ const Dxf = (() => {
 
     // the clip regions in force at each op, and the fills, which hide lines drawn before them
     const ops = page.ops, clipsAt = new Array(ops.length), fills = [];
-    let clips = []; const stack = [];
+    // everything is cut to the page, as the PDF is, whatever reaches past it
+    const PW = page.paper[0], sheetEdge = region([{ pts: [[0, 0], [PW * K, 0], [PW * K, PH * K], [0, PH * K]] }], false);
+    let clips = [sheetEdge]; const stack = [];
     ops.forEach((o, i) => {
       if (o.t === "save") stack.push(clips);
-      else if (o.t === "restore") clips = stack.length ? stack.pop() : [];
+      else if (o.t === "restore") clips = stack.length ? stack.pop() : [sheetEdge];
       else if (o.t === "clip") clips = [...clips, region(o.subs, o.evenodd)];
       else { clipsAt[i] = clips; if (o.t === "fill" && o.subs.length) { const r = region(o.subs, o.evenodd); if (r.rings.length) fills.push({ i, ...r }); } }
     });
@@ -220,7 +221,8 @@ const Dxf = (() => {
     ops.forEach((o, i) => {
       if (o.t !== "stroke" && o.t !== "fill" && o.t !== "text" && o.t !== "hatch") return;
       const cl = clipsAt[i] || [], M = mapFor(o.vp), base = { layer: layerOf(o.tag), vp: o.vp, blk: o.blk, dim: o.dim, scale: M.scale };
-      const colour = o.colour && !isBlack(o.colour) ? o.colour : null;
+      // colour by layer, always: the screen's greys would hide lines in model space
+      const colour = null;
       if (o.t === "stroke") {
         const lw = lineweight(o.width / K), lt = ltName(o.dash);
         for (const s of o.subs) for (const pc of pieces(s, i, cl)) {
@@ -339,10 +341,15 @@ const Dxf = (() => {
 
     // the viewports onto the views
     // (a turned view: its centre in the view's own axes, which turn with it)
+    // (a view reaching past the page: its viewport stops at the page's edge)
     const viewports = modelSpace ? vps.map((v) => {
-      const c = v.toModel([v.centre[0] * K, (PH - v.centre[1]) * K]), w = [c[0] + v.off[0], c[1] + v.off[1]];
-      return { centre: v.centre, size: v.paper_size, view: turn(w, v.rotation || 0), height: v.paper_size[1] * v.scale, twist: v.rotation || 0, layer: layerOf({ cat: "Viewports", kind: "nplt" }) };
-    }) : [];
+      const x0 = Math.max(0, v.centre[0] - v.paper_size[0] / 2), x1 = Math.min(PW, v.centre[0] + v.paper_size[0] / 2);
+      const y0 = Math.max(0, v.centre[1] - v.paper_size[1] / 2), y1 = Math.min(PH, v.centre[1] + v.paper_size[1] / 2);
+      if (x1 - x0 < 1e-3 || y1 - y0 < 1e-3) return null;
+      const centre = [(x0 + x1) / 2, (y0 + y1) / 2];
+      const c = v.toModel([centre[0] * K, (PH - centre[1]) * K]), w = [c[0] + v.off[0], c[1] + v.off[1]];
+      return { centre, size: [x1 - x0, y1 - y0], view: turn(w, v.rotation || 0), height: (y1 - y0) * v.scale, twist: v.rotation || 0, layer: layerOf({ cat: "Viewports", kind: "nplt" }) };
+    }).filter(Boolean) : [];
     const paperEnts = [], modelEnts = [];
     for (const e of [...loose, ...inserts, ...dims]) (modelSpace && (e.vp == null || !vps[e.vp]) ? paperEnts : modelEnts).push(e);
     return { paper: page.paper, name: safeName(page.name || "Sheet"), modelSpace, layers, lineTypes, blocks, model: modelEnts, paperEnts, viewports };
