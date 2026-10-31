@@ -780,7 +780,25 @@ impl Document {
         }
     }
 
-    /// The slices of a section view, one for each run of its line, left to right.
+    /// Projects saved while elevations and sections were always cropped: their Crop View is on, the region shown.
+    pub fn crop_elevations_and_sections(&mut self) {
+        for e in self.elements.values_mut() {
+            if let Element::View(v) = e {
+                if v.elevation.is_some() || v.section.is_some() {
+                    v.crop.enabled = true;
+                    v.crop.region_visible = true;
+                }
+            }
+        }
+    }
+
+    /// Whether a view is cropped (Crop View).
+    fn view_cropped(&self, view: Id) -> bool {
+        self.view(view).is_none_or(|v| v.crop.enabled)
+    }
+
+    /// The slices of a section view, one for each run of its line, left to right. Uncropped, the outer runs reach
+    /// past the ends of the line to the model's sides.
     pub(crate) fn section_slices(&self, view: Id) -> Option<Vec<Slice>> {
         let (_, s) = self.section_of_view(view)?;
         let (right, look) = s.axes()?;
@@ -789,7 +807,20 @@ impl Document {
             FarClip::NoClip => 1.0e7,
             _ => s.far_clip_mm.unwrap_or_else(|| self.section_fit_depth(s)),
         };
-        Some(runs.iter().map(|r| Slice { o, right, look, lo: r.u0, hi: r.u1, plane: r.d, depth, far: s.far_clip }).collect())
+        let mut out: Vec<Slice> = runs.iter().map(|r| Slice { o, right, look, lo: r.u0, hi: r.u1, plane: r.d, depth, far: s.far_clip }).collect();
+        if !self.view_cropped(view) {
+            if let Some((lo, hi)) = self.model_bounds() {
+                let us: Vec<f64> = [Point::new(lo.x, lo.y), Point::new(hi.x, lo.y), Point::new(hi.x, hi.y), Point::new(lo.x, hi.y)].iter().map(|p| (p.x - o.x) * right.x + (p.y - o.y) * right.y).collect();
+                let (u0, u1) = us.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), u| (a.min(*u), b.max(*u)));
+                if let Some(f) = out.first_mut() {
+                    f.lo = f.lo.min(u0 - 1000.0);
+                }
+                if let Some(l) = out.last_mut() {
+                    l.hi = l.hi.max(u1 + 1000.0);
+                }
+            }
+        }
+        Some(out)
     }
 
     /// Frame of a section view: the runs of the line side by side are the width, the levels and model the height.
@@ -797,11 +828,12 @@ impl Document {
         let slices = self.section_slices(view)?;
         let (_, s) = self.section_of_view(view)?;
         let (first, last) = (slices.first()?, slices.last()?);
-        let (z0, z1) = s.z_range.unwrap_or_else(|| {
+        let fit = || {
             let (a, b) = self.model_z_extent();
             (a - 1500.0, b + 1500.0)
-        });
-        Some(ElevFrame { origin: [first.o.x, first.o.y], look: [first.look.x, first.look.y], right: [first.right.x, first.right.y], left_mm: 0.0, right_mm: last.hi, depth_mm: first.depth, z_min: z0, z_max: z1 })
+        };
+        let (z0, z1) = if self.view_cropped(view) { s.z_range.unwrap_or_else(fit) } else { fit() };
+        Some(ElevFrame { origin: [first.o.x, first.o.y], look: [first.look.x, first.look.y], right: [first.right.x, first.right.y], left_mm: (-first.lo).max(0.0), right_mm: last.hi, depth_mm: first.depth, z_min: z0, z_max: z1 })
     }
 
     /// Whether the section line shows in a plan whose cut plane is at `z`.
@@ -1202,6 +1234,36 @@ mod tests {
         let u0 = slab.iter().map(|i| i.polys[0][0][0]).fold(f64::INFINITY, f64::min);
         let u1 = slab.iter().map(|i| i.polys[0][1][0]).fold(f64::NEG_INFINITY, f64::max);
         assert!((u0 - 1000.0).abs() < 1.0 && (u1 - 9000.0).abs() < 1.0, "{u0} {u1}");
+    }
+
+    #[test]
+    fn crop_view_off_shows_the_model_past_the_ends_of_the_line() {
+        let (mut d, lvl) = house();
+        let ft = d.floor_types()[0].0;
+        d.add_floor(ft, lvl, vec![Point::new(0.0, 0.0), Point::new(8000.0, 0.0), Point::new(8000.0, 6000.0), Point::new(0.0, 6000.0)]).unwrap();
+        // a short section through the middle of the slab
+        let s = d.add_section(lvl, Point::new(3000.0, 3000.0), Point::new(5000.0, 3000.0), false).unwrap();
+        let v = d.section(s).unwrap().view.unwrap();
+        assert!(d.view(v).unwrap().crop.enabled && d.view(v).unwrap().crop.region_visible, "a new section is cropped, its crop shown");
+        let reach = |d: &Document| {
+            let data = d.elevation_data(v).unwrap();
+            let us: Vec<f64> = data.items.iter().filter(|i| i.cut && i.category == "Floors").flat_map(|i| i.polys[0].iter().map(|p| p[0])).collect();
+            (us.iter().cloned().fold(f64::INFINITY, f64::min), us.iter().cloned().fold(f64::NEG_INFINITY, f64::max))
+        };
+        let (a, b) = reach(&d);
+        assert!(a >= -1.0 && b <= 2001.0, "cropped to the line: {a} {b}");
+        let mut view = d.view(v).unwrap().clone();
+        view.crop.enabled = false;
+        d.transact("crop", |tx| tx.update(v, Element::View(view.clone()))).unwrap();
+        let (a, b) = reach(&d);
+        assert!(a < -2900.0 && b > 4900.0, "the whole slab: {a} {b}");
+        assert!(d.section_frame(v).unwrap().left_mm > 2900.0);
+        // projects saved before: always cropped
+        view.crop.enabled = false;
+        view.crop.region_visible = false;
+        d.transact("old", |tx| tx.update(v, Element::View(view))).unwrap();
+        d.crop_elevations_and_sections();
+        assert!(d.view(v).unwrap().crop.enabled && d.view(v).unwrap().crop.region_visible);
     }
 
     #[test]

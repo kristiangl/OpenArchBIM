@@ -10,7 +10,7 @@ use crate::element::{Element, Id};
 
 /// 2: elevation and 3D views draw in the Hidden Line style (before this the setting had no effect).
 /// 3: plans no longer put a pale wash over floors.
-const FORMAT_VERSION: i64 = 6;
+const FORMAT_VERSION: i64 = 7;
 
 impl Document {
     /// Write the project. The file is written beside the target and renamed into
@@ -75,6 +75,9 @@ impl Document {
         }
         if v < 3 {
             d.clear_old_floor_wash(); // projects saved while new plans washed floors pale blue
+        }
+        if v < 7 {
+            d.crop_elevations_and_sections(); // projects saved while elevations and sections were always cropped
         }
         Ok(d)
     }

@@ -576,6 +576,16 @@ pub struct Crop {
     /// Crop region corners (min, max) in model coordinates, mm.
     #[serde(default)]
     pub region: Option<(Point, Point)>,
+    /// How far the annotation crop lies outside the crop region on paper, mm: left, bottom, right, top. None for
+    /// 10 mm each way.
+    #[serde(default)]
+    pub annotation_offset_mm: Option<[f64; 4]>,
+}
+
+impl Crop {
+    pub fn annotation_offsets(&self) -> [f64; 4] {
+        self.annotation_offset_mm.unwrap_or([10.0; 4])
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -730,6 +740,9 @@ impl View {
         v.settings.overrides.model.remove("Floors");
         v.settings.visual_style = VisualStyle::HiddenLine;
         v.elevation = Some(ElevationDef { marker, slot, crop: None, far_clip_mm: None });
+        // elevations and sections are cropped, the crop region shown
+        v.crop.enabled = true;
+        v.crop.region_visible = true;
         v
     }
 

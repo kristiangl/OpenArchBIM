@@ -25,19 +25,19 @@ const MODIFY_TAB = [
   { label: "Controls", items: [
     modifyItem("Activate", "activate", null, { big: true }) ] },
   { label: "Modify", items: [
-    modifyItem("Align", "align", { project: "al", family: "f-align" }, { iconOnly: true }),
-    modifyItem("Move", "move", { project: "mv", family: "f-mv" }, { iconOnly: true }),
-    modifyItem("Copy", "copy", { project: "cp", family: "f-cp" }, { iconOnly: true }),
-    modifyItem("Rotate", "rotate", { project: "ro", family: "f-ro" }, { iconOnly: true }),
+    modifyItem("Align", "align", { project: "al", family: "f-align", annotation: "a-align" }, { iconOnly: true }),
+    modifyItem("Move", "move", { project: "mv", family: "f-mv", annotation: "a-mv" }, { iconOnly: true }),
+    modifyItem("Copy", "copy", { project: "cp", family: "f-cp", annotation: "a-cp" }, { iconOnly: true }),
+    modifyItem("Rotate", "rotate", { project: "ro", family: "f-ro", annotation: "a-ro" }, { iconOnly: true }),
     modifyItem("Mirror", "mirror", null, { iconOnly: true, menu: [
-      modifyItem("Mirror - Pick Axis", "mirror", { project: "mi-pick", family: "f-mi-pick" }),
-      modifyItem("Mirror - Draw Axis", "mirror", { project: "mi-draw", family: "f-mi-draw" }) ] }),
-    modifyItem("Offset", "offset", { project: "of", family: "f-of" }, { iconOnly: true }),
+      modifyItem("Mirror - Pick Axis", "mirror", { project: "mi-pick", family: "f-mi-pick", annotation: "a-mi-pick" }),
+      modifyItem("Mirror - Draw Axis", "mirror", { project: "mi-draw", family: "f-mi-draw", annotation: "a-mi-draw" }) ] }),
+    modifyItem("Offset", "offset", { project: "of", family: "f-of", annotation: "a-of" }, { iconOnly: true }),
     modifyItem("Pin", "pin", { project: "pin" }, { iconOnly: true }),
     modifyItem("Unpin", "unpin", { project: "unpin" }, { iconOnly: true }),
     modifyItem("Delete", "delete", { project: "del", family: "f-del", annotation: "a-del" }, { iconOnly: true }),
-    modifyItem("Split", "split", { project: "sp" }, { iconOnly: true }),
-    modifyItem("Trim/Extend", "trim", { project: "tr" }, { iconOnly: true }),
+    modifyItem("Split", "split", { project: "sp", annotation: "a-sp" }, { iconOnly: true }),
+    modifyItem("Trim/Extend", "trim", { project: "tr", annotation: "a-tr" }, { iconOnly: true }),
     modifyItem("Array", "array", { project: "ar" }, { iconOnly: true }),
     modifyItem("Scale", "scale", { project: "sc" }, { iconOnly: true }) ] },
   { label: "View", items: [
@@ -149,10 +149,6 @@ const RIBBON = {
       { id: "project-info", label: "Project Information", big: true } ] },
   ],
   Modify: MODIFY_TAB,
-  Help: [
-    { label: "Logging", items: [
-      { id: "open-log", label: "Open Log Folder", big: true } ] },
-  ],
 };
 
 const PROJECT_TREE = [

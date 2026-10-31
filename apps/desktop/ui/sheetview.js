@@ -9,13 +9,15 @@
 const SheetView = (() => {
   const canvas = document.getElementById("sheet");
   const ctx = canvas.getContext("2d");
-  const cb = { select() {}, openView() {}, moveViewport() {}, placeView() {}, prompt() {}, activate() {}, deactivate() {}, menu() {}, activeBox() {}, moveSegment() {}, scheduleMenu() {}, openSchedule() {} };
+  const cb = { editLabel() {}, titleLine() {}, moveViewports() {}, select() {}, openView() {}, moveViewport() {}, placeView() {}, prompt() {}, activate() {}, deactivate() {}, menu() {}, activeBox() {}, moveSegment() {}, scheduleMenu() {}, openSchedule() {} };
   let sheet = null; // the `sheet` call's answer
   let views = new Map(); // view id -> its plan or elevation data
   let cam = { x: 420, y: 297, s: 1 }; // paper mm at the centre, pixels per paper mm
   let sel = new Set();
   let drag = null; // { id, x0, y0, dx, dy, moved }, and seg for a schedule's segment
   let pan = null;
+  let band = null; // a box dragged on the paper to pick views (screen px)
+  let tdrag = null, titleGrip = null; // a title line's length dragged; the grip of the one picked view
   let active = null; // the activated viewport
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -99,7 +101,7 @@ const SheetView = (() => {
     c.save();
     if (c.oaTag) c.oaTag({ cat: "Schedules", sub: null, kind: "schd" });
     c.strokeStyle = "#000"; c.fillStyle = "#000"; c.lineCap = "butt";
-    const line = (x0, y0, x1, y1, w) => { const a = at(x0, y0), b = at(x1, y1); c.lineWidth = Math.max(0.5, w * k); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); };
+    const line = (x0, y0, x1, y1, w) => { const a = at(x0, y0), b = at(x1, y1); c.lineWidth = Math.max(0.5, Pen.w(w, k)); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); };
     const text = (s, x, yTop, hRow, size, bold, align, italic) => {
       if (s == null || s === "") return;
       c.font = `${italic ? "italic " : ""}${bold ? "600 " : ""}${size * k}px system-ui, sans-serif`;
@@ -161,6 +163,13 @@ const SheetView = (() => {
     return null;
   }
 
+  // where a view's title line runs on the paper: its start, its end and its height
+  const titleLen = (v, tw) => (v.title_line_mm > 0 ? v.title_line_mm : Math.max(tw, 40));
+  function titleLine(v) {
+    const left = v.centre[0] - v.paper_size[0] / 2, bottom = v.centre[1] - v.paper_size[1] / 2;
+    const x0 = left + 4 + 1 + 4 + 2;
+    return { x0, x1: x0 + titleLen(v, textMm(v.title.toUpperCase(), 3.5, true)), y: bottom - 8 };
+  }
   // a view's label under its box: the detail number in a circle, the title on a line, the scale under the line
   function label(c, v, at, k) {
     const left = v.centre[0] - v.paper_size[0] / 2, bottom = v.centre[1] - v.paper_size[1] / 2;
@@ -168,7 +177,7 @@ const SheetView = (() => {
     const p = at(cx, cy);
     c.save();
     if (c.oaTag) c.oaTag({ cat: "View Titles", sub: null, kind: "text" });
-    c.strokeStyle = "#000"; c.fillStyle = "#000"; c.lineWidth = Math.max(0.5, 0.25 * k);
+    c.strokeStyle = "#000"; c.fillStyle = "#000"; c.lineWidth = Math.max(0.5, Pen.w(0.25, k));
     c.beginPath(); c.arc(p.x, p.y, r * k, 0, Math.PI * 2); c.stroke();
     c.textAlign = "center"; c.textBaseline = "middle"; c.font = `600 ${3.5 * k}px system-ui, sans-serif`;
     c.fillText(v.detail_number, p.x, p.y);
@@ -176,8 +185,8 @@ const SheetView = (() => {
     const t0 = at(cx + r + 2, cy + 0.8);
     c.fillText(v.title.toUpperCase(), t0.x, t0.y);
     const tw = c.measureText(v.title.toUpperCase()).width / k;
-    const l0 = at(cx + r + 2, cy), l1 = at(cx + r + 2 + Math.max(tw, 40), cy);
-    c.lineWidth = Math.max(0.5, 0.35 * k);
+    const l0 = at(cx + r + 2, cy), l1 = at(cx + r + 2 + titleLen(v, tw), cy);
+    c.lineWidth = Math.max(0.5, Pen.w(0.35, k));
     c.beginPath(); c.moveTo(l0.x, l0.y); c.lineTo(l1.x, l1.y); c.stroke();
     c.font = `${2.5 * k}px system-ui, sans-serif`; c.textBaseline = "top";
     const s0 = at(cx + r + 2, cy - 1);
@@ -194,13 +203,41 @@ const SheetView = (() => {
     if (!sheet) return;
     const moved = (p) => ({ ...p, segments: p.segments.map((g, i) => (i === drag.seg ? { ...g, at: [g.at[0] + drag.dx, g.at[1] + drag.dy] } : g)) });
     const shown = drag && drag.moved
-      ? { ...sheet, views: sheet.views.map((v) => (v.id === drag.id && drag.seg == null ? { ...v, centre: [v.centre[0] + drag.dx, v.centre[1] + drag.dy] } : v)), schedules: (sheet.schedules || []).map((p) => (p.id === drag.id && drag.seg != null ? moved(p) : p)) }
-      : sheet;
+      ? { ...sheet, views: sheet.views.map((v) => (drag.seg == null && (drag.ids || [drag.id]).includes(v.id) ? { ...v, centre: [v.centre[0] + drag.dx, v.centre[1] + drag.dy] } : v)), schedules: (sheet.schedules || []).map((p) => (p.id === drag.id && drag.seg != null ? moved(p) : p)) }
+      : tdrag ? { ...sheet, views: sheet.views.map((v) => (v.id === tdrag.id ? { ...v, title_line_mm: tdrag.len } : v)) } : sheet;
     // a shadow under the paper
     const o = toScreen(0, sheet.paper[1]);
     ctx.fillStyle = "rgba(0,0,0,0.12)";
     ctx.fillRect(o.x + 3, o.y + 3, sheet.paper[0] * cam.s, sheet.paper[1] * cam.s);
     draw(ctx, shown, views, toScreen, cam.s, { selected: active ? new Set() : sel, accent: css("--accent") });
+    const accent = css("--accent");
+    // the guides a dragged view lines up on, across the paper
+    if (drag && drag.moved && drag.guides) {
+      ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
+      for (const g of drag.guides) {
+        const a = g.x != null ? toScreen(g.x, 0) : toScreen(0, g.y), b = g.x != null ? toScreen(g.x, sheet.paper[1]) : toScreen(sheet.paper[0], g.y);
+        ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    // the box dragged to pick views
+    if (band) {
+      ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash(band.x1 < band.x0 ? [5, 3] : []);
+      ctx.fillStyle = "rgba(47,111,214,0.06)";
+      ctx.fillRect(band.x0, band.y0, band.x1 - band.x0, band.y1 - band.y0); ctx.strokeRect(band.x0, band.y0, band.x1 - band.x0, band.y1 - band.y0);
+      ctx.restore();
+    }
+    // one view picked: a grip at the end of its title line sets the line's length
+    titleGrip = null;
+    if (!active && sel.size === 1) {
+      const v = shown.views.find((x) => sel.has(x.id));
+      if (v) {
+        const t = titleLine(v), p = toScreen(t.x1, t.y);
+        ctx.save(); ctx.fillStyle = css("--view-bg") || "#fff"; ctx.strokeStyle = accent; ctx.lineWidth = 1.2;
+        ctx.beginPath(); ctx.arc(p.x, p.y, 4.5, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
+        titleGrip = { id: v.id, x: p.x, y: p.y, x0: t.x0 };
+      }
+    }
     // an activated view: everything else on the sheet fades behind it
     const b = active && screenBox(active);
     if (b) {
@@ -240,6 +277,36 @@ const SheetView = (() => {
     render();
   }
 
+  // What a view lines up by on the paper: its box's sides and middle, its title line, and where the model's origin
+  // falls (so two plans, or two elevations at the same scale, show the same place or height side by side).
+  function features(v, dx = 0, dy = 0) {
+    const c = [v.centre[0] + dx, v.centre[1] + dy], [w, h] = v.paper_size, t = titleLine(v);
+    const xs = [c[0] - w / 2, c[0], c[0] + w / 2], ys = [c[1] - h / 2, c[1], c[1] + h / 2, t.y + dy];
+    if (!v.rotation && v.scale) {
+      if (v.drawing === "plan") xs.push(c[0] - v.view_centre[0] / v.scale);
+      ys.push(c[1] - v.view_centre[1] / v.scale);
+    }
+    return { xs, ys };
+  }
+  // the move that puts a dragged view on the nearest line of another, and the lines it is on
+  function align(ids, dx, dy) {
+    const tol = 5 / cam.s, moving = sheet.views.filter((v) => ids.includes(v.id)), still = sheet.views.filter((v) => !ids.includes(v.id));
+    if (!moving.length || !still.length) return { dx, dy, guides: [] };
+    let bx = null, by = null;
+    for (const m of moving) {
+      const f = features(m, dx, dy);
+      for (const o of still) {
+        const g = features(o);
+        for (const a of f.xs) for (const b of g.xs) if (Math.abs(b - a) <= tol && (!bx || Math.abs(b - a) < Math.abs(bx.d))) bx = { d: b - a, x: b };
+        for (const a of f.ys) for (const b of g.ys) if (Math.abs(b - a) <= tol && (!by || Math.abs(b - a) < Math.abs(by.d))) by = { d: b - a, y: b };
+      }
+    }
+    const guides = [];
+    if (bx) { dx += bx.d; guides.push({ x: bx.x }); }
+    if (by) { dy += by.d; guides.push({ y: by.y }); }
+    return { dx, dy, guides };
+  }
+
   const viewportAt = (sx, sy) => {
     if (!sheet) return null;
     const p = toPaper(sx, sy);
@@ -260,6 +327,7 @@ const SheetView = (() => {
     if (active) return;
     if (e.button === 1 || e.button === 2) { pan = { x: e.offsetX, y: e.offsetY, cx: cam.x, cy: cam.y }; e.preventDefault(); return; }
     if (e.button !== 0) return;
+    if (titleGrip && Math.hypot(e.offsetX - titleGrip.x, e.offsetY - titleGrip.y) <= 7) { tdrag = { id: titleGrip.id, x0: titleGrip.x0, len: null }; return; }
     const hs = scheduleAt(e.offsetX, e.offsetY);
     if (hs) {
       sel = new Set([hs.p.id]); cb.select([hs.p.id]);
@@ -268,21 +336,45 @@ const SheetView = (() => {
       return;
     }
     const v = viewportAt(e.offsetX, e.offsetY);
-    sel = new Set(v ? [v.id] : []);
+    const add = e.ctrlKey || e.shiftKey;
+    // nothing there: a box picks the views (left to right, those wholly inside; right to left, those it touches)
+    if (!v) { if (!add) { sel = new Set(); cb.select([]); } band = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, add }; render(); return; }
+    if (add) { if (sel.has(v.id)) sel.delete(v.id); else sel.add(v.id); }
+    else if (!sel.has(v.id)) sel = new Set([v.id]);
     cb.select([...sel]);
-    if (v) drag = { id: v.id, x0: e.offsetX, y0: e.offsetY, dx: 0, dy: 0, moved: false };
+    // a picked view drags every picked view with it
+    const ids = sheet.views.filter((x) => sel.has(x.id)).map((x) => x.id);
+    if (sel.has(v.id)) drag = { id: v.id, ids, x0: e.offsetX, y0: e.offsetY, dx: 0, dy: 0, moved: false, add };
     render();
   });
   canvas.addEventListener("mousemove", (e) => {
     if (pan) { cam.x = pan.cx - (e.offsetX - pan.x) / cam.s; cam.y = pan.cy + (e.offsetY - pan.y) / cam.s; render(); return; }
+    if (tdrag) { tdrag.len = Math.max(5, Math.round(toPaper(e.offsetX, e.offsetY).x - tdrag.x0)); render(); return; }
+    if (band) { band.x1 = e.offsetX; band.y1 = e.offsetY; render(); return; }
     if (drag) {
       if (!drag.moved && Math.hypot(e.offsetX - drag.x0, e.offsetY - drag.y0) < 4) return;
-      drag.moved = true; drag.dx = (e.offsetX - drag.x0) / cam.s; drag.dy = -(e.offsetY - drag.y0) / cam.s;
+      drag.moved = true;
+      const raw = { dx: (e.offsetX - drag.x0) / cam.s, dy: -(e.offsetY - drag.y0) / cam.s };
+      // views line up with each other (not schedule segments); Shift drags freely
+      const a = drag.seg == null && !e.shiftKey ? align(drag.ids || [drag.id], raw.dx, raw.dy) : { ...raw, guides: [] };
+      drag.dx = a.dx; drag.dy = a.dy; drag.guides = a.guides;
       render();
     }
   });
   window.addEventListener("mouseup", () => {
     pan = null;
+    if (tdrag) { const t = tdrag; tdrag = null; if (t.len != null) cb.titleLine(t.id, t.len); render(); return; }
+    if (band) {
+      const b = band; band = null;
+      const a = toPaper(Math.min(b.x0, b.x1), Math.max(b.y0, b.y1)), z = toPaper(Math.max(b.x0, b.x1), Math.min(b.y0, b.y1)), crossing = b.x1 < b.x0;
+      const picked = sheet ? sheet.views.filter((v) => {
+        const l = v.centre[0] - v.paper_size[0] / 2, r = v.centre[0] + v.paper_size[0] / 2, bo = v.centre[1] - v.paper_size[1] / 2, t = v.centre[1] + v.paper_size[1] / 2;
+        return crossing ? r >= a.x && l <= z.x && t >= a.y && bo <= z.y : l >= a.x && r <= z.x && bo >= a.y && t <= z.y;
+      }).map((v) => v.id) : [];
+      if (Math.hypot(b.x1 - b.x0, b.y1 - b.y0) >= 4) { sel = new Set(b.add ? [...sel, ...picked] : picked); cb.select([...sel]); }
+      render();
+      return;
+    }
     if (!drag) return;
     const d = drag; drag = null;
     if (d.seg != null) {
@@ -291,8 +383,12 @@ const SheetView = (() => {
       render();
       return;
     }
-    const v = sheet && sheet.views.find((x) => x.id === d.id);
-    if (d.moved && v) cb.moveViewport(d.id, [Math.round((v.centre[0] + d.dx) * 10) / 10, Math.round((v.centre[1] + d.dy) * 10) / 10]);
+    // a click (no drag) on one of several picked views picks that one alone
+    if (!d.moved && !d.add && d.seg == null && sel.size > 1) { sel = new Set([d.id]); cb.select([d.id]); }
+    if (d.moved) {
+      const moves = sheet.views.filter((x) => (d.ids || [d.id]).includes(x.id)).map((v) => [v.id, [Math.round((v.centre[0] + d.dx) * 10) / 10, Math.round((v.centre[1] + d.dy) * 10) / 10]]);
+      if (moves.length === 1) cb.moveViewport(...moves[0]); else if (moves.length) cb.moveViewports(moves);
+    }
     render();
   });
   canvas.addEventListener("contextmenu", (e) => {
@@ -303,9 +399,23 @@ const SheetView = (() => {
     const v = viewportAt(e.offsetX, e.offsetY);
     if (v) { sel = new Set([v.id]); cb.select([v.id]); render(); cb.menu(v, e.clientX, e.clientY); }
   });
-  // a double-click on a viewport activates its view; on the dimmed sheet, it deactivates it
+  // the title block's label under a point on the screen, with the parameters it shows
+  function labelAt(sx, sy) {
+    if (!sheet || !sheet.title_block) return null;
+    const q = toPaper(sx, sy);
+    for (const t of sheet.title_block.labels || []) {
+      if (!t.params || !t.params.length) continue;
+      const L = Ann.layout(t), pad = 1;
+      if (q.x >= L.x0 - pad && q.x <= L.x0 + Math.max(L.w, 4) + pad && q.y <= L.top + pad && q.y >= L.top - L.h - pad) return t;
+    }
+    return null;
+  }
+  // a double-click on a title block's label edits it; on a viewport, activates its view; on the dimmed sheet,
+  // deactivates it
   canvas.addEventListener("dblclick", (e) => {
     if (active) { cb.deactivate(); return; }
+    const lb = labelAt(e.offsetX, e.offsetY);
+    if (lb) { cb.editLabel(lb.params); return; }
     const hs = scheduleAt(e.offsetX, e.offsetY);
     if (hs) { cb.openSchedule(hs.p.schedule); return; }
     const v = viewportAt(e.offsetX, e.offsetY);

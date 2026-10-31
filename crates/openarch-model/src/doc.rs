@@ -866,16 +866,45 @@ impl Document {
         }
     }
 
+    /// The view types a project starts with, one for each kind of view that has types.
+    pub const DEFAULT_VIEW_TYPES: [(&'static str, ViewKind); 5] = [
+        ("Floor Plan", ViewKind::FloorPlan),
+        ("Ceiling Plan", ViewKind::CeilingPlan),
+        ("3D View", ViewKind::ThreeD),
+        ("Building Elevation", ViewKind::Elevation),
+        ("Building Section", ViewKind::Section),
+    ];
+
+    /// The type a view of a kind gets when it has none: the first of that kind.
+    pub fn default_view_type(&self, kind: ViewKind) -> Option<Id> {
+        self.view_types().into_iter().filter(|(_, t)| t.view_kind == kind).map(|(id, _)| id).min()
+    }
+
+    /// A view's type: its own, or the default of its kind.
+    pub fn view_type_of(&self, v: &View) -> Option<Id> {
+        v.view_type.filter(|t| self.view_type(*t).is_some_and(|x| x.view_kind == v.view_kind)).or_else(|| self.default_view_type(v.view_kind))
+    }
+
+    /// A copy of a view type under a new name (one undo step): views of it are grouped in the Project Browser.
+    pub fn duplicate_view_type(&mut self, id: Id, name: &str) -> Result<Id, String> {
+        let t = self.view_type(id).cloned().ok_or("not a view type")?;
+        let name = name.trim();
+        if name.is_empty() || self.view_types().iter().any(|(_, x)| x.name == name) {
+            return Err("A view type needs a name of its own.".into());
+        }
+        self.transact("Duplicate View Type", |tx| Ok(tx.add(Element::ViewType(crate::view::ViewType { name: name.into(), ..t }))))
+    }
+
     /// Give a project the view types it needs (new projects, and projects saved before view types), and point
-    /// the plans that have none at the type of their kind. Not an undo step.
+    /// the views that have none at the type of their kind. Not an undo step.
     pub fn ensure_view_types(&mut self) {
         let have = |d: &Document, k: ViewKind| d.view_types().iter().any(|(_, t)| t.view_kind == k);
-        if have(self, ViewKind::FloorPlan) && have(self, ViewKind::CeilingPlan) {
+        if Self::DEFAULT_VIEW_TYPES.iter().all(|(_, k)| have(self, *k)) {
             return;
         }
         let _ = self.transact("View types", |tx| {
             let mut ids = Vec::new();
-            for (name, kind) in [("Floor Plan", ViewKind::FloorPlan), ("Ceiling Plan", ViewKind::CeilingPlan)] {
+            for (name, kind) in Self::DEFAULT_VIEW_TYPES {
                 if !have(tx.doc_ref(), kind) {
                     ids.push((kind, tx.add(Element::ViewType(crate::view::ViewType { name: name.into(), view_kind: kind, template_for_new: None, new_views_dependent: true }))));
                 }

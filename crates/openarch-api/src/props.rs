@@ -383,6 +383,7 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         "id": id, "kind": "View",
         "title": format!("{}: {}", kind_label(v.view_kind), v.name),
         "type_label": kind_label(v.view_kind),
+        "view_kind": v.view_kind, "type_id": d.view_type_of(v),
         "target": { "method": "patch_view", "id": id },
         "groups": groups,
     })
@@ -1463,6 +1464,7 @@ pub fn viewport_props(d: &Document, id: Id, v: &openarch_model::sheet::Viewport)
         "target": { "method": "patch_viewport", "id": id },
         "groups": [
             group("Identity Data", vec![ro("View Name", view), text("Detail Number", "detail_number", &v.detail_number)]),
+            group("Title", vec![num("Title Line Length (0 to fit)", "title_line_mm", v.title_line_mm.unwrap_or(0.0), true)]),
             group("Graphics", vec![
                 select("Rotation on Sheet", vec![rot(0, "None"), rot(90, "90 Counterclockwise"), rot(270, "90 Clockwise")]),
                 select("View Anchor", vec![anchor(A::Centre, "Centre"), anchor(A::TopLeft, "Top Left"), anchor(A::TopRight, "Top Right"), anchor(A::BottomLeft, "Bottom Left"), anchor(A::BottomRight, "Bottom Right")]),

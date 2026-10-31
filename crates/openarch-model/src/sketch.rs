@@ -274,17 +274,90 @@ fn line_ends(c: &Curve) -> Option<(Point, Point)> {
     if let Curve::Line { a, b } = c { Some((*a, *b)) } else { None }
 }
 
-/// Trim or extend two lines to a corner, keeping the part of each that holds its pick point.
+/// What a line or arc lies on: the infinite line through it, or its whole circle.
+#[derive(Clone, Copy)]
+enum Carrier {
+    Line(Point, Point),
+    Circle(Point, f64),
+}
+
+fn carrier(c: &Curve) -> Option<Carrier> {
+    match c {
+        Curve::Line { a, b } => Some(Carrier::Line(*a, *b)),
+        Curve::Arc { start, centre, .. } => Some(Carrier::Circle(*centre, centre.dist(start))),
+        Curve::Circle { centre, radius } => Some(Carrier::Circle(*centre, *radius)),
+        _ => None,
+    }
+}
+
+/// Where two circles cross.
+fn circle_circle(c1: Point, r1: f64, c2: Point, r2: f64) -> Vec<Point> {
+    let d = c1.dist(&c2);
+    if d < 1e-9 || d > r1 + r2 + 1e-9 || d < (r1 - r2).abs() - 1e-9 {
+        return vec![];
+    }
+    let a = (r1 * r1 - r2 * r2 + d * d) / (2.0 * d);
+    let h = (r1 * r1 - a * a).max(0.0).sqrt();
+    let u = scale(sub(c2, c1), 1.0 / d);
+    let m = add(c1, scale(u, a));
+    let n = Point::new(-u.y, u.x);
+    if h < 1e-9 { vec![m] } else { vec![add(m, scale(n, h)), sub(m, scale(n, h))] }
+}
+
+/// Where two carriers meet.
+fn meet(a: Carrier, b: Carrier) -> Vec<Point> {
+    match (a, b) {
+        (Carrier::Line(p, q), Carrier::Line(r, s)) => line_line(p, q, r, s).into_iter().collect(),
+        (Carrier::Line(p, q), Carrier::Circle(c, r)) | (Carrier::Circle(c, r), Carrier::Line(p, q)) => line_circle(p, q, c, r),
+        (Carrier::Circle(c1, r1), Carrier::Circle(c2, r2)) => circle_circle(c1, r1, c2, r2),
+    }
+}
+
+/// How far round an arc a point on its circle is, from its start in the arc's own direction (radians, 0 to 2 pi).
+fn along_arc(p: Point, start: Point, centre: Point, ccw: bool) -> f64 {
+    let d = ang(centre, p) - ang(centre, start);
+    (if ccw { d } else { -d }).rem_euclid(std::f64::consts::TAU)
+}
+
+/// A line or arc trimmed or extended to `x` (a point on its line or circle), keeping the part that holds `pick`.
+fn trim_curve_at(c: &Curve, pick: Point, x: Point) -> Result<Curve, String> {
+    match c {
+        Curve::Line { a, b } => {
+            let d = sub(*b, *a);
+            let l2 = dot(d, d);
+            let t = |q: Point| dot(sub(q, *a), d) / l2;
+            Ok(if t(pick) < t(x) { Curve::line(*a, x) } else { Curve::line(x, *b) })
+        }
+        Curve::Arc { start, end, centre, ccw } => {
+            let (sweep, tx, tp) = (along_arc(*end, *start, *centre, *ccw), along_arc(x, *start, *centre, *ccw), along_arc(pick, *start, *centre, *ccw));
+            let out = if tx <= sweep + 1e-9 {
+                // on the arc: the piece with the pick
+                if tp < tx { (*start, x) } else { (x, *end) }
+            } else if tx - sweep < std::f64::consts::TAU - tx {
+                // past the end: the end goes on to it
+                (*start, x)
+            } else {
+                // before the start: the start goes back to it
+                (x, *end)
+            };
+            if out.0.dist(&out.1) < 1e-6 {
+                return Err("that would leave nothing of the arc".into());
+            }
+            Ok(Curve::Arc { start: out.0, end: out.1, centre: *centre, ccw: *ccw })
+        }
+        _ => Err("only lines and arcs can be trimmed".into()),
+    }
+}
+
+/// Trim or extend two lines or arcs to the corner where they meet (the meeting point nearest the picks), keeping
+/// the part of each that holds its pick point.
 pub fn trim_corner(a: &Curve, pick_a: Point, b: &Curve, pick_b: Point) -> Result<(Curve, Curve), String> {
-    let ((a0, a1), (b0, b1)) = (line_ends(a).ok_or("trim to corner works on straight lines")?, line_ends(b).ok_or("trim to corner works on straight lines")?);
-    let x = line_line(a0, a1, b0, b1).ok_or("those lines are parallel")?;
-    let keep = |p0: Point, p1: Point, pick: Point| {
-        let d = sub(p1, p0);
-        let l2 = dot(d, d);
-        let t = |q: Point| dot(sub(q, p0), d) / l2;
-        if t(pick) < t(x) { Curve::line(p0, x) } else { Curve::line(x, p1) }
-    };
-    Ok((keep(a0, a1, pick_a), keep(b0, b1, pick_b)))
+    if matches!(a, Curve::Circle { .. }) || matches!(b, Curve::Circle { .. }) {
+        return Err("a circle is trimmed with Trim/Extend Single Element: pick the line that cuts it first".into());
+    }
+    let (ca, cb) = (carrier(a).ok_or("trim to corner works on lines and arcs")?, carrier(b).ok_or("trim to corner works on lines and arcs")?);
+    let x = meet(ca, cb).into_iter().min_by(|p, q| (p.dist(&pick_a) + p.dist(&pick_b)).total_cmp(&(q.dist(&pick_a) + q.dist(&pick_b)))).ok_or("those never meet")?;
+    Ok((trim_curve_at(a, pick_a, x)?, trim_curve_at(b, pick_b, x)?))
 }
 
 /// Intersections of the infinite line p-q with a circle.
@@ -306,20 +379,41 @@ fn on_arc(p: Point, start: Point, end: Point, centre: Point, ccw: bool) -> bool 
     if ccw { a <= sweep + 1e-9 } else { (std::f64::consts::TAU - a).rem_euclid(std::f64::consts::TAU) <= -sweep + 1e-9 }
 }
 
-/// Trim or extend one line to meet a boundary curve (line, arc or circle), keeping the part with the pick.
-pub fn trim_to(line: &Curve, pick: Point, boundary: &Curve) -> Result<Curve, String> {
-    let (a, b) = line_ends(line).ok_or("only straight lines can be trimmed to a curve")?;
-    let hits: Vec<Point> = match boundary {
-        Curve::Line { a: c, b: d } => line_line(a, b, *c, *d).into_iter().collect(),
-        Curve::Circle { centre, radius } => line_circle(a, b, *centre, *radius),
-        Curve::Arc { start, end, centre, ccw } => line_circle(a, b, *centre, centre.dist(start)).into_iter().filter(|p| on_arc(*p, *start, *end, *centre, *ccw)).collect(),
-        _ => return Err("trim to a line, arc or circle".into()),
+/// Trim or extend a line or arc to meet a boundary (line, arc or circle), keeping the part with the pick. A circle
+/// cut by the boundary in two places becomes the arc between them that holds the pick.
+pub fn trim_to(curve: &Curve, pick: Point, boundary: &Curve) -> Result<Curve, String> {
+    let own = carrier(curve).ok_or("only lines, arcs and circles can be trimmed")?;
+    let mut hits = meet(own, carrier(boundary).ok_or("trim to a line, arc or circle")?);
+    // an arc boundary: where it actually is, when the curve reaches it
+    if let Curve::Arc { start, end, centre, ccw } = boundary {
+        let on: Vec<Point> = hits.iter().copied().filter(|p| on_arc(*p, *start, *end, *centre, *ccw)).collect();
+        if !on.is_empty() {
+            hits = on;
+        }
+    }
+    if let Curve::Circle { centre, .. } = curve {
+        if hits.len() < 2 {
+            return Err("the boundary has to cut the circle in two places".into());
+        }
+        // the arc from one cut to the next, going round, that holds the pick
+        let mut by: Vec<(f64, Point)> = hits.iter().map(|p| (ang(*centre, *p).rem_euclid(std::f64::consts::TAU), *p)).collect();
+        by.sort_by(|a, b| a.0.total_cmp(&b.0));
+        let tp = ang(*centre, pick).rem_euclid(std::f64::consts::TAU);
+        let i = by.iter().rposition(|(t, _)| *t <= tp).unwrap_or(by.len() - 1);
+        let (s, e) = (by[i].1, by[(i + 1) % by.len()].1);
+        return Ok(Curve::Arc { start: s, end: e, centre: *centre, ccw: true });
+    }
+    // the meeting point to go to: on a line the nearest the pick; on an arc one it already reaches (nearest the pick
+    // round the arc), else the one it reaches by going on the least
+    let cost = |x: &Point| match curve {
+        Curve::Arc { start, end, centre, ccw } => {
+            let (sweep, tx, tp) = (along_arc(*end, *start, *centre, *ccw), along_arc(*x, *start, *centre, *ccw), along_arc(pick, *start, *centre, *ccw));
+            if tx <= sweep + 1e-9 { (tx - tp).abs() } else { std::f64::consts::TAU + (tx - sweep).min(std::f64::consts::TAU - tx) }
+        }
+        _ => x.dist(&pick),
     };
-    let d = sub(b, a);
-    let l2 = dot(d, d);
-    let t = |q: Point| dot(sub(q, a), d) / l2;
-    let x = hits.into_iter().min_by(|p, q| (t(*p) - t(pick)).abs().total_cmp(&(t(*q) - t(pick)).abs())).ok_or("that line never meets the boundary")?;
-    Ok(if t(pick) < t(x) { Curve::line(a, x) } else { Curve::line(x, b) })
+    let x = hits.into_iter().min_by(|p, q| cost(p).total_cmp(&cost(q))).ok_or("that never meets the boundary")?;
+    trim_curve_at(curve, pick, x)
 }
 
 /// Offset one curve by `dist` towards the side of `towards` (a point). Lines, arcs and circles.
@@ -597,6 +691,32 @@ mod tests {
         let t = trim_to(&Curve::line(p(0.0, 0.0), p(5000.0, 0.0)), p(100.0, 0.0), &circ).unwrap();
         assert_eq!(t, Curve::line(p(0.0, 0.0), p(1500.0, 0.0)));
         assert!(trim_to(&Curve::line(p(0.0, 9000.0), p(5000.0, 9000.0)), p(0.0, 9000.0), &circ).is_err());
+    }
+
+    #[test]
+    fn trim_and_extend_arcs_and_cut_circles() {
+        let near = |a: Point, b: Point| a.dist(&b) < 1e-6;
+        // an arc (radius 1000 round the origin, from 0 to 90 degrees) trimmed to the line x = 500, keeping the top
+        let arc = Curve::Arc { start: p(1000.0, 0.0), end: p(0.0, 1000.0), centre: p(0.0, 0.0), ccw: true };
+        let cut = Curve::line(p(500.0, -2000.0), p(500.0, 2000.0));
+        let Curve::Arc { start, end, .. } = trim_to(&arc, p(0.0, 1000.0), &cut).unwrap() else { panic!() };
+        assert!(near(start, p(500.0, 866.0254037844387)) && near(end, p(0.0, 1000.0)), "{start:?} {end:?}");
+        // ... and extended to the line x = -500 past its end
+        let Curve::Arc { start, end, .. } = trim_to(&arc, p(1000.0, 0.0), &Curve::line(p(-500.0, -2000.0), p(-500.0, 2000.0))).unwrap() else { panic!() };
+        assert!(near(start, p(1000.0, 0.0)) && near(end, p(-500.0, 866.0254037844387)));
+        // a line trimmed to the arc, and the corner of a line and an arc
+        let l = Curve::line(p(0.0, 0.0), p(2000.0, 2000.0));
+        let Curve::Line { b, .. } = trim_to(&l, p(100.0, 100.0), &arc).unwrap() else { panic!() };
+        assert!(near(b, p(707.1067811865476, 707.1067811865476)));
+        let (nl, na) = trim_corner(&Curve::line(p(300.0, 0.0), p(300.0, 500.0)), p(300.0, 100.0), &arc, p(0.0, 1000.0)).unwrap();
+        let Curve::Line { b, .. } = nl else { panic!() };
+        let Curve::Arc { start, .. } = na else { panic!() };
+        assert!(near(b, start) && near(b, p(300.0, 953.9392014169456)), "the line runs up to the arc and the arc ends there");
+        // a circle cut by a line across it becomes the arc on the side of the pick
+        let circ = Curve::Circle { centre: p(0.0, 0.0), radius: 1000.0 };
+        let Curve::Arc { start, end, ccw, .. } = trim_to(&circ, p(-1000.0, 0.0), &cut).unwrap() else { panic!() };
+        assert!(ccw && near(start, p(500.0, 866.0254037844387)) && near(end, p(500.0, -866.0254037844387)), "{start:?} {end:?}");
+        assert!(trim_corner(&circ, p(0.0, 1000.0), &cut, p(500.0, 0.0)).is_err());
     }
 
     #[test]

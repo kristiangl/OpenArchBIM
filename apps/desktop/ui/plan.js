@@ -7,10 +7,12 @@ const Plan = (() => {
   let ctx = canvas.getContext("2d");
   // renderTo: drawing a view onto a sheet or a page, at another size, with nothing selected and no tool showing
   let printing = false, printSize = null;
-  const cb = { editGroup() {}, groupPick() {}, placeGroup() {}, addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, array() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
+  const cb = { crop() {}, editGroup() {}, groupPick() {}, placeGroup() {}, addSection() {}, openView() {}, editFloor() {}, editRoof() {}, tempEdit() {}, tempLines() {}, tempPin() {}, tempPromote() {}, dimCall() {}, dimRefresh() {}, dimText() {}, dimSettings: () => ({}), placeDims() {}, edit() {}, array() {}, offset() {}, trim() {}, align() {}, options() {}, addWall() {}, addWalls() {}, moveWallEnd() {}, moveWallEnds() {}, reshapeWall() {}, reshapePreview() {}, placeInstance() {}, placeComponent() {}, joinEnd() {}, placeMarker() {}, markerSlot() {}, addGrid() {}, gridFromLine() {}, patchGrid() {}, moveGridEnd() {}, toggleGridLock() {}, markerSlots: () => [true, false, false, false], select() {}, cursor() {}, tool() {}, prompt() {} };
 
   let cam = { x: 3000, y: 2000, s: 0.1 }; // centre in mm, pixels per mm
   let data = { walls: [], floors: [], roofs: [], inserts: [], view: {}, crop: {} };
+  // the crop region picked (it is not an element): its grips, and the side of it or of the annotation crop dragged
+  let cropSel = false, cropGrips = [], cropDrag = null;
   let tool = "select";
   let draw = null; // { pts: [{x,y}] } while a wall chain or floor outline is in progress
   let hover = null; // { x, y, kind } snapped cursor
@@ -855,7 +857,8 @@ const Plan = (() => {
     const Q = end === 0 ? pts[Math.min(1, pts.length - 1)] : pts[Math.max(0, pts.length - 2)];
     const L = Math.hypot(P.x - Q.x, P.y - Q.y) || 1, u = { x: (P.x - Q.x) / L, y: (P.y - Q.y) / L };
     const denom = (data.view && data.view.scale) || 100;
-    const R = Math.min(30, Math.max(9, (g.bubble_dia_mm / 2) * denom * cam.s));
+    // printed: the bubble is its paper size at the view's scale
+    const R = Math.max(2, (g.bubble_dia_mm / 2) * denom * cam.s);
     const off = g.head_offsets && g.head_offsets[end];
     const c = { x: P.x + u.x * R + (off ? off[0] * cam.s : 0), y: P.y + u.y * R - (off ? off[1] * cam.s : 0) };
     return { P, u, R, c, offset: !!off };
@@ -867,14 +870,65 @@ const Plan = (() => {
     ctx.strokeStyle = col; ctx.lineWidth = selected ? 2 : 1.2; ctx.setLineDash([]);
     if (h.offset) { ctx.beginPath(); ctx.moveTo(h.P.x, h.P.y); ctx.lineTo(h.c.x, h.c.y); ctx.stroke(); }
     ctx.beginPath(); ctx.arc(h.c.x, h.c.y, h.R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
-    let size = Math.round(h.R * 0.95);
+    let size = h.R * 0.95;
     ctx.font = `600 ${size}px system-ui, sans-serif`;
     const w = ctx.measureText(g.name).width;
-    if (w > h.R * 1.7) { size = Math.max(6, Math.floor((size * h.R * 1.7) / w)); ctx.font = `600 ${size}px system-ui, sans-serif`; }
+    if (w > h.R * 1.7) { size = (size * h.R * 1.7) / w; ctx.font = `600 ${size}px system-ui, sans-serif`; }
     ctx.fillStyle = col; ctx.textAlign = "center"; ctx.textBaseline = "middle";
     ctx.fillText(g.name, h.c.x, h.c.y + 0.5);
     ctx.restore();
     return h;
+  }
+
+  // ---- the crop region: a thin line that prints while it is shown; picked, it has a grip on each side, and the
+  // annotation crop around it (dashed) has its own
+  function cropRects() {
+    const cr = data.crop || {};
+    if (!cr.enabled || !cr.region) return null;
+    let [[x0, y0], [x1, y1]] = cr.region;
+    if (cropDrag && cropDrag.which === "crop" && cropDrag.v != null) ({ x0, y0, x1, y1 } = { x0, y0, x1, y1, [cropDrag.side]: cropDrag.v });
+    const k = (data.view && data.view.scale) || 100, o = (cr.annotation_offset || [10, 10, 10, 10]).slice();
+    if (cropDrag && cropDrag.which === "ann" && cropDrag.v != null) o[["x0", "y0", "x1", "y1"].indexOf(cropDrag.side)] = cropDrag.v;
+    return { crop: { x0, y0, x1, y1 }, ann: { x0: x0 - o[0] * k, y0: y0 - o[1] * k, x1: x1 + o[2] * k, y1: y1 + o[3] * k }, off: o, k };
+  }
+  function annCrop(fn) {
+    const cr = data.crop || {}, r = cropRects();
+    if (!r || !cr.annotation) { fn(); return; }
+    const a = toScreen({ x: r.ann.x0, y: r.ann.y1 }), b = toScreen({ x: r.ann.x1, y: r.ann.y0 });
+    ctx.save(); ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.clip();
+    try { fn(); } finally { ctx.restore(); }
+  }
+  function drawCrop() {
+    cropGrips = [];
+    const cr = data.crop || {}, r = cropRects();
+    if (!r || !cr.visible) return;
+    const accent = css("--accent"), picked = cropSel && !printing;
+    const box = (q) => { const a = toScreen({ x: q.x0, y: q.y1 }), b = toScreen({ x: q.x1, y: q.y0 }); return { a, b }; };
+    const { a, b } = box(r.crop);
+    ctx.save();
+    if (ctx.oaTag) ctx.oaTag({ cat: "Viewports", sub: null, kind: "projection" });
+    ctx.strokeStyle = picked ? accent : printing ? "#000" : css("--text"); ctx.lineWidth = picked ? 1.5 : thin ? 1 : Math.max(1, Pen.w(0.18, (data.view.scale || 100) * cam.s)); ctx.setLineDash([]);
+    ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
+    if (picked && tool === "select") {
+      const grip = (which, side, x, y) => { ctx.fillStyle = css("--view-bg"); ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.fillRect(x - 4, y - 4, 8, 8); ctx.strokeRect(x - 4, y - 4, 8, 8); cropGrips.push({ which, side, x, y }); };
+      const sides = (which, p, q) => { const my = (p.y + q.y) / 2, mx = (p.x + q.x) / 2; grip(which, "x0", p.x, my); grip(which, "x1", q.x, my); grip(which, "y1", mx, p.y); grip(which, "y0", mx, q.y); };
+      if (cr.annotation) {
+        const n = box(r.ann);
+        ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
+        ctx.strokeRect(n.a.x, n.a.y, n.b.x - n.a.x, n.b.y - n.a.y); ctx.setLineDash([]);
+        sides("ann", n.a, n.b);
+      }
+      sides("crop", a, b);
+    }
+    ctx.restore();
+  }
+  // whether a point on the screen is on the crop region's line
+  function onCrop(sx, sy) {
+    const cr = data.crop || {}, r = cropRects();
+    if (!r || !cr.visible) return false;
+    const a = toScreen({ x: r.crop.x0, y: r.crop.y1 }), b = toScreen({ x: r.crop.x1, y: r.crop.y0 });
+    const inX = sx >= a.x - 5 && sx <= b.x + 5, inY = sy >= a.y - 5 && sy <= b.y + 5;
+    return (inY && (Math.abs(sx - a.x) <= 5 || Math.abs(sx - b.x) <= 5)) || (inX && (Math.abs(sy - a.y) <= 5 || Math.abs(sy - b.y) <= 5));
   }
 
   function drawGrids() {
@@ -893,7 +947,7 @@ const Plan = (() => {
       const dashArr = (((data.line_patterns || {})[g.style.line.pattern]) || []).map((v) => Math.max(v * paperPx, 0.8));
       ctx.save();
       if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "projection" });
-      ctx.strokeStyle = col; ctx.lineWidth = (thin ? 1 : Math.max(1, g.style.line.width_mm * paperPx)) + (selected ? 0.8 : 0); ctx.lineJoin = "round";
+      ctx.strokeStyle = col; ctx.lineWidth = (thin ? 1 : Math.max(1, Pen.w(g.style.line.width_mm, paperPx))) + (selected ? 0.8 : 0); ctx.lineJoin = "round";
       if (g.centre_segment === "none") { ctx.setLineDash(dashArr); strokePoly(pts); }
       else {
         // patterned ends round a solid middle (Center Segment)
@@ -1121,7 +1175,7 @@ const Plan = (() => {
     // line weights and pattern lengths are paper sizes: pixels = paper mm x scale x zoom
     const denom = (data.view && data.view.scale) || 100;
     const paperPx = denom * cam.s;
-    const lw = (st) => (thin ? 1 : Math.max(1, st.line.width_mm * paperPx));
+    const lw = (st) => (thin ? 1 : Math.max(1, Pen.w(st.line.width_mm, paperPx)));
     const mix = (hex, amount) => { // halftone: blend towards the background
       const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
       const [a, b] = [rgb(hex), rgb(bg.startsWith("#") && bg.length === 7 ? bg : "#fbfbfc")];
@@ -1467,21 +1521,17 @@ const Plan = (() => {
     drawGroups();
     const hov = new Set(tool === "select" && selHover ? selHover : []);
     Det.drawItems(sel, hov, accent, tool === "select");
-    Det.drawNotes(sel, hov, accent, tool === "select");
-    if (tool === "text") Det.preview(hover);
     ctx.restore();
-    drawGrids();
-    drawMarkers();
+    annCrop(() => {
+      Det.drawNotes(sel, hov, accent, tool === "select");
+      if (tool === "text") Det.preview(hover);
+      drawGrids();
+      drawMarkers();
+    });
     if (tool === "grid") drawGridPreview();
     drawGridAlign();
 
-    // crop region outline (not clipped)
-    if (crop.enabled && crop.visible && crop.region && !printing) {
-      const [c0, c1] = crop.region;
-      const a = toScreen({ x: c0[0], y: c1[1] }), b = toScreen({ x: c1[0], y: c0[1] });
-      ctx.strokeStyle = "#7a3fa0"; ctx.lineWidth = 1.2; ctx.setLineDash([8, 4]);
-      ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.setLineDash([]);
-    }
+    drawCrop();
 
     // Wall Joins tool: boxes on wall ends, the edited join in the accent colour
     if (tool === "joins") {
@@ -1614,11 +1664,13 @@ const Plan = (() => {
     }
 
     // permanent dimensions, and the tool that places them
-    Dims.draw(data.dimensions, sel, selHover);
+    annCrop(() => {
+      Dims.draw(data.dimensions, sel, selHover);
+      Spots.draw(data.spots, sel, selHover);
+      Sections.draw(data.sections, [...sel], selHover);
+    });
     if (tool === "dimension") Dims.drawTool();
-    Spots.draw(data.spots, sel, selHover);
     if (tool === "spot") Spots.drawTool();
-    Sections.draw(data.sections, [...sel], selHover);
     if (tool === "section" && draw && hover) Sections.drawPreview(draw.pts[0], hover);
 
     // temporary dimensions: of the selected element, and of the door or window being placed
@@ -2125,6 +2177,7 @@ const Plan = (() => {
     // Edit Group's Add and Remove take what is clicked instead of selecting it
     if (groupEdit && groupEdit.mode) { if (ids) cb.groupPick(ids); selHover = null; render(); return; }
     // Ctrl adds to the selection and Shift removes from it
+    cropSel = !ids && onCrop(sx, sy);
     if (!ids) { if (!ev.ctrlKey && !ev.shiftKey) sel = new Set(); }
     else if (ev.shiftKey) ids.forEach((i) => sel.delete(i));
     else if (ev.ctrlKey) ids.forEach((i) => sel.add(i));
@@ -2229,6 +2282,10 @@ const Plan = (() => {
     if (tool === "select" && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Sections.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
+    if (tool === "select" && e.button === 0 && cropSel) {
+      const g = cropGrips.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
+      if (g) { cropDrag = { which: g.which, side: g.side, v: null }; down = null; return; }
+    }
     // the centre of rotation can be dragged to a new place
     if (e.button === 0 && ed && ed.stage !== "pick" && radialTool() && !eo.centrePlace) {
       const sc = toScreen(centreOfRotation());
@@ -2288,6 +2345,17 @@ const Plan = (() => {
       if (Math.abs(dx) + Math.abs(dy) > 3) pan.moved = true;
       pan.x = e.clientX; pan.y = e.clientY;
       cam.x -= dx / cam.s; cam.y += dy / cam.s;
+      render();
+      return;
+    }
+    if (cropDrag) {
+      const w = toWorld(e.offsetX, e.offsetY), r = cropRects(), s = cropDrag.side, horiz = s[0] === "x";
+      if (cropDrag.which === "crop") cropDrag.v = Math.round((horiz ? w.x : w.y) / 10) * 10;
+      else {
+        // the annotation crop's offset on paper, never inside the crop
+        const edge = r.crop[s], out = s.endsWith("0") ? edge - (horiz ? w.x : w.y) : (horiz ? w.x : w.y) - edge;
+        cropDrag.v = Math.max(0, Math.round((out / r.k) * 10) / 10);
+      }
       render();
       return;
     }
@@ -2402,6 +2470,14 @@ const Plan = (() => {
     if (Sections.dragging) { down = null; Sections.up(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging) { down = null; Sketch.gripUp(); return; }
     if (cdrag) { cdrag = false; down = null; Snap.clearOverride(); render(); return; }
+    if (cropDrag) {
+      const c = cropDrag, r = cropRects(); cropDrag = null; down = null;
+      if (c.v == null) { render(); return; }
+      const { x0, y0, x1, y1 } = r.crop;
+      if (c.which === "crop") cb.crop({ region: [{ x: Math.min(x0, x1), y: Math.min(y0, y1) }, { x: Math.max(x0, x1), y: Math.max(y0, y1) }] });
+      else cb.crop({ annotation_offset_mm: r.off });
+      return;
+    }
     if (tdimOpen) { const t = tdimOpen; tdimOpen = null; openTdimInput(t); return; }
     if (gridOpen) { const b = gridOpen; gridOpen = null; openGridName(b); return; }
     if (ggrip) {
@@ -2592,12 +2668,12 @@ const Plan = (() => {
   // Draw a plan view's data onto another canvas context (a sheet, a page): `o` is { data, cam, w, h } with the camera in
   // model mm and pixels per mm. Nothing selected, no tool, no work grid or crop frame; the context is left as found.
   function renderTo(target, o) {
-    const keep = { ctx, data, cam, sel, selHover, hover, draw, band, tdims, placeDims, tool, groupEdit, thin };
+    const keep = { ctx, data, cam, sel, selHover, hover, draw, band, tdims, placeDims, tool, groupEdit, thin, cropSel };
     ctx = target; data = o.data; cam = o.cam; printSize = { w: o.w, h: o.h }; printing = true;
-    sel = new Set(); selHover = null; hover = null; draw = null; band = null; tdims = []; placeDims = []; tool = "select"; groupEdit = null; thin = false;
+    sel = new Set(); selHover = null; hover = null; draw = null; band = null; tdims = []; placeDims = []; tool = "select"; groupEdit = null; thin = false; cropSel = false;
     try { target.save(); render(); } finally {
       target.restore();
-      ({ ctx, data, cam, sel, selHover, hover, draw, band, tdims, placeDims, tool, groupEdit, thin } = keep);
+      ({ ctx, data, cam, sel, selHover, hover, draw, band, tdims, placeDims, tool, groupEdit, thin, cropSel } = keep);
       printing = false; printSize = null;
     }
   }
@@ -2744,7 +2820,7 @@ const Plan = (() => {
       if (e.key === "Escape" && wgrip) { wgrip = null; hover = null; render(); return true; }
       if (e.key === "Escape" && Det.cancelDrag()) return true;
       if (e.key === "Escape" && draw && draw.typed) { draw.typed = ""; cb.prompt(promptText()); render(); return true; }
-      if (e.key === "Escape") { if (draw) { draw = null; } else if (tool !== "select") { setTool("select"); return true; } else { sel = new Set(); cb.select([]); } cb.prompt(promptText()); render(); return true; }
+      if (e.key === "Escape") { if (draw) { draw = null; } else if (tool !== "select") { setTool("select"); return true; } else { sel = new Set(); cropSel = false; cb.select([]); } cb.prompt(promptText()); render(); return true; }
       if (e.key === "Tab" && tool === "select" && lastMouse) {
         const c = candidates(lastMouse.x, lastMouse.y);
         if (c.length > 1) { tabIdx = (tabIdx + (e.shiftKey ? -1 : 1) + c.length * 4) % c.length; selHover = c[tabIdx]; render(); }

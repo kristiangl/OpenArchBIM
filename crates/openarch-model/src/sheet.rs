@@ -141,6 +141,9 @@ pub struct Viewport {
     /// The box's size on the paper when the viewport was placed or last moved: the anchor is where it was then.
     #[serde(default)]
     pub box_size: Option<[f64; 2]>,
+    /// How long the line under the view's title is (mm); None to fit the title.
+    #[serde(default)]
+    pub title_line_mm: Option<f64>,
 }
 
 /// A viewport as the sheet draws it: the view, its crop in the view's own terms, and its box on the paper.
@@ -160,6 +163,7 @@ pub struct PlacedView {
     pub view_size: [f64; 2],
     /// The box on the paper, mm (turned when the viewport is).
     pub paper_size: [f64; 2],
+    pub title_line_mm: Option<f64>,
 }
 
 impl Document {
@@ -405,7 +409,7 @@ impl Document {
             }
         }
         let n = self.viewports().iter().filter(|(_, p)| p.sheet == sheet).filter_map(|(_, p)| p.detail_number.parse::<u32>().ok()).max().unwrap_or(0) + 1;
-        let mut vp = Viewport { sheet, view, centre, rotation: 0, detail_number: n.to_string(), anchor: ViewAnchor::Centre, box_size: None };
+        let mut vp = Viewport { sheet, view, centre, rotation: 0, detail_number: n.to_string(), anchor: ViewAnchor::Centre, box_size: None, title_line_mm: None };
         vp.box_size = self.view_on_paper(view, 0, centre, 0, "").map(|p| p.paper_size);
         self.transact("Place View", |tx| Ok(tx.add(Element::Viewport(vp))))
     }
@@ -470,7 +474,7 @@ impl Document {
     /// How a viewport draws: the view's crop (or what the model covers) at its scale.
     pub fn placed_view(&self, id: Id) -> Option<PlacedView> {
         let Some(Element::Viewport(vp)) = self.get(id) else { return None };
-        let p = self.view_on_paper(vp.view, id, vp.centre, vp.rotation, &vp.detail_number)?;
+        let p = PlacedView { title_line_mm: vp.title_line_mm, ..self.view_on_paper(vp.view, id, vp.centre, vp.rotation, &vp.detail_number)? };
         // a corner anchor stays where it was when the box was last placed; the box grows or shrinks from it
         let (sx, sy) = match vp.anchor {
             ViewAnchor::Centre => return Some(p),
@@ -514,7 +518,7 @@ impl Document {
         let paper = [size[0] / scale as f64, size[1] / scale as f64];
         let paper = if rotation == 0 { paper } else { [paper[1], paper[0]] };
         let title = if v.title_on_sheet.trim().is_empty() { v.name.clone() } else { v.title_on_sheet.clone() };
-        Some(PlacedView { id, view, drawing, title, detail_number: detail_number.into(), scale, rotation, centre, view_centre: c, view_size: size, paper_size: paper })
+        Some(PlacedView { id, view, drawing, title, detail_number: detail_number.into(), scale, rotation, centre, view_centre: c, view_size: size, paper_size: paper, title_line_mm: None })
     }
 
     /// The views placed on a sheet.

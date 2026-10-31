@@ -11,7 +11,7 @@ const Elev = (() => {
   const cb = {
     select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
-    addGrid: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
+    addGrid: () => {}, addSection: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
     dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
     arrayOptions: () => ({ arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false }), array: () => {},
     editGroup: () => {}, groupPick: () => {}, placeGroup: () => {}, curtainCall: () => {},
@@ -235,7 +235,10 @@ const Elev = (() => {
   // annotation is drawn at its paper size: pixels in a paper millimetre are the view scale times the zoom
   const k = () => ((data && data.scale) || 100) * cam.s;
   // a grid head's radius on screen, from its type's Head Diameter on paper (8 mm when not given)
-  const gridR = (g) => Math.max(5, (((g && g.head_dia_mm) || 8) / 2) * k());
+  // a grid's head is printed: its circle and number are paper sizes at the view's scale
+  const gridR = (g) => Math.max(2, (((g && g.head_dia_mm) || 8) / 2) * k());
+  // what an item's projection lines weigh: its category's projection pen, or 1 pixel with Thin Lines
+  const projW = (it) => (Plan.thinLines ? 1 : Math.max(1, Pen.w((it.style && it.style.line && it.style.line.width_mm) || 0.18, k())));
   const headW = (l) => (l.head ? Math.max(Ann.extent(l.head).maxX, 0) * k() : 0); // how far a level's head reaches past its end
 
   function resize() {
@@ -357,9 +360,12 @@ const Elev = (() => {
   // the items under the cursor, nearest first (items are stored far to near)
   function itemsAt(sx, sy) {
     const p = toWorld(sx, sy), out = [];
+    // with Select Elements by Face off, only an element's edges pick it
+    const face = Plan.selectOptions().face;
+    const onEdge = (poly) => poly.some((a, i) => { const b = poly[(i + 1) % poly.length]; return segDist(sx, sy, toScreen(a[0], a[1]), toScreen(b[0], b[1])) <= 4; });
     for (let i = data.items.length - 1; i >= 0; i--) {
       const it = data.items[i];
-      if (it.polys.some((poly) => inPoly(p, poly)) && !out.includes(it.id)) out.push(it.id);
+      if (it.polys.some((poly) => (face ? inPoly(p, poly) : onEdge(poly))) && !out.includes(it.id)) out.push(it.id);
     }
     return out;
   }
@@ -419,20 +425,34 @@ const Elev = (() => {
     ctx.closePath();
   }
 
-  // ---- the crop of a section view: its width is the section line, its height a range of levels. Drag a side to change it.
-  let cropBoxes = [], cropDrag = null; // grips in screen pixels; { side, v, moved } while one is dragged
+  // ---- the crop region: a thin line that prints while Crop View and Crop Region Visible are on. Picked (a click on
+  // its line), a section's crop has a grip on each side: its width is the section line, its height a range of levels.
+  let secStart = null; // the Section tool's first click { u, z }
+  const secPoint = (sx, sy) => { const w = toWorld(sx, sy); return { u: Math.round(w.u), z: Math.round(w.z) }; };
+  let cropBoxes = [], cropDrag = null, cropSel = false; // grips in screen pixels; { side, v, moved } while one is dragged
+  const cropShown = () => !!(data && data.frame && (!data.crop || (data.crop.enabled && data.crop.visible)));
+  function cropBox() {
+    const f = data.frame;
+    return { a: toScreen(-(f.left_mm || 0), f.z_max), b: toScreen(f.right_mm, f.z_min) };
+  }
+  function onCrop(sx, sy) {
+    if (!cropShown()) return false;
+    const { a, b } = cropBox();
+    const inX = sx >= a.x - 5 && sx <= b.x + 5, inY = sy >= a.y - 5 && sy <= b.y + 5;
+    return (inY && (Math.abs(sx - a.x) <= 5 || Math.abs(sx - b.x) <= 5)) || (inX && (Math.abs(sy - a.y) <= 5 || Math.abs(sy - b.y) <= 5));
+  }
   function drawCrop() {
     cropBoxes = [];
-    if (!data || !data.section || printing) return;
-    const f = data.frame, accent = css("--accent");
-    let u0 = 0, u1 = f.right_mm, z0 = f.z_min, z1 = f.z_max;
+    if (!cropShown()) return;
+    const f = data.frame, accent = css("--accent"), picked = cropSel && !printing;
+    let u0 = -(f.left_mm || 0), u1 = f.right_mm, z0 = f.z_min, z1 = f.z_max;
     if (cropDrag && cropDrag.moved) { if (cropDrag.side === "left") u0 = cropDrag.v; else if (cropDrag.side === "right") u1 = cropDrag.v; else if (cropDrag.side === "bottom") z0 = cropDrag.v; else z1 = cropDrag.v; }
     const a = toScreen(u0, z1), b = toScreen(u1, z0);
     ctx.save();
-    ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([7, 4]);
+    if (ctx.oaTag) ctx.oaTag({ cat: "Viewports", sub: null, kind: "projection" });
+    ctx.strokeStyle = picked ? accent : printing ? "#000" : css("--text"); ctx.lineWidth = picked ? 1.5 : Plan.thinLines ? 1 : Math.max(1, Pen.w(0.18, k())); ctx.setLineDash([]);
     ctx.strokeRect(a.x, a.y, b.x - a.x, b.y - a.y);
-    ctx.setLineDash([]);
-    if (tool === "select" && !data.section.pinned) {
+    if (picked && tool === "select" && data.section && !data.section.pinned && data.crop && data.crop.enabled) {
       const g = [["left", a.x, (a.y + b.y) / 2], ["right", b.x, (a.y + b.y) / 2], ["top", (a.x + b.x) / 2, a.y], ["bottom", (a.x + b.x) / 2, b.y]];
       ctx.fillStyle = css("--view-bg");
       for (const [side, x, y] of g) { ctx.fillRect(x - 4, y - 4, 8, 8); ctx.strokeRect(x - 4, y - 4, 8, 8); cropBoxes.push({ side, x, y }); }
@@ -486,7 +506,7 @@ const Elev = (() => {
     if (ctx.oaTag) ctx.oaTag({ cat: it.category, sub: null, kind: pass === "line" ? "cut" : "pattern" });
     if (pass === "line") {
       cutPath(it);
-      ctx.strokeStyle = selected ? col : st.line.color; ctx.lineWidth = selected ? 2.5 : Math.max(1.2, st.line.width_mm * k()); ctx.lineJoin = "miter"; ctx.stroke();
+      ctx.strokeStyle = selected ? col : st.line.color; ctx.lineWidth = selected ? 2.5 : Plan.thinLines ? 1 : Math.max(1, Pen.w(st.line.width_mm, k())); ctx.lineJoin = "miter"; ctx.stroke();
       ctx.restore();
       return;
     }
@@ -559,7 +579,12 @@ const Elev = (() => {
       const R = gridR(g);
       ctx.beginPath(); ctx.arc(a.x, a.y - R, R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
       if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "iden" });
-      label(g.name, a.x, a.y - R, col, "center", true);
+      let size = R * 0.95;
+      ctx.font = `600 ${size}px system-ui, sans-serif`;
+      const tw = ctx.measureText(g.name).width;
+      if (tw > R * 1.7) size = (size * R * 1.7) / tw;
+      ctx.font = `600 ${size}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = col;
+      ctx.fillText(g.name, a.x, a.y - R);
       ctx.restore();
     }
   }
@@ -597,6 +622,14 @@ const Elev = (() => {
   };
   const step = () => (cam.s > 0.3 ? 1 : cam.s > 0.03 ? 10 : 100);
   const snapU = (u) => Math.round(u / step()) * step();
+  // a grid line placed in the view: on a vertical edge of something drawn (a wall's face, an opening's side) when the
+  // cursor is within a few pixels of one, else on a round number
+  function gridU(sx) {
+    const u = toWorld(sx, 0).u;
+    let best = null;
+    for (const [vu] of verts) { const d = Math.abs(toScreen(vu, 0).x - sx); if (d <= 8 && (!best || d < best.d)) best = { d, u: vu }; }
+    return best ? { u: best.u, snapped: true } : { u: snapU(u), snapped: false };
+  }
 
   function segDist(px, py, a, b) {
     const dx = b.x - a.x, dy = b.y - a.y, l2 = dx * dx + dy * dy;
@@ -932,11 +965,11 @@ const Elev = (() => {
         for (const h of it.holes || []) { h.forEach(([u, z], i) => { const s = toScreen(u, z); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
         if (style === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill("evenodd"); }
         else if (style !== "wireframe") { ctx.fillStyle = f < 1 ? mix(fill, viewBg, f) : fill; ctx.fill("evenodd"); }
-        ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : 1; if (it.stroke !== false || selected) ctx.stroke();
+        ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : projW(it); if (it.stroke !== false || selected) ctx.stroke();
       }
       for (const [p, q] of it.lines) {
         const a = toScreen(p[0], p[1]), b = toScreen(q[0], q[1]);
-        ctx.strokeStyle = ink; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+        ctx.strokeStyle = ink; ctx.lineWidth = projW(it); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
     }
     // What the plane cuts: every fill first, then every outline, so two elements that overlap (a wall and a slab that
@@ -994,10 +1027,19 @@ const Elev = (() => {
       }
     }
     if (tool === "grid" && mouse) {
-      const u = snapU(toWorld(mouse.x, mouse.y).u), a = toScreen(u, data.frame.z_max), b = toScreen(u, data.frame.z_min);
+      const g = gridU(mouse.x), u = g.u, a = toScreen(u, data.frame.z_max), b = toScreen(u, data.frame.z_min);
       ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.4; ctx.setLineDash([14, 4, 3, 4]);
-      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      // on an edge: the mark of the snap where the cursor is
+      if (g.snapped) { ctx.setLineDash([]); ctx.lineWidth = 1.5; const m = toScreen(u, toWorld(mouse.x, mouse.y).z); ctx.strokeRect(m.x - 5, m.y - 5, 10, 10); }
+      ctx.restore();
       label(String(Math.round(u)), a.x + 8, a.y + 12, accent, "left", true);
+    }
+    // the Section tool: the line between the first click and the cursor
+    if (tool === "section" && mouse && secStart) {
+      const p = secPoint(mouse.x, mouse.y), a = toScreen(secStart.u, secStart.z), b = toScreen(p.u, p.z);
+      ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.6; ctx.setLineDash([12, 4, 3, 4]);
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
     }
     Det.drawNotes(selD, hov, accent, tool === "select", sel);
     if (tool === "text") Det.preview(hover);
@@ -1093,6 +1135,7 @@ const Elev = (() => {
     // the nearest thing under the cursor, or the one Tab stepped to
     const h = hoverPick(ev.offsetX, ev.offsetY);
     const target = h !== null ? [h] : [];
+    cropSel = h === null && onCrop(ev.offsetX, ev.offsetY);
     tabIdx = 0;
     // Edit Group's Add and Remove take what is clicked instead of selecting it
     if (groupEdit && groupEdit.mode) { if (h !== null) cb.groupPick([h]); render(); return; }
@@ -1331,7 +1374,13 @@ const Elev = (() => {
       if (tool === "cgsegments") { down = null; const s = segmentAt(e.offsetX, e.offsetY); if (s != null) cb.curtainCall("toggle_curtain_segment", { id: segLine, s }); return; }
       const jt = joinAt(e.offsetX, e.offsetY);
       if (jt) { down = null; cb.curtainCall("toggle_curtain_join", { wall: jt.wall, k: jt.k, j: jt.j }); return; }
-      if (tool === "grid") cb.addGrid(snapU(toWorld(e.offsetX, e.offsetY).u));
+      if (tool === "grid") cb.addGrid(gridU(e.offsetX).u);
+      else if (tool === "section") {
+        const p = secPoint(e.offsetX, e.offsetY);
+        if (!secStart) { secStart = p; cb.prompt(promptText()); }
+        else { const a = secStart; secStart = null; cb.addSection(a, p); }
+        render();
+      }
       else if (isEdit()) editClick(e);
       else if (tool === "level") {
         const z = typed ? parseFloat(typed) + datum() : snapZ(toWorld(e.offsetX, e.offsetY).z);
@@ -1376,6 +1425,7 @@ const Elev = (() => {
   new ResizeObserver(render).observe(canvas);
 
   function setTool(t) {
+    secStart = null;
     if (t !== "text") Det.clearPicks();
     if (t !== "noteleader") Det.stopLeader();
     if (t !== "dimension") EDims.stop();
@@ -1383,7 +1433,7 @@ const Elev = (() => {
     tool = t; typed = ""; candTab = 0; hover = null; band = null; cgHover = null; segHover = null;
     if (t !== "cgsegments") segLine = null;
     ed = isEdit() ? newEd() : null;
-    canvas.style.cursor = ["curtaingrid", "cgsegments", "level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window", "groupplace"].includes(t) || isEdit() ? "crosshair" : "default";
+    canvas.style.cursor = ["section", "curtaingrid", "cgsegments", "level", "grid", "text", "noteleader", "sketch", "dimension", "spot", "door", "window", "groupplace"].includes(t) || isEdit() ? "crosshair" : "default";
     cb.prompt(promptText());
     if (typeof cb.tool === "function") cb.tool(t);
     render();
@@ -1396,7 +1446,8 @@ const Elev = (() => {
     if (tool === "text" || tool === "noteleader") return Det.promptText(tool);
     if (tool === "groupplace") return groupPlace ? `Click to place ${groupPlace.name} by its origin. Esc to stop.` : "Pick a group to place.";
     if (tool === "level") return typed ? `Elevation ${typed}. Press Enter to place the level, Esc to clear.` : "Level: click at the height of the new level, or type its elevation and press Enter. Esc to finish.";
-    if (tool === "grid") return "Grid: click where the grid line goes. It runs away from the view. Esc to finish.";
+    if (tool === "grid") return "Grid: click where the grid line goes (it takes the face of a wall or an opening's side under the cursor). It runs away from the view. Esc to finish.";
+    if (tool === "section") return secStart ? "Click the other end of the section line." : "Section: click the start of the line, drawn up or down the view. The section cuts across this view and looks along it.";
     if (tool === "curtaingrid") {
       const how = { all: "All Segments", one: "One Segment", except: "All Except Picked" }[cgMode];
       return cgHover
@@ -1690,6 +1741,7 @@ const Elev = (() => {
           return true;
         }
       }
+      if (tool === "section" && e.key === "Escape") { if (secStart) { secStart = null; cb.prompt(promptText()); render(); } else setTool("select"); return true; }
       if ((tool === "grid" || tool === "door" || tool === "window" || tool === "curtaingrid") && e.key === "Escape") { setTool("select"); return true; }
       if (tool === "cgsegments" && (e.key === "Escape" || e.key === "Enter")) {
         const id = segLine, back = segReturn;

@@ -245,7 +245,10 @@ table.props select { width: 100%; padding: 1px 2px; background: var(--panel); bo
 .modal-back { position: fixed; inset: 0; z-index: 50; display: grid; place-items: center; background: rgba(0,0,0,.35); }
 .modal { display: flex; flex-direction: column; width: 520px; max-width: 94vw; max-height: 88vh; background: var(--panel); border: 1px solid var(--line); border-radius: 6px; box-shadow: 0 10px 40px rgba(0,0,0,.35); }
 .modal.wide { width: 980px; }
-.modal-title { padding: 8px 12px; font-weight: 600; background: var(--panel-2); border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; }
+.vp-band { position: absolute; border: 1px solid var(--accent); background: rgba(47, 111, 214, 0.08); pointer-events: none; z-index: 3; }
+.vp-band.crossing { border-style: dashed; }
+.modal-msg.confirm { white-space: pre-line; color: inherit; }
+.modal-title { cursor: move; user-select: none; padding: 8px 12px; font-weight: 600; background: var(--panel-2); border-bottom: 1px solid var(--line); border-radius: 6px 6px 0 0; }
 .modal-body { padding: 10px 12px; overflow: auto; flex: 1; min-height: 0; position: relative; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .modal-foot button, .popover button { padding: 3px 16px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }

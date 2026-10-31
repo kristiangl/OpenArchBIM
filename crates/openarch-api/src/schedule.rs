@@ -24,11 +24,13 @@ struct Cell {
     edit: Option<(Value, Vec<Value>)>,
     present: bool,
     global: Option<String>,
+    /// A type's value: an edit changes every instance of the type.
+    of_type: bool,
 }
 
 impl Cell {
     fn text(s: impl Into<String>) -> Cell {
-        Cell { text: s.into(), num: None, unit: Unit::Text, edit: None, present: true, global: None }
+        Cell { text: s.into(), num: None, unit: Unit::Text, edit: None, present: true, global: None, of_type: false }
     }
     fn blank() -> Cell {
         Cell::text("")
@@ -38,7 +40,7 @@ impl Cell {
         Cell { present: false, ..Cell::blank() }
     }
     fn num(n: f64, unit: Unit) -> Cell {
-        Cell { text: show(n, unit), num: Some(n), unit, edit: None, present: true, global: None }
+        Cell { text: show(n, unit), num: Some(n), unit, edit: None, present: true, global: None, of_type: false }
     }
 
     /// Whether the cell passes a filter or a highlight's test.
@@ -160,7 +162,7 @@ impl Session {
         let target = if t["target"].is_object() { t["target"].clone() } else { json!({ "method": t["patch"], "id": type_id }) };
         for row in t["groups"].as_array().into_iter().flatten().flat_map(|g| g["rows"].as_array().into_iter().flatten()) {
             if let (Some(label), Some(c)) = (row["label"].as_str(), cell_of(row, &target)) {
-                out.entry(label.to_string()).or_insert(c);
+                out.entry(label.to_string()).or_insert(Cell { of_type: true, ..c });
             }
         }
         let family = t["family"].as_str().unwrap_or("").to_string();
@@ -192,6 +194,29 @@ impl Session {
             }
         }
         Params { instance, of_type }
+    }
+
+    /// A type's name, and how many elements are of it.
+    fn type_use(&self, type_id: Id) -> (String, usize) {
+        let d = &self.doc;
+        let name = match d.get(type_id) {
+            Some(Element::FamilyType(t)) => format!("{}: {}", d.family(t.family).map_or("", |f| f.name.as_str()), t.name),
+            Some(Element::WallType(t)) => t.name.clone(),
+            Some(Element::FloorType(t)) => t.name.clone(),
+            Some(Element::RoofType(t)) => t.name.clone(),
+            _ => String::new(),
+        };
+        let n = d
+            .iter()
+            .filter(|(_, e)| match e {
+                Element::FamilyInstance(i) => i.type_id == type_id,
+                Element::Wall(w) => w.wall_type == type_id,
+                Element::Floor(f) => f.floor_type == type_id,
+                Element::Roof(r) => r.roof_type == type_id,
+                _ => false,
+            })
+            .count();
+        (name, n)
     }
 
     /// The elements a schedule of a category lists, in the model's order: every model element for Multi-Category,
@@ -518,6 +543,12 @@ impl Session {
                     Some((row, targets)) => json!({ "text": c.text, "row": row, "targets": targets }),
                     None => json!({ "text": c.text }),
                 };
+                // a type's value says which type and how many elements an edit changes
+                if let (true, Some((_, targets))) = (c.of_type, &c.edit) {
+                    let uses: Vec<(String, usize)> = targets.iter().filter_map(|t| t["id"].as_u64()).map(|t| self.type_use(t)).collect();
+                    let name = if uses.len() == 1 { uses[0].0.clone() } else { format!("{} types", uses.len()) };
+                    v["type"] = json!({ "name": name, "instances": uses.iter().map(|u| u.1).sum::<usize>() });
+                }
                 if let Some(b) = bg(i, cells) {
                     v["bg"] = json!(b);
                 }

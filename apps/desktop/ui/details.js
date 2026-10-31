@@ -234,7 +234,7 @@ function makeDetails(host) {
       const rot = ((n.rotation_deg || 0) * Math.PI) / 180, anchor = m([n.text.x, n.text.y]);
       const turned = (fn) => { c.save(); if (rot) { c.translate(anchor.x, anchor.y); c.rotate(-rot); c.translate(-anchor.x, -anchor.y); } fn(); c.restore(); };
       turned(() => Ann.labels(c, [n.text], b, col, { bg }));
-      const L = Ann.layout(n.text), ink = col || Ann.rgb(n.text.style.color), w = host.thin() ? 1 : Math.max(1, n.text.style.line_mm * b.k);
+      const L = Ann.layout(n.text), ink = col || Ann.rgb(n.text.style.color), w = host.thin() ? 1 : Math.max(1, Pen.w(n.text.style.line_mm, b.k));
       for (const l of n.leaders) drawLeader(c, leaderPath(n, L, l).map(m), b.k, ink, w);
       c.restore();
       if (!(gripSel.has(n.id) && selecting && gripSel.size === 1)) continue;

@@ -198,7 +198,7 @@ function makeSpots() {
     const len = 8 * L.k, hd = 1.6 * L.k, e = { x: a[0], y: -a[1] }, nrm = { x: -e.y, y: e.x };
     const A = { x: L.T.x + e.x * L.rad * 1.2, y: L.T.y + e.y * L.rad * 1.2 }, B = { x: A.x + e.x * len, y: A.y + e.y * len };
     ctx.save();
-    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = Math.max(1, 0.18 * L.k);
+    ctx.strokeStyle = col; ctx.fillStyle = col; ctx.lineWidth = Math.max(1, Pen.w(0.18, L.k));
     ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
     ctx.beginPath(); ctx.moveTo(B.x, B.y); ctx.lineTo(B.x - e.x * hd * 1.6 + nrm.x * hd * 0.6, B.y - e.y * hd * 1.6 + nrm.y * hd * 0.6); ctx.lineTo(B.x - e.x * hd * 1.6 - nrm.x * hd * 0.6, B.y - e.y * hd * 1.6 - nrm.y * hd * 0.6); ctx.closePath(); ctx.fill();
     ctx.restore();
@@ -215,7 +215,7 @@ function makeSpots() {
     const { T, Sh, Bd, size, off, lh } = L;
     ctx.save();
     ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
-    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, (sp.style && sp.style.line ? sp.style.line.width_mm : 0.18) * L.k)) + (o.selected ? 0.8 : 0);
+    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, Pen.w(sp.style && sp.style.line ? sp.style.line.width_mm : 0.18, L.k))) + (o.selected ? 0.8 : 0);
     if (o.ghost) ctx.globalAlpha = 0.85;
     if (sp.invalid) {
       ctx.strokeStyle = "#c0392b"; ctx.fillStyle = "#c0392b"; ctx.lineWidth = 1.5;
@@ -231,7 +231,7 @@ function makeSpots() {
     if (sp.kind === "slope") drawArrow(ctx, L, sp, col);
     ctx.save();
     ctx.strokeStyle = col; ctx.fillStyle = col;
-    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, (sp.style && sp.style.line ? sp.style.line.width_mm : 0.18) * L.k)) + (o.selected ? 0.8 : 0);
+    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, Pen.w(sp.style && sp.style.line ? sp.style.line.width_mm : 0.18, L.k))) + (o.selected ? 0.8 : 0);
     if (o.ghost) ctx.globalAlpha = 0.85;
     // leader: from the edge of the symbol, through the bend, to the shoulder line
     if (sp.leader) {

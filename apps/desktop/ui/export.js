@@ -199,7 +199,9 @@ const ExportFlow = (() => {
     const [pw, ph] = s.paper;
     const rec = new Recorder(pw * k, ph * k);
     rec.semantic = !!semantic;
-    SheetView.draw(rec, s, data, (x, y) => ({ x: x * k, y: (ph - y) * k }), k);
+    // a page: lines at their paper widths
+    Pen.screen = false;
+    try { SheetView.draw(rec, s, data, (x, y) => ({ x: x * k, y: (ph - y) * k }), k); } finally { Pen.screen = true; }
     const patterns = {};
     for (const d of data.values()) Object.assign(patterns, d.line_patterns || {});
     const name = item.kind === "sheet" ? `${item.number} - ${item.name}` : item.name;

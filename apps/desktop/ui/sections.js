@@ -108,7 +108,7 @@ const Sections = (() => {
     const k = H.paperPx(), pts = cornersOf(s), S = pts.map((p) => H.toScreen(p)), L = pathLen(pts);
     if (pathLen(S) < 2) return;
     ctx.save();
-    ctx.strokeStyle = col; ctx.lineWidth = selected ? 2 : Math.max(1, 0.35 * k); ctx.setLineDash([]); ctx.lineCap = "round"; ctx.lineJoin = "miter";
+    ctx.strokeStyle = col; ctx.lineWidth = selected ? 2 : Math.max(1, Pen.w(0.35, k)); ctx.setLineDash([]); ctx.lineCap = "round"; ctx.lineJoin = "miter";
     if (s.gap) {
       // broken in this plan: a stretch at each end; the middle is a gap, a thin line, or dashed while selected
       strokePath(ctx, subPath(pts, 0, s.gap.head_mm));

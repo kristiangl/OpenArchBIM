@@ -34,13 +34,13 @@ const Viewport = (() => {
 struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) tint: f32, @location(2) col: vec4<f32> };
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) tint: f32, @location(2) col: vec4<f32>, @location(3) a: f32 };
 
 @vertex fn vs_box(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>,
                   @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>, @location(4) col: vec4<f32>) -> VOut {
   var o: VOut;
   o.pos = u.vp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
-  o.n = n; o.tint = off.w; o.col = col;
+  o.n = n; o.tint = off.w; o.col = col; o.a = 1.0 - sc.w;
   return o;
 }
 @fragment fn fs_box(i: VOut) -> @location(0) vec4<f32> {
@@ -49,13 +49,13 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @loc
     var c = u.bg.rgb;
     if (i.tint >= 0.99) { c = mix(c, vec3<f32>(0.85, 0.62, 0.45), 0.45); }
     if (i.tint < 0.0) { c = mix(c, vec3<f32>(0.55, 0.72, 0.86), 0.25); }
-    return vec4<f32>(c, 1.0);
+    return vec4<f32>(c, i.a);
   }
   let l = max(dot(normalize(i.n), normalize(u.light.xyz)), 0.0);
   var base = mix(vec3<f32>(0.78, 0.80, 0.83), vec3<f32>(0.85, 0.62, 0.45), clamp(i.tint, 0.0, 1.0));
   if (i.col.w > 0.5 && i.tint < 0.99) { base = i.col.rgb; } // material colour unless selected
   if (i.tint < 0.0) { base = vec3<f32>(0.55, 0.72, 0.86); } // glass
-  return vec4<f32>(base * (0.38 + 0.62 * l), 1.0);
+  return vec4<f32>(base * (0.38 + 0.62 * l), i.a);
 }
 
 struct LOut { @builtin(position) pos: vec4<f32>, @location(0) c: vec3<f32> };
@@ -81,24 +81,24 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 1) in vec3 n;
 layout(location = 2) in vec4 off; layout(location = 3) in vec4 sc; layout(location = 4) in vec4 col;
-out vec3 vn; out float vtint; out vec4 vcol;
-void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); vn = n; vtint = off.w; vcol = col; }`;
+out vec3 vn; out float vtint; out vec4 vcol; out float va;
+void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); vn = n; vtint = off.w; vcol = col; va = 1.0 - sc.w; }`;
   const GL_BOX_FS = `#version 300 es
 precision highp float;
 ${GL_UNIFORMS}
-in vec3 vn; in float vtint; in vec4 vcol; out vec4 o;
+in vec3 vn; in float vtint; in vec4 vcol; in float va; out vec4 o;
 void main() {
   if (light.w > 0.5) {
     vec3 c = bg.rgb;
     if (vtint >= 0.99) c = mix(c, vec3(0.85, 0.62, 0.45), 0.45);
     if (vtint < 0.0) c = mix(c, vec3(0.55, 0.72, 0.86), 0.25);
-    o = vec4(c, 1.0); return;
+    o = vec4(c, va); return;
   }
   float l = max(dot(normalize(vn), normalize(light.xyz)), 0.0);
   vec3 base = mix(vec3(0.78, 0.80, 0.83), vec3(0.85, 0.62, 0.45), clamp(vtint, 0.0, 1.0));
   if (vcol.w > 0.5 && vtint < 0.99) base = vcol.rgb;
   if (vtint < 0.0) base = vec3(0.55, 0.72, 0.86);
-  o = vec4(base * (0.38 + 0.62 * l), 1.0);
+  o = vec4(base * (0.38 + 0.62 * l), va);
 }`;
   const GL_LINE_VS = `#version 300 es
 ${GL_UNIFORMS}
@@ -310,6 +310,14 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       primitive: { topology: "triangle-list", cullMode: "back" },
       depthStencil: { format: depthFormat, depthWriteEnabled: true, depthCompare: "less", depthBias: 4, depthBiasSlopeScale: 2 },
     });
+    // see-through surfaces (a selection, glass, a material with transparency): drawn after the rest, blended
+    const blend = { color: { srcFactor: "src-alpha", dstFactor: "one-minus-src-alpha" }, alpha: { srcFactor: "one", dstFactor: "one-minus-src-alpha" } };
+    const boxSeePipe = device.createRenderPipeline({
+      layout, vertex: { module, entryPoint: "vs_box", buffers: boxBuffers },
+      fragment: { module, entryPoint: "fs_box", targets: [{ format, blend }] },
+      primitive: { topology: "triangle-list", cullMode: "back" },
+      depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "less", depthBias: 4, depthBiasSlopeScale: 2 },
+    });
     const edgeBuffers = [
       { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
       { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }] },
@@ -372,7 +380,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         } else {
           if (f.lineMode !== 2) {
             pass.setPipeline(f.lineMode === 1 ? boxBiasPipe : boxPipe);
-            for (const g of f.meshes) { pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            for (const g of f.meshes) { if (g.alpha < 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            pass.setPipeline(boxSeePipe);
+            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
           }
           if (f.lineMode) {
             pass.setPipeline(f.lineMode === 2 ? wirePipe : edgePipe);
@@ -490,7 +500,12 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           if (f.lineMode !== 2) {
             use(boxProg);
             if (f.lineMode === 1) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); }
-            for (const g of f.meshes) { gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            // see-through surfaces after the rest, blended, leaving depth alone
+            gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
+            gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
+            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            gl.disable(gl.BLEND); gl.depthMask(true);
             gl.disable(gl.POLYGON_OFFSET_FILL);
           }
           if (f.lineMode) {
@@ -533,6 +548,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     if (why) console.info(`3D view: WebGPU not used (${why}); drawing with WebGL2.`);
 
     let meshes = []; // { g (backend handles), id, kind, data, bounds, color }
+    let lastVp = null; // the view and projection last drawn with, for box selection
     const cam = { az: -0.9, el: 0.5, dist: 38, target: [0, 0, 1.5] };
     let style = "shaded", stress = false, dirty = true, sized = false, last = performance.now(), frames = 0, acc = 0, fps = 0;
 
@@ -558,6 +574,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const eye = eyePos();
       const aspect = canvas.width / canvas.height;
       const vp = mat.mul(mat.perspective(0.9, aspect, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));
+      lastVp = vp;
       const dark = matchMedia("(prefers-color-scheme: dark)").matches;
       const page = dark ? [0.12, 0.14, 0.16] : [0.98, 0.98, 0.99];
       const lineMode = !stress && style === "hidden_line" ? 1 : !stress && style === "wireframe" ? 2 : 0;
@@ -613,32 +630,100 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       }
       return best;
     }
-    /** Element id under a canvas pixel (CSS px), or null. */
+    /** Element id under a canvas pixel (CSS px), or null. With Select Elements by Face off, only an edge picks. */
+    let byFace = true;
     function pick(sx, sy) {
+      if (!byFace) return edgePick(sx, sy);
       const { o, d } = rayAt(sx, sy);
       let bestT = Infinity, bestId = null;
       for (const m of meshes) { const t = hitMesh(m, o, d); if (t < bestT) { bestT = t; bestId = m.id; } }
       return bestId;
     }
-
-    // orbit / pan / zoom
-    let drag = null;
-    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-    let pickHandler = null, clickHook = null;
-    canvas.addEventListener("pointerdown", (e) => { canvas.setPointerCapture(e.pointerId); drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, button: e.button, pan: e.button !== 0 || e.shiftKey }; });
-    canvas.addEventListener("pointerup", (e) => {
-      // a left click that did not move is a pick; clicking empty space clears the selection
-      if (drag && drag.button === 0 && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) {
-        const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
-        // a tool that wants the click (picking a point) takes it instead of the selection
-        if (!(clickHook && clickHook(x, y)) && pickHandler) pickHandler(pick(x, y), e.shiftKey || e.ctrlKey || e.metaKey);
+    function edgePick(sx, sy) {
+      let best = 6, id = null;
+      const seg = (a, b) => { const dx = b.x - a.x, dy = b.y - a.y, L = dx * dx + dy * dy, t = L ? Math.max(0, Math.min(1, ((sx - a.x) * dx + (sy - a.y) * dy) / L)) : 0; return Math.hypot(sx - a.x - t * dx, sy - a.y - t * dy); };
+      for (const m of meshes) {
+        const e = m.edges || [];
+        for (let i = 0; i + 5 < e.length; i += 6) {
+          const a = project([e[i], e[i + 1], e[i + 2]]), b = project([e[i + 3], e[i + 4], e[i + 5]]);
+          if (!a || !b) continue;
+          const dd = seg(a, b);
+          if (dd < best) { best = dd; id = m.id; }
+        }
       }
+      return id;
+    }
+
+    // a screen point (CSS px) of a model point, or null behind the camera
+    function project(p) {
+      const m = lastVp;
+      if (!m) return null;
+      const x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12], y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13], w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15];
+      if (w <= 1e-6) return null;
+      return { x: (x / w * 0.5 + 0.5) * canvas.clientWidth, y: (0.5 - y / w * 0.5) * canvas.clientHeight };
+    }
+    // The elements a box takes: dragged left to right, those wholly inside; right to left, those it touches.
+    function boxPick(x0, y0, x1, y1) {
+      const [l, r, t, b] = [Math.min(x0, x1), Math.max(x0, x1), Math.min(y0, y1), Math.max(y0, y1)], window = x1 >= x0;
+      const inside = new Map();
+      for (const m of meshes) {
+        const [lo, hi] = m.bounds, pts = [];
+        for (const cx of [lo[0], hi[0]]) for (const cy of [lo[1], hi[1]]) for (const cz of [lo[2], hi[2]]) pts.push(project([cx, cy, cz]));
+        if (pts.some((p) => !p)) { if (window) inside.set(m.id, false); continue; }
+        const bx0 = Math.min(...pts.map((p) => p.x)), bx1 = Math.max(...pts.map((p) => p.x)), by0 = Math.min(...pts.map((p) => p.y)), by1 = Math.max(...pts.map((p) => p.y));
+        const ok = window ? bx0 >= l && bx1 <= r && by0 >= t && by1 <= b : bx1 >= l && bx0 <= r && by1 >= t && by0 <= b;
+        if (window) inside.set(m.id, (inside.get(m.id) ?? true) && ok); else if (ok) inside.set(m.id, true);
+      }
+      return [...inside].filter(([, ok]) => ok).map(([id]) => id);
+    }
+
+    // The mouse: by default the left button selects (a click, or a box when dragged), the right button orbits and
+    // the wheel button pans; Shift with the wheel button orbits. The buttons can be swapped (setButtons).
+    let buttons = { select: 0, orbit: 2, pan: 1 };
+    try { const b = JSON.parse(localStorage.getItem("openarch.mouse3d") || "null"); if (b) buttons = { ...buttons, ...b }; } catch { /* storage can be unavailable */ }
+    let drag = null, band = null;
+    canvas.addEventListener("contextmenu", (e) => e.preventDefault());
+    let pickHandler = null, clickHook = null, bandHandler = null, menuHandler = null;
+    const bandBox = document.createElement("div");
+    bandBox.className = "vp-band";
+    bandBox.hidden = true;
+    canvas.after(bandBox);
+    canvas.addEventListener("pointerdown", (e) => {
+      canvas.setPointerCapture(e.pointerId);
+      const what = e.button === buttons.select && !e.shiftKey ? "select" : e.button === buttons.orbit || (e.button === buttons.pan && e.shiftKey) ? "orbit" : e.button === buttons.pan ? "pan" : "select";
+      drag = { x: e.clientX, y: e.clientY, x0: e.clientX, y0: e.clientY, button: e.button, what, moved: false };
+    });
+    canvas.addEventListener("pointerup", (e) => {
+      const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      const still = drag && Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4;
+      const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+      if (drag && drag.what === "select" && still) {
+        // a click that did not move is a pick; clicking empty space clears the selection.
+        // A tool that wants the click (picking a point) takes it instead of the selection
+        if (!(clickHook && clickHook(x, y)) && pickHandler) pickHandler(pick(x, y), additive);
+      } else if (drag && drag.what === "select" && band) {
+        if (bandHandler) bandHandler(boxPick(band.x0, band.y0, x, y), additive);
+      } else if (drag && still && drag.button === 2 && menuHandler) {
+        // a right click that did not move: the view's menu
+        menuHandler(e.clientX, e.clientY);
+      }
+      band = null; bandBox.hidden = true;
       drag = null;
     });
     canvas.addEventListener("pointermove", (e) => {
       if (!drag) return;
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y; drag.x = e.clientX; drag.y = e.clientY;
-      if (drag.pan) {
+      if (drag.what === "select") {
+        if (Math.hypot(e.clientX - drag.x0, e.clientY - drag.y0) < 4) return;
+        const r = canvas.getBoundingClientRect();
+        band = { x0: drag.x0 - r.left, y0: drag.y0 - r.top };
+        const x = e.clientX - r.left, y = e.clientY - r.top;
+        Object.assign(bandBox.style, { left: `${canvas.offsetLeft + Math.min(band.x0, x)}px`, top: `${canvas.offsetTop + Math.min(band.y0, y)}px`, width: `${Math.abs(x - band.x0)}px`, height: `${Math.abs(y - band.y0)}px` });
+        bandBox.classList.toggle("crossing", x < band.x0);
+        bandBox.hidden = false;
+        return;
+      }
+      if (drag.what === "pan") {
         const s = cam.dist * 0.0016, ca = Math.cos(cam.az), sa = Math.sin(cam.az);
         cam.target[0] += (sa * dx - ca * dy * Math.sin(cam.el)) * s;
         cam.target[1] += (-ca * dx - sa * dy * Math.sin(cam.el)) * s;
@@ -654,7 +739,12 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     requestAnimationFrame(frame);
 
     const TINT = { Wall: 0.0, Floor: 0.3, Roof: 0.15, Door: 0.45, Window: 0.0, Glass: -1.0 };
-    const writeTint = (m, selected) => be.instance(m.g, new Float32Array([0, 0, 0, selected ? 1.0 : m.color ? 0 : TINT[m.kind] ?? 0, 1, 1, 1, 0, ...(m.color || [0, 0, 0]), m.color ? 1 : 0]));
+    // how see-through a mesh is: its material's transparency (glass half), a selection at least 30%
+    const writeTint = (m, selected) => {
+      const t = Math.max(m.transparency, selected ? 0.3 : 0);
+      m.g.alpha = 1 - t;
+      be.instance(m.g, new Float32Array([0, 0, 0, selected ? 1.0 : m.color ? 0 : TINT[m.kind] ?? 0, 1, 1, 1, t, ...(m.color || [0, 0, 0]), m.color ? 1 : 0]));
+    };
 
     return {
       info: be.info,
@@ -676,7 +766,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           const data = datas[i];
           const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
           for (let i = 0; i < data.length; i += 6) for (let k = 0; k < 3; k++) { bounds[0][k] = Math.min(bounds[0][k], data[i + k]); bounds[1][k] = Math.max(bounds[1][k], data[i + k]); }
-          const out = { g: be.mesh(data, edges[i]), id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null };
+          const out = { g: be.mesh(data, edges[i]), edges: edges[i], id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
           writeTint(out, sel.has(m.id));
           return out;
         });
@@ -703,6 +793,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       pick,
       /** Called with (elementId | null, additive) when the user clicks in the view. */
       onPick(fn) { pickHandler = fn; },
+      onBand(fn) { bandHandler = fn; },
+      setPickByFace(v) { byFace = !!v; },
+      onMenu(fn) { menuHandler = fn; },
+      get buttons() { return { ...buttons }; },
+      setButtons(b) { buttons = { ...buttons, ...b }; try { localStorage.setItem("openarch.mouse3d", JSON.stringify(buttons)); } catch { /* storage can be unavailable */ } },
       /** Called with the canvas pixel of a click before the pick; returning true keeps the selection as it is. */
       onClick(fn) { clickHook = fn; },
       /** Called after each frame is drawn (to draw over the view in step with the camera). */

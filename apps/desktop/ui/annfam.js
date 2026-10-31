@@ -274,6 +274,9 @@ const AnnModel = (() => {
       S.flipped = !S.flipped; tabsUI(); render();
     },
   };
+  // with lines or a region's boundary being drawn, the Modify tab's own tools work on them
+  const SK_MODIFY = { "a-align": "align", "a-mv": "move", "a-cp": "copy", "a-ro": "rotate", "a-mi-pick": "mirror", "a-mi-draw": "mirror", "a-of": "offset", "a-tr": "trim_corner", "a-sp": "split" };
+  for (const [id, t] of Object.entries(SK_MODIFY)) commands[id] = () => { if (ASk.active) { ASk.setTool(t); ctxRefresh(); } };
   for (const k of Object.keys(commands)) { const f = commands[k]; commands[k] = (e) => (S ? f(e) : undefined); }
   const TOOL_OF = { "a-select": "select", "a-label": "label", "a-text": "text" };
 
@@ -327,8 +330,9 @@ const AnnModel = (() => {
   }
   function contextBase() {
     const t = ASk.tool;
-    // the sketch tools the Modify tab's own Select and Delete do not cover
-    const tools = { label: "Sketch Tools", items: ASk.MODIFY.filter((x) => x.id !== "select" && x.id !== "delete").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
+    // the Modify tab's own tools (Move, Copy, Align ...) work on the lines; only Trim/Extend Single and Split are added,
+    // as in a project's sketches
+    const tools = { label: "Trim and Split", items: ASk.MODIFY.filter((x) => x.id === "trim_single" || x.id === "split").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
     const draw = { label: "Draw", items: ASk.DRAW.filter((x) => x.id !== "pick_walls").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
     if (S.mode === "lines") {
       const a = ASk.selectedAttr();
@@ -1135,7 +1139,7 @@ const AnnModel = (() => {
     if (!S) return;
     e.preventDefault();
     const m = mouseAt(e), before = toPaper(m.x, m.y);
-    S.view.k = Math.min(200, Math.max(2, S.view.k * Math.exp(-e.deltaY * 0.0012)));
+    S.view.k = Math.min(200, Math.max(0.02, S.view.k * Math.exp(-e.deltaY * 0.0012)));
     S.view.ox = m.x - before.x * S.view.k; S.view.oy = m.y + before.y * S.view.k;
     render();
   }
@@ -1166,6 +1170,6 @@ const AnnModel = (() => {
     open, close: () => close(false), closeForExit, activate, docInfo, commands, syncRibbon, context, undo, redo, undoState, save: () => loadIntoProject(false),
     isOpen: (id) => !!S && S.id === id,
     // test hooks
-    _state: () => S, _sketch: ASk,
+    _state: () => S, _sketch: ASk, sketchModify: SK_MODIFY,
   };
 })();

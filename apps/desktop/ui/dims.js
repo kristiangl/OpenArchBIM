@@ -345,7 +345,7 @@ function makeDims() {
     const S = (p) => H.toScreen({ x: p[0], y: p[1] });
     ctx.save();
     ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
-    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, d.style.line.width_mm * k)) + (o.selected ? 0.8 : 0);
+    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, Pen.w(d.style.line.width_mm, k))) + (o.selected ? 0.8 : 0);
     if (o.ghost) ctx.globalAlpha = 0.85;
     const gap = ty.witness_gap_mm * k, ext = ty.witness_extension_mm * k;
     ctx.beginPath();
@@ -404,7 +404,7 @@ function makeDims() {
     if (ctx.semantic && ctx.oaDim) { drawForCad(d, o, e, n); return; }
     ctx.save();
     ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
-    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, d.style.line.width_mm * k)) + (o.selected ? 0.8 : 0);
+    ctx.lineWidth = (H.thin() ? 1 : Math.max(1, Pen.w(d.style.line.width_mm, k))) + (o.selected ? 0.8 : 0);
     if (o.ghost) ctx.globalAlpha = 0.85;
     // witness lines: a gap off the element, a little past the dimension line
     const gap = ty.witness_gap_mm * k, ext = ty.witness_extension_mm * k;
@@ -487,7 +487,7 @@ function makeDims() {
       ctx.oaDim({ p13: S(ra.anchor), p14: S(rb.anchor), p10: B, p11: f.c, dir: e, value: s.value_mm, text: shown === String(Math.round(s.value_mm)) ? "" : shown || " ", txt: ty.text_size_mm, tick: ty.tick, gap: ty.witness_gap_mm, ext: ty.witness_extension_mm });
       ctx.save();
       ctx.strokeStyle = col; ctx.fillStyle = col; ctx.setLineDash([]);
-      ctx.lineWidth = H.thin() ? 1 : Math.max(1, d.style.line.width_mm * k);
+      ctx.lineWidth = H.thin() ? 1 : Math.max(1, Pen.w(d.style.line.width_mm, k));
       witness(ra); witness(rb);
       ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
       if (ty.tick === "arrow") { tick(ctx, ty, k, A, e, n, col, 1); tick(ctx, ty, k, B, e, n, col, -1); }

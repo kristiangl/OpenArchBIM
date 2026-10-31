@@ -165,6 +165,11 @@ async function renderProperties() {
     types = d.types; current = d.type_id;
     onType = d.pinned ? null : async (id) => { await run("set_curtain_panel", { id: d.id, type_id: id }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "View" && d.view_kind && (app.info.view_types || []).some((t) => t.view_kind === d.view_kind)) {
+    // a view's type: the Project Browser groups views by it
+    types = app.info.view_types.filter((t) => t.view_kind === d.view_kind); current = d.type_id;
+    onType = async (id) => { await run("patch_view", { id: d.id, patch: { view_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Dimension") {
     types = app.info.dimension_types || []; current = d.type_id;
     onType = async (id) => { await run("patch_dimension", { id: d.id, patch: { dim_type: id } }); await refresh(); };
@@ -392,6 +397,15 @@ function openModal(title, build, { wide = false } = {}) {
   box.append(h, content, foot);
   back.append(box);
   document.body.append(back);
+  // the title bar drags the dialog, to see what is under it
+  let off = [0, 0];
+  h.onpointerdown = (e) => {
+    if (e.button !== 0) return;
+    const start = [e.clientX - off[0], e.clientY - off[1]];
+    h.setPointerCapture(e.pointerId);
+    h.onpointermove = (m) => { off = [m.clientX - start[0], m.clientY - start[1]]; box.style.transform = `translate(${off[0]}px, ${off[1]}px)`; };
+    h.onpointerup = () => { h.onpointermove = null; h.onpointerup = null; };
+  };
   const close = () => back.remove();
   // a dialog that must tidy up on Escape (Type Properties cancels its edits) sets back.onEscape
   back.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); if (back.onEscape) back.onEscape(); else close(); } });
@@ -399,6 +413,20 @@ function openModal(title, build, { wide = false } = {}) {
   back.focus();
   build(content, foot, close);
   return close;
+}
+
+// OK or Cancel in our own dialog: the desktop shell's window.confirm doesn't wait for the answer
+function askConfirm(text, title = "OpenArch BIM", ok = "OK") {
+  return new Promise((resolve) => {
+    openModal(title, (body, foot, close) => {
+      const done = (v) => { close(); resolve(v); };
+      body.append(el("div", { className: "modal-msg confirm", textContent: text }));
+      body.closest(".modal-back").onEscape = () => done(false);
+      const yes = button(ok, () => done(true), true);
+      foot.append(yes, button("Cancel", () => done(false)));
+      setTimeout(() => yes.focus(), 0);
+    });
+  });
 }
 
 function button(text, onclick, primary) {

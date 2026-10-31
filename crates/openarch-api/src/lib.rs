@@ -1370,6 +1370,7 @@ impl Session {
                 self.doc.patch_level_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
+            "duplicate_view_type" => Ok(json!({ "id": self.doc.duplicate_view_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "duplicate_level_type" => Ok(json!({ "id": self.doc.duplicate_level_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "describe_level_type" => {
                 let id = id_of(p, "id")?;
@@ -1778,6 +1779,22 @@ impl Session {
                 Ok(json!({ "id": self.doc.add_schedule(category, &name, takeoff)? }))
             }
             "schedule_table" => self.schedule_table(id_of(p, "id")?),
+            // the ends of walls' location lines and the height of their bases (their work plane), for grips in 3D
+            "wall_ends" => {
+                let ids: Vec<Id> = p.get("ids").and_then(|v| serde_json::from_value(v.clone()).ok()).unwrap_or_default();
+                let d = &self.doc;
+                let walls: Vec<Value> = ids
+                    .iter()
+                    .filter_map(|id| match d.get(*id) {
+                        Some(Element::Wall(w)) if w.curve.is_none() => {
+                            let z = d.level(w.base_level).map_or(0.0, |l| l.elevation_mm) + w.base_offset_mm;
+                            Some(json!({ "id": id, "start": [w.start.x, w.start.y], "end": [w.end.x, w.end.y], "z_mm": z }))
+                        }
+                        _ => None,
+                    })
+                    .collect();
+                Ok(json!({ "walls": walls }))
+            }
             // a few of a schedule's settings at once (Filter by Sheet from a placed schedule's properties)
             "patch_schedule" => {
                 let id = id_of(p, "id")?;
@@ -1842,7 +1859,16 @@ impl Session {
                     Some(Element::AnnotationFamily(f)) => Some(f),
                     _ => None,
                 });
-                let title_block = tb.map(|f| json!({ "name": f.name, "paths": d.symbol_drawing(f, false).body, "labels": d.symbol_texts(f, &|q| d.sheet_param(id, q), false) }));
+                // each label says the parameters it shows, so a double-click on it can edit them
+                let title_block = tb.map(|f| {
+                    let mut labels = serde_json::to_value(d.symbol_texts(f, &|q| d.sheet_param(id, q), false)).unwrap_or_default();
+                    for l in labels.as_array_mut().into_iter().flatten() {
+                        if let Some(lb) = l["label"].as_u64().and_then(|i| f.labels.get(i as usize)) {
+                            l["params"] = json!(lb.params.iter().map(|p| p.param.clone()).collect::<Vec<_>>());
+                        }
+                    }
+                    json!({ "name": f.name, "paths": d.symbol_drawing(f, false).body, "labels": labels })
+                });
                 // its schedules, each as a table (only what the sheet's views show, for Filter by Sheet)
                 let mut visible = None;
                 let mut schedules = vec![];
@@ -2057,13 +2083,16 @@ impl Session {
                 })
                 .collect(),
         );
-        let Some(view) = d.view(vid).filter(|x| x.section.is_some()) else { return Ok(v) };
+        let Some(view) = d.view(vid) else { return Ok(v) };
         let mut items: Vec<Value> = vec![];
         for (it, mut j) in data.items.iter().zip(v["items"].as_array().cloned().unwrap_or_default()) {
+            let hint = it.material.as_deref().and_then(|m| d.material(m)).map(Hint::from_material).unwrap_or_default();
             if it.cut {
-                let hint = it.material.as_deref().and_then(|m| d.material(m)).map(Hint::from_material).unwrap_or_default();
                 // a category switched off in the view leaves its cut out
                 let Some(style) = style_for(d, &settings, it.category, None, view.element_overrides.get(&it.id), "cut", &hint) else { continue };
+                j["style"] = style;
+            } else if let Some(style) = style_for(d, &settings, it.category, None, view.element_overrides.get(&it.id), "projection", &hint) {
+                // the projection pen its lines are drawn with
                 j["style"] = style;
             }
             items.push(j);
@@ -2071,6 +2100,10 @@ impl Session {
         v["items"] = Value::Array(items);
         v["fill_patterns"] = graphics::fill_pattern_defs(d);
         v["line_patterns"] = graphics::line_pattern_defs(d);
+        v["crop"] = json!({ "enabled": view.crop.enabled, "visible": view.crop.region_visible });
+        if view.section.is_none() {
+            return Ok(v);
+        }
         v["section_id"] = json!(view.section);
         v["section"] = view.section.and_then(|sid| d.section(sid).map(|s| json!({ "id": sid, "flipped": s.flipped, "pinned": s.pinned, "length": s.length(), "far_clip": s.far_clip, "runs": s.view_runs().map(|(_, r)| r) }))).unwrap_or(Value::Null);
         Ok(v)
@@ -2083,7 +2116,7 @@ impl Session {
             "dirty": d.revision() != self.saved_revision,
             "path": self.path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "views": d.views().iter().map(|(id, v)| json!({
-                "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template,
+                "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template, "type_id": d.view_type_of(v),
                 "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
             "arrays": d.group_arrays().iter().map(|(id, a)| json!({ "id": id, "members": a.members, "count": a.members.len(), "move_to": if a.to_last { "last" } else { "second" }, "kind": if matches!(a.step, openarch_model::array::ArrayKind::Radial { .. }) { "radial" } else { "linear" } })).collect::<Vec<_>>(),
@@ -2095,7 +2128,7 @@ impl Session {
                 "excluded": d.group_type(g.group_type).map_or(0, |t| t.members.len()).saturating_sub(g.live(d).len()),
             })).collect::<Vec<_>>(),
             "grid_types": d.grid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
-            "view_types": d.view_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "view_kind": t.view_kind, "template_for_new": t.template_for_new })).collect::<Vec<_>>(),
+            "view_types": d.view_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "view_kind": t.view_kind, "template_for_new": t.template_for_new, "default": d.default_view_type(t.view_kind) == Some(*id) })).collect::<Vec<_>>(),
             "level_types": d.level_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name, "head": t.head })).collect::<Vec<_>>(),
             "line_styles": d.line_styles(),
             "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "label": t.name })).collect::<Vec<_>>(),
@@ -2625,6 +2658,7 @@ impl Session {
             "crop": {
                 "enabled": view.crop.enabled, "visible": view.crop.region_visible,
                 "region": view.crop.region.map(|(a, b)| json!([pt(&a), pt(&b)])),
+                "annotation": view.crop.annotation_crop, "annotation_offset": view.crop.annotation_offsets(),
             },
             "walls": walls, "curtains": curtains, "floors": floors, "roofs": roofs, "inserts": inserts,
             "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
@@ -2711,6 +2745,12 @@ impl Session {
             };
             if let Some(v) = verts {
                 meshes.push(json!({ "id": id, "kind": kind, "verts": v }));
+            }
+        }
+        // a material's transparency shows through
+        for m in meshes.iter_mut() {
+            if let Some(t) = m["material"].as_str().and_then(|n| d.material(n)).map(|x| x.graphics.shading_transparency).filter(|t| *t > 0) {
+                m["transparency"] = json!(t);
             }
         }
         json!({ "revision": d.revision(), "meshes": meshes, "visual_style": settings.as_ref().map(|s| s.visual_style) })
@@ -2820,6 +2860,17 @@ impl Session {
                 v["patch"] = json!("patch_filled_region_type");
                 v["duplicate"] = json!("duplicate_filled_region_type");
                 v
+            }
+            Element::ViewType(t) => {
+                // a view type is its name: views of it are grouped in the Project Browser
+                let label = serde_json::to_value(t.view_kind).ok().and_then(|k| k.as_str().map(str::to_string)).unwrap_or_default();
+                json!({
+                    "id": id, "kind": "ViewType", "title": t.name, "name": t.name,
+                    "family": match label.as_str() { "floor_plan" => "Floor Plan", "ceiling_plan" => "Ceiling Plan", "three_d" => "3D View", "elevation" => "Elevation", "section" => "Section", _ => "View" },
+                    "siblings": d.view_types().iter().filter(|(_, x)| x.view_kind == t.view_kind).map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+                    "patch": "patch_view_type", "duplicate": "duplicate_view_type",
+                    "groups": [],
+                })
             }
             Element::LevelType(t) => {
                 let mut v = props::level_type_props(d, id, t);
@@ -3342,6 +3393,7 @@ mod tests {
         def["itemize"] = json!(true);
         call(&mut s, "set_schedule", json!({"id": id, "def": def}));
         let t = call(&mut s, "schedule_table", json!({"id": id}));
+        assert_eq!(t["rows"][0]["cells"][2]["type"], json!({"name": "Single-Flush: 820 x 2040", "instances": 3}), "a type's cell says what an edit changes");
         let cell = &t["rows"][0]["cells"][0];
         assert_eq!(cell["row"]["path"], "mark");
         let target = &cell["targets"][0];
@@ -3351,6 +3403,30 @@ mod tests {
         // the schedule is a view, with its properties
         let props = call(&mut s, "describe", json!({"id": id}));
         assert_eq!(props["kind"], "Schedule");
+    }
+
+    #[test]
+    fn views_of_every_kind_have_types_and_take_a_new_one() {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let types = info["view_types"].as_array().unwrap().clone();
+        for k in ["floor_plan", "ceiling_plan", "three_d", "elevation", "section"] {
+            assert!(types.iter().any(|t| t["view_kind"] == k && t["default"] == true), "{k}");
+        }
+        let fp = types.iter().find(|t| t["view_kind"] == "floor_plan").unwrap()["id"].as_u64().unwrap();
+        let ground = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Ground").unwrap();
+        assert_eq!(ground["type_id"].as_u64(), Some(fp));
+        let t = call(&mut s, "describe_any_type", json!({"id": fp}));
+        assert_eq!((t["family"].as_str(), t["duplicate"].as_str()), (Some("Floor Plan"), Some("duplicate_view_type")));
+        let dp = call(&mut s, "duplicate_view_type", json!({"id": fp, "name": "Detail Plan"}))["id"].as_u64().unwrap();
+        assert!(s.handle("duplicate_view_type", &json!({"id": fp, "name": "Detail Plan"})).is_err(), "names are unique");
+        let gid = ground["id"].as_u64().unwrap();
+        call(&mut s, "patch_view", json!({"id": gid, "patch": {"view_type": dp}}));
+        let info = call(&mut s, "doc_info", json!({}));
+        assert_eq!(info["views"].as_array().unwrap().iter().find(|v| v["id"].as_u64() == Some(gid)).unwrap()["type_id"].as_u64(), Some(dp));
+        assert_eq!(call(&mut s, "describe", json!({"id": gid}))["type_id"].as_u64(), Some(dp));
+        call(&mut s, "rename_type", json!({"id": dp, "name": "Working Plan"}));
+        assert!(call(&mut s, "doc_info", json!({}))["view_types"].as_array().unwrap().iter().any(|t| t["name"] == "Working Plan" && t["default"] == false));
     }
 
     #[test]

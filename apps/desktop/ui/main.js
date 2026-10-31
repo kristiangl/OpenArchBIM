@@ -244,6 +244,8 @@ function modifyEnabled(id) {
     if (!st) return false;
     if (["a-select", "a-props", "a-load", "a-loadclose"].includes(id)) return true;
     if (id === "a-del") return !!(st.sel || (AnnModel._sketch && AnnModel._sketch.active));
+    // with lines or a boundary being drawn the tab's tools work on them
+    if (AnnModel._sketch && AnnModel._sketch.active) return !!AnnModel.sketchModify[id];
     return false;
   }
   if (["sel", "props", "v-vg"].includes(id)) return true;
@@ -324,7 +326,19 @@ function currentContext() {
       { label: "Label Dimension", items: [{ label: dim.segments.some((s) => s.param != null) ? "Change Label" : "Label", icon: "label", big: true, onclick: () => labelDimension(dim) }] },
       { label: "Witness Lines", items: [{ label: "Edit Witness Lines", icon: "editWitness", onclick: () => runCommand("edit-witness") }] } ] };
   }
-  return textContext();
+  const tc = textContext();
+  if (tc) return tc;
+  // anything selected brings the Modify tab forward, with nothing added to it
+  if (app.selection.length && !viewerBusy()) return { auto: true, key: "selection", title: "", groups: [] };
+  return null;
+}
+
+// a tool or sketch is running in the open view
+function viewerBusy() {
+  if (Sketch.active) return true;
+  if (app.view.kind === "plan") return Plan.tool !== "select";
+  if (app.view.kind === "elevation") return Elev.tool !== "select";
+  return false;
 }
 
 // Label Dimension: one segment takes a global parameter here; a chain is labelled segment by segment in Properties
@@ -349,9 +363,13 @@ function updateRibbonContext(activate) {
     const sig = c ? `${app.doc}:${c.key || c.title || "context"}` : "";
     const fresh = sig !== app.ctxSig;
     app.ctxSig = sig;
+    // a context that came from a selection: when it goes (Esc, a click on nothing) the Modify tab stays, and a
+    // second Esc goes to the first tab
+    const wasSel = app.ctxFromSel;
+    app.ctxFromSel = !!c && !viewerBusy();
     const doc = app.doc, showing = app.ribbonTab[doc];
     if (c && showing !== "Modify" && (activate || (c.auto && fresh))) { app.returnTab[doc] = showing; selectTab("Modify", c); return; }
-    if (!c && fresh && showing === "Modify" && app.returnTab[doc]) { const back = app.returnTab[doc]; app.returnTab[doc] = null; selectTab(back, c); return; }
+    if (!c && fresh && showing === "Modify" && app.returnTab[doc] && !wasSel) { const back = app.returnTab[doc]; app.returnTab[doc] = null; selectTab(back, c); return; }
     if (showing === "Modify") drawTab("Modify", c);
     syncModifyButtons(c);
   } finally {
@@ -620,13 +638,20 @@ function renderTree() {
   const leaf = (name, active, onopen, viewId) => ({ name, active, onopen, viewId });
   const ofKind = (k) => app.info.views.filter((x) => x.view_kind === k);
   const viewLeaf = (x) => leaf(x.name, v.viewId === x.id, () => openView(viewerOf(x.view_kind), x.id), x.id);
+  // a kind's views grouped by type: the default type's under the kind's own heading, every other type's under
+  // "Floor Plans (Detail Plan)" and so on
+  const byType = (k, heading) => {
+    const types = (app.info.view_types || []).filter((t) => t.view_kind === k);
+    if (types.length < 2) return [{ name: heading, children: ofKind(k).map(viewLeaf) }];
+    return types.map((t) => ({ name: t.default ? heading : `${heading} (${t.name})`, children: ofKind(k).filter((x) => x.type_id === t.id).map(viewLeaf) }));
+  };
   const nodes = [
     { name: "Views (all)", children: [
-      { name: "Floor Plans", children: ofKind("floor_plan").map(viewLeaf) },
-      { name: "Ceiling Plans", children: ofKind("ceiling_plan").map(viewLeaf) },
-      { name: "3D Views", children: ofKind("three_d").map(viewLeaf) },
-      { name: "Elevations", children: ofKind("elevation").map(viewLeaf) },
-      { name: "Sections", children: ofKind("section").map(viewLeaf) },
+      ...byType("floor_plan", "Floor Plans"),
+      ...byType("ceiling_plan", "Ceiling Plans"),
+      ...byType("three_d", "3D Views"),
+      ...byType("elevation", "Elevations"),
+      ...byType("section", "Sections"),
       { name: "Drafting Views", children: [] },
       { name: "Legends", children: [] },
       { name: "Schedules / Quantities", menu: newScheduleMenu, children: [
@@ -636,7 +661,7 @@ function renderTree() {
           { label: "Duplicate", run: async () => { const r = await run("duplicate_view", { id: x.id }); if (r) { await refresh(); await openView("schedule", r.id); } } },
           { sep: true },
           ...newScheduleMenu,
-          { label: "Delete", run: async () => { if (confirm(`Delete the schedule ${x.name}?`) && (await run("delete", { ids: [x.id] }))) { if (app.view.viewId === x.id) await openView("plan", app.lastPlanId); await refresh(); } } },
+          { label: "Delete", run: async () => { if ((await askConfirm(`Delete the schedule ${x.name}?`)) && (await run("delete", { ids: [x.id] }))) { if (app.view.viewId === x.id) await openView("plan", app.lastPlanId); await refresh(); } } },
         ] })),
         leaf("Wall and Floor Quantities", v.kind === "schedule" && v.viewId == null, () => openView("schedule", null)),
       ] },
@@ -1042,7 +1067,11 @@ function syncViewBar() {
     dl.onchange = send("settings", () => ({ detail_level: dl.value }));
     st.onchange = send("settings", () => ({ visual_style: st.value }));
     const tl = $("#vb-thin");
-    tl.onclick = () => { Plan.setThinLines(!Plan.thinLines); tl.classList.toggle("on", Plan.thinLines); };
+    // Thin Lines is one setting for every view: the open one draws again
+    tl.onclick = () => {
+      Plan.setThinLines(!Plan.thinLines); tl.classList.toggle("on", Plan.thinLines);
+      if (app.view.kind === "elevation") Elev.render(); else if (app.view.kind === "sheet") SheetView.render();
+    };
   }
   bar.classList.toggle("no-view", app.view.kind === "schedule" || !v);
   const on = app.view.kind !== "schedule" && !!v;
@@ -1081,7 +1110,7 @@ Plan.callbacks.addWalls = async (segments) => {
 };
 Plan.callbacks.editFloor = (id) => { app.selection = [id]; Plan.setSelection([id]); startFloorSketch(id); };
 Plan.callbacks.editRoof = (id) => { app.selection = [id]; Plan.setSelection([id]); startRoofSketch(id); };
-Plan.callbacks.select = (ids) => { app.browserSel = null; app.selection = ids; app.tdimRefs = {}; app.tdimPins = (ids.length === 1 && app.tdimMemory[ids[0]]) || {}; app.vp?.setSelection(ids); renderProperties(); refreshTempDims(); updateRibbonContext(); };
+Plan.callbacks.select = (ids) => { app.browserSel = null; app.selection = ids; app.tdimRefs = {}; app.tdimPins = (ids.length === 1 && app.tdimMemory[ids[0]]) || {}; app.vp?.setSelection(ids); renderProperties(); refreshTempDims(); updateRibbonContext(); refreshGrips3D(); };
 
 // ---- temporary dimensions ---------------------------------------------------------
 // The model works out the dimensions and what editing each one does (claude/interaction-tools.md, item 7).
@@ -1239,6 +1268,7 @@ function renderSelOpts() {
     b.onclick = () => {
       const n = { ...Plan.selectOptions(), [k]: !o[k] };
       Plan.setSelectOptions(n);
+      app.vp?.setPickByFace(n.face);
       try { localStorage.setItem("openarch.select", JSON.stringify(n)); } catch {}
       renderSelOpts();
     };
@@ -1643,10 +1673,64 @@ function point3D(sx, sy) {
   return g ? { x: Math.round(g[0] * 1000), y: Math.round(g[1] * 1000), snap: false, z: ed3.z } : null;
 }
 // the rubber band from the last point to the cursor on the level plane, the snap mark, and the distance or angle
+// ---- wall end grips in 3D: at the ends of each selected wall's location line, on its base (the work plane it is
+// drawn on); dragging one moves that end across that plane, as in plan
+let grips3 = [], grip3 = null; // [{ id, end, x, y, z }] in mm; the one dragged: { g, at: [x, y] }
+async function refreshGrips3D() {
+  const ids = app.view.kind === "3d" ? app.selection : [];
+  const r = ids.length ? await run("wall_ends", { ids }) : null;
+  grips3 = r ? r.walls.flatMap((w) => [0, 1].map((end) => ({ id: w.id, end, x: (end ? w.end : w.start)[0], y: (end ? w.end : w.start)[1], z: w.z_mm }))) : [];
+  draw3DEdit();
+}
+const grip3At = (sx, sy) => grips3.find((g) => { const s = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000]); return s && Math.abs(s.x - sx) <= 7 && Math.abs(s.y - sy) <= 7; });
+function drawGrips3D(c) {
+  const acc = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#1d6fb8";
+  for (const g of grips3) {
+    const at = grip3 && grip3.g === g && grip3.at ? grip3.at : [g.x, g.y];
+    const s = app.vp.project([at[0] / 1000, at[1] / 1000, g.z / 1000]);
+    if (!s) continue;
+    if (grip3 && grip3.g === g) { const o = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000]); c.strokeStyle = acc; c.setLineDash([5, 4]); c.beginPath(); c.moveTo(o.x, o.y); c.lineTo(s.x, s.y); c.stroke(); c.setLineDash([]); }
+    c.fillStyle = "#fff"; c.strokeStyle = acc; c.lineWidth = 1.5;
+    c.beginPath(); c.arc(s.x, s.y, 5, 0, Math.PI * 2); c.fill(); c.stroke();
+  }
+}
+$("#viewport").addEventListener("pointerdown", (e) => {
+  if (ed3 || e.button !== 0 || !grips3.length) return;
+  const g = grip3At(e.offsetX, e.offsetY);
+  if (!g) return;
+  // the grip takes the press: the view neither selects nor orbits
+  e.stopImmediatePropagation();
+  $("#viewport").setPointerCapture(e.pointerId);
+  grip3 = { g, at: null };
+}, true);
+$("#viewport").addEventListener("pointermove", (e) => {
+  if (!grip3) return;
+  e.stopImmediatePropagation();
+  const p = app.vp.groundAt(e.offsetX, e.offsetY, grip3.g.z / 1000);
+  if (p) grip3.at = [Math.round(p[0] * 1000), Math.round(p[1] * 1000)];
+  draw3DEdit();
+}, true);
+$("#viewport").addEventListener("pointerup", async (e) => {
+  if (!grip3) return;
+  e.stopImmediatePropagation();
+  const { g, at } = grip3; grip3 = null;
+  if (at && Math.hypot(at[0] - g.x, at[1] - g.y) > 1) { if (await run("move_wall_end", { id: g.id, end: g.end, point: at })) { await refresh(); renderProperties(); } }
+  refreshGrips3D();
+}, true);
+
 function draw3DEdit() {
   const cv = $("#viewport"), ov = $("#vp-over");
-  ov.classList.toggle("on", !!ed3);
-  if (!ed3 || !app.vp) return;
+  const showGrips = !ed3 && grips3.length && app.view.kind === "3d";
+  ov.classList.toggle("on", !!ed3 || !!showGrips);
+  if (!app.vp) return;
+  if (showGrips) {
+    ov.width = cv.clientWidth; ov.height = cv.clientHeight;
+    const c = ov.getContext("2d");
+    c.clearRect(0, 0, ov.width, ov.height);
+    drawGrips3D(c);
+    return;
+  }
+  if (!ed3) return;
   ov.width = cv.clientWidth; ov.height = cv.clientHeight;
   const c = ov.getContext("2d"), acc = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#1d6fb8";
   const S = (p) => app.vp.project([p[0] / 1000, p[1] / 1000, ed3.z]);
@@ -1951,6 +2035,8 @@ async function startElevationTool() {
 }
 async function startSectionTool() {
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return; }
+  // in an elevation or a section, a section is drawn across the view
+  if (app.view.kind === "elevation") { Elev.setTool("section"); return; }
   if (!(await ensurePlan("A section"))) return;
   Plan.startSection();
 }
@@ -2003,6 +2089,10 @@ Plan.callbacks.gridFromLine = async (source, offset, point) => {
   const r = await run("grid_from_line", { source, offset, point: [point.x, point.y] });
   if (r) await gridResult(r, "Grid created.");
 };
+// the crop region dragged: its corners, or how far the annotation crop lies outside it
+Plan.callbacks.crop = async (patch) => {
+  if (await run("patch_view", { id: app.view.viewId, patch: { crop: patch } })) await refresh();
+};
 Plan.callbacks.patchGrid = async (id, patch) => {
   await run("patch_grid", { id, patch });
   await refresh();
@@ -2023,6 +2113,25 @@ Plan.callbacks.toggleGridLock = async (pin) => {
   Plan.callbacks.select(Plan.selection());
 };
 // a grid placed in an elevation runs away from the viewer at the picked position
+// A section drawn in an elevation or section view: a line up or down the view makes a section through that place,
+// running back through the view's depth and looking along the view; its height is the line's.
+Elev.callbacks.addSection = async (a, b) => {
+  const f = Elev.data.frame, r3 = (v) => Math.round(v * 1000) / 1000;
+  if (Math.abs(b.u - a.u) > Math.abs(b.z - a.z)) { setPrompt("Draw the section line up or down the view: a horizontal section is a plan view.", true); return; }
+  if (Math.abs(b.z - a.z) < 100) { setPrompt("The section line is too short.", true); return; }
+  const u = (a.u + b.u) / 2;
+  const start = [r3(f.origin[0] + f.right[0] * u), r3(f.origin[1] + f.right[1] * u)];
+  const end = [r3(start[0] + f.look[0] * f.depth_mm), r3(start[1] + f.look[1] * f.depth_mm)];
+  const [z0, z1] = [Math.min(a.z, b.z), Math.max(a.z, b.z)];
+  // the level the section is drawn on in plans: the highest at or below its bottom
+  const lv = [...app.info.levels].sort((x, y) => x.elevation_mm - y.elevation_mm), level = lv.filter((l) => l.elevation_mm <= z0 + 1).pop() || lv[0];
+  const r = await run("add_section", { level_id: level.id, start, end });
+  if (!r) return;
+  await run("patch_section", { id: r.id, patch: { z_range: [z0, z1] } });
+  Elev.setTool("select");
+  await refresh();
+  setPrompt("Section made. It is in the Project Browser under Sections; its line shows in plans at its level.");
+};
 Elev.callbacks.addGrid = async (u) => {
   const f = Elev.data.frame, r3 = (v) => Math.round(v * 1000) / 1000;
   const a = { x: r3(f.origin[0] + f.right[0] * u), y: r3(f.origin[1] + f.right[1] * u) };
@@ -2197,6 +2306,24 @@ async function save(asNew) {
   if (await run("save", { path })) { setPrompt(`Saved ${path}`); await refresh(); }
 }
 
+// The 3D view's mouse buttons: which one selects, orbits and pans
+function mouseButtonsDialog(vp) {
+  openModal("3D Mouse Buttons", (body, foot, close) => {
+    const b = vp.buttons, names = [[0, "Left"], [1, "Wheel (middle)"], [2, "Right"]];
+    const pick = (key) => { const s = el("select", {}, names.map(([v, l]) => new Option(l, v, false, b[key] === v))); s.onchange = () => { b[key] = Number(s.value); }; return s; };
+    const msg = el("div", { className: "modal-msg" });
+    body.append(
+      el("label", { className: "new-row" }, [el("span", { textContent: "Select" }), pick("select")]),
+      el("label", { className: "new-row" }, [el("span", { textContent: "Orbit" }), pick("orbit")]),
+      el("label", { className: "new-row" }, [el("span", { textContent: "Pan" }), pick("pan")]),
+      el("div", { className: "modal-note", textContent: "Shift with the pan button orbits. A right click that doesn't move opens the view's menu." }), msg);
+    foot.append(button("Cancel", close), button("OK", () => {
+      if (new Set([b.select, b.orbit, b.pan]).size < 3) { msg.textContent = "Give each a different button."; return; }
+      vp.setButtons(b); close();
+    }, true));
+  });
+}
+
 // ---- closing the program: each open family is offered its own save first, then the project (Yes, No or Cancel)
 let exiting = false;
 function askYesNoCancel(title, text) {
@@ -2296,7 +2423,7 @@ function newCollectionDialog() {
   });
 }
 async function deleteCollection(c) {
-  if (!confirm(`Delete the sheet collection ${c.name}? Its sheets stay in the project, in no collection.`)) return;
+  if (!(await askConfirm(`Delete the sheet collection ${c.name}? Its sheets stay in the project, in no collection.`))) return;
   if (await run("delete", { ids: [c.id] })) await refresh();
 }
 // Duplicate Sheet: the sheet only, its views as new views, or the views with their detailing; the copy opens
@@ -2308,7 +2435,7 @@ async function duplicateSheet(s, how) {
   setPrompt(`Duplicated ${s.number} as ${t ? `${t.number} - ${t.name}` : "a new sheet"}.`);
 }
 async function deleteSheet(s) {
-  if (!confirm(`Delete sheet ${s.number} - ${s.name}? The views on it stay in the project.`)) return;
+  if (!(await askConfirm(`Delete sheet ${s.number} - ${s.name}? The views on it stay in the project.`))) return;
   if (await run("delete", { ids: [s.id] })) { if (app.view.kind === "sheet" && app.view.viewId === s.id) await openView("plan", app.lastPlanId); await refresh(); }
 }
 SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); };
@@ -2316,6 +2443,22 @@ SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties();
 const patchSegments = async (p, segments) => { if (await run("patch_sheet_schedule", { id: p.id, patch: { segments } })) await refresh(); };
 SheetView.callbacks.moveSegment = (p, i, at) => patchSegments(p, p.segments.map((g, k) => (k === i ? { ...g, at } : g)));
 SheetView.callbacks.openSchedule = (id) => openView("schedule", id);
+// a double-click on a title block's label edits the value it shows: the sheet's own, or the project's
+const SHEET_PARAM = { "Sheet Number": "number", "Sheet Name": "name", "Drawn By": "drawn_by", "Checked By": "checked_by", "Designed By": "designed_by", "Approved By": "approved_by", "Sheet Issue Date": "issue_date", "Current Revision": "current_revision" };
+const PROJECT_PARAM = { "Project Name": "name", "Project Number": "number", "Client Name": "client", "Project Address": "address", "Project Status": "status", "Author": "author" };
+SheetView.callbacks.editLabel = async (params) => {
+  const p = params.find((x) => SHEET_PARAM[x] || PROJECT_PARAM[x]);
+  if (!p) { setPrompt(`${params.join(", ")} is worked out, not typed.`, true); return; }
+  const sheetId = app.view.viewId;
+  if (SHEET_PARAM[p]) {
+    const d = await run("describe", { id: sheetId });
+    const row = d && d.groups.flatMap((g) => g.rows).find((r) => r.label === p);
+    namePrompt(p, row ? row.value : "", async (v) => { await Backend.call("patch_sheet", { id: sheetId, patch: { [SHEET_PARAM[p]]: v } }); await refresh(); });
+  } else {
+    const info = { ...(app.info.project || {}) };
+    namePrompt(p, info[PROJECT_PARAM[p]] || "", async (v) => { await Backend.call("set_project_info", { info: { ...info, [PROJECT_PARAM[p]]: v } }); await refresh(); });
+  }
+};
 SheetView.callbacks.scheduleMenu = (hit, x, y) => {
   const p = hit.p, L = hit.layout, g = L.segs[hit.seg];
   // split: this segment ends before the row; the rest go to a new segment beside it
@@ -2394,6 +2537,14 @@ async function deactivateViewport() {
 $("#activation-bar button").onclick = () => deactivateViewport();
 SheetView.callbacks.openView = (viewId) => { const v = viewById(viewId); if (v) openView(viewerOf(v.view_kind), viewId); };
 SheetView.callbacks.moveViewport = async (id, centre) => { if (await run("patch_viewport", { id, patch: { centre } })) await refresh(); };
+// several views moved together: one undo step
+SheetView.callbacks.moveViewports = async (moves) => {
+  const mark = (await run("edit_begin", {}) || {}).mark;
+  try { for (const [id, centre] of moves) await Backend.call("patch_viewport", { id, patch: { centre } }); } catch (e) { setPrompt(String(e.message || e), true); }
+  if (mark != null) await run("edit_commit", { mark, name: "Move Viewports" });
+  await refresh();
+};
+SheetView.callbacks.titleLine = async (id, len) => { if (await run("patch_viewport", { id, patch: { title_line_mm: len } })) { await refresh(); renderProperties(); } };
 SheetView.callbacks.placeView = async (sheet, view, centre) => {
   // a schedule goes with its top left corner where it is dropped
   if ((viewById(view) || {}).view_kind === "schedule") {
@@ -2422,7 +2573,7 @@ function projectInfoDialog() {
 }
 
 async function openIfc(path) {
-  if (app.info.dirty && !confirm("Discard unsaved changes?")) return;
+  if (app.info.dirty && !(await askConfirm("Discard unsaved changes?"))) return;
   setPrompt(`Reading ${path}...`);
   const r = await run("open_ifc", { path });
   if (!r) return;
@@ -2444,7 +2595,7 @@ async function openIfc(path) {
 }
 
 async function newProject(confirmed) {
-  if (!confirmed && app.info.dirty && !confirm("Discard unsaved changes?")) return;
+  if (!confirmed && app.info.dirty && !(await askConfirm("Discard unsaved changes?"))) return;
   await run("new_project", {});
   app.selection = []; app.tdimMemory = {}; Plan.setSelection([]);
   await refresh(true);
@@ -2504,6 +2655,11 @@ $("#qa-save").onclick = () => save(false);
 $("#qa-undo").onclick = undo;
 $("#qa-redo").onclick = redo;
 $("#qa-export").onclick = () => runCommand("export");
+// Help is a drop-down on the top bar, not a ribbon tab
+$("#qa-help").onclick = (e) => {
+  const r = e.currentTarget.getBoundingClientRect();
+  showMenu(r.left, r.bottom, [{ label: "Open Log Folder", run: () => runCommand("open-log") }]);
+};
 
 // The File menu: under the File button at the left of the top bar
 $("#file-btn").onclick = () => {
@@ -2547,6 +2703,14 @@ if (appWindow) {
   }
 }
 
+// no browser right-click menu anywhere (the views and the browser have their own); text boxes keep theirs for cut,
+// copy and paste
+document.addEventListener("contextmenu", (e) => {
+  const t = e.target;
+  if (t && (t.tagName === "TEXTAREA" || (t.tagName === "INPUT" && /^(text|search|number|)$/.test(t.type)) || t.isContentEditable)) return;
+  e.preventDefault();
+});
+
 let keyBuf = "", keyTimer = null;
 document.addEventListener("keydown", (e) => {
   const typing = e.target && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
@@ -2559,10 +2723,15 @@ document.addEventListener("keydown", (e) => {
     if (k === "o") { e.preventDefault(); openProject(); return; }
   }
   if (typing) return;
+  // Esc with nothing selected and no tool running goes to the first tab (Architecture in a project)
+  if (e.key === "Escape" && !mod && !app.selection.length && !viewerBusy()) {
+    const first = Object.keys(ribbonSet())[0];
+    if (app.ribbonTab[app.doc] !== first) { app.returnTab[app.doc] = null; selectTab(first); }
+  }
   if (app.view.kind === "elevation" && Elev.key(e)) { e.preventDefault(); return; }
   if (e.key === " " && !mod && !e.repeat && !Sketch.active && Plan.tool !== "elevation" && !(app.view.kind === "plan" && Plan.tool === "text")) { flipAction().then((used) => { if (used) renderProperties(); }); e.preventDefault(); return; }
   if (app.view.kind === "plan" && Plan.key(e)) { e.preventDefault(); return; }
-  if (app.view.kind === "3d" && e.key === "Escape" && app.selection.length) { app.selection = []; app.vp?.setSelection([]); Plan.setSelection([]); renderProperties(); return; }
+  if (app.view.kind === "3d" && e.key === "Escape" && app.selection.length) { app.selection = []; app.vp?.setSelection([]); Plan.setSelection([]); renderProperties(); updateRibbonContext(); refreshGrips3D(); return; }
   if (e.key === "Delete" || e.key === "Backspace") { e.preventDefault(); deleteSelection(); return; }
   // Two letter shortcuts
   if (/^[a-z]$/i.test(e.key) && !mod) {
@@ -3129,8 +3298,17 @@ async function initViewport() {
     vp.onPick((id, additive) => {
       let ids = additive ? [...app.selection] : [];
       if (id !== null) ids = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
-      app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext();
+      app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext(); refreshGrips3D();
     });
+    // a box dragged with the select button
+    vp.setPickByFace(Plan.selectOptions().face);
+    vp.onBand((picked, additive) => {
+      const ids = additive ? [...new Set([...app.selection, ...picked])] : picked;
+      app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext(); refreshGrips3D();
+    });
+    vp.onMenu((x, y) => showMenu(x, y, [{ label: "Mouse Buttons...", run: () => mouseButtonsDialog(vp) }]));
+    // what is drawn over the view follows the camera
+    vp.onRender(() => { if (ed3 || grips3.length) draw3DEdit(); });
     pill.textContent = `GPU: ${vp.info}`;
     pill.classList.add("ok");
     const btn = $("#stress");

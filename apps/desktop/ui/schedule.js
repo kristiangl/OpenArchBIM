@@ -68,6 +68,9 @@ const Sched = (() => {
   function editCell(td, c) {
     const r = c.row;
     const send = async (patch) => {
+      const q = c.type ? `Are you sure you want to change the type "${c.type.name}"?\nThis will update ${c.type.instances} instance${c.type.instances === 1 ? "" : "s"} of it.`
+        : c.targets.length > 1 ? `This will change ${c.targets.length} elements. Go ahead?` : null;
+      if (q && !(await askConfirm(q, "Change Value"))) { render(table.id); return; }
       for (const t of c.targets) { try { await Backend.call(t.method, { id: t.id, patch, ...(t.extra || {}) }); } catch (e) { setPrompt(String(e.message || e), true); break; } }
       await refresh();
     };
@@ -110,7 +113,7 @@ const Sched = (() => {
     const ids = pickedIds();
     if (!ids.length) { setPrompt("Pick a row first.", true); return; }
     const what = table.category === "Sheets" ? "sheet" : table.category === "Views" ? "view" : "element";
-    if (!confirm(`Delete ${ids.length} ${what}${ids.length === 1 ? "" : "s"} from the model?`)) return;
+    if (!(await askConfirm(`Delete ${ids.length} ${what}${ids.length === 1 ? "" : "s"} from the model?`))) return;
     if (await run("delete", { ids })) { picked = new Set(); app.selection = []; await refresh(); }
   }
 

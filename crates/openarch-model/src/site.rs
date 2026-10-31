@@ -1033,13 +1033,15 @@ impl Document {
         let along = |p: Point, d: Point| (p.x - m.position.x) * d.x + (p.y - m.position.y) * d.y;
         let b = self.model_bounds();
         let corners = |lo: Point, hi: Point| [Point::new(lo.x, lo.y), Point::new(hi.x, lo.y), Point::new(hi.x, hi.y), Point::new(lo.x, hi.y)];
-        let (mut l, mut r) = def.crop.unwrap_or_else(|| match b {
+        let fit = || match b {
             Some((lo, hi)) => {
                 let us: Vec<f64> = corners(lo, hi).iter().map(|p| along(*p, right)).collect();
                 (-(us.iter().cloned().fold(f64::INFINITY, f64::min)) + 2000.0, us.iter().cloned().fold(f64::NEG_INFINITY, f64::max) + 2000.0)
             }
             None => (10000.0, 10000.0),
-        });
+        };
+        // uncropped, the view takes in the whole model
+        let (mut l, mut r) = if v.crop.enabled { def.crop.unwrap_or_else(fit) } else { fit() };
         // `l` is how far it reaches to the left of the marker, `r` to the right
         l = l.max(1000.0);
         r = r.max(1000.0);
@@ -1254,7 +1256,7 @@ impl Document {
                 continue;
             }
             let u = u_of(Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0));
-            if section.is_some() && (u < 0.0 || u > frame.right_mm) {
+            if section.is_some() && (u < -frame.left_mm || u > frame.right_mm) {
                 continue;
             }
             grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], head_dia_mm: self.grid_type(g.grid_type).map_or(8.0, |t| t.bubble_dia_mm), pinned: g.pinned });

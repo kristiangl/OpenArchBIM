@@ -26,7 +26,7 @@ const Ann = (() => {
     const corners = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
     ctx.save();
     trace(); ctx.clip("evenodd");
-    ctx.strokeStyle = colour; ctx.fillStyle = colour; ctx.lineWidth = Math.max(0.6, f.pen_mm * o.k); ctx.lineCap = "butt";
+    ctx.strokeStyle = colour; ctx.fillStyle = colour; ctx.lineWidth = Math.max(0.6, Pen.w(f.pen_mm, o.k)); ctx.lineCap = "butt";
     let budget = 2000;
     // a model pattern's sizes are model mm: over the view's scale they are paper mm, as the drawing is
     const u = def.model ? 1 / (modelScale || 1) : 1;
@@ -79,7 +79,7 @@ const Ann = (() => {
       s.pts.forEach((q, i) => { const a = m(q); i ? ctx.lineTo(a.x, a.y) : ctx.moveTo(a.x, a.y); });
       if (s.closed) ctx.closePath();
       ctx.strokeStyle = col || (s.hidden ? grey : rgb(s.color));
-      ctx.lineWidth = (opt.thin ? 1 : Math.max(1, s.width_mm * o.k)) * widen;
+      ctx.lineWidth = (opt.thin ? 1 : Math.max(1, Pen.w(s.width_mm, o.k))) * widen;
       ctx.setLineDash(s.hidden ? [4, 3] : (s.dash || []).map((d) => Math.max(d * o.k, 0.8)));
       ctx.stroke();
     }
@@ -127,7 +127,7 @@ const Ann = (() => {
       ctx.save();
       ctx.globalAlpha = t.hidden ? 0.4 : 1;
       if (st.opaque && opt.bg) { ctx.fillStyle = opt.bg; ctx.fillRect(left - off, top - off, W + 2 * off, H + 2 * off); }
-      if (st.show_border) { ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, st.line_mm * o.k); ctx.setLineDash([]); ctx.strokeRect(left - off, top - off, W + 2 * off, H + 2 * off); }
+      if (st.show_border) { ctx.strokeStyle = ink; ctx.lineWidth = Math.max(1, Pen.w(st.line_mm, o.k)); ctx.setLineDash([]); ctx.strokeRect(left - off, top - off, W + 2 * off, H + 2 * off); }
       ctx.fillStyle = ink; ctx.strokeStyle = ink; ctx.font = fontOf(st, px); ctx.textBaseline = "top"; ctx.textAlign = "left";
       let ha = t.halign || "left";
       if (o.flip) ha = ha === "left" ? "right" : ha === "right" ? "left" : ha;
