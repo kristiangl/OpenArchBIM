@@ -25,84 +25,73 @@ const Backend = {
     } catch {}
   },
 
-  // File dialogs: native in the desktop app, a plain prompt in a browser.
+  async fileDialog(kind, options) {
+    if (this.isDesktop) return window.__TAURI__.core.invoke("plugin:dialog|" + kind, { options });
+    const response = await fetch("/dialog", { method: "POST", body: JSON.stringify({ kind, options }) });
+    const result = await response.json();
+    if (result.err !== undefined) throw new Error(result.err);
+    if (result.unsupported) return this.pathPrompt(options.title || (kind === "save" ? "Save As" : "Open"), options.defaultPath);
+    return result.ok;
+  },
+  pathPrompt(title, current = "") {
+    return new Promise((resolve) => openModal(title, (body, foot, close) => {
+      const input = document.createElement("input"); input.type = "text"; input.value = current || ""; input.style.width = "100%";
+      body.append(input);
+      const done = (value) => { close(); resolve(value); };
+      body.closest(".modal-back").onEscape = () => done(null);
+      foot.append(button("Cancel", () => done(null)), button("OK", () => done(input.value.trim() || null), true));
+      input.onkeydown = (e) => { if (e.key === "Enter") done(input.value.trim() || null); };
+      setTimeout(() => { input.focus(); input.select(); }, 0);
+    }));
+  },
+
+  // Native dialogs in the desktop app and Windows browser preview; path dialog on other preview hosts.
   async pickSavePath(current) {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.save({ defaultPath: current || "Untitled.oab", filters: [{ name: "OpenArch BIM project", extensions: ["oab"] }] });
-    }
-    return window.prompt("Save as (file path)", current || "untitled.oab");
+    return this.fileDialog("save", { defaultPath: current || "Untitled.oab", filters: [{ name: "OpenArch BIM project", extensions: ["oab"] }] });
   },
 
   async pickOpenPath() {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      // .ironbark is the old extension (before the rename); those files still open
-      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM project or IFC file", extensions: ["oab", "ironbark", "ifc"] }, { name: "IFC file", extensions: ["ifc"] }] });
-    }
-    return window.prompt("Open (file path)");
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "OpenArch BIM project or IFC file", extensions: ["oab", "ironbark", "ifc"] }, { name: "IFC file", extensions: ["ifc"] }] });
   },
 
   // Family files (.oaf; .ibfam is the old extension and still opens)
   async pickSaveFamily(current) {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.save({ defaultPath: current || "Family.oaf", filters: [{ name: "OpenArch BIM family", extensions: ["oaf"] }] });
-    }
-    return window.prompt("Save family as (file path)", current || "family.oaf");
+    return this.fileDialog("save", { defaultPath: current || "Family.oaf", filters: [{ name: "OpenArch BIM family", extensions: ["oaf"] }] });
   },
 
   // Shared parameter files (.txt)
   async pickOpenShared() {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
-    }
-    return window.prompt("Shared parameter file (path)");
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
   },
   async pickSaveShared(current) {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.save({ defaultPath: current || "Shared Parameters.txt", filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
-    }
-    return window.prompt("Create shared parameter file at (path)", current || "shared parameters.txt");
+    return this.fileDialog("save", { defaultPath: current || "Shared Parameters.txt", filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
   },
 
   // IFC export (.ifc)
   async pickSaveIfc(current) {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.save({ defaultPath: current || "Project.ifc", filters: [{ name: "IFC4 file", extensions: ["ifc"] }] });
-    }
-    return window.prompt("Export IFC as (file path)", current || "project.ifc");
+    return this.fileDialog("save", { defaultPath: current || "Project.ifc", filters: [{ name: "IFC4 file", extensions: ["ifc"] }] });
   },
 
   // Lookup table files (.csv)
   async pickOpenCsv() {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });
-    }
-    return window.prompt("Import lookup table (CSV file path)");
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });
   },
   async pickSaveCsv(current) {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.save({ defaultPath: current || "Table.csv", filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });
-    }
-    return window.prompt("Export lookup table as (file path)", current || "table.csv");
+    return this.fileDialog("save", { defaultPath: current || "Table.csv", filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });
   },
 
   async pickFolder() {
-    if (this.isDesktop && window.__TAURI__.dialog) return window.__TAURI__.dialog.open({ directory: true, multiple: false });
-    return window.prompt("Output folder");
+    return this.fileDialog("open", { directory: true, multiple: false });
   },
   async pickSaveJson(current) {
-    if (this.isDesktop && window.__TAURI__.dialog) return window.__TAURI__.dialog.save({ defaultPath: current, filters: [{ name: "Export settings", extensions: ["json"] }] });
-    return window.prompt("Save settings as (file path)", current);
+    return this.fileDialog("save", { defaultPath: current, filters: [{ name: "Export settings", extensions: ["json"] }] });
   },
   async pickOpenJson() {
-    if (this.isDesktop && window.__TAURI__.dialog) return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "Export settings", extensions: ["json"] }] });
-    return window.prompt("Load settings (file path)");
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "Export settings", extensions: ["json"] }] });
   },
 
   async pickOpenFamily() {
-    if (this.isDesktop && window.__TAURI__.dialog) {
-      return window.__TAURI__.dialog.open({ multiple: false, filters: [{ name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }] });
-    }
-    return window.prompt("Load family (file path)");
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }] });
   },
 };
 

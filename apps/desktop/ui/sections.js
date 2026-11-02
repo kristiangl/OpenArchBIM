@@ -12,7 +12,7 @@ const Sections = (() => {
   let split = null; // Split Segment: { id, at (where the line splits), preview (corners the model would give) }
   const attach = (h) => { H = h; };
   const r3 = (v) => Math.round(v * 1000) / 1000;
-  const HEAD_MM = 4; // the head circle sits this far (paper mm) beyond the end of the line
+  const MARKER_HIT_MM = 8; // selection tolerance round the family origin, in paper millimetres
 
   const P = (a) => ({ x: a[0], y: a[1] });
   const lookAngle = (look) => (Math.atan2(look[1], look[0]) * 180) / Math.PI;
@@ -59,15 +59,11 @@ const Sections = (() => {
     const dot = (v, w) => v.x * w.x + v.y * w.y;
     const moved = (q, v, k) => ({ x: q.x + v.x * k, y: q.y + v.y * k });
     if (drag.type === "end0" || drag.type === "end1") {
-      if (n > 2) {
-        // a jogged line's end slides along its own run
-        const i = drag.type === "end0" ? 0 : n - 1, q = pts[i], k = dot({ x: p.x - q.x, y: p.y - q.y }, t);
-        pts[i] = moved(q, t, k);
-        return { ...s, pts: pts.map((c) => [c.x, c.y]) };
-      }
-      const start = drag.type === "end0" ? [p.x, p.y] : s.start, end = drag.type === "end1" ? [p.x, p.y] : s.end;
-      const u = unit(P(start), P(end)), tt = s.flipped ? { x: -u.x, y: -u.y } : u;
-      return { ...s, start, end, pts: [start, end], look: [-tt.y, tt.x] };
+      const i = drag.type === "end0" ? 0 : n - 1, j = i === 0 ? 1 : n - 2;
+      const direction = unit(pts[j], pts[i]);
+      const along = Math.max(100, dot({ x: p.x - pts[j].x, y: p.y - pts[j].y }, direction));
+      pts[i] = moved(pts[j], direction, along);
+      return { ...s, start: [pts[0].x, pts[0].y], end: [pts[n - 1].x, pts[n - 1].y], pts: pts.map((c) => [c.x, c.y]) };
     }
     if (drag.type === "run") {
       const k = drag.index, off = dot({ x: p.x - pts[2 * k].x, y: p.y - pts[2 * k].y }, nn);
@@ -84,9 +80,9 @@ const Sections = (() => {
     return s;
   }
 
-  function mark(ctx, fam, labels, at, outward, look, o) {
+  function mark(ctx, fam, labels, at, look, o) {
     // the head (circle, divider line, labels) stays upright; the arrow turns with the side the section looks at
-    const c = { x: at.x + outward.x * HEAD_MM * o.k, y: at.y + outward.y * HEAD_MM * o.k };
+    const c = at; // the line ends at the intersection of the family reference planes
     const opt = { pats: H.pats && H.pats() };
     if (o.head) Ann.paths(ctx, fam.body, { x: c.x, y: c.y, k: o.k, rot: 0 }, o.hot, o.bg, opt);
     Ann.paths(ctx, fam.pointer, { x: c.x, y: c.y, k: o.k, rot: lookAngle(look) }, o.hot, o.bg, opt);
@@ -121,9 +117,15 @@ const Sections = (() => {
     }
     const n = S.length;
     if (s.family) {
-      const o = { k, col, hot: selected || hovered ? accent : null, bg }, out0 = unit(S[1], S[0]), out1 = unit(S[n - 2], S[n - 1]);
-      mark(ctx, s.family, s.labels, S[0], out0, s.look, { ...o, head: true });
-      mark(ctx, s.family, [], S[n - 1], out1, s.look, { ...o, head: false });
+      const o = { k, col, hot: selected || hovered ? accent : null, bg };
+      const endMark = (kind, at) => {
+        if (kind === "none") return;
+        const tail = kind === "tail";
+        const family = tail && s.tail_family ? s.tail_family : s.family;
+        mark(ctx, family, tail ? [] : s.labels, at, s.look, { ...o, head: !tail || !!s.tail_family });
+      };
+      endMark(s.start_marker || "head", S[0]);
+      endMark(s.end_marker || "tail", S[n - 1]);
     }
     if (selected && !s.pinned) grips(ctx, s, pts, S, L, accent);
     ctx.restore();
@@ -134,16 +136,24 @@ const Sections = (() => {
     const lk = { x: s.look[0], y: -s.look[1] }, n = S.length;
     const f = s.frame;
     if (f && f.depth) {
-      const o = P(f.o), at = (u, d) => H.toScreen({ x: o.x + f.right[0] * u + f.look[0] * d, y: o.y + f.right[1] * u + f.look[1] * d });
-      const F0 = at(0, f.depth), F1 = at(f.width, f.depth);
-      // the ends at the left and right of the view
+      // Project the current ends onto the head run's plane, then offset by the far clip depth.
+      // The preview points change before the server frame does; using its old origin/width skews the sides.
+      const o = pts[0], right = unit(pts[0], pts[1]);
+      const far = (p) => {
+        const u = (p.x - o.x) * right.x + (p.y - o.y) * right.y;
+        return H.toScreen({ x: o.x + right.x * u + s.look[0] * f.depth, y: o.y + right.y * u + s.look[1] * f.depth });
+      };
       const [A, B] = s.flipped ? [S[n - 1], S[0]] : [S[0], S[n - 1]];
+      const [left, rightEnd] = s.flipped ? [pts[n - 1], pts[0]] : [pts[0], pts[n - 1]];
+      const F0 = far(left), F1 = far(rightEnd);
       ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
       ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(F0.x, F0.y); ctx.lineTo(F1.x, F1.y); ctx.lineTo(B.x, B.y); ctx.stroke();
       ctx.setLineDash([]);
       boxes.push({ id: s.id, type: "depth", x: (F0.x + F1.x) / 2, y: (F0.y + F1.y) / 2, r: 5, sq: true, lk });
     }
     boxes.push({ id: s.id, type: "end0", x: S[0].x, y: S[0].y, r: 5 }, { id: s.id, type: "end1", x: S[n - 1].x, y: S[n - 1].y, r: 5 });
+    for (const [end, at] of [[0, S[0]], [1, S[n - 1]]])
+      boxes.push({ id: s.id, type: "cycle", end, x: at.x + lk.x * 18, y: at.y + lk.y * 18, r: 7 });
     // the flip and break controls sit either side of the middle of the longest run, clear of the jogs
     let k0 = 0;
     for (let k = 1; k < n / 2; k++) if (len(pts[2 * k], pts[2 * k + 1]) > len(pts[2 * k0], pts[2 * k0 + 1])) k0 = k;
@@ -173,7 +183,11 @@ const Sections = (() => {
     ctx.save();
     for (const b of boxes) {
       ctx.strokeStyle = accent; ctx.fillStyle = bg; ctx.lineWidth = 1.5; ctx.setLineDash([]);
-      if (b.type === "flip") {
+      if (b.type === "cycle") {
+        ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+        ctx.beginPath(); ctx.arc(b.x, b.y, 3.7, 0.5, 5.5); ctx.stroke();
+        ctx.beginPath(); ctx.moveTo(b.x + 1, b.y - 4); ctx.lineTo(b.x + 4, b.y - 3); ctx.lineTo(b.x + 3, b.y); ctx.stroke();
+      } else if (b.type === "flip") {
         // two arrows, one each way across the line: the side the section looks at
         ctx.beginPath(); ctx.arc(b.x, b.y, b.r, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
         const n = b.lk, t = { x: -n.y, y: n.x }, tip = (sg) => ({ x: b.x + n.x * 4.5 * sg, y: b.y + n.y * 4.5 * sg });
@@ -223,10 +237,11 @@ const Sections = (() => {
     ctx.beginPath(); ctx.moveTo(A.x, A.y); ctx.lineTo(B.x, B.y); ctx.stroke();
     ctx.setLineDash([]);
     if (l > 8 && H.family()) {
-      const wl = Math.hypot(b.x - a.x, b.y - a.y), look = [-(b.y - a.y) / wl, (b.x - a.x) / wl], u = unit(A, B);
+      const wl = Math.hypot(b.x - a.x, b.y - a.y), look = [-(b.y - a.y) / wl, (b.x - a.x) / wl];
       const o = { k: H.paperPx(), col: accent, hot: accent, bg };
-      mark(ctx, H.family(), [], A, { x: -u.x, y: -u.y }, look, { ...o, head: true });
-      mark(ctx, H.family(), [], B, u, look, { ...o, head: false });
+      mark(ctx, H.family(), [], A, look, { ...o, head: true });
+      const tail = H.tailFamily();
+      mark(ctx, tail || H.family(), [], B, look, { ...o, head: !!tail });
     }
     ctx.restore();
   }
@@ -243,9 +258,15 @@ const Sections = (() => {
         bands.push([[a.x + nn[0] * tol, a.y + nn[1] * tol], [b.x + nn[0] * tol, b.y + nn[1] * tol], [b.x - nn[0] * tol, b.y - nn[1] * tol], [a.x - nn[0] * tol, a.y - nn[1] * tol]]);
       }
     }
-    const u = unit(pts[0], pts[1]), c = [pts[0].x - u.x * HEAD_MM * m, pts[0].y - u.y * HEAD_MM * m], r = HEAD_MM * m;
+    const c = [pts[0].x, pts[0].y], r = MARKER_HIT_MM * m;
     const head = [[c[0] - r, c[1] - r], [c[0] + r, c[1] - r], [c[0] + r, c[1] + r], [c[0] - r, c[1] + r]];
-    return { ring: bands[0] || head, rings: [...bands, head] };
+    const rings = [...bands];
+    for (const [kind, a, b] of [[s.start_marker || "head", pts[0], pts[1]], [s.end_marker || "tail", pts[pts.length - 1], pts[pts.length - 2]]]) {
+      if (kind === "none") continue;
+      const c = [a.x, a.y];
+      rings.push([[c[0] - r, c[1] - r], [c[0] + r, c[1] - r], [c[0] + r, c[1] + r], [c[0] - r, c[1] + r]]);
+    }
+    return { ring: rings[0] || head, rings };
   }
 
   // ---- grips ---------------------------------------------------------------------------------
@@ -294,11 +315,15 @@ const Sections = (() => {
     if (!d) return;
     const id = d.id, pt = () => [r3(d.p.x), r3(d.p.y)];
     let ok = true;
-    if (d.type === "flip") ok = await H.call("patch_section", { id, patch: { flipped: !d.s.flipped } });
+    if (d.type === "cycle") {
+      const key = d.box.end === 0 ? "start_marker" : "end_marker", choices = ["head", "tail", "none"];
+      const current = d.s[key] || (d.box.end === 0 ? "head" : "tail");
+      ok = await H.call("patch_section", { id, patch: { [key]: choices[(choices.indexOf(current) + 1) % choices.length] } });
+    }
+    else if (d.type === "flip") ok = await H.call("patch_section", { id, patch: { flipped: !d.s.flipped } });
     else if (d.type === "break") ok = await H.call("section_break", { id, view_id: H.viewId() });
     else if (!d.moved) { H.render(); return; }
-    else if (d.type === "end0") ok = await H.call("patch_section", { id, patch: { start: pt() } });
-    else if (d.type === "end1") ok = await H.call("patch_section", { id, patch: { end: pt() } });
+    else if (d.type === "end0" || d.type === "end1") ok = await H.call("move_section_end", { id, end: d.type === "end0" ? 0 : 1, point: pt() });
     else if (d.type === "depth") ok = await H.call("patch_section", { id, patch: { far_clip_mm: d.depth, ...(d.s.far_clip === "no_clip" ? { far_clip: "with_line" } : {}) } });
     else if (d.type === "run") ok = await H.call("section_edit", { id, op: "move_run", index: d.index, to: pt() });
     else if (d.type === "jog") ok = await H.call("section_edit", { id, op: "move_jog", index: d.index, to: pt() });

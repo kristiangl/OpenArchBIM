@@ -900,7 +900,9 @@ impl Document {
                     }
                     cand
                 };
-                nm.slots[slot] = Some(tx.add(Element::View(View::elevation(&name, marker, slot as u8))));
+                let mut view = View::elevation(&name, marker, slot as u8);
+                view.view_type = m.slots.iter().flatten().find_map(|id| tx.doc_ref().view(*id)).and_then(|v| tx.doc_ref().view_type_of(v));
+                nm.slots[slot] = Some(tx.add(Element::View(view)));
                 tx.update(marker, Element::ElevationMarker(nm))?;
             } else {
                 let view = m.slots[slot].unwrap();

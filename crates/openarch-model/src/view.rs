@@ -665,6 +665,9 @@ pub struct ViewType {
     /// New views stay linked to that template (dependent on it) rather than taking a copy of its settings.
     #[serde(default = "yes")]
     pub new_views_dependent: bool,
+    /// Reusable section tag or elevation marker settings.
+    #[serde(default)]
+    pub marker_type: Option<Id>,
 }
 
 fn yes() -> bool {

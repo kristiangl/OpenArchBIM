@@ -367,9 +367,11 @@ impl Document {
         } else {
             vec![]
         };
+        let sheet_details: Vec<Element> = if how == DuplicateSheet::WithDetailing { self.iter().filter(|(_, e)| view_owner(e) == Some(id)).map(|(_, e)| e.clone()).collect() } else { vec![] };
         let schedules: Vec<SheetSchedule> = if how == DuplicateSheet::Empty { vec![] } else { self.sheet_schedules(id).into_iter().map(|(_, p)| p.clone()).collect() };
         self.transact("Duplicate Sheet", |tx| {
             let sheet = tx.add(Element::Sheet(Sheet { number, ..s }));
+            for e in sheet_details { tx.add(with_view(e, sheet)); }
             // a schedule is placed again: it can be on many sheets
             for p in schedules {
                 tx.add(Element::SheetSchedule(SheetSchedule { sheet, ..p }));

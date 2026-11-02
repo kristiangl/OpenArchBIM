@@ -50,6 +50,7 @@ pub mod symbol;
 pub mod systypes;
 pub mod tempdim;
 pub mod view;
+pub mod viewmarker;
 pub mod wallpath;
 pub mod wallprofile;
 

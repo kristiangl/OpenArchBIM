@@ -329,6 +329,7 @@ impl Document {
                 | Element::DimensionType(_)
                 | Element::SpotType(_)
                 | Element::ViewType(_)
+                | Element::ViewMarkerType(_)
                 | Element::FilledRegionType(_)
                 | Element::TextNoteType(_)
         );

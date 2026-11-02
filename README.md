@@ -12,16 +12,20 @@ A free, open-source building information modelling (BIM) application for archite
 - Layered walls with wall types, mitred and butted joins, and join cleanup
 - Floors and roofs drawn from sketch boundaries, with slope-defining edges and slope arrows
 - Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry)
-- Plan, elevation and section views, with view ranges, templates and graphic display options
+- Plan, elevation and section views, with view ranges, templates, graphic display options and reusable marker types linked to view types
 - Permanent and temporary dimensions, spot elevations and spot coordinates
-- Schedules with calculated columns and cross-schedule totals
+- Schedules with calculated columns and cross-schedule totals, material takeoffs, sheet lists and view lists
+- Sheets and title blocks, with placed views, schedules, detail lines, text, filled regions and masking regions
+- PDF and DXF export, including batch sheet export, plus IFC import and export
 - Linked models built for scale: shared definitions with cheap placements, aimed at masterplans with many linked buildings
+- Save and Save As for projects, model families and annotation families, with native file dialogs on desktop and in the Windows browser preview
+- Text notes edited in place with their font, size, colour and alignment
 - Undo and redo, and a single-file project format (`.oab`) with loadable family files (`.oaf`)
 
 ## What is planned
 
-- Sheets and title blocks (a generic A0 to A3 set will ship first)
-- PDF, DXF and IFC export, plus batch sheet export
+- Key schedules, with room and revision schedules as those tools are built
+- Revisions and revision tables on sheets
 
 Australian standards and metric units come first. Other regions are welcome later.
 
@@ -61,7 +65,11 @@ Run the whole app in a browser during development:
 
     cargo run -p openarch-dev
 
-then open http://127.0.0.1:8765.
+then open http://127.0.0.1:8765. Windows previews use the Explorer file picker; other browser preview hosts use an in-app path dialog.
+
+Selecting a section line shows its view properties. Edit Type selects a Section Tag; Marker Type Properties edits or duplicates its head and tail symbol choices. Elevation view types similarly select an Elevation Mark. Section end grips lengthen or shorten along the current cut plane, with a perpendicular range box throughout the drag; Align and Rotate can change its angle. New projects include separate Section Head and Section Tail families, anchored where their reference planes cross. The editable source families are in `crates/openarch-model/families`. Existing project families keep their saved artwork and type choices.
+
+Projects saved with these marker types use file format 8. Older projects are upgraded on opening, preserving distinct existing marker choices, but earlier app builds cannot open files saved in this format.
 
 Run the desktop app (needs Rust and your platform's webview libraries):
 

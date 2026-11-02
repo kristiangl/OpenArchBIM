@@ -35,6 +35,7 @@ const AnnModel = (() => {
 
   let S = null; // the open document
   let wired = false;
+  const filePaths = new Map();
 
   // ---------------------------------------------------------------- curves between paper mm and sketch units
   function mapCurve(c, f, k) {
@@ -61,9 +62,9 @@ const AnnModel = (() => {
     const fam = clone(raw);
     for (const k of ["id", "params", "kind", "in_use", "category", "subcategories", "fill_patterns", "drawing", "annotation_widths"]) delete fam[k];
     S = {
-      id, fam, params: raw.params, category: raw.category, subs: raw.subcategories || [], pats: raw.fill_patterns || {}, drawing: raw.drawing, tick: 0,
+      id, fam, sourcePath: filePaths.get(id) || null, params: raw.params, category: raw.category, subs: raw.subcategories || [], pats: raw.fill_patterns || {}, drawing: raw.drawing, tick: 0,
       widths: raw.annotation_widths || [],
-      tool: "select", mode: null, layer: "body", sel: null, drag: null, mouse: null, flipped: false, undo: [], redo: [], dirty: false,
+      tool: "select", mode: null, layer: "body", sel: null, drag: null, mouse: null, flipped: false, undo: [], redo: [], dirty: false, fileDirty: false,
       view: { k: 14, ox: 0, oy: 0 }, msg: "", msgErr: false, sub: "", boundarySub: "", newType: (fam.region_types[0] || {}).name || "", lines: null, region: null,
     };
     mount();
@@ -72,7 +73,7 @@ const AnnModel = (() => {
   }
 
   const hasPointer = () => S.fam.family_kind !== "level_head";
-  const docInfo = () => (S ? { name: S.fam.name, dirty: S.dirty, id: S.id } : null);
+  const docInfo = () => (S ? { name: S.fam.name, dirty: S.dirty || S.fileDirty, id: S.id } : null);
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
 
   // Bring the document to the front (after opening it, or switching back to it)
@@ -85,7 +86,7 @@ const AnnModel = (() => {
 
   function close(force) {
     if (!S) return;
-    if (!force && S.dirty) { askLoad(); return; }
+    if (!force && (S.dirty || S.fileDirty)) { askLoad(); return; }
     if (ASk.active) ASk.end();
     S = null;
     setDoc("project");
@@ -109,7 +110,7 @@ const AnnModel = (() => {
   // Closing as the program closes: resolves true once the family is closed, false when the person stays
   function closeForExit() {
     if (!S) return Promise.resolve(true);
-    if (!S.dirty) { close(true); return Promise.resolve(true); }
+    if (!S.dirty && !S.fileDirty) { close(true); return Promise.resolve(true); }
     return new Promise((resolve) => askLoad(resolve));
   }
 
@@ -121,10 +122,35 @@ const AnnModel = (() => {
     try { await Backend.call("set_annotation_family", { id: S.id, family: S.fam }); }
     catch (e) { say(String(e.message || e), true); return; }
     S.dirty = false;
+    if (S.fileDirty && andClose) {
+      const choice = await new Promise((resolve) => openModal("Save Annotation Family", (body, foot, closeModal) => {
+        body.append(el("p", "", "Save the edited annotation family to a file as well?"));
+        const done = (result) => { closeModal(); resolve(result); };
+        body.closest(".modal-back").onEscape = () => done("cancel");
+        foot.append(button("Cancel", () => done("cancel")), button("Project Only", () => done("project")),
+          button(S.sourcePath ? "Save File" : "Save As...", async () => { if (await saveFile(false)) done("saved"); }, true));
+      }));
+      if (choice === "cancel") return;
+    }
     await refresh();
     if (andClose) { close(true); setPrompt(`Loaded ${name} into the project.`); return; }
     S.msg = "Loaded into the project.";
     activate();
+  }
+
+  async function saveFile(asNew = false, id = S?.id, name = S?.fam.name) {
+    if (S?.mode === "region") { say("Finish or cancel the region first.", true); return false; }
+    if (S?.mode === "lines") endLines();
+    try {
+      const current = S?.id === id ? S.sourcePath : filePaths.get(id);
+      const path = !asNew && current ? current : await Backend.pickSaveFamily(current || name + ".oaf");
+      if (!path) return false;
+      const r = await Backend.call("save_annotation_family_file", { id, path, ...(S?.id === id ? { family: S.fam } : {}) });
+      filePaths.set(id, r.path);
+      if (S?.id === id) { S.sourcePath = r.path; S.fileDirty = false; say("Saved " + r.path); }
+      else setPrompt("Saved " + r.path);
+      return true;
+    } catch (e) { setPrompt(String(e.message || e), true); return false; }
   }
 
   // ---------------------------------------------------------------- undo, and the drawing the core makes
@@ -146,11 +172,11 @@ const AnnModel = (() => {
     if (S.undo.length > 100) S.undo.shift();
     S.redo = [];
     fn(S.fam);
-    S.dirty = true;
+    S.dirty = true; S.fileDirty = true;
     if (!keepProps) props();
     status(); render(); refreshDrawing();
   }
-  function restore(json) { S.fam = JSON.parse(json); S.sel = null; S.dirty = true; props(); status(); ctxRefresh(); refreshDrawing(); }
+  function restore(json) { S.fam = JSON.parse(json); S.sel = null; S.dirty = true; S.fileDirty = true; props(); status(); ctxRefresh(); refreshDrawing(); }
   // Line steps back through its own changes, then the document's; a region's sketch keeps to its own
   function undo() {
     if (!S) return;
@@ -275,8 +301,8 @@ const AnnModel = (() => {
     },
   };
   // with lines or a region's boundary being drawn, the Modify tab's own tools work on them
-  const SK_MODIFY = { "a-align": "align", "a-mv": "move", "a-cp": "copy", "a-ro": "rotate", "a-mi-pick": "mirror", "a-mi-draw": "mirror", "a-of": "offset", "a-tr": "trim_corner", "a-sp": "split" };
-  for (const [id, t] of Object.entries(SK_MODIFY)) commands[id] = () => { if (ASk.active) { ASk.setTool(t); ctxRefresh(); } };
+  const SK_MODIFY = { "a-align": "align", "a-mv": "move", "a-cp": "copy", "a-ro": "rotate", "a-mi-pick": "mirror", "a-mi-draw": "mirror", "a-of": "offset", "a-tr": "trim_corner", "a-sp": "split", "a-ts": "trim_single", "a-tm": "trim_single" };
+  for (const [id, t] of Object.entries(SK_MODIFY)) commands[id] = () => { if (ASk.active) { if (id === "a-ts" || id === "a-tm") ASk.setOpts({ multiple: id === "a-tm" }); if (id === "a-mi-pick" || id === "a-mi-draw") ASk.setOpts({ mirrorMode: id === "a-mi-pick" ? "pick" : "draw" }); ASk.setTool(t); ctxRefresh(); } };
   for (const k of Object.keys(commands)) { const f = commands[k]; commands[k] = (e) => (S ? f(e) : undefined); }
   const TOOL_OF = { "a-select": "select", "a-label": "label", "a-text": "text" };
 
@@ -330,15 +356,13 @@ const AnnModel = (() => {
   }
   function contextBase() {
     const t = ASk.tool;
-    // the Modify tab's own tools (Move, Copy, Align ...) work on the lines; only Trim/Extend Single and Split are added,
-    // as in a project's sketches
-    const tools = { label: "Trim and Split", items: ASk.MODIFY.filter((x) => x.id === "trim_single" || x.id === "split").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
+    // The shared Modify tab handles editing; this context supplies drawing and style controls.
     const draw = { label: "Draw", items: ASk.DRAW.filter((x) => x.id !== "pick_walls").map((x) => ({ ...x, onclick: () => ASk.setTool(x.id), on: t === x.id })) };
     if (S.mode === "lines") {
       const a = ASk.selectedAttr();
       const node = styleSelect(a ? a.sub : S.sub, (v) => { S.sub = v; if (ASk.selectedAttr()) ASk.patchSelected({ sub: v }); ctxRefresh(); });
       node.title = "The subcategory of new lines, and of the selected lines";
-      return { auto: true, title: "Lines", groups: [draw, tools, { label: "Subcategory", items: [{ big: true, node }] }] };
+      return { auto: true, title: "Lines", groups: [draw, { label: "Subcategory", items: [{ big: true, node }] }] };
     }
     if (S.mode === "region") {
       const a = ASk.selectedAttr();
@@ -346,7 +370,7 @@ const AnnModel = (() => {
       node.title = "The line style of new boundary lines, and of the selected ones";
       return { auto: true, title: ASk.title, groups: [
         { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: () => ASk.finish() }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: () => ASk.cancel() }] },
-        draw, tools, { label: "Line Style", items: [{ big: true, node }] },
+        draw, { label: "Line Style", items: [{ big: true, node }] },
       ] };
     }
     const sel = S.sel;
@@ -847,7 +871,7 @@ const AnnModel = (() => {
     if (!L.pushed) { S.undo.push(L.before); S.redo = []; L.pushed = true; }
     const ptr = S.layer === "pointer";
     S.fam.lines = [...S.fam.lines.filter((l) => !!l.pointer !== ptr), ...mine];
-    S.dirty = true;
+    S.dirty = true; S.fileDirty = true;
     refreshDrawing();
   }
   function endLines() { if (S && S.mode === "lines") endSession(); }
@@ -1055,7 +1079,9 @@ const AnnModel = (() => {
     if (g) { S.drag = { width: g.edge, L: boxOf(S.sel).L, started: false }; S.canvas.setPointerCapture(e.pointerId); return; }
     const h = hit(S.mouse.x, S.mouse.y);
     if (h && h.kind === "line") { startLines(h.i, "select"); return; }
+    const hadSelection = !!S.sel;
     S.sel = h;
+    if (!h) emptySelectionClick(hadSelection);
     if (h) { S.drag = { last: q, started: false }; S.canvas.setPointerCapture(e.pointerId); }
     props(); render(); ctxRefresh();
   }
@@ -1077,7 +1103,7 @@ const AnnModel = (() => {
     }
     if (S.drag && S.sel && S.drag.width !== undefined) {
       const p = toPaper(m.x, m.y), px = Math.round((S.flipped ? -p.x : p.x) * 10) / 10;
-      if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; }
+      if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; S.fileDirty = true; }
       setWidth(get(S.sel), S.drag.L, S.drag.width, px);
       render();
       return;
@@ -1086,7 +1112,7 @@ const AnnModel = (() => {
       const q = paperAt(m), dx = q.x - S.drag.last.x, dy = q.y - S.drag.last.y;
       if (dx || dy) {
         // the whole drag is one undo step
-        if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; }
+        if (!S.drag.started) { S.undo.push(snapshot()); S.redo = []; S.drag.started = true; S.dirty = true; S.fileDirty = true; }
         const it = get(S.sel);
         if (S.sel.kind === "label" || S.sel.kind === "text") { it.x = round6(it.x + dx); it.y = round6(it.y + dy); }
         else for (const l of it.loops) for (const ed of l) ed.curve = moveCurve(ed.curve, dx, dy);
@@ -1152,7 +1178,7 @@ const AnnModel = (() => {
     let used = true;
     if (mod && k === "z") { undo(); updateUndoButtons(); }
     else if (mod && k === "y") { redo(); updateUndoButtons(); }
-    else if (mod && k === "s") loadIntoProject(false);
+    else if (mod && k === "s") saveFile(e.shiftKey);
     else if (ASk.active) {
       const st = ASk.state();
       // Esc in Line's select tool with nothing selected leaves Line
@@ -1167,7 +1193,7 @@ const AnnModel = (() => {
   }
 
   return {
-    open, close: () => close(false), closeForExit, activate, docInfo, commands, syncRibbon, context, undo, redo, undoState, save: () => loadIntoProject(false),
+    open, close: () => close(false), closeForExit, activate, docInfo, commands, syncRibbon, context, undo, redo, undoState, save: saveFile, exportFamily: (id, name) => saveFile(true, id, name), rememberFile: (id, path) => filePaths.set(id, path), resetFiles: () => filePaths.clear(),
     isOpen: (id) => !!S && S.id === id,
     // test hooks
     _state: () => S, _sketch: ASk, sketchModify: SK_MODIFY,

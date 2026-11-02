@@ -1132,6 +1132,7 @@ const Elev = (() => {
 
   // ---- events ------------------------------------------------------------------------------
   function pick(ev) {
+    const hadSelection = sel.size > 0 || cropSel;
     // the nearest thing under the cursor, or the one Tab stepped to
     const h = hoverPick(ev.offsetX, ev.offsetY);
     const target = h !== null ? [h] : [];
@@ -1143,6 +1144,7 @@ const Elev = (() => {
     else if (ev.ctrlKey) target.forEach((i) => sel.add(i));
     else sel = new Set(target);
     cb.select([...sel]);
+    if (h === null && !cropSel && !ev.ctrlKey && !ev.shiftKey) emptySelectionClick(hadSelection);
     render();
   }
 
@@ -1345,7 +1347,7 @@ const Elev = (() => {
       render();
       return;
     }
-    if (down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5) {
+    if (down && (tool !== "select" || Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5)) {
       if (tool === "sketch") {
         const p = snap(e.offsetX, e.offsetY);
         Snap.clearOverride(); snapCycle = 0; down = null;

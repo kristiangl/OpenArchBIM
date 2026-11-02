@@ -908,8 +908,19 @@ impl Document {
 
     /// Align: move elements sideways so an edge of theirs lies on a reference line.
     /// `reference` and `target` are each a pair of points on a line; the two lines
-    /// must be parallel.
+    /// must be parallel for ordinary elements; sections can rotate their cut plane to match.
     pub fn align_elements(&mut self, ids: &[Id], reference: (Point, Point), target: (Point, Point)) -> Result<Vec<Id>, String> {
+        let (sections, other): (Vec<Id>, Vec<Id>) = ids.iter().copied().partition(|id| self.section(*id).is_some());
+        if !sections.is_empty() {
+            return self.grouped("Align", |d| {
+                let mut out = if other.is_empty() { vec![] } else { d.align_elements(&other, reference, target)? };
+                for id in sections {
+                    d.align_section_line(id, reference, target)?;
+                    out.push(id);
+                }
+                Ok(out)
+            });
+        }
         let (rd, td) = (Point::new(reference.1.x - reference.0.x, reference.1.y - reference.0.y), Point::new(target.1.x - target.0.x, target.1.y - target.0.y));
         let (rl, tl) = (rd.x.hypot(rd.y), td.x.hypot(td.y));
         if rl < 1e-6 || tl < 1e-6 {

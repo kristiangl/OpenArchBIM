@@ -35,7 +35,9 @@ function setPrompt(text, isError = false) {
 
 async function run(method, params) {
   try {
-    return await Backend.call(method, params);
+    const result = await Backend.call(method, params);
+    if (["new_project", "open", "open_ifc"].includes(method)) AnnModel.resetFiles();
+    return result;
   } catch (e) {
     setPrompt(String(e.message || e), true);
     return null;
@@ -205,6 +207,10 @@ const BOUNDARY_EDITORS = {
 };
 function editBoundaryTarget() {
   if (app.selection.length !== 1) return null;
+  if (app.view.kind === "sheet") {
+    const id = app.selection[0];
+    return SheetView.regions().some((r) => r.id === id) ? { label: "Edit Boundary", run: () => startRegionSketch(null, id) } : null;
+  }
   if (app.view.kind === "elevation") {
     const id = app.selection[0];
     return Elev.regions().some((r) => r.id === id) ? { label: "Edit Boundary", run: () => startRegionSketch(null, id) } : null;
@@ -217,7 +223,7 @@ function editBoundaryTarget() {
   return null;
 }
 // the view text notes are placed and picked in: a plan, or an elevation or section
-const noteView = () => (app.view.kind === "elevation" ? Elev : app.view.kind === "plan" ? Plan : null);
+const noteView = () => (app.view.kind === "elevation" ? Elev : app.view.kind === "plan" ? Plan : app.view.kind === "sheet" ? SheetView : null);
 // the text notes selected in the view's Select tool, and the one when it is the whole selection
 const selectedNotes = () => { const V = noteView(); return V && V.tool === "select" ? V.textNotes().filter((n) => app.selection.includes(n.id)) : []; };
 const selectedNote = () => { const s = selectedNotes(); return s.length === 1 && app.selection.length === 1 ? s[0] : null; };
@@ -227,13 +233,16 @@ const selectedSection = () => (app.view.kind === "plan" && app.selection.length 
 // A Modify button is greyed out when this document or view has nothing for it to do. The button stays in
 // place, so the tab keeps the same groups and order in every view.
 function modifyEnabled(id) {
-  if (!id || !commandFor(id)) return false;
+  if (!id) return false;
+  if (app.doc === "project" && Sketch.active && SKETCH_MODIFY[id]) return true;
+  if (!commandFor(id)) return false;
   if (app.doc === "family") {
     const st = FamModel._state && FamModel._state();
     if (!st) return false;
     if (["f-select", "f-props", "f-load", "f-loadclose"].includes(id)) return true;
     // with a sketch open the tab's tools work on the sketch lines
     if (st.sk) return !!FamModel.sketchModify[id];
+    if (["f-tr", "f-ts", "f-tm", "f-sp"].includes(id)) return false;
     if (id === "f-del") return !!st.sel || !!st.editing;
     if (st.editing) return id === "f-align";
     // every 2D view takes the Modify tools (they work in the view they are picked in); the 3D view only selects
@@ -334,10 +343,18 @@ function currentContext() {
 }
 
 // a tool or sketch is running in the open view
+function emptySelectionClick(hadSelection) {
+  if (hadSelection) return;
+  const first = Object.keys(ribbonSet())[0];
+  app.returnTab[app.doc] = null;
+  selectTab(first);
+}
+
 function viewerBusy() {
   if (Sketch.active) return true;
   if (app.view.kind === "plan") return Plan.tool !== "select";
   if (app.view.kind === "elevation") return Elev.tool !== "select";
+  if (app.view.kind === "sheet") return SheetView.tool !== "select";
   return false;
 }
 
@@ -399,6 +416,13 @@ function renderTabs() {
 function groupNode(g, isContext, isModify) {
   const grp = el("div", { className: "group" + (g.label === "Family Editor" ? " fam-editor" : "") });
   const items = el("div", { className: "items" });
+  if (isModify && g.label === "Modify") {
+    const primary = el("div", { className: "modify-primary" }), secondary = el("div", { className: "modify-secondary" });
+    for (const it of g.items) (it.secondary ? secondary : primary).append(cmdButton(it, !!it.secondary));
+    items.append(primary, secondary);
+    grp.append(items, el("div", { className: "label", textContent: g.label }));
+    return grp;
+  }
   let stack = null;
   for (const it of g.items) {
     if (it.node) {
@@ -480,11 +504,12 @@ function renderDocTabs() {
 
 // While a sketch is open nothing else is editable: the ribbon's Modify tools act on the sketch lines instead,
 // and every other command waits for Finish or Cancel.
-const SKETCH_MODIFY = { sel: "select", mv: "move", cp: "copy", ro: "rotate", mi: "mirror", "mi-pick": "mirror", "mi-draw": "mirror", of: "offset", tr: "trim_corner", al: "align" };
+const SKETCH_MODIFY = { sel: "select", mv: "move", cp: "copy", ro: "rotate", mi: "mirror", "mi-pick": "mirror", "mi-draw": "mirror", of: "offset", tr: "trim_corner", ts: "trim_single", tm: "trim_single", sp: "split", al: "align" };
 function runCommand(id, e) {
   if (Sketch.active) {
     if (SKETCH_MODIFY[id]) {
       if (id === "mi-pick" || id === "mi-draw") Sketch.setOpts({ mirrorMode: id === "mi-pick" ? "pick" : "draw" });
+      if (id === "ts" || id === "tm") Sketch.setOpts({ multiple: id === "tm" });
       Sketch.setTool(SKETCH_MODIFY[id]); renderSketchRibbon(); return;
     }
     // showing or hiding the Properties palette leaves the sketch as it is
@@ -756,6 +781,7 @@ function annotationMenu(f) {
     { label: "Edit", run: () => AnnModel.open(f.id) },
     { label: "Duplicate...", run: () => duplicateTypePrompt(f.id, async () => { await refresh(); }, "duplicate_annotation_family") },
     { label: "Rename...", run: () => { if (!open()) renameAnnotationFamily(f); } },
+    { label: "Save as File...", run: () => AnnModel.exportFamily(f.id, f.name) },
     { label: "Delete", disabled: f.in_use, title: f.in_use ? "In use by a level type, an elevation mark or a section" : "", run: async () => {
       if (open()) return;
       if (await run("delete_annotation_family", { id: f.id })) { await refresh(); setPrompt(`Deleted ${f.name}.`); }
@@ -832,6 +858,7 @@ async function openView(kind, viewId, opt = {}) {
   if (kind === "plan") app.lastPlanId = target;
   if (kind !== "plan" && Plan.tool !== "select") Plan.setTool("select");
   if (kind !== "elevation" && Elev.tool !== "select") Elev.setTool("select");
+  if (changed) SheetView.setTool("select");
   $("#viewport-wrap").className = "v-" + kind;
   $("#stress").hidden = kind !== "3d";
   app.browserSel = null;
@@ -1561,6 +1588,7 @@ function selectTool() {
   if (Sketch.active) { Sketch.setTool("select"); renderSketchRibbon(); return; }
   if (app.view.kind === "plan") Plan.setTool("select");
   else if (app.view.kind === "elevation") Elev.setTool("select");
+  else if (app.view.kind === "sheet") SheetView.setTool("select");
   else setPrompt("Click in the view to select, or pick a view in the Project Browser.");
   updateRibbonContext();
 }
@@ -2299,7 +2327,7 @@ async function exportIfc() {
 async function save(asNew) {
   if (app.doc === "family") { await FamModel.save(!!asNew); return; }
   // an annotation family lives in the project: saving it loads it into the project
-  if (app.doc === "annotation") { await AnnModel.save(); return; }
+  if (app.doc === "annotation") { await AnnModel.save(!!asNew); return; }
   let path = app.info.path;
   if (!path || asNew) path = await Backend.pickSavePath(path);
   if (!path) return;
@@ -2438,7 +2466,16 @@ async function deleteSheet(s) {
   if (!(await askConfirm(`Delete sheet ${s.number} - ${s.name}? The views on it stay in the project.`))) return;
   if (await run("delete", { ids: [s.id] })) { if (app.view.kind === "sheet" && app.view.viewId === s.id) await openView("plan", app.lastPlanId); await refresh(); }
 }
-SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); };
+SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); updateRibbonContext(); };
+SheetView.callbacks.moveDetails = async (ids, delta) => {
+  const details = new Set([...SheetView.detailLines(), ...SheetView.regions(), ...SheetView.textNotes()].map((e) => e.id));
+  const picked = ids.filter((id) => details.has(id));
+  if (picked.length && await run("transform", { ids: picked, kind: "move", ...delta })) await refresh();
+};
+SheetView.callbacks.tool = () => { renderOptionsBar(); renderProperties(); updateRibbonContext(); };
+SheetView.callbacks.leaveDetail = () => leaveDetailLines();
+SheetView.callbacks.editDetail = (id) => startDetailLines(id, "select");
+SheetView.callbacks.editRegion = (id) => startRegionSketch(null, id);
 // ---- schedules on a sheet: segments moved, split at a row, joined -------------------------------------------------
 const patchSegments = async (p, segments) => { if (await run("patch_sheet_schedule", { id: p.id, patch: { segments } })) await refresh(); };
 SheetView.callbacks.moveSegment = (p, i, at) => patchSegments(p, p.segments.map((g, k) => (k === i ? { ...g, at } : g)));
@@ -2652,6 +2689,7 @@ function newDocument() {
 $("#qa-new").onclick = newDocument;
 $("#qa-open").onclick = openProject;
 $("#qa-save").onclick = () => save(false);
+$("#qa-save-as").onclick = () => save(true);
 $("#qa-undo").onclick = undo;
 $("#qa-redo").onclick = redo;
 $("#qa-export").onclick = () => runCommand("export");
@@ -2713,7 +2751,7 @@ document.addEventListener("contextmenu", (e) => {
 
 let keyBuf = "", keyTimer = null;
 document.addEventListener("keydown", (e) => {
-  const typing = e.target && ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName);
+  const typing = e.target && (e.target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName));
   const mod = e.ctrlKey || e.metaKey;
   if (mod && !typing) {
     const k = e.key.toLowerCase();
@@ -2728,6 +2766,7 @@ document.addEventListener("keydown", (e) => {
     const first = Object.keys(ribbonSet())[0];
     if (app.ribbonTab[app.doc] !== first) { app.returnTab[app.doc] = null; selectTab(first); }
   }
+  if (app.view.kind === "sheet" && SheetView.key(e)) { e.preventDefault(); return; }
   if (app.view.kind === "elevation" && Elev.key(e)) { e.preventDefault(); return; }
   if (e.key === " " && !mod && !e.repeat && !Sketch.active && Plan.tool !== "elevation" && !(app.view.kind === "plan" && Plan.tool === "text")) { flipAction().then((used) => { if (used) renderProperties(); }); e.preventDefault(); return; }
   if (app.view.kind === "plan" && Plan.key(e)) { e.preventDefault(); return; }
@@ -2808,9 +2847,8 @@ function sketchContext() {
     ];
   const detail = Sketch.kind === "detail" || Sketch.kind === "region";
   const draw = Sketch.DRAW.filter((t) => !detail || t.id !== "pick_walls").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
-  const trims = Sketch.MODIFY.filter((t) => t.id === "trim_single" || t.id === "split").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
   const groups = [{ label: "Mode", items: modes }, { label: "Draw", items: draw }];
-  if (trims.length) groups.push({ label: "Trim and Split", items: trims });
+
   // Detail Line and the regions: no slope or span; a line style for new lines and the selected ones
   if (detail) {
     const a = Sketch.selectedAttr();
@@ -2937,7 +2975,7 @@ function openSlopeDialog() {
 }
 
 // the view hosting the sketch: an elevation or section while one is open and sketching, else the plan
-const sketchView = () => (Elev.sketching ? Elev : Plan);
+const sketchView = () => (SheetView.sketching ? SheetView : Elev.sketching ? Elev : Plan);
 Sketch.callbacks.change = () => { if (Sketch.kind === "detail") syncDetailLines(); renderSketchUI(); };
 Sketch.callbacks.prompt = (t, isError) => setPrompt(t, !!isError);
 Sketch.callbacks.slope = () => openSlopeDialog();
@@ -3136,7 +3174,7 @@ DetailCallbacks.options = () => app.noteOpts;
 const notePt = (q) => ({ x: Math.round(q.x * 1000) / 1000, y: Math.round(q.y * 1000) / 1000 });
 // a view that can hold text notes and detail items: the current one when it is a plan, elevation or section
 async function ensureDetailView(what) {
-  if (app.view.kind === "plan" || app.view.kind === "elevation") return true;
+  if (["plan", "elevation", "sheet"].includes(app.view.kind)) return true;
   return ensurePlan(what);
 }
 async function patchNoteLeaders(n, leaders) {
@@ -3148,16 +3186,41 @@ async function patchNoteLeaders(n, leaders) {
 // A box over the view to type the text in: click outside it or press Esc to finish; Ctrl+Enter too. With a leader on the
 // right the text goes to the left of the click.
 function noteEditor(at, sizeMm, value, onDone, o = {}) {
-  const V = noteView(), c = V.canvasRect(), s = V.screenOf(at.x, at.y), px = Math.max(10, sizeMm * V.paperPx());
-  const x = c.left + s.x, y = c.top + s.y - (o.lead ? px * 0.7 : 0);
-  const ta = el("textarea", { className: "ann-text-edit", value: value || "" });
-  ta.style.cssText = `position:fixed;${o.right ? `right:${window.innerWidth - x}px` : `left:${x}px`};top:${y}px;min-width:140px;min-height:${px * 1.4}px;font:${px}px Arial, system-ui, sans-serif;z-index:60;`;
-  document.body.append(ta);
+  const V = noteView(), c = V.canvasRect(), paperPx = V.paperPx(), ds = V.viewScale();
+  const st = o.style || noteType()?.style || { size_mm: sizeMm, font: "Arial", color: [0, 0, 0] };
+  const ta = el("div", { className: "ann-text-edit" });
+  ta.contentEditable = "plaintext-only"; ta.setAttribute("role", "textbox"); ta.setAttribute("aria-label", "Text note");
+  ta.textContent = value || "";
+  const wf = st.width_factor || 1, width = o.note?.text.width_mm || 0;
+  Object.assign(ta.style, {
+    position: "fixed", zIndex: "60", margin: "0", padding: "0", border: "0", outline: "none",
+    fontFamily: st.font || "Arial", fontSize: st.size_mm * paperPx + "px",
+    fontWeight: st.bold ? "600" : "400", fontStyle: st.italic ? "italic" : "normal",
+    textDecoration: st.underline ? "underline" : "none", lineHeight: "1.2",
+    color: Ann.rgb(st.color || [0, 0, 0]), background: st.opaque ? (app.view.kind === "sheet" ? "#ffffff" : getComputedStyle(document.documentElement).getPropertyValue("--view-bg")) : "transparent",
+    width: width > 0 ? width * paperPx / wf + "px" : "max-content", minWidth: "1ch",
+    whiteSpace: width > 0 ? "pre-wrap" : "pre", textAlign: o.note?.text.halign || o.halign || "left",
+    transformOrigin: "0 0", caretColor: "currentColor",
+  });
+  const textValue = () => ta.innerText.replace(/\r/g, "").replace(/\n$/, "");
+  const position = () => {
+    const text = { ...(o.note?.text || { x: at.x / ds, y: at.y / ds, halign: o.halign || "left", valign: o.valign || "top", width_mm: 0, wrap: "words" }), style: st, lines: textValue().split("\n").map((l) => [l]) };
+    if (o.lead) {
+      const originText = { ...text, x: 0, y: 0 };
+      const start = NoteGeom.leaderStart({ text: originText, left_attach: o.left_attach, right_attach: o.right_attach }, Ann.layout(originText), o.right ? "right" : "left");
+      text.x -= start[0]; text.y -= start[1];
+    }
+    const n = { ...(o.note || {}), text }, L = Ann.layout(text), tl = NoteGeom.corners(n, L)[0];
+    const q = V.screenOf(tl[0] * ds, tl[1] * ds);
+    ta.style.left = c.left + q.x + "px"; ta.style.top = c.top + q.y + st.size_mm * 0.1 * paperPx + "px";
+    ta.style.transform = "rotate(" + -(n.rotation_deg || 0) + "deg) scaleX(" + wf + ")";
+  };
+  document.body.append(ta); position(); ta.oninput = position;
   let done = false;
-  const finish = () => { if (done) return; done = true; const v = ta.value.replace(/\s+$/, ""); ta.remove(); onDone(v); };
+  const finish = () => { if (done) return; done = true; const v = textValue().replace(/\s+$/, ""); ta.remove(); onDone(v); };
   ta.onkeydown = (e) => { e.stopPropagation(); if (e.key === "Escape" || (e.key === "Enter" && (e.ctrlKey || e.metaKey))) { e.preventDefault(); finish(); } };
   ta.onblur = finish;
-  setTimeout(() => ta.focus(), 0);
+  setTimeout(() => { ta.focus(); const r = document.createRange(); r.selectNodeContents(ta); r.collapse(false); const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }, 0);
 }
 const noteType = () => {
   const types = app.info.text_note_types || [];
@@ -3184,7 +3247,7 @@ DetailCallbacks.placeNote = (pts, o) => {
     const r = await run("add_text_note", { note });
     await refresh();
     if (r) { app.selection = [r.id]; V.setSelection([r.id]); renderProperties(); updateRibbonContext(); }
-  }, { right: side === "right" && lead, lead });
+  }, { right: side === "right" && lead, lead, style: type?.style, halign: o.halign, valign: o.valign, left_attach: o.left_attach, right_attach: o.right_attach });
 };
 DetailCallbacks.editNote = (id) => {
   const V = noteView(), n = V && V.textNotes().find((x) => x.id === id);
@@ -3196,7 +3259,7 @@ DetailCallbacks.editNote = (id) => {
     if (!text && !n.leaders.length) { await run("delete", { ids: [id] }); app.selection = []; V.setSelection([]); }
     else await run("patch_text_note", { id, patch: { text } });
     await refresh();
-  });
+  }, { note: n, style: n.text.style });
 };
 DetailCallbacks.patchNote = async (id, patch) => { await run("patch_text_note", { id, patch }); await refresh(); };
 // the ends of selected detail lines dragged by their grips: the view's lines go back with those ends moved (one undo step)
@@ -3296,9 +3359,11 @@ async function initViewport() {
     // clicking in the 3D view selects like the plan does: Shift or Ctrl adds, empty space clears
     vp.onClick((x, y) => { if (!ed3) return false; click3DEdit(x, y); return true; });
     vp.onPick((id, additive) => {
+      const hadSelection = app.selection.length > 0;
       let ids = additive ? [...app.selection] : [];
       if (id !== null) ids = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
       app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext(); refreshGrips3D();
+      if (id === null && !additive) emptySelectionClick(hadSelection);
     });
     // a box dragged with the select button
     vp.setPickByFace(Plan.selectOptions().face);

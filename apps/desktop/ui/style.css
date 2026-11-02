@@ -95,6 +95,13 @@ button, select { font: inherit; color: inherit; }
 .cmd > span:last-child { text-align: center; max-width: 96px; font-size: 11px; }
 .cmd.small > span:last-child { text-align: left; max-width: none; }
 
+.modify-primary { display: grid; grid-template-columns: repeat(4, 36px); grid-template-rows: repeat(2, 34px); }
+.modify-secondary { display: grid; grid-template-columns: repeat(3, 25px); grid-template-rows: repeat(3, 22px); margin-left: 5px; align-self: center; }
+#ribbon .modify-primary .cmd { min-width: 0; padding: 2px; }
+#ribbon .modify-primary .ico { width: 26px; height: 26px; }
+#ribbon .modify-secondary .cmd { justify-content: center; }
+#ribbon .modify-secondary .ico { width: 18px; height: 18px; }
+
 .stack { display: flex; flex-direction: column; justify-content: center; }
 
 #workspace { display: grid; grid-template-columns: 290px 1fr; min-height: 0; }
@@ -313,7 +320,7 @@ table.range select, table.range input { width: 100%; padding: 1px 4px; backgroun
 .el-row { display: flex; gap: 6px; }
 .el-wrap { display: flex; align-items: center; gap: 4px; }
 /* text typed in place in an annotation family */
-.ann-text-edit { padding: 1px 3px; border: 1.5px solid var(--accent); border-radius: 2px; background: var(--view-bg); color: var(--text); resize: both; line-height: 1.2; }
+.ann-text-edit { box-sizing: content-box; border: 0; border-radius: 0; outline: none; background: transparent; color: var(--text); line-height: 1.2; }
 .mat-left .modal-tabs { margin: 0; }
 /* a value that opens a picker (Materials, Fill Patterns) when clicked */
 .picker-field { display: flex; align-items: center; gap: 6px; width: 100%; min-width: 120px; padding: 2px 6px; text-align: left; background: var(--panel); border: 1px solid var(--line); border-radius: 2px; cursor: pointer; color: inherit; font: inherit; }

@@ -378,6 +378,19 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         ro("Sheet Number", on_sheet.map_or(String::new(), |s| s.number.clone())),
         ro("Sheet Name", on_sheet.map_or(String::new(), |s| s.name.clone())),
     ]));
+    if let Some(section) = v.section.and_then(|sid| d.section(sid).map(|s| (sid, s))) {
+        let (sid, section) = section;
+        let mut controls = group("Section", vec![
+            boolean("Pinned", "pinned", section.pinned, true),
+            boolean("Flipped", "flipped", section.flipped, true),
+            boolean("Fold Lines", "fold_lines", section.fold_lines, section.bends.len() > 0),
+            enum_select("Far Clipping", "far_clip", &name_of(&section.far_clip), &[("with_line", "Clip with line"), ("without_line", "Clip without line"), ("no_clip", "No clip")]),
+            num("Far Clip Offset", "far_clip_mm", section.far_clip_mm.unwrap_or(0.0), section.far_clip != openarch_model::section::FarClip::NoClip),
+            ro("Width", format!("{:.0}", section.length())),
+        ]);
+        controls["target"] = json!({ "method": "patch_section", "id": sid });
+        groups.push(controls);
+    }
     groups.push(group("Phasing", vec![ro("Phase Filter", "Show All"), ro("Phase", "New Construction")]));
     json!({
         "id": id, "kind": "View",
@@ -386,6 +399,34 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         "view_kind": v.view_kind, "type_id": d.view_type_of(v),
         "target": { "method": "patch_view", "id": id },
         "groups": groups,
+    })
+}
+
+pub fn view_type_marker_groups(d: &Document, view_type: &ViewType) -> Vec<Value> {
+    if !matches!(view_type.view_kind, ViewKind::Section | ViewKind::Elevation) { return vec![]; }
+    let label = if view_type.view_kind == ViewKind::Section { "Section Tag" } else { "Elevation Mark" };
+    let choices = d.view_marker_types().into_iter().filter(|(_, t)| t.view_kind == view_type.view_kind)
+        .map(|(id, t)| (t.name.clone(), nest("marker_type", json!(id)), view_type.marker_type == Some(id))).collect();
+    vec![group("Graphics", vec![select(label, choices), dialog("Marker Type Properties", "view_marker_type", "Edit...")])]
+}
+
+pub fn view_marker_type_props(d: &Document, id: Id, marker: &openarch_model::viewmarker::ViewMarkerType) -> Value {
+    let section = marker.view_kind == ViewKind::Section;
+    let kind = if section { openarch_model::annotation::AnnotationKind::SectionMarker } else { openarch_model::annotation::AnnotationKind::ElevationMarker };
+    let symbols = |path: &str, selected: Option<Id>| d.annotation_families().into_iter().filter(|(_, f)| f.kind == kind)
+        .map(|(id, f)| (f.name.clone(), nest(path, json!(id)), selected == Some(id))).collect::<Vec<_>>();
+    let mut rows = vec![select(if section { "Section Head" } else { "Symbol" }, symbols("head", marker.head))];
+    if section {
+        let mut tails = vec![("Head family's pointer".into(), nest("tail", Value::Null), marker.tail.is_none())];
+        tails.extend(symbols("tail", marker.tail));
+        rows.push(select("Section Tail", tails));
+    }
+    json!({
+        "id": id, "kind": "ViewMarkerType", "title": marker.name, "name": marker.name,
+        "family": if section { "Section Tag" } else { "Elevation Mark" },
+        "siblings": d.view_marker_types().iter().filter(|(_, t)| t.view_kind == marker.view_kind).map(|(i, t)| json!({ "id": i, "name": t.name })).collect::<Vec<_>>(),
+        "patch": "patch_view_marker_type", "duplicate": "duplicate_view_marker_type",
+        "groups": [group("Graphics", rows)],
     })
 }
 
@@ -897,11 +938,11 @@ pub fn marker_props(d: &Document, id: Id, m: &openarch_model::site::ElevationMar
         })
         .collect();
     json!({
-        "id": id, "kind": "ElevationMarker", "title": "Elevation Marker", "type_label": "Elevation Marker",
+        "id": id, "kind": "ElevationMarker", "title": "Elevation Marker", "type_label": "Elevation",
+        "view_kind": "elevation", "type_id": m.slots.iter().flatten().find_map(|id| d.view(*id)).and_then(|v| d.view_type_of(v)),
         "target": { "method": "patch_marker", "id": id },
         "groups": [
             group("Constraints", vec![boolean("Pinned", "pinned", m.pinned, true), num("Rotation", "rotation_deg", m.rotation_deg, true)]),
-            group("Graphics", vec![select("Symbol", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::ElevationMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.marker_family(m.family).map(|(i, _)| i))).collect())]),
             group("Views", slots),
             group("Identity Data", vec![ro("Level", d.level(m.level).map_or("?", |l| l.name.as_str()))]),
         ],
@@ -1240,6 +1281,11 @@ pub fn level_type_props(d: &Document, id: Id, t: &openarch_model::annotation::Le
 /// view of its own, so instead of the extents of one it names the view it points at.
 pub fn section_props(d: &Document, id: Id, s: &openarch_model::section::Section) -> Value {
     use openarch_model::section::FarClip;
+    if let Some((view_id, view)) = s.view.and_then(|id| d.view(id).map(|view| (id, view))) {
+        let mut properties = view_props(d, view_id, view);
+        properties["selected_marker"] = json!(id);
+        return properties;
+    }
     let view = s.view.and_then(|v| d.view(v));
     let far = match s.far_clip {
         FarClip::WithLine => "with_line",
@@ -1252,7 +1298,8 @@ pub fn section_props(d: &Document, id: Id, s: &openarch_model::section::Section)
     });
     let runs = s.drawn().map_or(1, |dr| dr.runs.len());
     let mut graphics = vec![
-        select("Symbol", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::SectionMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.section_marker_family(s.family).map(|(i, _)| i))).collect()),
+        select("Section Head", d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::SectionMarker).map(|(fid, f)| (f.name.clone(), nest("family", json!(fid)), Some(fid) == d.section_marker_family(s.family).map(|(i, _)| i))).collect()),
+        select("Section Tail", std::iter::once(("Head family's pointer".into(), nest("tail_family", json!(null)), s.tail_family.is_none())).chain(d.annotation_families().into_iter().filter(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::SectionMarker).map(|(fid, f)| (f.name.clone(), nest("tail_family", json!(fid)), s.tail_family == Some(fid)))).collect()),
         boolean("Flipped", "flipped", s.flipped, true),
     ];
     let (title, extents, identity) = match s.reference {

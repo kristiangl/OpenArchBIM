@@ -25,6 +25,50 @@ const SheetView = (() => {
   const toScreen = (x, y) => { const { w, h } = size(); return { x: (x - cam.x) * cam.s + w / 2, y: h / 2 - (y - cam.y) * cam.s }; };
   const toPaper = (sx, sy) => { const { w, h } = size(); return { x: (sx - w / 2) / cam.s + cam.x, y: (h / 2 - sy) / cam.s + cam.y }; };
 
+  let tool = "select", down = null, mouse = null, hover = null;
+  const held = (x) => tool === "sketch" && Sketch.active && (Sketch.kind === "detail" ? x.line != null : Sketch.kind === "region" && x.region === Sketch.editingId);
+  function snap(sx, sy, o = {}) {
+    const segs = [];
+    for (const st of sheet?.detail?.strokes || []) {
+      if (held(st)) continue;
+      for (let i = 1; i < st.pts.length; i++) segs.push([...st.pts[i - 1], ...st.pts[i]]);
+    }
+    Snap.build(segs, "sheet");
+    return Snap.resolve(toPaper(sx, sy), { zoom: cam.s, gridStep: 0, shift: !!mouse?.shiftKey,
+      last: o.last || (tool === "sketch" ? Sketch.last() : null),
+      extra: tool === "sketch" ? Sketch.segs() : [], points: tool === "sketch" ? Sketch.points() : [],
+      hvDeg: o.hvDeg, track: o.track || (tool === "sketch" ? Sketch.trackPoints() : []) });
+  }
+  const Det = makeDetails({
+    ctx: () => ctx, toScreen: (q) => toScreen(q.x, q.y), toWorld: toPaper, zoom: () => cam.s,
+    scale: () => 1, data: () => sheet || {}, css: (n) => n === "--view-bg" ? "#ffffff" : css(n), render, thin: () => false, held, snap,
+    shift: () => !!mouse?.shiftKey, options: () => DetailCallbacks.options(), cb: DetailCallbacks,
+  });
+  const sketchHost = {
+    get ctx() { return ctx; }, get canvas() { return canvas; }, size,
+    toScreen: (q) => toScreen(q.x, q.y), toWorld: toPaper, scale: () => cam.s, css, render,
+    wallAt: () => null, wallById: () => null, wallChain: (id) => [id],
+    edgeAt: () => null, edgesNear: () => [],
+    cycleSnap: () => {}, label: (text, at, color) => {
+      ctx.fillStyle = color; ctx.font = "11px system-ui"; ctx.fillText(text, at.x, at.y);
+    },
+  };
+  function setTool(t) {
+    tool = t; down = null; band = null; drag = null; Det.clearPicks(); Det.stopLeader();
+    canvas.style.cursor = t === "select" ? "" : "crosshair";
+    cb.tool?.(t); render();
+  }
+  function detailAt(sx, sy) {
+    const q = toPaper(sx, sy);
+    const inside = (ring) => {
+      let hit = false;
+      for (let i = 0, j = ring.length - 1; i < ring.length; j = i++)
+        if ((ring[i][1] > q.y) !== (ring[j][1] > q.y) && q.x < (ring[j][0] - ring[i][0]) * (q.y - ring[i][1]) / (ring[j][1] - ring[i][1]) + ring[i][0]) hit = !hit;
+      return hit;
+    };
+    return Det.elements().filter((e) => (e.rings || [e.ring]).filter(inside).length % 2).reverse()[0];
+  }
+
   // ---- drawing, onto any context: `at(x, y)` maps paper mm to the context's pixels, `k` pixels per mm
   function draw(c, s, data, at, k, opt = {}) {
     const [pw, ph] = s.paper;
@@ -61,6 +105,13 @@ const SheetView = (() => {
       if (c.oaBlock) c.oaBlock({ name: s.title_block.name || "Title Block", at: o0, dir: { x: o1.x - o0.x, y: o1.y - o0.y } });
       Ann.draw(c, s.title_block, { x: o0.x, y: o0.y, k }, null, "#ffffff", { own: true });
       if (c.oaBlock) c.oaBlock(null);
+    }
+    if (opt.details !== false) {
+      const d = makeDetails({ ctx: () => c, toScreen: (q) => at(q.x, q.y), toWorld: () => ({}),
+        zoom: () => k, scale: () => 1, data: () => s, css: () => "#ffffff",
+        render() {}, thin: () => false, held: () => false });
+      d.drawItems(new Set(), new Set(), "#2f6fd6", false);
+      d.drawNotes(new Set(), new Set(), "#2f6fd6", false);
     }
     c.restore();
   }
@@ -209,8 +260,21 @@ const SheetView = (() => {
     const o = toScreen(0, sheet.paper[1]);
     ctx.fillStyle = "rgba(0,0,0,0.12)";
     ctx.fillRect(o.x + 3, o.y + 3, sheet.paper[0] * cam.s, sheet.paper[1] * cam.s);
-    draw(ctx, shown, views, toScreen, cam.s, { selected: active ? new Set() : sel, accent: css("--accent") });
+    draw(ctx, shown, views, toScreen, cam.s, { selected: active ? new Set() : sel, accent: css("--accent"), details: false });
     const accent = css("--accent");
+    Det.drawItems(sel, new Set(), accent, tool === "select");
+    Det.drawNotes(sel, new Set(), accent, tool === "select");
+    if (down?.delta) {
+      ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1;
+      for (const e of Det.elements()) if (sel.has(e.id)) for (const ring of e.rings || [e.ring]) {
+        ctx.beginPath();
+        ring.forEach(([x, y], i) => { const q = toScreen(x + down.delta.dx, y + down.delta.dy); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+        ctx.closePath(); ctx.stroke();
+      }
+      ctx.restore();
+    }
+    if (tool === "text") Det.preview(hover);
+    if (tool === "sketch") Sketch.draw(ctx);
     // the guides a dragged view lines up on, across the paper
     if (drag && drag.moved && drag.guides) {
       ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.setLineDash([6, 4]);
@@ -327,6 +391,16 @@ const SheetView = (() => {
     if (active) return;
     if (e.button === 1 || e.button === 2) { pan = { x: e.offsetX, y: e.offsetY, cx: cam.x, cy: cam.y }; e.preventDefault(); return; }
     if (e.button !== 0) return;
+    if (tool === "select" && Det.gripDown(e.offsetX, e.offsetY)) return;
+    if (tool === "sketch" && Sketch.gripDown(e.offsetX, e.offsetY)) return;
+    if (tool !== "select") { down = { x: e.offsetX, y: e.offsetY }; return; }
+    const detail = detailAt(e.offsetX, e.offsetY);
+    if (detail) {
+      if (e.ctrlKey || e.shiftKey) { if (sel.has(detail.id)) sel.delete(detail.id); else sel.add(detail.id); }
+      else sel = new Set([detail.id]);
+      down = { x: e.offsetX, y: e.offsetY, detail: true };
+      cb.select([...sel]); render(); return;
+    }
     if (titleGrip && Math.hypot(e.offsetX - titleGrip.x, e.offsetY - titleGrip.y) <= 7) { tdrag = { id: titleGrip.id, x0: titleGrip.x0, len: null }; return; }
     const hs = scheduleAt(e.offsetX, e.offsetY);
     if (hs) {
@@ -338,7 +412,7 @@ const SheetView = (() => {
     const v = viewportAt(e.offsetX, e.offsetY);
     const add = e.ctrlKey || e.shiftKey;
     // nothing there: a box picks the views (left to right, those wholly inside; right to left, those it touches)
-    if (!v) { if (!add) { sel = new Set(); cb.select([]); } band = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, add }; render(); return; }
+    if (!v) { const hadSelection = sel.size > 0; if (!add) { sel = new Set(); cb.select([]); } band = { x0: e.offsetX, y0: e.offsetY, x1: e.offsetX, y1: e.offsetY, add, hadSelection }; render(); return; }
     if (add) { if (sel.has(v.id)) sel.delete(v.id); else sel.add(v.id); }
     else if (!sel.has(v.id)) sel = new Set([v.id]);
     cb.select([...sel]);
@@ -349,6 +423,23 @@ const SheetView = (() => {
   });
   canvas.addEventListener("mousemove", (e) => {
     if (pan) { cam.x = pan.cx - (e.offsetX - pan.x) / cam.s; cam.y = pan.cy + (e.offsetY - pan.y) / cam.s; render(); return; }
+    mouse = e;
+    if (Det.dragging) { Det.gripMove(e.offsetX, e.offsetY); return; }
+    if (Sketch.gripDragging && tool === "sketch") { Sketch.gripMove(e.offsetX, e.offsetY, snap(e.offsetX, e.offsetY)); return; }
+    if (tool === "select" && down?.detail && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) > 5) {
+      const a = toPaper(down.x, down.y), z = toPaper(e.offsetX, e.offsetY);
+      down.delta = { dx: z.x - a.x, dy: z.y - a.y };
+      render(); return;
+    }
+    if (tool !== "select") {
+      hover = tool === "sketch" ? snap(e.offsetX, e.offsetY) : Det.toolSnap(e.offsetX, e.offsetY);
+      if (tool === "sketch") {
+        if (down && Sketch.canBand() && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) > 5)
+          band = { x0: down.x, y0: down.y, x1: e.offsetX, y1: e.offsetY };
+        Sketch.move(hover, e.offsetX, e.offsetY);
+      }
+      render(); return;
+    }
     if (tdrag) { tdrag.len = Math.max(5, Math.round(toPaper(e.offsetX, e.offsetY).x - tdrag.x0)); render(); return; }
     if (band) { band.x1 = e.offsetX; band.y1 = e.offsetY; render(); return; }
     if (drag) {
@@ -361,8 +452,24 @@ const SheetView = (() => {
       render();
     }
   });
-  window.addEventListener("mouseup", () => {
-    pan = null;
+  window.addEventListener("mouseup", (e) => {
+    const wasPan = pan; pan = null;
+    if (wasPan || e.button !== 0) return;
+    if (Det.dragging) { Det.gripUp(); return; }
+    if (tool === "sketch" && Sketch.gripDragging) { Sketch.gripUp(); return; }
+    if (down) {
+      const d = down, b = band; down = null; band = null;
+      if (d.detail) { if (d.delta) cb.moveDetails?.([...sel], d.delta); render(); return; }
+      const r = canvas.getBoundingClientRect(), x = e.clientX - r.left, y = e.clientY - r.top;
+      if (tool === "sketch") {
+        if (b) {
+          const a = toPaper(Math.min(b.x0, b.x1), Math.max(b.y0, b.y1)), z = toPaper(Math.max(b.x0, b.x1), Math.min(b.y0, b.y1));
+          Sketch.bandSelect({ x0: a.x, y0: a.y, x1: z.x, y1: z.y }, b.x1 >= b.x0, e);
+        } else Sketch.click(snap(x, y), x, y, e);
+      } else if (tool === "text") Det.toolClick(Det.toolSnap(x, y));
+      else if (tool === "noteleader") Det.leaderClick(Det.toolSnap(x, y));
+      render(); return;
+    }
     if (tdrag) { const t = tdrag; tdrag = null; if (t.len != null) cb.titleLine(t.id, t.len); render(); return; }
     if (band) {
       const b = band; band = null;
@@ -372,6 +479,7 @@ const SheetView = (() => {
         return crossing ? r >= a.x && l <= z.x && t >= a.y && bo <= z.y : l >= a.x && r <= z.x && bo >= a.y && t <= z.y;
       }).map((v) => v.id) : [];
       if (Math.hypot(b.x1 - b.x0, b.y1 - b.y0) >= 4) { sel = new Set(b.add ? [...sel, ...picked] : picked); cb.select([...sel]); }
+      if (Math.hypot(b.x1 - b.x0, b.y1 - b.y0) < 4 && !b.add) emptySelectionClick(b.hadSelection);
       render();
       return;
     }
@@ -414,6 +522,15 @@ const SheetView = (() => {
   // deactivates it
   canvas.addEventListener("dblclick", (e) => {
     if (active) { cb.deactivate(); return; }
+    if (tool === "sketch") { Sketch.dblclick(); return; }
+    if (tool !== "select") return;
+    const detail = detailAt(e.offsetX, e.offsetY);
+    if (detail) {
+      if (detail.kind === "detail") cb.editDetail?.(detail.id);
+      else if (detail.kind === "region") cb.editRegion?.(detail.id);
+      else DetailCallbacks.editNote(detail.id);
+      return;
+    }
     const lb = labelAt(e.offsetX, e.offsetY);
     if (lb) { cb.editLabel(lb.params); return; }
     const hs = scheduleAt(e.offsetX, e.offsetY);
@@ -433,6 +550,26 @@ const SheetView = (() => {
   new ResizeObserver(() => render()).observe(canvas);
 
   return {
+    get tool() { return tool; }, setTool,
+    get sketching() { return tool === "sketch"; },
+    startSketch(o) { setTool("sketch"); sel = new Set(); Sketch.attach(sketchHost); Sketch.begin(o); render(); },
+    endSketch() { Sketch.end(); setTool("select"); },
+    viewId: () => sheet?.id, viewScale: () => 1, paperPx: () => cam.s,
+    screenOf: toScreen, canvasRect: () => canvas.getBoundingClientRect(),
+    detailLines: () => sheet?.detail_lines || [], regions: () => sheet?.regions || [],
+    textNotes: () => sheet?.text_notes || [],
+    setEditingNote: (id) => Det.setEditing(id),
+    startNoteLeader(id, side, arc) { setTool("noteleader"); Det.startLeader(id, side, arc); },
+    noteOptionsChanged() { Det.clearPicks(); render(); },
+    key(e) {
+      if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
+      if (tool === "sketch") return Sketch.key(e);
+      if (tool === "text" && e.key === " " && Det.flipArc()) return true;
+      if (e.key !== "Escape") return false;
+      if (Det.cancelDrag()) return true;
+      if (Det.picking) { Det.clearPicks(); render(); return true; }
+      setTool("select"); sel = new Set(); cb.select([]); render(); return true;
+    },
     callbacks: cb,
     load,
     render,

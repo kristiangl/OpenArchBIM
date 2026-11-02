@@ -421,6 +421,9 @@ impl Document {
     }
 
     fn check_detail_view(&self, view: Id) -> Result<(), String> {
+        if let Some(s) = self.sheet(view) {
+            return if s.placeholder { Err("clear Placeholder before drawing on a sheet".into()) } else { Ok(()) };
+        }
         match self.view(view) {
             Some(v) if v.view_kind != crate::view::ViewKind::ThreeD => Ok(()),
             Some(_) => Err("detail lines, regions and text notes are drawn in 2D views, not 3D views".into()),

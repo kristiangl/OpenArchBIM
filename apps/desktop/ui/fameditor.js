@@ -132,11 +132,12 @@ const FamModel = (() => {
       const info = await Backend.call("family_file_info", { path });
       let mode = "refuse";
       if (info.exists != null) {
-        if (S && S.id === info.exists) { setPrompt(`Close "${S.def.name}" in the family editor before loading a file over it.`, true); return null; }
+        if (info.annotation ? AnnModel.isOpen(info.exists) : S && S.id === info.exists) { setPrompt(`Close "${info.name}" in the family editor before loading a file over it.`, true); return null; }
         mode = await askReplace(info);
         if (!mode) return null;
       }
       const r = await Backend.call("import_family_file", { path, mode, loaded_at: today() });
+      if (r.annotation) AnnModel.rememberFile(r.id, path);
       await refresh();
       if (!quiet) setPrompt(`${r.replaced ? "Reloaded" : "Loaded"} ${info.name}.`);
       if (after) after();
@@ -150,7 +151,7 @@ const FamModel = (() => {
     const id = await loadFile(null, { quiet: true });
     if (id == null) return;
     if (closeList) closeList();
-    open(id);
+    if (app.info.annotation_families.some((f) => f.id === id)) AnnModel.open(id); else open(id);
   }
 
   // ---------------------------------------------------------------- the editor
@@ -407,33 +408,28 @@ const FamModel = (() => {
   async function loadIntoProject(close) {
     if (!(await commitToProject())) return;
     const name = S.def.name;
-    if (S.fileDirty) await offerFileSave();
+    if (S.fileDirty && await offerFileSave() === "cancel") return;
     if (close) closeEditor(true); else setDoc("project");
     await refresh(true);
     setPrompt(`Loaded ${name} into the project.`);
   }
 
-  function offerFileSave() {
-    return new Promise(async (resolve) => {
-      let st = { source_path: null, found: false };
-      try { st = await Backend.call("family_file_status", { id: S.id }); } catch { /* treated as no file */ }
-      const path = st.source_path;
-      let settled = false;
-      const settle = resolve;
-      resolve = (v) => { settled = true; settle(v); };
-      openModal(path ? (st.found ? "Overwrite Family File" : "Family File Not Found") : "Save Family File", (body, foot, close) => {
-        const done = (v) => { close(); resolve(v); };
-        body.append(el("div", "modal-msg", path
-          ? (st.found ? `${S.def.name} was loaded from ${path}. Overwrite that file with these changes?` : `${S.def.name} was loaded from ${path}, which cannot be found now. Save the family to a file?`)
-          : `${S.def.name} has no family file yet. Save it to a file as well?`),
-          el("div", "modal-msg", "Choosing project only keeps the changes in this project. Other projects that use the file are not touched."));
-        foot.append(button("Project Only", () => { S.fileDirty = false; done(false); }));
-        foot.append(button(path && st.found ? "Overwrite File" : "Save As...", async () => { close(); const ok = await saveFile(!(path && st.found)); if (!ok) S.fileDirty = false; resolve(ok); }, true));
+  async function offerFileSave() {
+    let fileStatus = { source_path: S.sourcePath, found: false };
+    try { fileStatus = await Backend.call("family_file_status", { id: S.id }); }
+    catch (e) { S.msg = String(e.message || e); status(); }
+    const missing = !!fileStatus.source_path && !fileStatus.found;
+    return new Promise((resolve) => {
+      openModal(missing ? "Family File Not Found" : "Save Family File", (body, foot, close) => {
+        const message = missing
+          ? S.def.name + " was loaded from " + fileStatus.source_path + ", which cannot be found. Choose Save As to save these changes to a file."
+          : "Save the edited family to a file as well?";
+        body.append(el("div", "modal-msg", message));
+        const done = (result) => { close(); resolve(result); };
+        body.closest(".modal-back").onEscape = () => done("cancel");
+        foot.append(button("Cancel", () => done("cancel")), button("Project Only", () => done("project")),
+          button(missing || !S.sourcePath ? "Save As..." : "Save File", async () => { if (await saveFile(missing)) done("saved"); }, true));
       });
-      // Esc closes a dialog without a button: count that as "project only" so Load into Project goes on
-      const back = [...document.querySelectorAll(".modal-back")].pop();
-      const watch = new MutationObserver(() => { if (!back.isConnected) { watch.disconnect(); if (!settled) { S.fileDirty = false; resolve(false); } } });
-      watch.observe(document.body, { childList: true });
     });
   }
 
@@ -456,7 +452,7 @@ const FamModel = (() => {
   }
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
   // the Modify tab's commands and the sketch tool each one picks while a sketch is open
-  const SK_MODIFY = { "f-select": "select", "f-align": "align", "f-mv": "move", "f-cp": "copy", "f-ro": "rotate", "f-mi-pick": "mirror", "f-mi-draw": "mirror", "f-of": "offset", "f-del": "delete" };
+  const SK_MODIFY = { "f-tr": "trim_corner", "f-ts": "trim_single", "f-tm": "trim_single", "f-sp": "split", "f-select": "select", "f-align": "align", "f-mv": "move", "f-cp": "copy", "f-ro": "rotate", "f-mi-pick": "mirror", "f-mi-draw": "mirror", "f-of": "offset", "f-del": "delete" };
   const commands = {
     "f-props": () => toggleProperties(),
     "f-types": () => typesDialog(),
@@ -496,7 +492,8 @@ const FamModel = (() => {
   for (const [id, t] of Object.entries(SK_MODIFY)) {
     const f = commands[id];
     commands[id] = (e) => {
-      if (!skActive()) return f(e);
+      if (!skActive()) return f?.(e);
+      if (id === "f-ts" || id === "f-tm") FSk.setOpts({ multiple: id === "f-tm" });
       // Delete takes the selected lines out at once, or with none selected waits for a click on one
       if (t === "delete" && FSk.selectedCount) { FSk.key({ key: "Delete", preventDefault() {} }); ctxRefresh(); return; }
       if (id === "f-mi-pick" || id === "f-mi-draw") FSk.setOpts({ mirrorMode: id === "f-mi-pick" ? "pick" : "draw" });
@@ -2708,14 +2705,14 @@ const FamModel = (() => {
     const m = mouse(e);
     S.mouse = m;
 
-    if (e.button === 1 || e.button === 2) { S.drag = { pan: true, x: m.x, y: m.y, ox: cam().ox, oy: cam().oy, button: e.button }; return; }
+    if (e.button === 1 || e.button === 2) { e.preventDefault(); S.drag = { pan: true, x: m.x, y: m.y, ox: cam().ox, oy: cam().oy, button: e.button }; return; }
     if (await skDown(e, m)) return;
     const t = S.tool;
     // a padlock that shows takes a click whatever tool is on (the Select tool handles its own below)
     if (t !== "select") {
       const inBox = (q) => m.x >= q.x && m.x <= q.x + q.w && m.y >= q.y && m.y <= q.y + q.h;
-      const dl = (S.dimHits || []).find((q) => q.kind === "lock" && inBox(q)), d = dl && dimById(dl.id);
-      if (d) { await dimPatch(d, { locked: !d.locked }); render(); return; }
+      const dl = (S.dimHits || []).find((q) => (q.kind === "lock" || q.kind === "eq") && inBox(q)), d = dl && dimById(dl.id);
+      if (d) { if (dl.kind === "eq") await toggleEq(d.id); else await dimPatch(d, { locked: !d.locked }); render(); return; }
       const lk = t !== "align" && (S.lockHits || []).find(inBox);
       if (lk) { await toggleEdgeLock(lk); render(); return; }
     }
@@ -2756,7 +2753,9 @@ const FamModel = (() => {
         S.drag = !held && pl.anchor.type === "offset" && /^\s*-?\d+(\.\d+)?\s*$/.test(String(pl.anchor.by)) ? { plane: pl.id, before: snapshot(), moved: false } : null;
         return;
       }
+      const hadSelection = !!S.sel;
       S.sel = hitItem(m.x, m.y); props(); render();
+      if (!S.sel) emptySelectionClick(hadSelection);
       if (!S.sel) { S.drag = { box: true, x: m.x, y: m.y, mode: "replace" }; return; }
       const it = S.sel && (S.sel.kind === "ctrl" ? ctrlById(S.sel.id) : S.sel.kind === "conn" ? connById(S.sel.id) : S.sel.kind === "mtext" ? mtextById(S.sel.id) : S.sel.kind === "comp" ? compById(S.sel.id) : null);
       const wp = it && S.sel.kind !== "ctrl" && S.sel.kind !== "comp" ? planeById(it.plane) : null;
@@ -3071,6 +3070,7 @@ const FamModel = (() => {
     if (!S || S.view === "3d") return;
     e.preventDefault();
     const m = mouse(e), c = cam();
+    if (!e.deltaY || e.buttons & 4 || S.drag?.pan) return;
     const f = e.deltaY < 0 ? 1.15 : 1 / 1.15;
     c.ox = m.x - (m.x - c.ox) * f; c.oy = m.y - (m.y - c.oy) * f; c.k *= f;
     render();
@@ -3091,7 +3091,7 @@ const FamModel = (() => {
     if (e.key === "Enter" && S.draft && S.draft.kind === "path") { await finishPath(); render(); e.preventDefault(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z") { e.preventDefault(); e.stopPropagation(); await undo(); return; }
     if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") { e.preventDefault(); e.stopPropagation(); await redo(); return; }
-    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); e.stopPropagation(); await save(false); }
+    if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "s") { e.preventDefault(); e.stopPropagation(); await save(e.shiftKey); }
   }
 
   // ---------------------------------------------------------------- work planes
@@ -3625,12 +3625,10 @@ const FamModel = (() => {
       { label: "Boundary Line", icon: "symbolicLine", on: !sk.drawAxis, onclick: () => { sk.drawAxis = false; ctxRefresh(); status(); } },
       { label: "Axis Line", icon: "refLine", on: !!sk.drawAxis, onclick: () => { sk.drawAxis = true; if (FSk.tool !== "line") FSk.setTool("line"); S.msg = "Axis Line: click its two points."; ctxRefresh(); status(); } },
     ] : [];
-    const trims = FSk.MODIFY.filter((x) => ["trim_corner", "trim_single", "split"].includes(x.id)).map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id }));
     return { auto: true, title: sk ? skTitle() : FSk.title, groups: [
       { label: "Mode", items: mode },
       { label: "Draw", items: [...kinds, ...SK_DRAW.map((x) => ({ ...x, onclick: () => FSk.setTool(x.id), on: t === x.id }))] },
       { label: "Work Plane", items: [{ label: "Set", icon: "setWp", onclick: () => commands["f-wpset"]() }, { label: "Show", icon: "showWp", on: !!S.showWp, onclick: () => commands["f-wpshow"]() }, { label: "Viewer", icon: "viewer", onclick: () => commands["f-wpviewer"]() }] },
-      ...(trims.length ? [{ label: "Trim and Split", items: trims }] : []),
     ] };
   }
   const worldRect = (x0, y0, x1, y1) => { const a = s2w(x0, y0), b = s2w(x1, y1); return { x0: Math.min(a.u, b.u), y0: Math.min(a.v, b.v), x1: Math.max(a.u, b.u), y1: Math.max(a.v, b.v) }; };
@@ -3661,7 +3659,7 @@ const FamModel = (() => {
     if (!d || !(d.sk || d.skGrip)) return false;
     if (d.skGrip) { await FSk.gripUp(); return true; }
     if (d.band) { FSk.bandSelect(worldRect(d.x, d.y, m.x, m.y), m.x >= d.x, e); render(); return true; }
-    if (Math.hypot(m.x - d.x, m.y - d.y) < 5) {
+    if (!FSk.canBand() || Math.hypot(m.x - d.x, m.y - d.y) < 5) {
       const p = skSnap(m.x, m.y);
       Snap.clearOverride(); S.snapCycle = 0;
       await FSk.click(p, m.x, m.y, e);

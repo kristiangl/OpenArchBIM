@@ -60,6 +60,15 @@ pub const SITE_BASE_ID: u64 = 4_503_599_627_370_001;
 pub const SITE_SURVEY_ID: u64 = 4_503_599_627_370_002;
 
 /// Read a family file (.oaf; the older .ibfam files are the same JSON).
+fn read_annotation_file(path: &std::path::Path) -> Result<Option<(openarch_model::annotation::AnnotationFamily, Value)>, String> {
+    let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
+    let file: Value = serde_json::from_str(&text).map_err(|e| format!("not a family file: {e}"))?;
+    if file.get("format").and_then(|v| v.as_str()) != Some("openarch-annotation") { return Ok(None); }
+    if file.get("version").and_then(|v| v.as_u64()) != Some(1) { return Err("unsupported annotation family file version".into()); }
+    let family = serde_json::from_value(file.get("family").cloned().ok_or("missing annotation family")?).map_err(|e| format!("bad annotation family: {e}"))?;
+    Ok(Some((family, file)))
+}
+
 fn read_family_file(path: &std::path::Path) -> Result<openarch_model::faminst::FamilyFile, String> {
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     serde_json::from_str(&text).map_err(|e| format!("{} is not a family file: {e}", path.display()))
@@ -137,7 +146,8 @@ fn section_json(d: &Document, id: Id, s: &openarch_model::section::Section, plan
     // the view box: the left end of the view, across it and how deep (a reference section looks at nothing)
     let depth = s.view.and_then(|v| d.elevation_frame(v)).map(|f| f.depth_mm).filter(|v| *v < 1.0e6);
     let frame = s.view_runs().map(|(o, r)| json!({ "o": [o.x, o.y], "right": [right.x, right.y], "look": [look.x, look.y], "width": r.last().map_or(0.0, |r| r.u1), "depth": depth }));
-    let family = d.section_marker_family(s.family);
+    let symbols = d.section_symbols(s);
+    let family = d.section_marker_family(symbols.0);
     json!({
         "id": id, "view_id": s.reference.or(s.view), "name": s.reference.or(s.view).and_then(|v| d.view(v)).map(|v| v.name.clone()),
         "reference": s.reference.is_some(),
@@ -149,6 +159,8 @@ fn section_json(d: &Document, id: Id, s: &openarch_model::section::Section, plan
         "pinned": s.pinned, "level_id": s.level, "far_clip": s.far_clip, "depth": depth,
         "family": family.map(|(fid, f)| symbol_json(d, fid, f)),
         "labels": d.section_labels(s),
+        "tail_family": symbols.1.and_then(|f| d.section_marker_family(Some(f))).map(|(fid, f)| symbol_json(d, fid, f)),
+        "start_marker": s.start_marker, "end_marker": s.end_marker,
     })
 }
 
@@ -297,6 +309,10 @@ impl Session {
                 };
                 Ok(json!({ "id": id, "view_id": self.doc.section(id).and_then(|s| s.view) }))
             }
+            "move_section_end" => {
+                self.doc.move_section_end(id_of(p, "id")?, end_of(p)? as usize, point_of(p.get("point").ok_or("missing point")?)?)?;
+                Ok(json!({}))
+            }
             "patch_section" => {
                 // patch: any of start, end ([x, y]), bends ([[x, y], ...]), flipped, far_clip, far_clip_mm, z_range, pinned, family,
                 // fold_lines, reference (the view a reference section points at)
@@ -355,6 +371,10 @@ impl Session {
                         Some(v) => point_of(v)?,
                         None => m.position,
                     };
+                    if let Some(view_type) = patch.get("view_type") {
+                        let view = m.slots.iter().flatten().next().copied().ok_or("the marker has no view")?;
+                        d.patch_view(view, &json!({ "view_type": view_type }))?;
+                    }
                     if let Some(f) = patch.get("family") {
                         let fam = f.as_u64();
                         if fam.is_some_and(|f| !d.annotation_family(f).is_some_and(|x| x.kind == openarch_model::annotation::AnnotationKind::ElevationMarker)) {
@@ -935,8 +955,32 @@ impl Session {
                 self.doc.set_family_source(id, Some(path.to_string_lossy().into_owned()), at)?;
                 Ok(json!({ "path": path.to_string_lossy() }))
             }
+            "save_annotation_family_file" => {
+                let id = id_of(p, "id")?;
+                let family: openarch_model::annotation::AnnotationFamily = match p.get("family") {
+                    Some(f) => serde_json::from_value(f.clone()).map_err(|e| format!("bad annotation family: {e}"))?,
+                    None => self.doc.annotation_family(id).ok_or("not an annotation family")?.clone(),
+                };
+                let mut check = self.doc.clone();
+                check.set_annotation_family(id, family.clone())?;
+                let mut path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                if path.extension().is_none() { path.set_extension("oaf"); }
+                let subcategories = self.doc.object_styles().and_then(|(_, o)| o.annotation.get(family.kind.category())).map(|s| s.subcategories.clone()).unwrap_or_default();
+                let line_patterns: Vec<_> = self.doc.line_patterns().into_iter().filter(|(_, p)| subcategories.values().any(|s| s.pattern == p.name)).map(|(_, p)| p.clone()).collect();
+                let fill_patterns: Vec<_> = self.doc.fill_patterns().into_iter().filter(|(_, p)| family.region_types.iter().any(|r| r.foreground.as_ref() == Some(&p.name) || r.background.as_ref() == Some(&p.name))).map(|(_, p)| p.clone()).collect();
+                let file = json!({ "format": "openarch-annotation", "version": 1, "family": family, "subcategories": subcategories, "line_patterns": line_patterns, "fill_patterns": fill_patterns });
+                let text = serde_json::to_string_pretty(&file).map_err(|e| e.to_string())?;
+                let tmp = path.with_extension("oaf.tmp");
+                std::fs::write(&tmp, text).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                std::fs::rename(&tmp, &path).map_err(|e| format!("cannot write {}: {e}", path.display()))?;
+                Ok(json!({ "path": path.to_string_lossy() }))
+            }
             "family_file_info" => {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                if let Some((family, _)) = read_annotation_file(&path)? {
+                    let exists = self.doc.annotation_families().into_iter().find(|(_, f)| f.name == family.name).map(|(id, _)| id);
+                    return Ok(json!({ "name": family.name, "annotation": true, "category_label": family.kind.category(), "types": [], "exists": exists }));
+                }
                 let file = read_family_file(&path)?;
                 let exists = self.doc.families().into_iter().find(|(_, f)| f.name == file.family.name).map(|(id, _)| id);
                 Ok(json!({
@@ -950,6 +994,32 @@ impl Session {
                     Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad mode: {e}"))?,
                     None => openarch_model::faminst::ImportMode::Refuse,
                 };
+                if let Some((family, file)) = read_annotation_file(&path)? {
+                    let replace = p.get("mode").and_then(|v| v.as_str()).is_some_and(|m| m != "refuse");
+                    let (id, replaced) = self.doc.grouped("Load annotation family", |d| {
+                        for (field, kind) in [("line_patterns", "line_pattern"), ("fill_patterns", "fill_pattern")] {
+                            for pattern in file.get(field).and_then(|v| v.as_array()).into_iter().flatten() {
+                                let name = pattern.get("name").and_then(|v| v.as_str()).ok_or("a pattern needs a name")?;
+                                let exists = if kind == "line_pattern" { d.line_pattern(name).is_some() } else { d.fill_pattern(name).is_some() };
+                                if !exists {
+                                    let mut item = pattern.clone(); item["kind"] = json!(kind);
+                                    graphics::add_style_item(d, &json!({ "item": item }))?;
+                                }
+                            }
+                        }
+                        if let Some(subs) = file.get("subcategories").and_then(|v| v.as_object()) {
+                            let have = d.symbol_subcategories(family.kind);
+                            let missing: serde_json::Map<String, Value> = subs.iter().filter(|(name, _)| !have.contains(name)).map(|(n, v)| (n.clone(), v.clone())).collect();
+                            if !missing.is_empty() {
+                                let mut patch = json!({ "annotation": {} });
+                                patch["annotation"][family.kind.category()] = json!({ "subcategories": missing });
+                                d.patch_object_styles(&patch)?;
+                            }
+                        }
+                        d.import_annotation_family(family, replace)
+                    })?;
+                    return Ok(json!({ "id": id, "replaced": replaced, "annotation": true }));
+                }
                 let file = read_family_file(&path)?;
                 let at = p.get("loaded_at").and_then(|v| v.as_str()).map(String::from);
                 let (id, replaced) = self.doc.import_family_with(file, mode, Some((path.to_string_lossy().into_owned(), at)))?;
@@ -1297,12 +1367,17 @@ impl Session {
                             n.flipped = sec.flipped != mirror;
                             n.pinned = false;
                             let mut patch = serde_json::to_value(&n).map_err(|e| e.to_string())?;
+                            // Geometry transforms must not write legacy instance symbols into a shared marker type.
+                            if let Some(fields) = patch.as_object_mut() { fields.remove("family"); fields.remove("tail_family"); }
                             if copy {
                                 // a copy of a reference section points at the same view; any other copy makes its own
                                 let nid = match sec.reference {
                                     Some(target) => d.add_reference_section(sec.level, n.start, n.end, n.flipped, target)?,
                                     None => d.add_section(sec.level, n.start, n.end, n.flipped)?,
                                 };
+                                if let Some(view_type) = sec.view.and_then(|view| d.view(view)).and_then(|view| d.view_type_of(view)) {
+                                    if let Some(view) = d.section(nid).and_then(|s| s.view) { d.patch_view(view, &json!({ "view_type": view_type }))?; }
+                                }
                                 d.patch_section(nid, &patch)?;
                                 made.push(nid);
                             } else {
@@ -1370,6 +1445,15 @@ impl Session {
                 self.doc.patch_level_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
+            "patch_view_type" => {
+                self.doc.patch_view_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "patch_view_marker_type" => {
+                self.doc.patch_view_marker_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "duplicate_view_marker_type" => Ok(json!({ "id": self.doc.duplicate_view_marker_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "duplicate_view_type" => Ok(json!({ "id": self.doc.duplicate_view_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "duplicate_level_type" => Ok(json!({ "id": self.doc.duplicate_level_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "describe_level_type" => {
@@ -1880,7 +1964,11 @@ impl Session {
                     let table = self.schedule_table_for(p.schedule, if by_sheet { visible.as_ref() } else { None }).unwrap_or(Value::Null);
                     schedules.push(json!({ "id": sid, "schedule": p.schedule, "segments": p.segments, "repeat_headers": p.repeat_headers, "table": table }));
                 }
-                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules }))
+                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules,
+                    "detail": d.detail_paths(id, 1.0, true, true), "text_notes": d.text_note_draws(id, 1.0),
+                    "detail_lines": d.detail_lines(id).iter().map(|(i, l)| json!({ "id": i, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+                    "regions": d.detail_regions(id).iter().map(|(i, r)| json!({ "id": i, "masking": r.masking, "region_type": r.region_type })).collect::<Vec<_>>(),
+                    "fill_patterns": graphics::fill_pattern_defs(d), "line_styles": d.line_styles() }))
             }
             "floor_sketch" => {
                 let id = id_of(p, "id")?;
@@ -2554,7 +2642,7 @@ impl Session {
                 .filter(|(id, _)| !view.hidden_elements.contains(id))
                 .map(|(id, m)| json!({
                     "id": id, "x": m.position.x, "y": m.position.y, "rotation_deg": m.rotation_deg, "pinned": m.pinned, "level_id": m.level,
-                    "family": d.marker_family(m.family).map(|(fid, f)| symbol_json(d, fid, f)),
+                    "family": d.marker_family(d.elevation_symbol(m)).map(|(fid, f)| symbol_json(d, fid, f)),
                     "slots": (0..4).map(|k| json!({
                         "slot": k, "view_id": m.slots[k], "name": m.slots[k].and_then(|v| d.view(v)).map(|v| v.name.clone()),
                         "look": [m.look(k).x, m.look(k).y],
@@ -2648,6 +2736,8 @@ impl Session {
             }),
             _ => Value::Null,
         };
+        let section_tag = d.default_view_type(openarch_model::view::ViewKind::Section).and_then(|id| d.view_type(id))
+            .and_then(|t| t.marker_type).and_then(|id| d.view_marker_type(id));
         let mut out = json!({
             "view": {
                 "id": vid, "name": view.name, "level_id": view.level, "scale": settings.scale,
@@ -2661,7 +2751,8 @@ impl Session {
                 "annotation": view.crop.annotation_crop, "annotation_offset": view.crop.annotation_offsets(),
             },
             "walls": walls, "curtains": curtains, "floors": floors, "roofs": roofs, "inserts": inserts,
-            "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
+            "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(section_tag.and_then(|t| t.head)).map(|(fid, f)| symbol_json(d, fid, f)),
+            "section_tail_family": section_tag.and_then(|t| t.tail).and_then(|id| d.section_marker_family(Some(id))).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
         });
@@ -2869,9 +2960,11 @@ impl Session {
                     "family": match label.as_str() { "floor_plan" => "Floor Plan", "ceiling_plan" => "Ceiling Plan", "three_d" => "3D View", "elevation" => "Elevation", "section" => "Section", _ => "View" },
                     "siblings": d.view_types().iter().filter(|(_, x)| x.view_kind == t.view_kind).map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
                     "patch": "patch_view_type", "duplicate": "duplicate_view_type",
-                    "groups": [],
+                    "marker_type": t.marker_type,
+                    "groups": props::view_type_marker_groups(d, t),
                 })
             }
+            Element::ViewMarkerType(t) => props::view_marker_type_props(d, id, t),
             Element::LevelType(t) => {
                 let mut v = props::level_type_props(d, id, t);
                 v["family"] = json!("Level");
@@ -4115,6 +4208,11 @@ mod tests {
     #[test]
     fn sections_are_drawn_in_plan_cut_styled_moved_copied_and_deleted() {
         let (mut s, lvl, wt, view) = setup();
+        // Use a labelled family to test parameter drawing independently of the starter artwork.
+        let head = s.doc.section_marker_family(None).unwrap().0;
+        let mut family = openarch_model::annotation::AnnotationFamily::section_marker("Labelled test head");
+        family.read_old_drawing();
+        s.doc.set_annotation_family(head, family).unwrap();
         for (a, b) in [([0, 0], [8000, 0]), ([8000, 0], [8000, 6000]), ([8000, 6000], [0, 6000]), ([0, 6000], [0, 0])] {
             call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": a, "end": b, "height": 2700.0}));
         }
@@ -4139,7 +4237,9 @@ mod tests {
         assert!(data["fill_patterns"]["Solid fill"]["solid"] == true);
         // properties
         let props = call(&mut s, "describe", json!({"id": sec}));
-        assert_eq!(props["target"]["method"], "patch_section");
+        assert_eq!(props["target"]["method"], "patch_view");
+        assert_eq!(props["target"]["id"], sv);
+        assert!(props["groups"].as_array().unwrap().iter().any(|g| g["target"]["method"] == "patch_section"));
         call(&mut s, "patch_section", json!({"id": sec, "patch": {"far_clip_mm": 2000.0, "far_clip": "without_line"}}));
         assert_eq!(call(&mut s, "elevation", json!({"view_id": sv}))["frame"]["depth_mm"].as_f64(), Some(2000.0));
         // flipping looks the other way

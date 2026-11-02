@@ -181,6 +181,12 @@ impl Document {
         d.ensure_site_defaults();
         d.ensure_annotation_defaults();
         d.ensure_view_types();
+        d.ensure_view_marker_types();
+        // New projects use the supplied head/tail pair; opening an existing project keeps its symbols.
+        if let Some((marker, _)) = d.default_view_type(ViewKind::Section).and_then(|id| d.view_type(id)).and_then(|t| t.marker_type).and_then(|id| d.view_marker_type(id).map(|t| (id, t))) {
+            let tail = d.annotation_families().into_iter().find(|(_, f)| f.kind == crate::annotation::AnnotationKind::SectionMarker && f.name == "Section Tail").map(|(id, _)| id);
+            d.patch_view_marker_type(marker, &serde_json::json!({ "tail": tail })).expect("default section tail");
+        }
         d.ensure_detail_defaults();
         d.ensure_curtain_types();
         d.undo.clear(); // starting state is not undoable
@@ -694,7 +700,7 @@ impl Document {
                 Element::TextNote(t) => Some(t.view),
                 _ => None,
             };
-            if view.is_some_and(|v| views.contains(&v)) && !ids.contains(&i) {
+            if view.is_some_and(|v| views.contains(&v) || ids.contains(&v)) && !ids.contains(&i) {
                 ids.push(i);
             }
             // a viewport goes with its view and with its sheet; a schedule on a sheet with its schedule and its sheet
@@ -906,7 +912,7 @@ impl Document {
             let mut ids = Vec::new();
             for (name, kind) in Self::DEFAULT_VIEW_TYPES {
                 if !have(tx.doc_ref(), kind) {
-                    ids.push((kind, tx.add(Element::ViewType(crate::view::ViewType { name: name.into(), view_kind: kind, template_for_new: None, new_views_dependent: true }))));
+                    ids.push((kind, tx.add(Element::ViewType(crate::view::ViewType { name: name.into(), view_kind: kind, template_for_new: None, new_views_dependent: true, marker_type: None }))));
                 }
             }
             let plans: Vec<(Id, View)> = tx.doc_ref().views().into_iter().filter(|(_, v)| v.view_type.is_none()).map(|(i, v)| (i, v.clone())).collect();
@@ -1002,6 +1008,9 @@ impl Document {
                 return Err("unknown level".into());
             }
         }
+        if nv.view_type.is_some_and(|t| !self.view_type(t).is_some_and(|t| t.view_kind == nv.view_kind)) {
+            return Err("that type belongs to a different kind of view".into());
+        }
         if nv.view_kind.is_plan() && nv.level.is_none() {
             return Err("a plan view needs a level".into());
         }
@@ -1029,7 +1038,19 @@ impl Document {
                 return Err("unknown underlay level".into());
             }
         }
-        self.transact("Change view properties", |tx| tx.update(id, Element::View(nv)))
+        let siblings: Vec<Id> = if nv.view_type != v.view_type {
+            nv.elevation.as_ref().and_then(|e| self.elevation_marker(e.marker))
+                .map(|m| m.slots.iter().flatten().copied().filter(|other| *other != id).collect()).unwrap_or_default()
+        } else { vec![] };
+        self.transact("Change view properties", |tx| {
+            for other in siblings {
+                if let Some(mut sibling) = tx.doc_ref().view(other).cloned() {
+                    sibling.view_type = nv.view_type;
+                    tx.update(other, Element::View(sibling))?;
+                }
+            }
+            tx.update(id, Element::View(nv))
+        })
     }
 
     pub fn patch_view_template(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {

@@ -58,6 +58,12 @@ pub struct SectionBreak {
     pub tail_mm: f64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SectionEnd { Head, Tail, None }
+fn head_end() -> SectionEnd { SectionEnd::Head }
+fn tail_end() -> SectionEnd { SectionEnd::Tail }
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Section {
     /// The level whose plan it was drawn in.
@@ -83,6 +89,15 @@ pub struct Section {
     /// The annotation family it is drawn with. `None` uses the first section marker family.
     #[serde(default)]
     pub family: Option<Id>,
+    #[serde(default)]
+    pub tail_family: Option<Id>,
+    /// Reference markers can retain a distinct marker type from their target view.
+    #[serde(default)]
+    pub reference_marker_type: Option<Id>,
+    #[serde(default = "head_end")]
+    pub start_marker: SectionEnd,
+    #[serde(default = "tail_end")]
+    pub end_marker: SectionEnd,
     #[serde(default)]
     pub pinned: bool,
     /// The corners of a jogged line between the start and the end, in order along it: two for each jog (see `drawn`).
@@ -160,6 +175,10 @@ impl Section {
             z_range: None,
             view: None,
             family: None,
+            tail_family: None,
+            reference_marker_type: None,
+            start_marker: SectionEnd::Head,
+            end_marker: SectionEnd::Tail,
             pinned: false,
             bends: vec![],
             breaks: vec![],
@@ -474,7 +493,7 @@ impl Document {
     /// The labels of a section marker with their text worked out. A view not yet on a sheet reads "-" for its number
     /// and its sheet. A reference section names the view it points at and shows the family's Reference Label.
     pub fn section_labels(&self, s: &Section) -> Vec<crate::annotation::DrawnText> {
-        let Some((_, f)) = self.section_marker_family(s.family) else { return vec![] };
+        let Some((_, f)) = self.section_marker_family(self.section_symbols(s).0) else { return vec![] };
         let name = s.reference.or(s.view).and_then(|v| self.view(v)).map(|v| v.name.clone()).unwrap_or_default();
         let reference = if s.reference.is_some() { f.reference_label.clone() } else { String::new() };
         let value = |param: &str| match param {
@@ -581,8 +600,11 @@ impl Document {
         if new.z_range.is_some_and(|(a, b)| !a.is_finite() || !b.is_finite() || b - a < 100.0) {
             return Err("the section must be at least 100 mm tall".into());
         }
-        if new.family.is_some_and(|f| self.annotation_family(f).is_none()) {
+        if [new.family, new.tail_family].into_iter().flatten().any(|f| !self.annotation_family(f).is_some_and(|x| x.kind == crate::annotation::AnnotationKind::SectionMarker)) {
             return Err("unknown section marker".into());
+        }
+        if new.reference_marker_type.is_some_and(|id| !self.view_marker_type(id).is_some_and(|t| t.view_kind == ViewKind::Section)) {
+            return Err("unknown section marker type".into());
         }
         let len = new.path_length();
         for (k, b) in new.breaks.iter().enumerate() {
@@ -612,6 +634,56 @@ impl Document {
     /// Change a section with a JSON patch (ends, bends, flip, far clip, range, family, breaks, fold lines, the view
     /// a reference section points at, pin). Moving an end of a jogged line moves it along its own run. One undo step.
     pub fn patch_section(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let symbols_changed = patch.get("family").is_some() || patch.get("tail_family").is_some();
+        let marker = self.section(id).and_then(|s| s.reference_marker_type.or_else(|| s.view.or(s.reference).and_then(|view| self.marker_type_for_view(view).map(|(id, _)| id))));
+        if symbols_changed {
+            if let Some(marker) = marker {
+                let mut type_patch = serde_json::json!({});
+                if let Some(head) = patch.get("family") { type_patch["head"] = head.clone(); }
+                if let Some(tail) = patch.get("tail_family") { type_patch["tail"] = tail.clone(); }
+                return self.grouped("Change section symbol type", |d| {
+                    d.patch_view_marker_type(marker, &type_patch)?;
+                    d.patch_section_instance(id, patch)
+                });
+            }
+        }
+        self.patch_section_instance(id, patch)
+    }
+
+    pub fn move_section_end(&mut self, id: Id, end: usize, point: Point) -> Result<(), String> {
+        if end > 1 { return Err("a section has two ends".into()); }
+        let section = self.section(id).ok_or("not a section")?;
+        let points = section.points();
+        let (at, neighbour) = if end == 0 { (points[0], points[1]) } else { (points[points.len() - 1], points[points.len() - 2]) };
+        let dx = at.x - neighbour.x;
+        let dy = at.y - neighbour.y;
+        let length = dx.hypot(dy);
+        let minimum = if section.bends.is_empty() { MIN_LENGTH_MM } else { MIN_RUN_MM };
+        let along = (((point.x - neighbour.x) * dx + (point.y - neighbour.y) * dy) / length).max(minimum);
+        let projected = Point::new(neighbour.x + dx / length * along, neighbour.y + dy / length * along);
+        let key = if end == 0 { "start" } else { "end" };
+        self.patch_section(id, &serde_json::json!({ key: projected }))
+    }
+
+    pub fn align_section_line(&mut self, id: Id, reference: (Point, Point), target: (Point, Point)) -> Result<(), String> {
+        let section = self.section(id).cloned().ok_or("not a section")?;
+        let (rx, ry) = (reference.1.x - reference.0.x, reference.1.y - reference.0.y);
+        let (tx, ty) = (target.1.x - target.0.x, target.1.y - target.0.y);
+        let (rl, tl) = (rx.hypot(ry), tx.hypot(ty));
+        if rl < 1e-6 || tl < 1e-6 { return Err("pick two lines to align".into()); }
+        let mut angle = (ry.atan2(rx) - ty.atan2(tx)).rem_euclid(std::f64::consts::PI);
+        if angle > std::f64::consts::FRAC_PI_2 { angle -= std::f64::consts::PI; }
+        let centre = Point::new((target.0.x + target.1.x) / 2.0, (target.0.y + target.1.y) / 2.0);
+        let normal = Point::new(-ry / rl, rx / rl);
+        let offset = (centre.x - reference.0.x) * normal.x + (centre.y - reference.0.y) * normal.y;
+        if angle.abs() < 1e-9 && offset.abs() < 1e-6 { return Err("those lines are already aligned".into()); }
+        let rotation = crate::edit::Xform::Rotate { cx: centre.x, cy: centre.y, angle_deg: angle.to_degrees() };
+        let map = |point| { let point = rotation.apply(point); Point::new(point.x - normal.x * offset, point.y - normal.y * offset) };
+        let bends: Vec<Point> = section.bends.iter().copied().map(map).collect();
+        self.patch_section(id, &serde_json::json!({ "start": map(section.start), "end": map(section.end), "bends": bends }))
+    }
+
+    fn patch_section_instance(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
         let Some(old) = self.section(id).cloned() else { return Err("not a section".into()) };
         let mut patch = patch.clone();
         if let Some(o) = patch.as_object_mut() {
@@ -1340,6 +1412,8 @@ mod tests {
         use crate::annotation::{AnnShape, AnnotationKind};
         let mut d = Document::new_project();
         let (id, f) = d.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::SectionMarker).map(|(i, f)| (i, f.clone())).unwrap();
+        let mut f = crate::annotation::AnnotationFamily::section_marker(&f.name);
+        f.read_old_drawing();
         let mut old = f.clone();
         // as saved then: shapes rather than lines and regions
         old.lines.clear();
@@ -1500,6 +1574,10 @@ mod tests {
     #[test]
     fn a_reference_section_points_at_an_existing_view_and_goes_with_it() {
         let (mut d, lvl, s, _) = house_with_stub();
+        let head = d.section_marker_family(None).unwrap().0;
+        let mut legacy = crate::annotation::AnnotationFamily::section_marker("Legacy labelled head");
+        legacy.read_old_drawing();
+        d.set_annotation_family(head, legacy).unwrap();
         let target = d.section(s).unwrap().view.unwrap();
         let n = d.views().len();
         let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();

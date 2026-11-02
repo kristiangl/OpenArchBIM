@@ -1866,6 +1866,10 @@ const Plan = (() => {
       }
     }
     if (!filter || filter === "all") {
+      for (const section of data.sections || []) {
+        for (const run of section.runs || [{ a: section.start, b: section.end }])
+          out.push({ kind: "section", owner: section.id, a: run.a, b: run.b });
+      }
       for (const f of data.floors) for (let i = 0; i < f.points.length; i++) out.push({ kind: "floor", owner: f.id, a: f.points[i], b: f.points[(i + 1) % f.points.length] });
       for (const rf of data.roofs || []) {
         if (rf.id === Sketch.editingId) continue;
@@ -2171,6 +2175,7 @@ const Plan = (() => {
   }
 
   function selectClick(sx, sy, ev) {
+    const hadSelection = sel.size > 0 || cropSel;
     const c = candidates(sx, sy);
     const ids = c.length ? c[tabIdx % c.length] : null;
     tabIdx = 0;
@@ -2184,6 +2189,7 @@ const Plan = (() => {
     else sel = new Set(ids);
     selHover = null;
     cb.select([...sel]);
+    if (!ids && !cropSel && !ev.ctrlKey && !ev.shiftKey) emptySelectionClick(hadSelection);
     render();
   }
 
@@ -2551,7 +2557,8 @@ const Plan = (() => {
       render();
       return;
     }
-    if (down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5) click(e.offsetX, e.offsetY, e);
+    // Drawing tools accept a pick even while the pointer moves during the press.
+    if (down && (tool !== "select" && tool !== "joins" || Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5)) click(e.offsetX, e.offsetY, e);
     down = null;
   });
   canvas.addEventListener("dblclick", (e) => {
@@ -2606,6 +2613,7 @@ const Plan = (() => {
     paperPx: () => ((data.view && data.view.scale) || 100) * cam.s,
     sections: () => data.sections || [],
     family: () => data.section_family,
+    tailFamily: () => data.section_tail_family,
     pats: () => data.fill_patterns,
     selection: () => [...sel],
     snap: (sx, sy) => snap(sx, sy),

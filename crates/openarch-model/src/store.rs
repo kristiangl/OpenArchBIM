@@ -10,7 +10,7 @@ use crate::element::{Element, Id};
 
 /// 2: elevation and 3D views draw in the Hidden Line style (before this the setting had no effect).
 /// 3: plans no longer put a pale wash over floors.
-const FORMAT_VERSION: i64 = 7;
+const FORMAT_VERSION: i64 = 8;
 
 impl Document {
     /// Write the project. The file is written beside the target and renamed into
@@ -68,6 +68,7 @@ impl Document {
         d.ensure_site_point_overrides(); // projects saved before the base and survey points had categories
         d.ensure_annotation_defaults(); // projects saved before annotation families
         d.ensure_view_types(); // projects saved before view types
+        d.ensure_view_marker_types();
         d.ensure_detail_defaults(); // projects saved before detail items
         d.ensure_curtain_types(); // projects saved before curtain walls
         if v < 2 {

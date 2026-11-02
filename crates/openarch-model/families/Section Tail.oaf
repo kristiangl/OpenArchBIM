@@ -1,0 +1,191 @@
+{
+  "family": {
+    "broken_style": "gapped",
+    "family_kind": "section_marker",
+    "label_types": [
+      {
+        "bold": false,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2.5mm",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.5,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      },
+      {
+        "bold": true,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2mm Bold",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.0,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      },
+      {
+        "bold": false,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2mm",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.0,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      }
+    ],
+    "labels": [],
+    "lines": [],
+    "name": "Section Marker",
+    "reference_label": "SIM",
+    "region_types": [
+      {
+        "background": null,
+        "background_color": [
+          255,
+          255,
+          255
+        ],
+        "foreground": "Solid fill",
+        "foreground_color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 1,
+        "masking": true,
+        "name": "Solid filled"
+      }
+    ],
+    "regions": [
+      {
+        "loops": [
+          [
+            {
+              "curve": {
+                "a": {
+                  "x": 6.0,
+                  "y": 0.5
+                },
+                "b": {
+                  "x": 0.0,
+                  "y": 0.5
+                },
+                "type": "line"
+              },
+              "subcategory": ""
+            },
+            {
+              "curve": {
+                "a": {
+                  "x": 0.0,
+                  "y": 0.5
+                },
+                "b": {
+                  "x": 0.0,
+                  "y": -0.5
+                },
+                "type": "line"
+              },
+              "subcategory": ""
+            },
+            {
+              "curve": {
+                "a": {
+                  "x": 0.0,
+                  "y": -0.5
+                },
+                "b": {
+                  "x": 6.0,
+                  "y": -0.5
+                },
+                "type": "line"
+              },
+              "subcategory": ""
+            },
+            {
+              "curve": {
+                "a": {
+                  "x": 6.0,
+                  "y": -0.5
+                },
+                "b": {
+                  "x": 6.0,
+                  "y": 0.5
+                },
+                "type": "line"
+              },
+              "subcategory": ""
+            }
+          ]
+        ],
+        "masking": false,
+        "pointer": true,
+        "region_type": "Solid filled",
+        "visible": true
+      }
+    ],
+    "text_types": [
+      {
+        "bold": false,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2.5mm",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.5,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      }
+    ],
+    "texts": []
+  },
+  "fill_patterns": [
+    {
+      "built_in": true,
+      "lines": [],
+      "name": "Solid fill",
+      "pattern_type": "drafting",
+      "solid": true
+    }
+  ],
+  "format": "openarch-annotation",
+  "line_patterns": [],
+  "subcategories": {},
+  "version": 1
+}

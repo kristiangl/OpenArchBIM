@@ -596,6 +596,21 @@ impl AnnotationFamily {
         )
     }
 
+    /// Section artwork shipped with new projects. Family origins are their reference-plane intersection.
+    pub fn default_section_markers() -> [AnnotationFamily; 2] {
+        let read = |name: &str, data: &str| {
+            #[derive(Deserialize)]
+            struct Bundled { family: AnnotationFamily }
+            let mut family = serde_json::from_str::<Bundled>(data).expect("valid bundled section family").family;
+            family.name = name.into();
+            family
+        };
+        [
+            read("Section Head", include_str!("../families/Section Head.oaf")),
+            read("Section Tail", include_str!("../families/Section Tail.oaf")),
+        ]
+    }
+
     /// Whether the family still has the shapes or labels of an older project.
     pub fn has_old_drawing(&self) -> bool {
         !self.old_shapes.is_empty() || !self.old_pointer.is_empty() || self.labels.iter().any(|l| l.has_old())
@@ -1057,7 +1072,7 @@ impl Document {
                 tx.add(Element::AnnotationFamily(AnnotationFamily::elevation_marker("Elevation Marker")));
             }
             if !have(tx, AnnotationKind::SectionMarker) {
-                tx.add(Element::AnnotationFamily(AnnotationFamily::section_marker("Section Marker")));
+                for family in AnnotationFamily::default_section_markers() { tx.add(Element::AnnotationFamily(family)); }
             }
             if !have(tx, AnnotationKind::TitleBlock) {
                 tx.add(Element::AnnotationFamily(AnnotationFamily::title_block("A1 Title Block", [841.0, 594.0], 150.0, 1.0)));
@@ -1133,7 +1148,7 @@ impl Document {
     }
 
     /// Check a family's drawing: line styles the category has, regions that close, types and patterns that exist.
-    fn check_symbol(&self, f: &AnnotationFamily) -> Result<(), String> {
+    pub fn check_symbol(&self, f: &AnnotationFamily) -> Result<(), String> {
         let subs = self.symbol_subcategories(f.kind);
         let style_ok = |s: &str| s.is_empty() || s == INVISIBLE_LINES || subs.iter().any(|x| x == s);
         let curve_ok = |c: &Curve| {
@@ -1256,6 +1271,20 @@ impl Document {
         self.transact("Edit family", |tx| tx.update(id, Element::AnnotationFamily(new)))
     }
 
+    /// Load a standalone annotation family, replacing a same-named copy only when requested.
+    pub fn import_annotation_family(&mut self, mut family: AnnotationFamily, replace: bool) -> Result<(Id, bool), String> {
+        family.read_old_drawing();
+        if family.name.trim().is_empty() { return Err("a family needs a name".into()); }
+        self.check_symbol(&family)?;
+        let old = self.annotation_families().into_iter().find(|(_, f)| f.name == family.name).map(|(id, _)| id);
+        if let Some(id) = old {
+            if !replace { return Err("a family with that name is already loaded".into()); }
+            self.set_annotation_family(id, family)?;
+            return Ok((id, true));
+        }
+        self.transact("Load annotation family", |tx| Ok((tx.add(Element::AnnotationFamily(family)), false)))
+    }
+
     /// A copy of a family under a new name, ready to edit.
     pub fn duplicate_annotation_family(&mut self, id: Id, name: &str) -> Result<Id, String> {
         let Some(f) = self.annotation_family(id).cloned() else { return Err("not an annotation family".into()) };
@@ -1272,12 +1301,17 @@ impl Document {
             return Ok(());
         }
         m.family = family;
-        self.transact("Change marker family", |tx| tx.update(id, Element::ElevationMarker(m)))
+        let marker_type = m.slots.iter().flatten().find_map(|view| self.marker_type_for_view(*view).map(|(id, _)| id));
+        self.grouped("Change elevation symbol type", |d| {
+            if let Some(marker_type) = marker_type { d.patch_view_marker_type(marker_type, &serde_json::json!({ "head": family }))?; }
+            d.transact("Change marker family", |tx| tx.update(id, Element::ElevationMarker(m)))
+        })
     }
 
     /// Whether a level type, an elevation marker or a section draws with this family.
     pub fn annotation_family_in_use(&self, id: Id) -> bool {
-        self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| m.family == Some(id)) || self.sections().iter().any(|(_, s)| s.family == Some(id))
+        self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| self.elevation_symbol(m) == Some(id)) || self.sections().iter().any(|(_, s)| { let symbols = self.section_symbols(s); symbols.0 == Some(id) || symbols.1 == Some(id) })
+            || self.view_marker_types().iter().any(|(_, t)| t.head == Some(id) || t.tail == Some(id))
     }
 
     /// Delete a family nothing uses, keeping at least one of each kind.
@@ -1319,6 +1353,15 @@ impl Document {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn legacy_section_project() -> Document {
+        let mut d = Document::new_project();
+        let id = d.section_marker_family(None).unwrap().0;
+        let mut family = AnnotationFamily::section_marker("Legacy Section Marker");
+        family.read_old_drawing();
+        d.set_annotation_family(id, family).unwrap();
+        d
+    }
 
     #[test]
     fn a_new_project_has_a_head_for_its_levels_and_a_marker_family() {
@@ -1383,7 +1426,7 @@ mod tests {
 
     #[test]
     fn older_shapes_become_lines_over_masking_regions_and_solid_filled_regions() {
-        let d = Document::new_project();
+        let d = legacy_section_project();
         let (_, f) = d.section_marker_family(None).unwrap();
         // the circle and the line across it are lines; the circle also masks what is behind it; the arrow is solid
         assert_eq!(f.lines.len(), 2);
@@ -1421,7 +1464,7 @@ mod tests {
         let err = region_loops(&edges[..3]).unwrap_err();
         let at = err.at.unwrap();
         assert!(at[0].abs() <= 6.0 && at[1].abs() <= 6.0, "{at:?}");
-        let mut d = Document::new_project();
+        let mut d = legacy_section_project();
         let (id, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
         f.regions.push(AnnRegion { loops, masking: false, region_type: SOLID_FILLED.into(), visible: true, pointer: false });
         d.set_annotation_family(id, f.clone()).unwrap();
@@ -1489,7 +1532,7 @@ mod tests {
 
     #[test]
     fn text_draws_as_written_and_types_are_checked() {
-        let mut d = Document::new_project();
+        let mut d = legacy_section_project();
         let (id, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
         f.texts.push(AnnText { x: 10.0, y: 0.0, text: "SEE\nDETAIL".into(), text_type: "2.5mm".into(), halign: HAlign::Left, valign: VAlign::Middle, width_mm: 0.0, keep_readable: true, visible: true });
         f.texts.push(AnnText { x: 10.0, y: -5.0, text: "hidden".into(), text_type: "2.5mm".into(), halign: HAlign::Left, valign: VAlign::Middle, width_mm: 0.0, keep_readable: true, visible: false });

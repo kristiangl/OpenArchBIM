@@ -3,6 +3,8 @@
 //!
 //!   cargo run -p openarch-dev [-- --port 8765 --ui apps/desktop/ui]
 
+mod native_dialog;
+
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
@@ -33,6 +35,18 @@ fn main() {
 
     for mut req in server.incoming_requests() {
         let url = req.url().split('?').next().unwrap_or("/").to_string();
+        if req.method() == &Method::Post && url == "/dialog" {
+            let mut body = String::new();
+            let _ = req.as_reader().read_to_string(&mut body);
+            std::thread::spawn(move || {
+                let out = serde_json::from_str::<serde_json::Value>(&body).map_err(|e| e.to_string())
+                    .and_then(|v| native_dialog::pick(&v))
+                    .unwrap_or_else(|e| serde_json::json!({ "err": e }));
+                let header = Header::from_bytes("Content-Type", "application/json").unwrap();
+                let _ = req.respond(Response::from_string(out.to_string()).with_header(header));
+            });
+            continue;
+        }
         if req.method() == &Method::Post && url == "/rpc" {
             let mut body = String::new();
             let _ = req.as_reader().read_to_string(&mut body);

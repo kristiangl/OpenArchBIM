@@ -4,6 +4,14 @@
 
 // ---- Properties palette ---------------------------------------------------------
 async function applyPatch(target, patch) {
+  if (target.method === "patch_multi" && (patch.halign || patch.valign) && noteView()) {
+    const notes = noteView().textNotes().filter((n) => (target.extra?.ids || []).includes(n.id));
+    if (notes.length === target.extra.ids.length) return patchNotes(notes, patch);
+  }
+  if (target.method === "patch_text_note" && (patch.halign || patch.valign) && noteView()) {
+    const note = noteView().textNotes().find((n) => n.id === target.id);
+    if (note) return patchNotes([note], patch);
+  }
   if (target.apply) return target.apply(patch); // dialogs handle their own refresh and errors
   if (await run(target.method, { id: target.id, patch, ...(target.extra || {}) })) await refresh();
 }
@@ -164,6 +172,10 @@ async function renderProperties() {
     // type keeps the type's panel
     types = d.types; current = d.type_id;
     onType = d.pinned ? null : async (id) => { await run("set_curtain_panel", { id: d.id, type_id: id }); await refresh(); };
+    title = d.title;
+  } else if (d && d.kind === "ElevationMarker" && d.view_kind) {
+    types = app.info.view_types.filter((t) => t.view_kind === d.view_kind); current = d.type_id;
+    onType = async (id) => { await run("patch_marker", { id: d.id, patch: { view_type: id } }); await refresh(); };
     title = d.title;
   } else if (d && d.kind === "View" && d.view_kind && (app.info.view_types || []).some((t) => t.view_kind === d.view_kind)) {
     // a view's type: the Project Browser groups views by it

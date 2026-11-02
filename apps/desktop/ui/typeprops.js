@@ -24,7 +24,7 @@ function namePrompt(title, initial, ok) {
   });
 }
 
-async function openTypeProperties(typeId, { onType = null } = {}) {
+async function openTypeProperties(typeId, { onType = null, onClose = null } = {}) {
   if (!typeId) return;
   let mark;
   try { mark = (await Backend.call("edit_begin", {})).mark; } catch (e) { return; }
@@ -52,12 +52,13 @@ async function openTypeProperties(typeId, { onType = null } = {}) {
       appliedId = id;
       setDirty(false);
       await refresh();
-      if (close) closeModal(); else await load();
+      if (close) { closeModal(); if (onClose) await onClose(); } else await load();
     };
     const cancel = async () => {
       try { await Backend.call("edit_cancel", { mark }); } catch (e) { /* nothing to undo */ }
       closeModal();
       await refresh();
+      if (onClose) await onClose();
     };
     // Escape and the dialog's own close go through Cancel
     body.closest(".modal-back").onEscape = cancel;
@@ -68,7 +69,7 @@ async function openTypeProperties(typeId, { onType = null } = {}) {
     };
     const target = {
       apply: (patch) => changed(() => Backend.call(d.patch, { id, patch })),
-      dialogs: { assembly: () => openEditAssembly(d, (patch) => target.apply(patch)) },
+      dialogs: { assembly: () => openEditAssembly(d, (patch) => target.apply(patch)), view_marker_type: () => openTypeProperties(d.marker_type, { onType: marker => target.apply({ marker_type: marker }), onClose: load }) },
     };
 
     const load = async () => {
