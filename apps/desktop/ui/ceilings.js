@@ -130,6 +130,54 @@ const Ceilings = (() => {
     ctx.restore();
   }
 
+  // A selected ceiling: Edit Boundary, and Move Grid / Rotate Grid when its type has a grid. Move Grid takes a base
+  // point and a destination; Rotate Grid a centre, a start direction and an end direction.
+  let gridEdit = null; // { id, tool: "move" | "rotate", points: [] }
+  function selected() {
+    if (app.view.kind !== "plan" || app.selection.length !== 1) return null;
+    return (Plan.viewData()?.ceilings || []).find((c) => c.id === app.selection[0]) || null;
+  }
+  function selectionContext() {
+    if (app.view.kind !== "plan") return null;
+    if (gridEdit && Plan.tool !== "ceilinggrid") gridEdit = null;
+    const c = selected() || (gridEdit && (Plan.viewData()?.ceilings || []).find((x) => x.id === gridEdit.id));
+    if (!c || Plan.tool !== "select" && Plan.tool !== "ceilinggrid") return null;
+    const items = [{ label: "Edit Boundary", icon: "editBoundary", big: true, onclick: () => startSketch(c.id) }];
+    const grid = c.grid ? [{ label: "Grid", items: [
+      { label: "Move Grid", ico: "Mv", on: gridEdit?.tool === "move", onclick: () => startGrid(c, "move") },
+      { label: "Rotate Grid", ico: "Ro", on: gridEdit?.tool === "rotate", onclick: () => startGrid(c, "rotate") },
+    ] }] : [];
+    return { auto: true, key: `ceilingsel:${c.id}:${gridEdit?.tool || ""}`, title: "Ceilings", groups: [{ label: "Mode", items }, ...grid] };
+  }
+  function startGrid(c, tool) {
+    gridEdit = { id: c.id, tool, points: [], origin: c.grid_origin || { x: 0, y: 0 }, angle: c.grid_angle_deg || 0 };
+    Plan.setTool("ceilinggrid");
+    updateRibbonContext();
+    setPrompt(tool === "move" ? "Move Grid: click a base point, then where it goes." : "Rotate Grid: click the centre, then the start direction, then the end direction.");
+  }
+  async function gridClick(p) {
+    const g = gridEdit;
+    if (!g) return;
+    g.points.push(p);
+    const need = g.tool === "move" ? 2 : 3;
+    if (g.points.length < need) { setPrompt(g.tool === "move" ? "Click where the base point goes." : g.points.length === 1 ? "Click the start direction." : "Click the end direction."); return; }
+    let patch;
+    if (g.tool === "move") {
+      const [a, b] = g.points;
+      patch = { grid_origin: { x: g.origin.x + b.x - a.x, y: g.origin.y + b.y - a.y } };
+    } else {
+      const [c, s, e] = g.points;
+      const turn = Math.atan2(e.y - c.y, e.x - c.x) - Math.atan2(s.y - c.y, s.x - c.x), cos = Math.cos(turn), sin = Math.sin(turn);
+      const dx = g.origin.x - c.x, dy = g.origin.y - c.y;
+      patch = { grid_origin: { x: c.x + dx * cos - dy * sin, y: c.y + dx * sin + dy * cos }, grid_angle_deg: (((g.angle + (turn * 180) / Math.PI) % 360) + 360) % 360 };
+    }
+    const id = g.id;
+    gridEdit = null;
+    Plan.setTool("select");
+    if (await run("patch_ceiling", { id, patch })) { await refresh(); app.selection = [id]; Plan.setSelection([id]); renderProperties(); setPrompt("Ceiling grid moved."); }
+    updateRibbonContext();
+  }
+
   const clearPreview = () => { preview = null; asked++; };
-  return { start, context, hover, place, startSketch, finish, elements, draw, clearPreview, isCeilingPlan, offset, typeId };
+  return { ensureCeilingPlan, selectionContext, gridClick, start, context, hover, place, startSketch, finish, elements, draw, clearPreview, isCeilingPlan, offset, typeId };
 })();

@@ -74,7 +74,7 @@ impl Tx<'_> {
         let before = self.doc.elements.remove(&id).ok_or_else(|| format!("no element {id}"))?;
         let is_annotation = matches!(before, Element::Dimension(_) | Element::Spot(_));
         self.changes.push(Change { id, before: Some(before), after: None });
-        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
+        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::FamilyInstance(i) if i.face_host.is_some_and(|h|h.element==id)=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
         for tid in tags {self.remove(tid)?;}
         if !is_annotation {
             // Remove references before IDs can be reused after a project is reopened.

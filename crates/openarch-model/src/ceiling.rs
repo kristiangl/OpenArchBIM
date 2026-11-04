@@ -169,12 +169,88 @@ impl Document {
         self.enclosed_faces(level, z, RoomBoundary::Finish, false).into_iter().find(|r| crate::rooms::contains(r, at))
     }
 
+    /// The height of a ceiling's underside at a plan point (its slope included).
+    pub fn ceiling_underside_z(&self, c: &Ceiling, p: Point) -> Option<f64> {
+        Some(self.floor_surface(&self.ceiling_slab(c))?.z(p) - self.ceiling_thickness(c))
+    }
+
+    /// The ceiling over `at` on a level: the lowest one when ceilings overlap.
+    pub fn ceiling_at(&self, level: Id, at: Point) -> Option<Id> {
+        self.ceilings().into_iter()
+            .filter(|(_, c)| c.level == level && c.regions(0.5).iter().any(|r| crate::rooms::contains(r, at)))
+            .filter_map(|(id, c)| Some((id, self.ceiling_underside_z(c, at)?)))
+            .min_by(|a, b| a.1.total_cmp(&b.1)).map(|(id, _)| id)
+    }
+
+    /// Place a ceiling-hosted family (a light, an air terminal, a smoke detector...) on a ceiling's underside at a plan
+    /// point, turned by `rotation_deg`. It follows the ceiling when the ceiling's height changes, and goes with it.
+    pub fn place_on_ceiling(&mut self, type_id: Id, ceiling: Id, at: Point, rotation_deg: f64) -> Result<Id, String> {
+        let ft = self.family_type(type_id).ok_or("unknown family type")?.clone();
+        let fam = self.family(ft.family).ok_or("type has no family")?;
+        if fam.host != crate::family::HostKind::Ceiling {
+            return Err(format!("{} is not hosted by ceilings", fam.name));
+        }
+        let (category, ifc_class, ifc_type) = (fam.category, fam.category.ifc_class().to_string(), fam.category.ifc_predefined().to_string());
+        let c = self.ceiling(ceiling).ok_or("Click a ceiling to place it on.")?;
+        if !c.regions(0.5).iter().any(|r| crate::rooms::contains(r, at)) {
+            return Err("Click inside a ceiling to place it on.".into());
+        }
+        if !(at.x.is_finite() && at.y.is_finite() && rotation_deg.is_finite()) {
+            return Err("the position must be numbers".into());
+        }
+        let mut inst = crate::family::FamilyInstance::new(type_id, c.level);
+        inst.location = at;
+        inst.rotation_deg = rotation_deg.rem_euclid(360.0);
+        inst.face_host = Some(crate::family::FaceHost { element: ceiling, kind: crate::family::HostKind::Ceiling });
+        inst.ifc.export_as = ifc_class;
+        inst.ifc.predefined_type = ifc_type;
+        inst.mark = self.auto_mark(category);
+        self.transact("Place on ceiling", |tx| Ok(tx.add(Element::FamilyInstance(inst))))
+    }
+
     pub fn add_automatic_ceiling(&mut self, ceiling_type: Id, level: Id, offset_mm: f64, at: Point) -> Result<Id, String> {
         let region = self.ceiling_region_at(level, offset_mm, at).ok_or("Click inside walls that form a closed loop at the ceiling's height.")?;
         let ring = |pts: &[Point]| -> Vec<Curve> { (0..pts.len()).map(|i| Curve::line(pts[i], pts[(i + 1) % pts.len()])).collect() };
         let curves: Vec<Curve> = std::iter::once(&region.outer).chain(region.holes.iter()).flat_map(|r| ring(r)).collect();
         self.add_ceiling_sketch(ceiling_type, level, curves, offset_mm, None)
     }
+}
+
+/// Starter ceiling-hosted families, one or two of each kind that hangs from a ceiling: a recessed troffer and a
+/// downlight (Lighting Fixtures), a supply air diffuser (Air Terminals) and a smoke detector (Fire Alarm Devices).
+/// Each is a solid below its Ref. Level, which sits on the ceiling's underside; families made in the family editor
+/// with Hosted by: Ceiling work the same way.
+pub(crate) fn starter_ceiling_families() -> Vec<crate::family::StarterFamily> {
+    use crate::famgeom::{Coord, FamilyBody, Form, FormShape, Loop, Node, Visibility, PLANE_LEVEL};
+    use crate::family::{Family, FamilyCategory, HostKind, PlanSymbol, StarterFamily};
+    // a closed outline in plan: a rectangle `w` by `l`, or a polygon of `sides` round a circle `w` across
+    let outline = |w: f64, l: f64, sides: usize| -> Loop {
+        let pts: Vec<[f64; 2]> = if sides == 0 {
+            vec![[-w / 2.0, -l / 2.0], [w / 2.0, -l / 2.0], [w / 2.0, l / 2.0], [-w / 2.0, l / 2.0]]
+        } else {
+            // to a hundredth of a millimetre, so the outline saves and reads back exactly
+            let r = |v: f64| (v * 100.0).round() / 100.0;
+            (0..sides).map(|k| { let a = std::f64::consts::TAU * k as f64 / sides as f64; [r(w / 2.0 * a.cos()), r(w / 2.0 * a.sin())] }).collect()
+        };
+        Loop { nodes: pts.iter().map(|p| Node::new(Coord::at(p[0]), Coord::at(p[1]))).collect(), bulges: vec![], closed: true, shapes: vec![] }
+    };
+    let family = |name: &str, category: FamilyCategory, solids: Vec<(Loop, f64)>, types: &[&str]| {
+        let mut body = FamilyBody::template();
+        for (i, (profile, depth)) in solids.into_iter().enumerate() {
+            let shape = FormShape::Extrusion { plane: PLANE_LEVEL, start: format!("{}", -depth), end: "0".into(), start_lock: None, end_lock: None, profile: vec![profile] };
+            body.add_form(Form { id: 0, name: format!("{name} {}", i + 1), shape, void: false, cuts_host: false, cut_by: vec![], opening: false, material: String::new(), material_param: None, subcategory: String::new(), vis: Visibility::default() });
+        }
+        StarterFamily {
+            family: Family { name: name.into(), category, host: HostKind::Ceiling, plan_symbol: PlanSymbol::None, params: vec![], built_in: false, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body },
+            types: types.iter().map(|t| (t.to_string(), Default::default())).collect(),
+        }
+    };
+    vec![
+        family("Recessed Troffer 600 x 600", FamilyCategory::LightingFixtures, vec![(outline(595.0, 595.0, 0), 90.0)], &["600 x 600"]),
+        family("Downlight 90", FamilyCategory::LightingFixtures, vec![(outline(110.0, 0.0, 16), 10.0), (outline(90.0, 0.0, 16), 80.0)], &["90 dia"]),
+        family("Supply Air Diffuser 600 x 600", FamilyCategory::AirTerminals, vec![(outline(595.0, 595.0, 0), 20.0), (outline(300.0, 300.0, 0), 60.0)], &["600 x 600"]),
+        family("Smoke Detector", FamilyCategory::FireAlarmDevices, vec![(outline(100.0, 0.0, 16), 45.0)], &["Photoelectric"]),
+    ]
 }
 
 pub(crate) fn starter_ceiling_types() -> Vec<CeilingType> {

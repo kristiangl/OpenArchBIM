@@ -491,6 +491,15 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
             add("Constraints", ro("Host", format!("{} ({})", if h.v_mm.is_some() { "Curtain Wall" } else { "Basic Wall" }, h.wall)));
             add("Constraints", ro("Head Height", format!("{:.0}", sill + height)));
         }
+        // a ceiling-hosted family hangs from its ceiling: Offset from Host moves it down, away from the face
+        None if i.face_host.is_some() => {
+            let h = i.face_host.unwrap();
+            let host = d.ceiling(h.element).and_then(|c| d.ceiling_type(c.ceiling_type)).map_or("?".to_string(), |t| t.name.clone());
+            add("Constraints", ro("Level", d.level(i.level).map_or(String::new(), |l| l.name.clone())));
+            add("Constraints", ro("Host", format!("Ceiling : {host}")));
+            add("Constraints", num("Offset from Host", "offset_mm", i.offset_mm, true));
+            if let Some(f) = d.instance_frame(id) { add("Constraints", ro("Elevation from Level", format!("{:.0}", f.z_ref - d.level(i.level).map_or(0.0, |l| l.elevation_mm)))); }
+        }
         None => {
             let lv = d.level(i.level).map_or(String::new(), |l| l.name.clone());
             add("Constraints", ro("Host", format!("Level : {lv}")));

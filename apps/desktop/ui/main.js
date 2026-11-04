@@ -321,6 +321,8 @@ function currentContext() {
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
+  const cs = Ceilings.selectionContext();
+  if (cs) return cs;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
   const tv = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
   if (tv && tv.tool === "tag") return Tags.context();
@@ -1408,12 +1410,21 @@ async function useComponentType(tid) {
     Plan.setPlacement(t && t.width > 0 ? t.width : 600, f.name);
     return;
   }
+  // ceiling-hosted families are placed where the ceilings are seen: the level's reflected ceiling plan
+  if (f && f.host === "ceiling" && !Ceilings.isCeilingPlan()) {
+    if (!(await Ceilings.ensureCeilingPlan())) return;
+    setPrompt(`${f.name} is hosted by ceilings: click a ceiling to place it. Space turns it, Esc stops.`);
+  }
   if (Plan.tool !== "component") Plan.setTool("component");
   const pv = await run("type_plan_preview", { type_id: tid, detail: (app.settings && app.settings.detail_level) || "medium" });
   Plan.setComponent(pv || { parts: [], footprint: [] });
 }
 Plan.callbacks.placeComponent = async (point, rot) => {
-  const r = await run("place_free_instance", { type_id: app.componentTypeId, level_id: curLevelId(), point: [point.x, point.y], rotation: rot, offset: app.componentOffset || 0 });
+  // a ceiling-hosted family (a light, a diffuser, a detector) goes on the ceiling under the click
+  const onCeiling = familyOfType(app.componentTypeId)?.host === "ceiling";
+  const r = onCeiling
+    ? await run("place_on_ceiling", { type_id: app.componentTypeId, level_id: curLevelId(), point: [point.x, point.y], rotation: rot })
+    : await run("place_free_instance", { type_id: app.componentTypeId, level_id: curLevelId(), point: [point.x, point.y], rotation: rot, offset: app.componentOffset || 0 });
   if (r) { noteTypeUsed(app.componentTypeId); await refresh(); const f = familyOfType(app.componentTypeId); setPrompt(`Placed ${f ? f.name : "a component"}. Click to place another, Space turns it, Esc stops.`); }
 };
 

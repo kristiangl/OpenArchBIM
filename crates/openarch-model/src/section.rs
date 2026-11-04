@@ -1079,6 +1079,37 @@ impl Document {
                 self.far_outline(sl, &rings, id, "Floors", top - thick, top, far_lines);
             }
         }
+        // ---- ceilings: cut through their layers from the top down, as floors are; a basic ceiling as a thin band
+        for (id, c) in self.ceilings() {
+            if hidden(id) {
+                continue;
+            }
+            let slab = self.ceiling_slab(c);
+            let Some(surface) = self.floor_surface(&slab) else { continue };
+            let loops: Vec<Vec<Point>> = c.loops.iter().map(|l| crate::curve::loop_polygon(l, 20.0)).collect();
+            let rings: Vec<&[Point]> = loops.iter().filter(|l| l.len() >= 3).map(|l| l.as_slice()).collect();
+            let bands: Vec<(Option<&str>, f64, bool)> = match self.ceiling_type(c.ceiling_type) {
+                Some(t) if !t.layers.is_empty() => t.layers.iter().map(|l| (Some(l.material.as_str()), l.thickness_mm, l.is_void)).collect(),
+                _ => vec![(None, 2.0, false)],
+            };
+            for cut in sl.cuts(&rings, sl.plane + PLANE_EPS) {
+                let (t0, t1) = (surface.z(cut.p0), surface.z(cut.p1));
+                let mut off = 0.0;
+                for (mat, th, void) in &bands {
+                    let (hi, lo) = (off, off + th);
+                    off += th;
+                    if *void || *th <= 0.0 {
+                        continue;
+                    }
+                    let poly = vec![[cut.u0, t0 - lo], [cut.u1, t1 - lo], [cut.u1, t1 - hi], [cut.u0, t0 - hi]];
+                    out.push(ElevItem { id, category: "Ceilings", depth: -1.0 + 0.002, polys: vec![poly], fill: mat.map_or([200, 200, 196], shade), cut: true, material: mat.map(str::to_string), ..Default::default() });
+                }
+            }
+            if far_wanted {
+                let (top, thick) = (surface.base, bands.iter().map(|b| b.1).sum::<f64>());
+                self.far_outline(sl, &rings, id, "Ceilings", top - thick, top, far_lines);
+            }
+        }
         // ---- roofs
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };

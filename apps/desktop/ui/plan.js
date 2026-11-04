@@ -2222,6 +2222,7 @@ const Plan = (() => {
     if (tool === "room" || tool === "roomtag") { Spatial.place(tool,toWorld(sx,sy)); return; }
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
+    if (tool === "ceilinggrid") { Ceilings.gridClick(snap(sx, sy)); return; }
     if (ed && editClick(sx, sy, ev)) return;
     if (tool === "dimension") { Dims.click(sx, sy, ev); cb.prompt(promptText()); return; }
     if (tool === "spot") { Spots.click(sx, sy, ev); cb.prompt(promptText()); return; }

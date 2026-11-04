@@ -225,6 +225,18 @@ impl ResolvedRange {
     /// `classify` for an element of `category`. Windows, casework and generic models wholly above the cut plane but
     /// below the top are still shown, as seen from above (wall cupboards, high windows, a shelf modelled as a
     /// generic model); everything else up there is hidden.
+    /// How an element shows in a reflected ceiling plan, which looks up from its cut plane: cut where the plane passes
+    /// through it, seen above it up to the top, and not shown below it.
+    pub fn classify_up(&self, z0: f64, z1: f64) -> PlanDisplay {
+        if z1 < self.cut || z0 > self.top {
+            PlanDisplay::Hidden
+        } else if z0 <= self.cut {
+            PlanDisplay::Cut
+        } else {
+            PlanDisplay::Projection
+        }
+    }
+
     pub fn classify_category(&self, category: &str, z0: f64, z1: f64) -> PlanDisplay {
         match self.classify(z0, z1) {
             PlanDisplay::Hidden
@@ -727,11 +739,13 @@ impl View {
         }
     }
 
-    /// A reflected ceiling plan of a level. It draws as a plan for now; looking up through the cut plane comes with ceilings.
+    /// A reflected ceiling plan of a level: it looks up from a cut plane 2300 above the level to the level above, so
+    /// it shows the ceilings, what hangs from them and what is cut, and not what stands below the cut.
     pub fn ceiling_plan(name: &str, level: Id) -> View {
         let mut v = View::floor_plan(name, level);
         v.view_kind = ViewKind::CeilingPlan;
         v.settings.overrides.model.remove("Floors");
+        v.settings.view_range = ViewRange { top: RangePlane { level: RangeLevel::Above, offset_mm: 0.0 }, cut_offset_mm: 2300.0, bottom: RangePlane { level: RangeLevel::Associated, offset_mm: 0.0 }, depth: RangePlane { level: RangeLevel::Associated, offset_mm: 0.0 } };
         v
     }
 

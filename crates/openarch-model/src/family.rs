@@ -437,11 +437,22 @@ pub struct FamilyInstance {
     pub phase_demolished: Option<Id>,
     #[serde(default)]
     pub ifc: IfcParams,
+    /// A face host (a ceiling now; floors and roofs can follow): the instance stands at `location`, turned by
+    /// `rotation_deg`, against the host's face there, `offset_mm` away from it (Offset from Host, out of the face).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub face_host: Option<FaceHost>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct FaceHost {
+    pub element: Id,
+    pub kind: HostKind,
 }
 
 impl FamilyInstance {
     pub fn new(type_id: Id, level: Id) -> FamilyInstance {
         FamilyInstance {
+            face_host: None,
             type_id,
             level,
             host: None,
@@ -692,4 +703,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
         window("Awning", vec![wt(600.0, 600.0, 1500.0), wt(900.0, 600.0, 1500.0), wt(1200.0, 900.0, 1200.0), wt(1800.0, 900.0, 1200.0)]),
         window("Sliding", vec![wt(1200.0, 1200.0, 900.0), wt(1800.0, 1200.0, 900.0), wt(2400.0, 1200.0, 900.0)]),
     ]
+    .into_iter()
+    .chain(crate::ceiling::starter_ceiling_families())
+    .collect()
 }

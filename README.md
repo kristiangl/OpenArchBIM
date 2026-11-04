@@ -11,7 +11,8 @@ A free, open-source building information modelling (BIM) application for archite
 - Levels and grids, with datum alignment locks and a project base point and survey point
 - Layered walls with wall types, mitred and butted joins, and join cleanup
 - Floors and roofs drawn from sketch boundaries, with slope-defining edges and slope arrows
-- Ceilings placed automatically inside walls or sketched, with compound or basic ceiling types, ceiling grids in reflected ceiling plans, and room volumes that stop at them
+- Ceilings placed automatically inside walls or sketched, with compound or basic ceiling types, ceiling grids that move and turn, reflected ceiling plans that look up, sections that cut them, and room volumes that stop at them
+- Ceiling-hosted families of any category (lights, air diffusers, smoke detectors and so on) that hang from a ceiling and follow it
 - Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry), numbered Marks, and tags placed one at a time, all at once or as they are placed
 - Plan, elevation and section views, with view ranges, templates, graphic display options and reusable marker types linked to view types
 - Permanent and temporary dimensions, spot elevations and spot coordinates

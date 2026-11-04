@@ -1733,6 +1733,46 @@ impl Document {
                 items.push(ElevItem { id, category: "Floors", depth: dmin - 0.5, polys, lines: vec![], fill: [170, 172, 176], stroke: true , ..Default::default() });
             }
         }
+        // ceilings seen edge on, as floors are (a basic ceiling, with no thickness, as a thin band)
+        for (id, c) in self.ceilings() {
+            if hidden(id) {
+                continue;
+            }
+            let slab = self.ceiling_slab(c);
+            let Some(surf) = self.floor_surface(&slab) else { continue };
+            let thick = self.ceiling_thickness(c).max(2.0);
+            let loops: Vec<Vec<Point>> = c.loops.iter().map(|l| crate::curve::loop_polygon(l, 20.0)).collect();
+            let depths = crate::curve::loop_depths(&loops);
+            for (poly, depth) in loops.iter().zip(depths) {
+                if depth != 0 || poly.len() < 3 {
+                    continue;
+                }
+                let clipped;
+                let poly = match &sl {
+                    Some(s) => {
+                        clipped = s.clip_ring(poly);
+                        &clipped
+                    }
+                    None => poly,
+                };
+                if poly.len() < 3 {
+                    continue;
+                }
+                let us: Vec<f64> = poly.iter().map(|p| u_of(*p)).collect();
+                let ds: Vec<f64> = poly.iter().map(|p| d_of(*p)).collect();
+                let (dmin, dmax) = (ds.iter().cloned().fold(f64::INFINITY, f64::min), ds.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
+                if !visible(dmin, dmax) {
+                    continue;
+                }
+                let mut pts: Vec<[f64; 2]> = Vec::new();
+                for (p, u) in poly.iter().zip(&us) {
+                    let z = surf.z(*p);
+                    pts.push([*u, z]);
+                    pts.push([*u, z - thick]);
+                }
+                items.push(ElevItem { id, category: "Ceilings", depth: dmin - 0.5, polys: vec![convex_hull_2d(pts)], lines: vec![], fill: [214, 212, 206], stroke: true, ..Default::default() });
+            }
+        }
         // roofs: every plane as a polygon, so hips, gables and eaves show as they are
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };

@@ -664,6 +664,10 @@ impl Session {
                 let tid = id_of(p, "type_id")?;
                 let detail: openarch_model::view::DetailLevel = serde_json::from_value(p.get("detail").cloned().unwrap_or(json!("medium"))).unwrap_or_default();
                 let mut d2 = self.doc.clone();
+                // a ceiling-hosted family previews as if free standing: its plan shape is the same
+                if let Some((fid, f)) = d2.family_type(tid).and_then(|t| d2.family(t.family).map(|f| (t.family, f.clone()))).filter(|(_, f)| f.host == openarch_model::family::HostKind::Ceiling) {
+                    d2.transact("Preview", |tx| tx.update(fid, Element::Family(openarch_model::family::Family { host: openarch_model::family::HostKind::None, ..f })))?;
+                }
                 let lvl = d2.levels().first().map(|(id, _)| *id).ok_or("no level")?;
                 let id = d2.place_free(tid, lvl, Point::new(0.0, 0.0), 0.0, 0.0)?;
                 let sym = symbol::plan_symbol_at(&d2, id, detail, None).ok_or("nothing to draw in plan")?;
@@ -2642,7 +2646,9 @@ impl Session {
                     let Some((fam, typ)) = d.instance_family(inst) else { continue };
                     let door_detail = settings.overrides.model.get(fam.category.label()).and_then(|c| c.detail_level).unwrap_or(settings.detail_level);
                     let Some(frame) = d.instance_frame(id) else { continue };
-                    let display = match range.classify_category(fam.category.label(), frame.z0, frame.z1) {
+                    // a reflected ceiling plan looks up from its cut plane
+                    let looked_at = if view.view_kind == openarch_model::view::ViewKind::CeilingPlan { range.classify_up(frame.z0, frame.z1) } else { range.classify_category(fam.category.label(), frame.z0, frame.z1) };
+                    let display = match looked_at {
                         PlanDisplay::Hidden if in_underlay(inst.level) => "underlay",
                         PlanDisplay::Hidden => continue,
                         PlanDisplay::Cut => "cut",

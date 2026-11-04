@@ -42,6 +42,13 @@ impl Session {
                 Ok(json!({ "id": id }))
             })(),
             "set_ceiling_sketch" => (|| { self.doc.set_ceiling_sketch(id_of(p, "id")?, curves_of(p)?, slope_of(p)?)?; Ok(json!({})) })(),
+            // a ceiling-hosted family on the ceiling over the click: { type_id, level_id, point, rotation? }
+            "place_on_ceiling" => (|| {
+                let level = id_of(p, "level_id")?;
+                let at = point_of(&p["point"])?;
+                let ceiling = self.doc.ceiling_at(level, at).ok_or("Click inside a ceiling to place it on.")?;
+                Ok(json!({ "id": self.doc.place_on_ceiling(id_of(p, "type_id")?, ceiling, at, p["rotation"].as_f64().unwrap_or(0.0))?, "ceiling": ceiling }))
+            })(),
             // Edit Boundary: the sketch to reopen
             "ceiling_sketch" => (|| {
                 let c = self.doc.ceiling(id_of(p, "id")?).ok_or("not a ceiling")?;

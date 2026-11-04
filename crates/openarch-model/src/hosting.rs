@@ -260,7 +260,11 @@ impl Document {
             return None;
         }
         let level_z = self.level(i.level)?.elevation_mm;
-        let z_ref = level_z + i.offset_mm;
+        // a ceiling-hosted instance hangs from the ceiling's underside where it stands, Offset from Host below it
+        let z_ref = match i.face_host {
+            Some(h) if h.kind == HostKind::Ceiling => self.ceiling(h.element).and_then(|c| self.ceiling_underside_z(c, i.location))? - i.offset_mm,
+            _ => level_z + i.offset_mm,
+        };
         let a = i.rotation_deg.to_radians();
         let dir = Point::new(a.cos(), a.sin());
         let left = Point::new(-dir.y, dir.x);
@@ -320,7 +324,7 @@ impl Document {
             HostKind::None | HostKind::Face => {}
             HostKind::Wall => return Err(format!("{} is hosted in walls: click a wall to place it", fam.name)),
             HostKind::Floor => return Err(format!("{} is hosted in floors, and placing in floors is not built yet", fam.name)),
-            HostKind::Ceiling => return Err(format!("{} is hosted in ceilings, and placing in ceilings is not built yet", fam.name)),
+            HostKind::Ceiling => return Err(format!("{} is hosted in ceilings: click a ceiling to place it", fam.name)),
             HostKind::Roof => return Err(format!("{} is hosted in roofs, and placing in roofs is not built yet", fam.name)),
         }
         if fam.body.is_empty() {

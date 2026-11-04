@@ -587,6 +587,10 @@ impl Document {
                     ni.flip_facing = !ni.flip_facing;
                 }
             }
+            // a ceiling-hosted copy goes onto the ceiling it lands under (or stays on its own when there is none)
+            if let Some(h) = ni.face_host.as_mut().filter(|_| opt.copy || opt.disjoin) {
+                if let Some(c) = self.ceiling_at(ni.level, ni.location) { h.element = c; }
+            }
             if opt.copy {
                 ni.pinned = false;
                 if self.key_control(id, &["mark".into()], None).is_none() { ni.mark.clear(); }
