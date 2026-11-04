@@ -17,7 +17,7 @@ use crate::{Res, Session};
 /// and how it is edited (the palette's row and the targets that take the patch); whether the element has the
 /// parameter at all, and the global parameter that sets it.
 #[derive(Clone, Debug)]
-struct Cell {
+pub(crate) struct Cell {
     text: String,
     num: Option<f64>,
     unit: Unit,
@@ -207,6 +207,15 @@ impl Session {
             }
         }
         Params { instance, of_type }
+    }
+
+    /// Every parameter an element shows, as text, the way a schedule cell shows it (its own values, then its type's):
+    /// what a tag's labels read. `types` keeps each type's values between elements.
+    pub(crate) fn param_texts(&self, id: Id, types: &mut BTreeMap<Id, BTreeMap<String, Cell>>) -> BTreeMap<String, String> {
+        let p = self.params(id, types);
+        let mut out: BTreeMap<String, String> = p.of_type.into_iter().map(|(k, c)| (k, c.text)).collect();
+        out.extend(p.instance.into_iter().filter(|(_, c)| c.present).map(|(k, c)| (k, c.text)));
+        out
     }
 
     /// A type's name, and how many elements are of it.

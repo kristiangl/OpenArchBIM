@@ -40,6 +40,9 @@ pub enum AnnotationKind {
     TitleBlock,
     RoomTag,
     RevisionTag,
+    /// A tag of a door or a window (tags.rs): its labels read the element's parameters.
+    DoorTag,
+    WindowTag,
 }
 
 impl AnnotationKind {
@@ -51,6 +54,8 @@ impl AnnotationKind {
             AnnotationKind::TitleBlock => "Title Block",
             AnnotationKind::RoomTag => "Room Tag",
             AnnotationKind::RevisionTag => "Revision Tag",
+            AnnotationKind::DoorTag => "Door Tag",
+            AnnotationKind::WindowTag => "Window Tag",
         }
     }
 
@@ -63,6 +68,8 @@ impl AnnotationKind {
             AnnotationKind::TitleBlock => "Title Blocks",
             AnnotationKind::RoomTag => "Room Tags",
             AnnotationKind::RevisionTag => "Revision Tags",
+            AnnotationKind::DoorTag => "Door Tags",
+            AnnotationKind::WindowTag => "Window Tags",
         }
     }
 
@@ -75,9 +82,15 @@ impl AnnotationKind {
             AnnotationKind::TitleBlock => TITLE_BLOCK_PARAMS,
             AnnotationKind::RevisionTag => &["Revision Number","Revision Description","Revision Date"],
             AnnotationKind::RoomTag => &["Room Number", "Room Name", "Area", "Perimeter", "Volume", "Department", "Occupancy", "Level"],
+            AnnotationKind::DoorTag | AnnotationKind::WindowTag => OPENING_TAG_PARAMS,
         }
     }
 }
+
+/// What a door or window tag's labels offer; a label can name any other parameter the element has too.
+pub const OPENING_TAG_PARAMS: &[&str] = &[
+    "Mark", "Type Mark", "Width", "Height", "Sill Height", "Head Height", "Family", "Type", "Family and Type", "Comments", "Description", "Fire Rating", "Frame Type", "Level",
+];
 
 pub const LEVEL_PARAMS: &[&str] = &["Name", "Elevation", "Survey Elevation", "Project Elevation", "Level Number"];
 pub const VIEW_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number"];
@@ -1083,6 +1096,25 @@ impl Document {
         self.transact("Load revision tag",|tx|Ok(tx.add(Element::AnnotationFamily(f)))).expect("valid revision tag")
     }
 
+    /// The project's first family of a door or window tag kind, made when there is none: a Door Tag shows Mark in a
+    /// box, a Window Tag shows Mark in a hexagon (paper mm, centred on the tag's origin). Window tags read Mark
+    /// rather than Type Mark by Kristian's choice (4 Nov); a family can label Type Mark instead.
+    pub(crate) fn ensure_tag_family(&mut self, kind: AnnotationKind) -> Result<Id, String> {
+        if let Some((id, _)) = self.annotation_families().into_iter().find(|(_, f)| f.kind == kind) { return Ok(id); }
+        let (name, param, sample, outline): (&str, &str, &str, Vec<[f64; 2]>) = match kind {
+            AnnotationKind::DoorTag => ("Door Tag", "Mark", "1", vec![[-4.0, -2.5], [4.0, -2.5], [4.0, 2.5], [-4.0, 2.5]]),
+            AnnotationKind::WindowTag => ("Window Tag", "Mark", "W01", vec![[-4.5, 0.0], [-2.5, -2.5], [2.5, -2.5], [4.5, 0.0], [2.5, 2.5], [-2.5, 2.5]]),
+            _ => return Err("not a door or window tag".into()),
+        };
+        let mut f = AnnotationFamily::drawn_with(name, kind, vec![], vec![], vec![old_label(0.0, 0.0, HAlign::Center, VAlign::Middle, 2.5, false, vec![LabelLine::new(param, "", "", sample)])]);
+        f.read_old_drawing();
+        for (i, a) in outline.iter().enumerate() {
+            let b = outline[(i + 1) % outline.len()];
+            f.lines.push(AnnLine { curve: Curve::line(pt(*a), pt(b)), subcategory: String::new(), visible: true, pointer: false });
+        }
+        self.transact(&format!("Load {}", name.to_lowercase()), |tx| Ok(tx.add(Element::AnnotationFamily(f))))
+    }
+
     pub fn room_tag_labels(&self,tag:&crate::rooms::RoomTag)->Vec<DrawnText>{
         let Some(room)=self.room(tag.room)else{return vec![]};let Some(calc)=self.room_calculation(tag.room)else{return vec![]};
         let family=tag.family.and_then(|id|self.annotation_family(id)).or_else(||self.annotation_families().into_iter().find(|(_,f)|f.kind==AnnotationKind::RoomTag).map(|(_,f)|f));let Some(family)=family else{return vec![]};
@@ -1348,7 +1380,7 @@ impl Document {
     /// Whether a level type, an elevation marker or a section draws with this family.
     pub fn annotation_family_in_use(&self, id: Id) -> bool {
         self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| self.elevation_symbol(m) == Some(id)) || self.sections().iter().any(|(_, s)| { let symbols = self.section_symbols(s); symbols.0 == Some(id) || symbols.1 == Some(id) })
-            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),_=>false})
+            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::ElementTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),_=>false})
             || self.view_marker_types().iter().any(|(_, t)| t.head == Some(id) || t.tail == Some(id))
     }
 

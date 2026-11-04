@@ -55,6 +55,8 @@ const COMMANDS = {
   "m-revisions": () => Revisions.dialog(),
   "det-revcloud": () => Revisions.start(),
   "tag-revision": () => Revisions.tag(),
+  "tag-cat": () => Tags.start(),
+  "tag-all": () => Tags.tagAll(),
   room: () => Spatial.start(),
   "room-sep": () => Spatial.separators(),
   "tag-room": () => Spatial.start(true),
@@ -316,6 +318,11 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "wall") return wallContext();
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
+  // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
+  const tv = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
+  if (tv && tv.tool === "tag") return Tags.context();
+  if (tv && (tv.tool === "door" || tv.tool === "window")) return { auto: true, key: `place:${tv.tool}`, title: tv.tool === "door" ? "Place Door" : "Place Window", groups: [
+    { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => tv.setTool("select") }] }, ...Tags.placementGroups()] };
   const cc = curtainContext();
   if (cc) return cc;
   const ac = arrayContext();
@@ -1421,10 +1428,11 @@ function syncPlacement(tool) {
 
 async function startPlacement(tool) {
   // doors and windows go into the walls an elevation or section shows, too
-  if (app.view.kind === "elevation" && (tool === "door" || tool === "window")) { Elev.startPlace(tool); syncPlacement(tool); return; }
+  if (app.view.kind === "elevation" && (tool === "door" || tool === "window")) { Elev.startPlace(tool); syncPlacement(tool); updateRibbonContext(true); return; }
   if (!(await ensurePlan(tool === "door" ? "A door" : "A window"))) return;
   Plan.setTool(tool);
   syncPlacement(tool);
+  if (tool === "door" || tool === "window") updateRibbonContext(true);
 }
 
 Plan.callbacks.placeInstance = async (wallId, point) => {
@@ -1432,6 +1440,7 @@ Plan.callbacks.placeInstance = async (wallId, point) => {
   const [flip_hand, flip_facing] = [[false, false], [true, false], [true, true], [false, true]][app.placeFlip || 0];
   const r = await run("place_instance", { type_id: placeTypeId(tool), host_id: wallId, point: [point.x, point.y], flip_hand, flip_facing });
   const what = tool === "hosted" ? "component" : tool;
+  if (r && (tool === "door" || tool === "window")) await Tags.placed(r.id);
   if (r) { noteTypeUsed(placeTypeId(tool)); await refresh(); setPrompt(r.warning ? `Placed a ${what}. ${r.warning}` : `Placed a ${what}. Click another wall or press Esc.`); }
 };
 
@@ -2000,6 +2009,8 @@ Plan.callbacks.joinEnd = (list) => { app.joinEnd = list; renderJoinBar(); };
 async function flipAction() {
   if (app.view.kind === "plan" && Plan.isEditTool()) return false; // Space is not a flip while a Modify tool is running
   const tool = app.view.kind === "plan" ? Plan.tool : "select";
+  // selected tags turn between horizontal and vertical
+  if (tool === "select" && (await Tags.flipSelected())) return true;
   if (tool === "wall") {
     app.flipped = !app.flipped;
     updatePlanExtents();
@@ -2186,7 +2197,7 @@ Elev.callbacks.moveBy = async (ids, du, dz, copy) => {
   const f = Elev.data.frame, d = Elev.data;
   // detail groups drawn here move as detail items do; a model group only moves across
   const grp = (i) => (app.info.groups || []).find((g) => g.id === i);
-  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []),...(d.revision_clouds||[]),...(d.revision_tags||[]), ...(app.info.groups || []).filter((g) => g.kind === "detail" && g.view_id === app.view.viewId)].map((x) => x.id));
+  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []),...(d.revision_clouds||[]),...(d.revision_tags||[]),...(d.element_tags||[]), ...(app.info.groups || []).filter((g) => g.kind === "detail" && g.view_id === app.view.viewId)].map((x) => x.id));
   const mg = ids.filter((i) => grp(i) && grp(i).kind === "model");
   const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i) && !mg.includes(i));
   let out = [];
@@ -2203,6 +2214,7 @@ Elev.callbacks.moveBy = async (ids, du, dz, copy) => {
 };
 Elev.callbacks.place = async (tool, u, z) => {
   const r = await run("place_in_elevation", { view_id: app.view.viewId, type_id: placeTypeId(tool), u, z, flip_hand: [false, true, true, false][app.placeFlip || 0] });
+  if (r) await Tags.placed(r.id);
   if (r) { noteTypeUsed(placeTypeId(tool)); await refresh(); setPrompt(r.warning ? `Placed a ${tool}. ${r.warning}` : `Placed a ${tool}. Click another wall or press Esc.`); }
 };
 // the width and height of the door or window about to be placed, for the elevation's preview

@@ -31,6 +31,8 @@ const AnnModel = (() => {
     title_block:"Title block: the border, labels and revision schedule are saved in this family.",
     room_tag:"Room tag: labels read the room in the project.",
     revision_tag:"Revision tag: labels read the cloud revision and sheet numbering.",
+    door_tag: "Door tag: labels read the door's parameters (Mark by default). The tag's origin sits on the door, or at the end of its leader.",
+    window_tag: "Window tag: labels read the window's parameters (Mark by default). The tag's origin sits on the window, or at the end of its leader.",
     level_head: "Level head: the level line arrives from the left and ends at the vertical reference line.",
     elevation_marker: "Elevation mark: the body is drawn once. The pointer is drawn for each view, turned to point along +x here.",
     section_marker: "Section mark: the body is drawn at the head of the line. The pointer is drawn at each end for the view direction, along +x here.",

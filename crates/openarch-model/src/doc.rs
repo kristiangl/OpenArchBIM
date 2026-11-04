@@ -74,7 +74,7 @@ impl Tx<'_> {
         let before = self.doc.elements.remove(&id).ok_or_else(|| format!("no element {id}"))?;
         let is_annotation = matches!(before, Element::Dimension(_) | Element::Spot(_));
         self.changes.push(Change { id, before: Some(before), after: None });
-        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
+        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
         for tid in tags {self.remove(tid)?;}
         if !is_annotation {
             // Remove references before IDs can be reused after a project is reopened.
@@ -641,6 +641,7 @@ impl Document {
             Some(Element::RoomSeparation(r)) => r.pinned,
             Some(Element::RevisionCloud(r)) => r.pinned,
             Some(Element::RevisionTag(r)) => r.pinned,
+            Some(Element::ElementTag(t)) => t.pinned,
             Some(Element::Wall(w)) => w.pinned,
             Some(Element::Floor(f)) => f.pinned,
             Some(Element::Roof(r)) => r.pinned,
@@ -670,7 +671,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -679,6 +680,7 @@ impl Document {
                 Element::RoomSeparation(r)=>r.pinned=pinned,
                 Element::RevisionCloud(r)=>r.pinned=pinned,
                 Element::RevisionTag(r)=>r.pinned=pinned,
+                Element::ElementTag(t)=>t.pinned=pinned,
                 Element::Wall(w) => w.pinned = pinned,
                 Element::Floor(f) => f.pinned = pinned,
                 Element::Roof(r) => r.pinned = pinned,
@@ -711,7 +713,7 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_)) => {},
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,

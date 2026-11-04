@@ -338,6 +338,7 @@ impl Document {
         inst.offset_mm = offset_mm;
         inst.ifc.export_as = fam.category.ifc_class().to_string();
         inst.ifc.predefined_type = fam.category.ifc_predefined().to_string();
+        inst.mark = self.auto_mark(fam.category);
         self.transact("Place component", |tx| Ok(tx.add(Element::FamilyInstance(inst))))
     }
 
@@ -531,6 +532,7 @@ impl Document {
         inst.ifc.export_as = fam.category.ifc_class().to_string();
         inst.ifc.predefined_type = fam.category.ifc_predefined().to_string();
         self.fits(&inst, None)?;
+        inst.mark = self.auto_mark(fam.category);
         let name = match fam.category {
             FamilyCategory::Doors => "Place door",
             FamilyCategory::Windows => "Place window",

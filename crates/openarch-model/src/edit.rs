@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -384,6 +384,21 @@ impl Document {
                 Some(Element::RoomSeparation(s))=>{let mut s=s.clone();s.curve=s.curve.transform(x);s.pinned=s.pinned&&!opt.copy;Element::RoomSeparation(s)},
                 Some(Element::RevisionCloud(c))=>{if self.revision_record(c.revision).is_some_and(|r|r.issued){return Err("Unissue the revision before moving or copying its cloud.".into());}let mut c=c.clone();c.curves=c.curves.iter().map(|c|c.transform(x)).collect();c.pinned=c.pinned&&!opt.copy;Element::RevisionCloud(c)},
                 Some(Element::RevisionTag(t))=>{let mut t=t.clone();t.at=x.apply(t.at);t.pinned=t.pinned&&!opt.copy;Element::RevisionTag(t)},
+                // a tag is an offset from its element: moved with its element it keeps the offset (it follows the
+                // element), moved alone its head goes where the transform takes it
+                Some(Element::ElementTag(t)) => {
+                    let mut t = t.clone();
+                    if !set.contains(&t.element) {
+                        if let Some(p) = self.tag_point(t.view, t.element) {
+                            let shift = |o: [f64; 2]| { let q = x.apply(Point::new(p.x + o[0], p.y + o[1])); [q.x - p.x, q.y - p.y] };
+                            t.offset = shift(t.offset);
+                            t.end_offset = t.end_offset.map(shift);
+                            t.elbow = t.elbow.map(shift);
+                        }
+                    }
+                    t.pinned = t.pinned && !opt.copy;
+                    Element::ElementTag(t)
+                }
                 Some(Element::DetailLine(l)) => Element::DetailLine(crate::detail::DetailLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
                 Some(Element::DetailRegion(r)) => {
                     let mut nr = r.clone();
@@ -602,6 +617,7 @@ impl Document {
                 result.push(tx.add(Element::Grid(g)));
             }
             let mut added: Vec<(Id, FamilyInstance)> = vec![];
+            let mut inst_map: BTreeMap<Id, Id> = BTreeMap::new();
             for (orig, mut ni, follows) in new_insts {
                 if follows {
                     if let Some(h) = ni.host {
@@ -610,10 +626,21 @@ impl Document {
                         }
                     }
                 }
+                // a copy takes the next Mark, as a newly placed one does (a key-controlled Mark is kept)
+                if ni.mark.is_empty() {
+                    if let Some(c) = tx.doc_ref().instance_family(&ni).map(|(f, _)| f.category) { ni.mark = tx.doc_ref().next_mark(c); }
+                }
                 let id = tx.add(Element::FamilyInstance(ni.clone()));
                 tx.copy_parameter_data(orig,id)?;
+                inst_map.insert(orig, id);
                 added.push((id, ni));
                 result.push(id);
+            }
+            // a tag copied with its door or window tags the copy
+            for &id in detail_map.values() {
+                if let Some(Element::ElementTag(t)) = tx.doc_ref().get(id) {
+                    if let Some(&ni) = inst_map.get(&t.element) { let t = crate::tags::ElementTag { element: ni, ..t.clone() }; tx.update(id, Element::ElementTag(t))?; }
+                }
             }
             // every opening has to still fit where it ended up
             let doc = tx.doc_ref();

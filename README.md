@@ -11,7 +11,7 @@ A free, open-source building information modelling (BIM) application for archite
 - Levels and grids, with datum alignment locks and a project base point and survey point
 - Layered walls with wall types, mitred and butted joins, and join cleanup
 - Floors and roofs drawn from sketch boundaries, with slope-defining edges and slope arrows
-- Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry)
+- Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry), numbered Marks, and tags placed one at a time, all at once or as they are placed
 - Plan, elevation and section views, with view ranges, templates, graphic display options and reusable marker types linked to view types
 - Permanent and temporary dimensions, spot elevations and spot coordinates
 - Rooms with live areas, perimeters and optional volumes, room separation lines, room tags, unplaced rooms that keep their data, and From/To Room for doors and windows
@@ -72,11 +72,13 @@ then open http://127.0.0.1:8765. Windows previews use the Explorer file picker; 
 
 Selecting a section line shows its view properties. Edit Type selects a Section Tag; Marker Type Properties edits or duplicates its head and tail symbol choices. Elevation view types similarly select an Elevation Mark. Section end grips lengthen or shorten along the current cut plane, with a perpendicular range box throughout the drag; Align and Rotate can change its angle. New projects include separate Section Head and Section Tail families, anchored where their reference planes cross. The editable source families are in `crates/openarch-model/families`. Existing project families keep their saved artwork and type choices.
 
-Projects saved with this build use file format 10, which adds project instance parameters, key schedules, rooms and revisions. Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
+Projects saved with this build use file format 11, which adds project instance parameters, key schedules, rooms, revisions and door and window tags. Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
 
 For a key schedule, choose Schedule keys in New Schedule, select a category and name the key selector. Add instance fields or use Add Parameter for a project/shared parameter. Insert Data Row creates a key; edit its values, then assign it to elements in Properties or an ordinary schedule. Set the selector to (none) to unlock the values while keeping them.
 
 Rooms: Architecture > Room places a room with a click inside an enclosed area; its Modify tab panels turn Tag on Placement on or off, place rooms in every enclosed area, open Area and Volume Computations, and pick an unplaced room to place instead of a new one. Delete in a view leaves a room in the project, unplaced; Delete Row in a room schedule removes it. A room schedule's Embedded Schedule tab lists one category's elements under each room.
+
+Tags: Annotate > Tag by Category tags the door or window you click, Tag All tags every untagged door, window or room in the view, and Place Door and Place Window tag as they place (Tag on Placement on their Modify tab). Spacebar turns a selected tag between horizontal and vertical. A tag follows its door or window when it moves.
 
 To export schedule values to IFC, tick Enable this schedule for IFC export on its IFC Export tab (where fields can be renamed or sent to a quantity set), then tick Export schedules as property and quantity sets in Export > IFC.
 

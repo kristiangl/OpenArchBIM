@@ -39,6 +39,7 @@ pub mod roof;
 pub mod schedule;
 pub mod rooms;
 pub mod revisions;
+pub mod tags;
 pub mod key_schedule;
 pub mod section;
 pub mod sharedparams;

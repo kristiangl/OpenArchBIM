@@ -23,6 +23,7 @@ mod ifc_schedule;
 mod keys;
 mod rooms;
 mod revisions;
+mod tags;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -211,6 +212,9 @@ impl Session {
     }
 
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
+        if let Some(r) = self.handle_tags(method, p) {
+            return r;
+        }
         match method {
             "add_project_parameter" => self.create_project_parameter(p),
             "add_key_row" => Ok(json!({ "row": self.doc.add_key_row(id_of(p, "id")?)? })),
@@ -2215,6 +2219,7 @@ impl Session {
         if let Some(o) = v.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
+            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
         }
         // permanent dimensions, measured in the view's own frame
         let hidden_here = d.view(vid).map(|x| x.hidden_elements.clone()).unwrap_or_default();
@@ -2840,6 +2845,7 @@ impl Session {
             if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
+            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
         }
         Ok(out)
     }
@@ -2974,6 +2980,7 @@ impl Session {
             Element::Revision(_)|Element::RevisionCloud(_)|Element::RevisionTag(_)=>self.revision_properties(id),
             Element::Room(r) => Ok(rooms::room_properties(d,id,r)),
             Element::RoomTag(t) => Ok(self.room_tag_props(id,t)),
+            Element::ElementTag(t) => Ok(self.tag_props(id, t)),
             Element::RoomSeparation(_) => Ok(json!({"id":id,"kind":"RoomSeparation","title":"Room Separation","type_label":"Room Separation","groups":[],"target":{"method":"patch_room_separation","id":id}})),
             Element::Wall(w) => Ok(props::wall_props(d, id, w)),
             Element::Floor(f) => Ok(props::floor_props(d, id, f)),
