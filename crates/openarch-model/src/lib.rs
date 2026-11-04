@@ -56,6 +56,7 @@ pub mod styles;
 pub mod symbol;
 pub mod systypes;
 pub mod tempdim;
+pub mod clipboard;
 pub mod colorfill;
 pub mod view;
 pub mod viewmarker;

@@ -96,7 +96,7 @@ fn slide_point(s: Point, e: Point, a: Point, b: Point) -> Option<Point> {
 impl Document {
     /// The wall (and distance along it) a point lands in, on a level. A wall the
     /// point is on is preferred over a nearer one it is not on; `prefer` wins ties.
-    fn host_wall_at(&self, level: Id, p: Point, prefer: Option<Id>) -> Option<(Id, f64)> {
+    pub(crate) fn host_wall_at(&self, level: Id, p: Point, prefer: Option<Id>) -> Option<(Id, f64)> {
         let mut best: Option<(f64, Id, f64)> = None;
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };

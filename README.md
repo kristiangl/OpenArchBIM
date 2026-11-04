@@ -27,6 +27,7 @@ A free, open-source building information modelling (BIM) application for archite
 - Linked models built for scale: shared definitions with cheap placements, aimed at masterplans with many linked buildings
 - Save and Save As for projects, model families and annotation families, with native file dialogs on desktop and in the Windows browser preview
 - Text notes edited in place with their font, size, colour and alignment
+- Copy, Cut and Paste (at a picked point, aligned to selected levels, selected views, the current view or the same place) and Match Type
 - Undo and redo, and a single-file project format (`.oab`) with loadable family files (`.oaf`)
 
 ## What is planned

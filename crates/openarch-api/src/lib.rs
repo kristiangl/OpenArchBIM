@@ -26,6 +26,7 @@ mod revisions;
 mod tags;
 mod ceilings;
 mod areas;
+mod clipboard;
 mod colorfill;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
@@ -37,6 +38,10 @@ pub struct Session {
     saved_revision: u64,
     /// The group open in Edit Group, if any.
     group_editing: Option<Id>,
+    /// Copy / Cut: the snapshot, and which project it came from (`doc_serial` when it was taken).
+    clipboard: Option<(u64, openarch_model::clipboard::Clipboard)>,
+    /// Counts the projects this session has opened, so a paste knows whether the clipboard is from this one.
+    doc_serial: u64,
 }
 
 impl Default for Session {
@@ -211,7 +216,7 @@ const LOCATION_LINES: [(&str, LocationLine, &str); 6] = [
 impl Session {
     pub fn new() -> Self {
         let doc = Document::new_project();
-        Session { saved_revision: doc.revision(), doc, path: None, group_editing: None }
+        Session { saved_revision: doc.revision(), doc, path: None, group_editing: None, clipboard: None, doc_serial: 0 }
     }
 
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
@@ -225,6 +230,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_color_fills(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_clipboard(method, p) {
             return r;
         }
         match method {
@@ -2185,7 +2193,11 @@ impl Session {
                 p.get("floor_rate").and_then(|v| v.as_f64()).unwrap_or(0.0),
             )),
             "new_project" => {
+                // the clipboard stays, marked as another project's
+                let (clip, serial) = (self.clipboard.take(), self.doc_serial + 1);
                 *self = Session::new();
+                self.clipboard = clip;
+                self.doc_serial = serial;
                 Ok(json!({}))
             }
             // IFC4 export: { path, name? } (the name defaults to the file's stem)
@@ -2214,6 +2226,7 @@ impl Session {
                 let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
                 let (doc, report) = Document::from_ifc(&bytes)?;
                 self.doc = doc;
+                self.doc_serial += 1;
                 self.path = None;
                 // unsaved until it is saved as a project
                 self.saved_revision = u64::MAX;
@@ -2227,6 +2240,7 @@ impl Session {
                 let doc = Document::open(&path)?;
                 self.saved_revision = doc.revision();
                 self.doc = doc;
+                self.doc_serial += 1;
                 self.path = Some(path);
                 Ok(json!({}))
             }

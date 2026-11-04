@@ -14,10 +14,15 @@ const MODIFY_TAB = [
   { label: "Properties", items: [
     modifyItem("Properties", "properties", { project: "props", family: "f-props", annotation: "a-props" }, { big: true }) ] },
   { label: "Clipboard", items: [
-    modifyItem("Paste", "paste", null, { big: true }),
-    modifyItem("Cut", "cut", null),
-    modifyItem("Copy", "copy", { project: "cp", family: "f-cp" }),
-    modifyItem("Match Type", "matchType", null) ] },
+    modifyItem("Paste", "paste", { project: "paste" }, { big: true, menu: [
+      modifyItem("Paste from Clipboard", "paste", { project: "paste" }),
+      modifyItem("Aligned to Selected Levels", "paste", { project: "paste-levels" }),
+      modifyItem("Aligned to Selected Views", "paste", { project: "paste-views" }),
+      modifyItem("Aligned to Current View", "paste", { project: "paste-current" }),
+      modifyItem("Aligned to Same Place", "paste", { project: "paste-same" }) ] }),
+    modifyItem("Cut", "cut", { project: "clip-cut" }),
+    modifyItem("Copy", "copy", { project: "clip-copy" }),
+    modifyItem("Match Type", "matchType", { project: "match-type" }) ] },
   { label: "Geometry", items: [
     modifyItem("Join", "join", null), modifyItem("Unjoin", "unjoin", null),
     modifyItem("Cut", "cut", null), modifyItem("Uncut", "uncut", null),

@@ -1542,6 +1542,7 @@ const Plan = (() => {
       Tags.draw(ctx, data, toScreen, cam.s, sel);
       Det.drawNotes(sel, hov, accent, tool === "select");
       if (tool === "text") Det.preview(hover);
+      if (tool === "paste") Clip.drawPreview(ctx, toScreen, hover);
       drawGrids();
       drawMarkers();
     });
@@ -1720,6 +1721,7 @@ const Plan = (() => {
     if (t !== "spot") Spots.stop();
     if (t !== "secsplit") Sections.stopSplit();
     if (t !== "text") Det.clearPicks();
+    if (t !== "matchtype") Clip.endTool();
     if (t !== "noteleader") Det.stopLeader();
     tool = t;
     draw = null;
@@ -2228,6 +2230,8 @@ const Plan = (() => {
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
     if (tool === "colorlegend") { ColorFill.place(toWorld(sx, sy)); return; }
+    if (tool === "paste") { Clip.place(snap(sx, sy)); return; }
+    if (tool === "matchtype") { Clip.matchClick(rawCandidates(sx, sy).flat()[0] ?? null); return; }
     if (tool === "ceilinggrid") { Ceilings.gridClick(snap(sx, sy)); return; }
     if (tool === "area" || tool === "areatag" || tool === "areaboundary") {
       const walls = new Set(data.walls.map((w) => w.id));

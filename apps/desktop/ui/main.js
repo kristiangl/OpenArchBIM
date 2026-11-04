@@ -61,6 +61,14 @@ const COMMANDS = {
   "area-boundary": () => Areas.start("areaboundary"),
   "tag-area": () => Areas.start("areatag"),
   "area-schemes": () => ColorFill.schemes(),
+  "clip-copy": () => Clip.copy(false),
+  "clip-cut": () => Clip.copy(true),
+  paste: () => Clip.paste(),
+  "paste-levels": () => Clip.pasteLevels(),
+  "paste-views": () => Clip.pasteViews(),
+  "paste-current": () => Clip.pasteCurrent(),
+  "paste-same": () => Clip.pasteSame(),
+  "match-type": () => Clip.matchType(),
   "color-legend": () => ColorFill.start(),
   "tag-cat": () => Tags.start(),
   "tag-all": () => Tags.tagAll(),
@@ -275,6 +283,7 @@ function modifyEnabled(id) {
     return false;
   }
   if (["sel", "props", "v-vg"].includes(id)) return true;
+  if (id.startsWith("paste") || ["clip-copy", "clip-cut", "match-type"].includes(id)) return !Sketch.active && Clip.enabled(id);
   if (Sketch.active) return id === "sel" || id === "del" || !!SKETCH_MODIFY[id];
   if (id === "gp") return app.selection.length > 0 && !app.groupEdit && app.view.kind !== "schedule";
   if (app.view.kind === "elevation") {
@@ -329,6 +338,8 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
+  if (app.view.kind === "plan" && Plan.tool === "paste") return Clip.context();
+  if (app.view.kind === "plan" && Plan.tool === "matchtype") return Clip.matchContext();
   const cf = ColorFill.selectionContext();
   if (cf) return cf;
   const cs = Ceilings.selectionContext();
@@ -1083,6 +1094,7 @@ async function refresh(force = false) {
   const info = await run("doc_info", {});
   if (!info) return;
   app.info = info;
+  await Clip.load(false);
   syncGroups();
   const pick = (cur, cat, label) => (cur && info.family_types.some((t) => t.id === cur) ? cur : (info.family_types.find((t) => t.label === label) || info.family_types.find((t) => t.category === cat) || {}).id || null);
   app.doorTypeId = pick(app.doorTypeId, "Doors", "Single-Flush: 820 x 2040");
@@ -2816,6 +2828,12 @@ document.addEventListener("keydown", (e) => {
     if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); return; }
     if (k === "s") { e.preventDefault(); save(e.shiftKey); return; }
     if (k === "o") { e.preventDefault(); openProject(); return; }
+    // the clipboard, in a project's model views
+    if (app.doc === "project" && !Sketch.active && ["c", "x", "v"].includes(k) && !e.shiftKey) {
+      e.preventDefault();
+      if (k === "v") Clip.paste(); else if (app.selection.length) Clip.copy(k === "x");
+      return;
+    }
   }
   if (typing) return;
   // Esc with nothing selected and no tool running goes to the first tab (Architecture in a project)
