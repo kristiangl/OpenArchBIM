@@ -7,8 +7,8 @@
 //!
 //! From Kristian's Schedules and Tabular Reporting specification (30 Oct). Besides a single category, a schedule
 //! lists every model category (Multi-Category: the parameters they share), the sheets (a sheet list) or the views
-//! (a view list); a material takeoff lists each element once for every material in its layers. Key schedules come
-//! later.
+//! (a view list); a material takeoff lists each element once for every material in its layers. A key schedule
+//! holds named sets of instance values, with stable assignments and project/shared parameter bindings.
 
 use serde::{Deserialize, Serialize};
 
@@ -48,6 +48,12 @@ pub const TAKEOFF_CATEGORIES: [&str; 4] = ["Walls", "Floors", "Roofs", MULTI_CAT
 pub struct ScheduleDef {
     /// The category listed (Doors, Walls, ...), Multi-Category, Sheets or Views.
     pub category: String,
+    #[serde(default)]
+    pub key: Option<crate::key_schedule::KeySchedule>,
+    #[serde(default)]
+    pub ifc: crate::ifc_properties::IfcSchedule,
+    #[serde(default)]
+    pub embedded: Option<Box<ScheduleDef>>,
     /// A material takeoff: a row for each material of each element.
     #[serde(default)]
     pub takeoff: bool,
@@ -370,6 +376,9 @@ impl ScheduleDef {
     pub fn new(category: &str) -> ScheduleDef {
         ScheduleDef {
             category: category.into(),
+            key: None,
+            ifc: Default::default(),
+            embedded: None,
             takeoff: false,
             fields: vec![],
             filters: vec![],
@@ -397,6 +406,18 @@ impl ScheduleDef {
             if self.fields[..i].iter().any(|g| g.name == f.name) {
                 return Err(format!("{} is in the schedule twice.", f.name));
             }
+        }
+        if let Some(child)=&self.embedded {
+            if self.category!="Rooms" || self.key.is_some() || child.key.is_some() || child.embedded.is_some() {return Err("Only a room schedule can contain one embedded category schedule.".into());}
+            child.check(&|f|f.unit)?;
+        }
+        let mut exported = std::collections::BTreeSet::new();
+        for mapping in &self.ifc.fields {
+            let f = self.field(&mapping.field).ok_or_else(|| format!("{} is not a schedule field.", mapping.field))?;
+            let name = if mapping.name.trim().is_empty() { f.heading() } else { mapping.name.trim() };
+            if !exported.insert((mapping.quantity, name.to_string())) { return Err(format!("IFC property {name} is mapped twice.")); }
+            let unit = mapping.unit.unwrap_or_else(|| self.unit_of(f, unit_of));
+            if mapping.quantity && !crate::ifc_properties::quantity_unit(unit) { return Err(format!("{} cannot export as a quantity.", mapping.field)); }
         }
         if self.filters.len() > MAX_FILTERS {
             return Err(format!("A schedule takes up to {MAX_FILTERS} filters."));
@@ -566,6 +587,9 @@ impl Document {
             return Err("not a schedule".into());
         }
         def.check(unit_of)?;
+        self.check_key_definition(id, &def)?;
+        if def.key.is_some() { return self.write_key_definition(id, def); }
+        if v.schedule.as_ref().is_some_and(|s| s.key.is_some()) { return Err("A key schedule keeps its kind.".into()); }
         self.transact("Schedule Properties", |tx| tx.update(id, Element::View(View { schedule: Some(def), ..v })))
     }
 }

@@ -52,6 +52,13 @@ const COMMANDS = {
   "mi-pick": () => { Plan.setEditOptions({ mirrorMode: "pick" }); return startEditTool("mirror"); },
   "mi-draw": () => { Plan.setEditOptions({ mirrorMode: "draw" }); return startEditTool("mirror"); },
 
+  "m-revisions": () => Revisions.dialog(),
+  "det-revcloud": () => Revisions.start(),
+  "tag-revision": () => Revisions.tag(),
+  room: () => Spatial.start(),
+  "room-sep": () => Spatial.separators(),
+  "tag-room": () => Spatial.start(true),
+  "room-settings": () => Spatial.settings(),
   wall: async () => { if (await ensurePlan("A wall")) Plan.setTool("wall"); },
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
@@ -266,6 +273,7 @@ function modifyEnabled(id) {
   }
   // the 3D view moves, copies and turns the selection on the level plane
   if (app.view.kind === "3d" && ["mv", "cp", "ro", "mi", "mi-draw", "ar"].includes(id)) return app.selection.length > 0;
+  if(app.view.kind==="sheet"&&["mv","cp","ro","mi-draw","pin","unpin"].includes(id))return Revisions.canEditSheet();
   if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
   if (id === "del") return app.selection.length > 0;
   // a Modify tool picked while another tool runs takes over from it, as it always has
@@ -307,6 +315,7 @@ function currentContext() {
   if (Sketch.active) return sketchContext();
   if (app.view.kind === "plan" && Plan.tool === "wall") return wallContext();
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
+  if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
   const cc = curtainContext();
   if (cc) return cc;
   const ac = arrayContext();
@@ -318,6 +327,10 @@ function currentContext() {
   const b = editBoundaryTarget();
   if (b) return { auto: true, key: `boundary:${b.label}:${app.selection[0]}`, title: b.label.replace(/^Edit /, ""), groups: [
     { label: "Mode", items: [{ label: b.label, icon: "editBoundary", onclick: b.run }] } ] };
+  // a selected revision cloud: Edit Sketch reopens its boundary
+  const cloud = Revisions.selectedCloud();
+  if (cloud) return { auto: true, key: `revcloud:${cloud}`, title: "Revision Clouds", groups: [
+    { label: "Mode", items: [{ label: "Edit Sketch", icon: "editBoundary", onclick: () => Revisions.start(cloud) }] } ] };
   const pt = profileTarget();
   if (pt) return { auto: true, key: `profile:${pt.id}:${pt.profiled}`, title: "Walls", groups: [
     { label: "Mode", items: [
@@ -1837,6 +1850,7 @@ $("#viewport").addEventListener("pointermove", (e) => { if (!ed3 || e.buttons) r
 document.addEventListener("keydown", (e) => { if (ed3 && e.key === "Escape") { e.stopPropagation(); end3DEdit("Cancelled."); } }, true);
 
 async function startEditTool(name) {
+  if(app.view.kind==="sheet"&&["move","copy","rotate","mirror"].includes(name)){Revisions.startSheetEdit(name);return;}
   if (app.view.kind === "3d") {
     if (["move", "copy", "rotate", "mirror", "array"].includes(name)) { start3DEdit(name); updateRibbonContext(); }
     else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views; Move, Copy, Rotate, Mirror and Array work here.`, true);
@@ -2172,7 +2186,7 @@ Elev.callbacks.moveBy = async (ids, du, dz, copy) => {
   const f = Elev.data.frame, d = Elev.data;
   // detail groups drawn here move as detail items do; a model group only moves across
   const grp = (i) => (app.info.groups || []).find((g) => g.id === i);
-  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(app.info.groups || []).filter((g) => g.kind === "detail" && g.view_id === app.view.viewId)].map((x) => x.id));
+  const own = new Set([...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []),...(d.revision_clouds||[]),...(d.revision_tags||[]), ...(app.info.groups || []).filter((g) => g.kind === "detail" && g.view_id === app.view.viewId)].map((x) => x.id));
   const mg = ids.filter((i) => grp(i) && grp(i).kind === "model");
   const det = ids.filter((i) => own.has(i)), model = ids.filter((i) => !own.has(i) && !mg.includes(i));
   let out = [];
@@ -2277,8 +2291,11 @@ async function deleteSelection() {
   if (!app.selection.length) return;
   const ids = app.selection;
   if (await excludeSelected()) return;
-  // keep the selection when the delete is refused (pinned elements, for one)
-  if (!(await run("delete", { ids }))) return;
+  // keep the selection when the delete is refused (pinned elements, for one); a room deleted in a model view stays
+  // in the project, unplaced
+  const r = await run("delete", { ids, unplace_rooms: ["plan", "elevation", "3d"].includes(app.view.kind) });
+  if (!r) return;
+  if (r.unplaced) setPrompt(`${r.unplaced === 1 ? "The room is no longer placed but stays" : `${r.unplaced} rooms are no longer placed but stay`} in the project. Delete its row in a room schedule to remove it for good.`);
   app.selection = [];
   Plan.setSelection([]);
   Elev.setSelection([]);
@@ -2468,7 +2485,7 @@ async function deleteSheet(s) {
 }
 SheetView.callbacks.select = (ids) => { app.selection = ids; renderProperties(); updateRibbonContext(); };
 SheetView.callbacks.moveDetails = async (ids, delta) => {
-  const details = new Set([...SheetView.detailLines(), ...SheetView.regions(), ...SheetView.textNotes()].map((e) => e.id));
+  const details = new Set([...SheetView.detailLines(), ...SheetView.regions(), ...SheetView.textNotes(),...(SheetView.sheet?.revision_clouds||[]),...(SheetView.sheet?.revision_tags||[])].map((e) => e.id));
   const picked = ids.filter((id) => details.has(id));
   if (picked.length && await run("transform", { ids: picked, kind: "move", ...delta })) await refresh();
 };
@@ -2846,8 +2863,11 @@ function sketchContext() {
       { label: "Modify", ico: "Se", onclick: () => Sketch.setTool("select"), on: cur === "select" },
     ];
   const detail = Sketch.kind === "detail" || Sketch.kind === "region";
-  const draw = Sketch.DRAW.filter((t) => !detail || t.id !== "pick_walls").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
+  // annotation-like sketches (a revision cloud, room separation lines) draw lines only: no walls to pick, no slope
+  const plain = Sketch.kind === "revisioncloud" || Sketch.kind === "roomseparation";
+  const draw = Sketch.DRAW.filter((t) => !(detail || plain) || t.id !== "pick_walls").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
   const groups = [{ label: "Mode", items: modes }, { label: "Draw", items: draw }];
+  if (Sketch.kind === "revisioncloud") groups.push(...Revisions.sketchGroups());
 
   // Detail Line and the regions: no slope or span; a line style for new lines and the selected ones
   if (detail) {
@@ -2862,7 +2882,7 @@ function sketchContext() {
       if (Sketch.selectedAttr()) Sketch.patchSelected({ style: s.value });
     };
     groups.push({ label: "Line Style", items: [{ big: true, node: el("div", { className: "rb-select" }, [s]) }] });
-  } else if (!Sketch.isRoof) {
+  } else if (!Sketch.isRoof && !plain) {
     groups.push({ label: "Slope and Span", items: Sketch.ANNOTATE.map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id })) });
   }
   return { auto: true, key: `sketch:${Sketch.kind}:${Sketch.tool}`, title: Sketch.title || "Sketch", groups };
@@ -2978,8 +2998,11 @@ function openSlopeDialog() {
 const sketchView = () => (SheetView.sketching ? SheetView : Elev.sketching ? Elev : Plan);
 Sketch.callbacks.change = () => { if (Sketch.kind === "detail") syncDetailLines(); renderSketchUI(); };
 Sketch.callbacks.prompt = (t, isError) => setPrompt(t, !!isError);
+Sketch.callbacks.flip = () => Revisions.flip();
 Sketch.callbacks.slope = () => openSlopeDialog();
 Sketch.callbacks.finish = async (o) => {
+  if (o.kind === "revisioncloud") return Revisions.finish(o);
+  if (o.kind === "roomseparation") return Spatial.finish(o);
   if (o.kind === "region") return finishRegion(o);
   if (o.kind === "profile") return finishProfile(o);
   const roof = o.kind === "roof";

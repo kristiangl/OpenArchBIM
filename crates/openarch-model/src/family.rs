@@ -300,6 +300,12 @@ pub struct FamilySettings {
     #[serde(default)]
     pub room_point: [f64; 3],
     #[serde(default)]
+    pub room_from: Option<[f64; 3]>,
+    #[serde(default)]
+    pub room_to: Option<[f64; 3]>,
+    #[serde(default)]
+    pub room_bounding: Option<bool>,
+    #[serde(default)]
     pub maintain_annotation_orientation: bool,
 }
 
@@ -309,7 +315,7 @@ fn normal_part() -> String {
 
 impl Default for FamilySettings {
     fn default() -> Self {
-        FamilySettings { can_host_rebar: false, part_type: normal_part(), shared: false, room_calculation_point: false, room_point: [0.0; 3], maintain_annotation_orientation: false }
+        FamilySettings { can_host_rebar: false, part_type: normal_part(), shared: false, room_calculation_point: false, room_point: [0.0; 3], room_from: None, room_to: None, room_bounding: None, maintain_annotation_orientation: false }
     }
 }
 

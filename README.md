@@ -14,9 +14,12 @@ A free, open-source building information modelling (BIM) application for archite
 - Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry)
 - Plan, elevation and section views, with view ranges, templates, graphic display options and reusable marker types linked to view types
 - Permanent and temporary dimensions, spot elevations and spot coordinates
-- Schedules with calculated columns and cross-schedule totals, material takeoffs, sheet lists and view lists
+- Rooms with live areas, perimeters and optional volumes, room separation lines, room tags, unplaced rooms that keep their data, and From/To Room for doors and windows
+- Schedules with calculated columns and cross-schedule totals, material takeoffs, sheet lists, view lists, key schedules, and room schedules that can embed a schedule of each room's contents
+- Key schedules for reusable instance values, with project/shared parameters, assignment in Properties or schedule cells, and controlled values that update together
+- Revisions with numbering sequences, issued revisions that lock, revision clouds and tags, and revision tables in title blocks
 - Sheets and title blocks, with placed views, schedules, detail lines, text, filled regions and masking regions
-- PDF and DXF export, including batch sheet export, plus IFC import and export
+- PDF and DXF export, including batch sheet export, plus IFC import and export, with rooms as spaces and chosen schedule fields as property and quantity sets
 - Linked models built for scale: shared definitions with cheap placements, aimed at masterplans with many linked buildings
 - Save and Save As for projects, model families and annotation families, with native file dialogs on desktop and in the Windows browser preview
 - Text notes edited in place with their font, size, colour and alignment
@@ -24,8 +27,8 @@ A free, open-source building information modelling (BIM) application for archite
 
 ## What is planned
 
-- Key schedules, with room and revision schedules as those tools are built
-- Revisions and revision tables on sheets
+- Areas, area plans and area schedules
+- Stairs, ramps and railings
 
 Australian standards and metric units come first. Other regions are welcome later.
 
@@ -69,7 +72,13 @@ then open http://127.0.0.1:8765. Windows previews use the Explorer file picker; 
 
 Selecting a section line shows its view properties. Edit Type selects a Section Tag; Marker Type Properties edits or duplicates its head and tail symbol choices. Elevation view types similarly select an Elevation Mark. Section end grips lengthen or shorten along the current cut plane, with a perpendicular range box throughout the drag; Align and Rotate can change its angle. New projects include separate Section Head and Section Tail families, anchored where their reference planes cross. The editable source families are in `crates/openarch-model/families`. Existing project families keep their saved artwork and type choices.
 
-Projects saved with these marker types use file format 8. Older projects are upgraded on opening, preserving distinct existing marker choices, but earlier app builds cannot open files saved in this format.
+Projects saved with this build use file format 10, which adds project instance parameters, key schedules, rooms and revisions. Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
+
+For a key schedule, choose Schedule keys in New Schedule, select a category and name the key selector. Add instance fields or use Add Parameter for a project/shared parameter. Insert Data Row creates a key; edit its values, then assign it to elements in Properties or an ordinary schedule. Set the selector to (none) to unlock the values while keeping them.
+
+Rooms: Architecture > Room places a room with a click inside an enclosed area; its Modify tab panels turn Tag on Placement on or off, place rooms in every enclosed area, open Area and Volume Computations, and pick an unplaced room to place instead of a new one. Delete in a view leaves a room in the project, unplaced; Delete Row in a room schedule removes it. A room schedule's Embedded Schedule tab lists one category's elements under each room.
+
+To export schedule values to IFC, tick Enable this schedule for IFC export on its IFC Export tab (where fields can be renamed or sent to a quantity set), then tick Export schedules as property and quantity sets in Export > IFC.
 
 Run the desktop app (needs Rust and your platform's webview libraries):
 

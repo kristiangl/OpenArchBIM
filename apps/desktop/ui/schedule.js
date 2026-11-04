@@ -6,12 +6,12 @@
 const Sched = (() => {
   let table = null; // the schedule_table answer
   let picked = new Set(); // index of the selected rows
-  const TABS = [["fields", "Fields"], ["filter", "Filter"], ["sorting", "Sorting/Grouping"], ["formatting", "Formatting"], ["appearance", "Appearance"]];
+  const TABS = [["fields", "Fields"], ["filter", "Filter"], ["sorting", "Sorting/Grouping"], ["formatting", "Formatting"], ["appearance", "Appearance"], ["ifc", "IFC Export"], ["embedded", "Embedded Schedule"]];
   const OPS = [["equal", "equals"], ["not_equal", "does not equal"], ["greater", "is greater than"], ["greater_or_equal", "is greater than or equal to"], ["less", "is less than"], ["less_or_equal", "is less than or equal to"], ["contains", "contains"], ["not_contains", "does not contain"], ["begins_with", "begins with"], ["not_begins_with", "does not begin with"], ["ends_with", "ends with"], ["not_ends_with", "does not end with"], ["has_value", "has a value"], ["has_no_value", "has no value"], ["has_parameter", "has parameter"], ["associated_with_global", "is associated with global parameter"], ["not_associated_with_global", "is not associated with global parameter"]];
   const GLOBAL_OPS = ["associated_with_global", "not_associated_with_global"];
   const NO_VALUE = ["has_value", "has_no_value", "has_parameter"];
   // what a schedule's rows are, for the count under the table
-  const noun = (t) => (t.def && t.def.takeoff ? "material rows" : t.category === "Multi-Category" ? "elements" : t.category.toLowerCase());
+  const noun = (t) => (t.def && t.def.key ? "keys" : t.def && t.def.takeoff ? "material rows" : t.category === "Multi-Category" ? "elements" : t.category.toLowerCase());
   const hex = (c) => "#" + c.map((x) => x.toString(16).padStart(2, "0")).join("");
   const rgb = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
   const UNITS = [["number", "Number"], ["integer", "Integer"], ["length", "Length"], ["area", "Area"], ["volume", "Volume"], ["angle", "Angle"], ["currency", "Currency"], ["text", "Text"], ["yes_no", "Yes/No"]];
@@ -27,6 +27,8 @@ const Sched = (() => {
     table = t;
     const cols = t.columns, n = Math.max(1, cols.length);
     const bar = el("div", { className: "sched-bar" }, [
+      ...(t.category === "Rooms" && !t.def.key ? [button("Insert Data Row",()=>Spatial.insertRoom()),button("Unplace Room",async()=>{for(const room of pickedIds())await run("unplace_room",{id:room});await refresh();})] : []),
+      ...(t.def.key ? [button("Insert Data Row", async () => { if (await run("add_key_row", {id})) await refresh(); })] : []),
       button("Highlight in Model", () => highlight(), false),
       button("Delete Row", () => deleteRows(), false),
       el("span", { className: "spacer" }),
@@ -49,7 +51,7 @@ const Sched = (() => {
       tbl.append(tr);
     });
     if (!t.rows.length) tbl.append(el("tr", {}, [el("td", { colSpan: n, className: "empty", textContent: cols.length ? `No ${noun(t)} to list.` : "No fields yet: add some in Schedule Properties." })]));
-    const wrap = el("div", { className: "sched-wrap sched-live" }, [bar, tbl, el("div", { className: "sched-count", textContent: `${t.count} ${noun(t)}` })]);
+    const wrap = el("div", { className: "sched-wrap sched-live" }, [bar, tbl, el("div", { className: "sched-count", textContent: `${t.count} ${t.def.key && t.count === 1 ? "key" : noun(t)}` })]);
     host.replaceChildren(wrap);
   }
 
@@ -57,7 +59,7 @@ const Sched = (() => {
   function pick(i, add) {
     if (!add) picked = new Set();
     if (picked.has(i)) picked.delete(i); else picked.add(i);
-    app.selection = [...new Set([...picked].flatMap((k) => table.rows[k].ids))];
+    app.selection = table.def.key ? [] : [...new Set([...picked].flatMap((k) => table.rows[k].ids))];
     renderProperties();
     render(table.id);
   }
@@ -67,6 +69,7 @@ const Sched = (() => {
   // each type, the row stands for)
   function editCell(td, c) {
     const r = c.row;
+    const patchFor = (v) => r.patch_path ? r.patch_path.reduceRight((value, key) => ({[key]:value}), v) : nestPatch(r.path, v);
     const send = async (patch) => {
       const q = c.type ? `Are you sure you want to change the type "${c.type.name}"?\nThis will update ${c.type.instances} instance${c.type.instances === 1 ? "" : "s"} of it.`
         : c.targets.length > 1 ? `This will change ${c.targets.length} elements. Go ahead?` : null;
@@ -80,11 +83,11 @@ const Sched = (() => {
       inp.onchange = () => send(r.options[Number(inp.value)].patch);
     } else if (r.kind === "bool") {
       inp = el("input", { type: "checkbox", checked: !!r.raw });
-      inp.onchange = () => send(nestPatch(r.path, inp.checked));
+      inp.onchange = () => send(patchFor(inp.checked));
     } else {
       inp = el("input", { type: r.kind === "number" ? "number" : "text", value: r.kind === "number" ? r.raw : r.value });
       if (r.kind === "number") inp.step = "any";
-      const commit = () => { const v = r.kind === "number" ? parseFloat(inp.value) : inp.value; if (r.kind === "number" && Number.isNaN(v)) return render(table.id); send(nestPatch(r.path, v)); };
+      const commit = () => { const v = r.kind === "number" ? (inp.value.trim() === "" && c.targets.some(t=>t.method === "patch_key_row") ? null : parseFloat(inp.value)) : inp.value; if (r.kind === "number" && Number.isNaN(v)) return render(table.id); send(patchFor(v)); };
       inp.onkeydown = (e) => { if (e.key === "Enter") inp.blur(); if (e.key === "Escape") { inp.onblur = null; render(table.id); } };
       inp.onblur = commit;
     }
@@ -96,7 +99,9 @@ const Sched = (() => {
   // Highlight in Model: a plan showing the picked elements, zoomed to them and with them selected; a sheet or view
   // list opens the sheet or view
   async function highlight() {
-    const ids = pickedIds();
+    const keys = table.def.key;
+    const rows = new Set([...picked].map(i=>table.rows[i]?.key_row));
+    const ids = keys ? Object.entries(keys.assignments).filter(([,row])=>rows.has(row)).map(([id])=>Number(id)) : pickedIds();
     if (!ids.length) { setPrompt("Pick a row first.", true); return; }
     if (table.category === "Sheets") { await openView("sheet", ids[0]); return; }
     if (table.category === "Views") { const v = app.info.views.find((x) => x.id === ids[0]); if (v) await openView(viewerOf(v.view_kind), v.id); return; }
@@ -110,6 +115,13 @@ const Sched = (() => {
   }
 
   async function deleteRows() {
+    if (table.def.key) {
+      const rows = [...picked].map(i=>table.rows[i]?.key_row).filter(id=>id!=null);
+      if (!rows.length) { setPrompt("Pick a key row first.",true); return; }
+      if (!(await askConfirm("Delete the selected keys? Assigned elements will keep their current values."))) return;
+      if (await run("delete_key_rows",{id:table.id,rows})) { picked=new Set(); await refresh(); }
+      return;
+    }
     const ids = pickedIds();
     if (!ids.length) { setPrompt("Pick a row first.", true); return; }
     const what = table.category === "Sheets" ? "sheet" : table.category === "Views" ? "view" : "element";
@@ -166,14 +178,26 @@ const Sched = (() => {
       const first = cats.find((c) => c.count && c.name !== "Multi-Category") || cats[0];
       if (first) pick.value = first.name;
       const name = el("input", { type: "text", value: list ? (kind === "sheets" ? "Sheet List" : "View List") : nameFor(first.name) });
-      pick.onchange = () => { name.value = nameFor(pick.value); };
+      const keyMode = el("input", { type: "checkbox", id: "schedule-keys" });
+      const keyName = el("input", { type: "text", id: "schedule-key-name", value: first ? first.name.replace(/s$/, "") + " Style" : "Style" });
+      const keyRow = el("label", { className: "new-row" }, ["Key name", keyName]); keyRow.hidden = true;
+      const mode = () => {
+        for (const o of pick.options) o.disabled = keyMode.checked && o.value === "Multi-Category";
+        if (keyMode.checked && pick.value === "Multi-Category") pick.value = cats.find(c=>c.name!=="Multi-Category").name;
+        keyRow.hidden = !keyMode.checked;
+        name.value = keyMode.checked ? pick.value.replace(/s$/, "") + " Key Schedule" : nameFor(pick.value);
+      };
+      keyMode.onchange = mode;
+      pick.onchange = () => { mode(); keyName.value = pick.value.replace(/s$/, "") + " Style"; };
       const msg = el("div", { className: "modal-msg" });
       if (!list) body.append(el("div", { className: "new-row" }, [el("span", { textContent: "Category" }), pick]));
-      body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), msg);
+      body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]));
+      if (kind === "schedule") body.append(el("label", {}, [keyMode, " Schedule keys"]), keyRow);
+      body.append(msg);
       const ok = async () => {
         try {
           const category = kind === "sheets" ? "Sheets" : kind === "views" ? "Views" : pick.value;
-          const r = await Backend.call("add_schedule", { category, name: name.value.trim(), takeoff: kind === "takeoff" });
+          const r = await Backend.call("add_schedule", { category, name: name.value.trim(), takeoff: kind === "takeoff", key: kind === "schedule" && keyMode.checked, key_name: keyName.value.trim() });
           close(); await refresh(); await openView("schedule", r.id); edit(r.id, "fields");
         } catch (e) { msg.textContent = String(e.message || e); }
       };
@@ -183,12 +207,51 @@ const Sched = (() => {
     });
   }
 
+  async function addParameter(category, done) {
+    openModal("Parameter Properties", (body, foot, close) => {
+      let shared = null;
+      const name = el("input", { type: "text", id: "key-param-name" });
+      const unit = el("select", { id: "key-param-unit" }, UNITS.map(([value, label]) => new Option(label, value, false, value === "text")));
+      const chosen = el("span", { textContent: "Project instance parameter" });
+      const msg = el("div", { className: "modal-msg" });
+      const choose = async () => {
+        try {
+          const path = await Backend.pickOpenShared(); if (!path) return;
+          const file = await Backend.call("shared_params", { path, op: "read" });
+          openModal("Choose Shared Parameter", (b2, f2, close2) => {
+            const list = el("select", { size: 12, style: "width:100%" }, file.params.map((p, i) => new Option(p.name, i)));
+            b2.append(list);
+            f2.append(button("Cancel", close2), button("OK", () => {
+              const p = file.params[Number(list.value)]; if (!p) return;
+              const types = { TEXT: "text", MULTILINETEXT: "text", URL: "text", MATERIAL: "text", LENGTH: "length", AREA: "area", VOLUME: "volume", ANGLE: "angle", NUMBER: "number", INTEGER: "integer", YESNO: "yes_no" };
+              if (!types[p.datatype.toUpperCase()]) { msg.textContent = "That parameter type is not supported yet."; close2(); return; }
+              shared = p; name.value = p.name; unit.value = types[p.datatype.toUpperCase()];
+              name.disabled = true; unit.disabled = true; chosen.textContent = "Shared instance parameter: " + p.guid; close2();
+            }, true));
+          });
+        } catch (e) { msg.textContent = String(e.message || e); }
+      };
+      body.append(el("label", { className: "new-row" }, ["Name", name]), el("label", { className: "new-row" }, ["Type", unit]), chosen,
+        el("div", { className: "sched-rule" }, [button("Select Shared Parameter...", choose), button("Use Project Parameter", () => { shared = null; name.disabled = false; unit.disabled = false; chosen.textContent = "Project instance parameter"; })]), msg);
+      foot.append(button("Cancel", close), button("OK", async () => {
+        try {
+          await Backend.call("add_project_parameter", { category, name: name.value, unit: unit.value, shared_guid: shared ? shared.guid : null });
+          close(); await done();
+        } catch (e) { msg.textContent = String(e.message || e); }
+      }, true));
+      name.focus();
+    });
+  }
+
   // ---- Schedule Properties -----------------------------------------------------------------------------------------
-  async function edit(id, tab = "fields") {
+  async function edit(id, tab = "fields", embeddedMode = false) {
     const t = await run("schedule_table", { id });
     if (!t) return;
-    const def = JSON.parse(JSON.stringify(t.def));
-    const avail = (await run("schedule_fields", { category: def.category, takeoff: !!def.takeoff })) || [];
+    const parentDef = JSON.parse(JSON.stringify(t.def));
+    const def = embeddedMode ? parentDef.embedded : parentDef;
+    if(!def)return;
+    let avail = (await run("schedule_fields", { category: def.category, takeoff: !!def.takeoff, key: !!def.key, id })) || [];
+    const embeddedCategories=await Backend.call("embedded_categories",{});
     const globals = ((await run("global_params", {})) || { params: [] }).params.map((g) => g.name);
     const unitOf = (f) => (f.kind === "count" ? "integer" : f.kind === "formula" ? f.unit : f.kind === "percentage" ? "number" : f.kind === "combined" ? "text" : ((avail.find((a) => a.name === f.name) || {}).unit || "text"));
     const blank = (name, kind) => ({ name, kind, heading: "", hidden: false, totals: "none", align: "left", formula: "", unit: "number", of: "", parts: [], highlights: [], highlight_on_sheets: false });
@@ -218,8 +281,8 @@ const Sched = (() => {
       const opts = (pairs, cur) => pairs.map(([v, l]) => new Option(l, v, false, v === cur));
       const fieldOpts = (cur, none, noneLabel = "(none)") => [...(none ? [new Option(noneLabel, "", false, !cur)] : []), ...def.fields.map((f) => new Option(f.name, f.name, false, f.name === cur))];
       const draw = () => {
-        bar.replaceChildren(...TABS.map(([k, l]) => { const b = el("button", { textContent: l, className: tab === k ? "on" : "" }); b.onclick = () => { tab = k; draw(); }; return b; }));
-        pane.replaceChildren(...({ fields, filter, sorting, formatting, appearance })[tab]());
+        bar.replaceChildren(...TABS.filter(([k])=>k!=="embedded"||!embeddedMode&&def.category==="Rooms"&&!def.key).map(([k, l]) => { const b = el("button", { textContent: l, className: tab === k ? "on" : "" }); b.onclick = () => { tab = k; draw(); }; return b; }));
+        pane.replaceChildren(...({ fields, filter, sorting, formatting, appearance, ifc, embedded })[tab]());
       };
       // Fields: what the category offers, and the schedule's columns in order
       let selAvail = null, selField = null;
@@ -228,7 +291,7 @@ const Sched = (() => {
         const left = el("select", { size: 16, multiple: true, className: "sched-list" }), right = el("select", { size: 16, multiple: true, className: "sched-list" });
         const fillLeft = () => {
           const q = search.value.trim().toLowerCase();
-          const all = [{ name: "Count", kind: "count", unit: "integer" }, ...avail];
+          const all = [...(def.key ? [] : [{ name: "Count", kind: "count", unit: "integer" }]), ...avail];
           const tag = (a) => (def.category === "Multi-Category" || a.kind !== "type" ? "" : "  (type)");
           left.replaceChildren(...all.filter((a) => !def.fields.some((f) => f.name === a.name) && (!q || a.name.toLowerCase().includes(q))).map((a) => new Option(`${a.name}${tag(a)}`, a.name, false, a.name === selAvail)));
         };
@@ -238,12 +301,13 @@ const Sched = (() => {
         right.onchange = () => { selField = right.value; };
         const add = () => {
           const names = [...left.selectedOptions].map((o) => o.value);
-          for (const nm of names) { const a = nm === "Count" ? { name: "Count", kind: "count" } : avail.find((x) => x.name === nm); if (a) def.fields.push(blank(a.name, a.kind)); }
+          for (const nm of names) { const a = nm === "Count" ? { name: "Count", kind: "count" } : avail.find((x) => x.name === nm); if (a) def.fields.push({...blank(a.name, a.kind), unit:a.unit || "text"}); }
           fillLeft(); fillRight();
         };
         const remove = () => {
-          const names = [...right.selectedOptions].map((o) => o.value);
+          const names = [...right.selectedOptions].map((o) => o.value).filter(n=>!def.key || n!=="Key Name");
           def.fields = def.fields.filter((f) => !names.includes(f.name));
+          if (def.ifc) def.ifc.fields = (def.ifc.fields || []).filter(f=>!names.includes(f.field));
           def.sort = def.sort.filter((k) => !names.includes(k.field));
           def.filters = def.filters.filter((k) => !names.includes(k.field));
           fillLeft(); fillRight();
@@ -255,7 +319,7 @@ const Sched = (() => {
           el("div", {}, [el("div", { className: "ex-h", textContent: "Available fields" }), search, left]),
           el("div", { className: "sched-mid" }, [button("Add →", add), button("← Remove", remove)]),
           el("div", {}, [el("div", { className: "ex-h", textContent: "Scheduled fields (in order)" }), right]),
-          el("div", { className: "sched-mid" }, [button("Move Up", () => move(-1)), button("Move Down", () => move(1)), button("Add Calculated...", () => calculated(null, () => { fillRight(); })), button("Combine Parameters...", () => combined(() => { fillRight(); })), button("Edit...", () => { const f = def.fields.find((x) => x.name === right.value); if (f && (f.kind === "formula" || f.kind === "percentage")) calculated(f, fillRight); else if (f && f.kind === "combined") combined(fillRight, f); })]),
+          el("div", { className: "sched-mid" }, [button("Move Up", () => move(-1)), button("Move Down", () => move(1)), ...(!["Multi-Category","Sheets","Views"].includes(def.category) ? [button("Add Parameter...", () => addParameter(def.category, async () => { avail = await Backend.call("schedule_fields",{category:def.category,takeoff:!!def.takeoff,key:!!def.key,id}); fillLeft(); }))] : []), ...(!def.key ? [button("Add Calculated...", () => calculated(null, () => { fillRight(); })), button("Combine Parameters...", () => combined(() => { fillRight(); }))] : []), button("Edit...", () => { const f = def.fields.find((x) => x.name === right.value); if (f && (f.kind === "formula" || f.kind === "percentage")) calculated(f, fillRight); else if (f && f.kind === "combined") combined(fillRight, f); })]),
         ])];
       }
       // a formula or percentage field
@@ -331,7 +395,7 @@ const Sched = (() => {
         }
         const out = [el("div", { className: "modal-note", style: "margin:0 0 6px", textContent: "A row is listed when it passes every rule. Numbers compare in the field's units (mm, m²)." }), ...rows.map((r, i) => el("div", { className: "sched-rule" }, [el("span", { textContent: i ? "And:" : "Filter by:" }), r.fs, r.op, r.box]))];
         if (def.category === "Sheets" || def.category === "Views") return out;
-        const bySheet = el("input", { type: "checkbox", checked: !!def.filter_by_sheet });
+        const bySheet = el("input", { type: "checkbox", checked: !!def.filter_by_sheet, disabled:!!def.key });
         bySheet.onchange = () => { def.filter_by_sheet = bySheet.checked; };
         return [...out, el("div", { className: "sched-rule" }, [el("span"), el("label", {}, [bySheet, " Filter by sheet"])]),
           el("div", { className: "modal-note", textContent: "On a sheet, only the elements the sheet's views show are listed." })];
@@ -378,7 +442,7 @@ const Sched = (() => {
         }
         const gt = el("input", { type: "checkbox", checked: def.grand_totals }), title = el("input", { type: "text", value: def.grand_title });
         gt.onchange = () => { def.grand_totals = gt.checked; }; title.oninput = () => { def.grand_title = title.value; };
-        const it = el("input", { type: "checkbox", checked: def.itemize });
+        const it = el("input", { type: "checkbox", checked: def.itemize, disabled:!!def.key });
         it.onchange = () => { def.itemize = it.checked; };
         out.push(el("div", { className: "sched-rule" }, [el("span"), el("label", {}, [gt, " Grand totals"]), title]), el("div", { className: "sched-rule" }, [el("span"), el("label", {}, [it, " Itemize every instance"])]));
         return out;
@@ -414,14 +478,42 @@ const Sched = (() => {
         show();
         return [el("div", { className: "sched-fields two" }, [list, form])];
       }
+      function ifc() {
+        const config=def.ifc || (def.ifc={enabled:false,name:"",quantity_name:"",fields:[],include_hidden:false,explicit:false});
+        if (def.key || ["Sheets","Views","Revisions","Revision Clouds"].includes(def.category)) return [el("p",{textContent:"This table does not describe model occurrences for IFC export."})];
+        const enabled=el("input",{type:"checkbox",checked:config.enabled});enabled.onchange=()=>config.enabled=enabled.checked;
+        const setName=el("input",{type:"text",value:config.name||"",placeholder:t.name});setName.oninput=()=>config.name=setName.value;
+        const quantities=el("input",{type:"text",value:config.quantity_name||"",placeholder:"Qto_"+(config.name||t.name)});quantities.oninput=()=>config.quantity_name=quantities.value;
+        const hidden=el("input",{type:"checkbox",checked:config.include_hidden});hidden.onchange=()=>{config.include_hidden=hidden.checked;draw();};
+        const grid=el("table",{className:"props"});grid.append(el("tr",{},["Export","Field","IFC name","Data type","Quantity"].map(text=>el("th",{textContent:text}))));
+        const edits=[];
+        for (const f of def.fields) {
+          const existing=(config.fields||[]).find(m=>m.field===f.name);
+          const check=el("input",{type:"checkbox",checked:config.explicit?!!existing:!!existing||!f.hidden||config.include_hidden});
+          const name=el("input",{type:"text",value:existing?.name||"",placeholder:f.heading||f.name});
+          const type=el("select",{},[new Option("Automatic",""),...UNITS.map(([v,l])=>new Option(l,v,false,existing?.unit===v))]);
+          const quantity=el("input",{type:"checkbox",checked:!!existing?.quantity});
+          edits.push({f,check,name,type,quantity});
+          grid.append(el("tr",{},[el("td",{},[check]),el("td",{textContent:f.name}),el("td",{},[name]),el("td",{},[type]),el("td",{},[quantity])]));
+        }
+        const save=()=>{config.explicit=true;config.fields=edits.filter(e=>e.check.checked).map(e=>({field:e.f.name,name:e.name.value,unit:e.type.value||null,quantity:e.quantity.checked}));};
+        for(const e of edits) for(const control of [e.check,e.name,e.type,e.quantity]) control.onchange=save;
+        return [el("label",{},[enabled," Enable this schedule for IFC export"]),el("label",{className:"new-row"},["Property set name",setName]),el("label",{className:"new-row"},["Quantity set name",quantities]),el("label",{},[hidden," Include hidden fields in automatic mapping"]),grid,button("Use visible columns",()=>{config.explicit=false;config.fields=[];draw();}),el("p",{textContent:"Enable schedule sets in Export > IFC Settings. Filters are respected; values export per element. Material takeoffs create a separate named set for each material."})];
+      }
+      function embedded() {
+        const on=el("input",{type:"checkbox",checked:!!def.embedded});on.onchange=async()=>{if(on.checked){def.embedded={category:"Doors",fields:[{name:"Mark",kind:"instance"}],itemize:true};}else def.embedded=null;draw();};
+        const category=el("select",{},embeddedCategories.map(c=>new Option(typeof c==="string"?c:c.name,typeof c==="string"?c:c.name)));category.value=def.embedded?.category||"Doors";category.onchange=async()=>{if(!def.embedded)return;def.embedded.category=category.value;const fields=await Backend.call("schedule_fields",{category:category.value});def.embedded.fields=fields.filter(f=>f.kind==="instance").slice(0,3).map(f=>({name:f.name,kind:f.kind}));};
+        return [el("label",{},[on," Include an embedded schedule"]),...(def.embedded?[el("label",{className:"new-row"},["Category",category]),button("Embedded Schedule Properties...",async()=>{if(await run("set_schedule",{id,def})){close();await edit(id,"fields",true);}})]:[]),el("p",{textContent:"Contents are listed below each room. The embedded table has independent fields, filters, sorting and formatting."})];
+      }
       function appearance() {
         const chk = (key, l) => { const c = el("input", { type: "checkbox", checked: !!def[key] }); c.onchange = () => { def[key] = c.checked; }; return el("label", {}, [c, ` ${l}`]); };
         return [el("div", { className: "sched-rule" }, [el("span"), chk("show_title", "Show title")]), el("div", { className: "sched-rule" }, [el("span"), chk("show_headers", "Show headers")])];
       }
+      if (def.key) { const input=el("input",{type:"text",id:"schedule-key-name",value:def.key.parameter_name}); input.oninput=()=>{def.key.parameter_name=input.value;}; body.append(el("label",{className:"new-row"},["Key name",input])); }
       body.append(bar, pane, msg);
       draw();
       foot.append(button("Cancel", close), button("OK", async () => {
-        try { await Backend.call("set_schedule", { id, def }); close(); await refresh(); } catch (e) { msg.textContent = String(e.message || e); }
+        try { await Backend.call("set_schedule", { id, def: embeddedMode ? {...parentDef,embedded:def} : def }); close(); await refresh(); } catch (e) { msg.textContent = String(e.message || e); }
       }, true));
     }, { wide: true });
   }

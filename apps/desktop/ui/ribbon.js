@@ -69,7 +69,7 @@ const RIBBON = {
     { label: "Model", items: [
       { id: "model-line", label: "Model Line" }, { id: "model-text", label: "Model Text" }, { id: "model-group", label: "Model Group" } ] },
     { label: "Room & Area", items: [
-      { id: "room", label: "Room" }, { id: "room-sep", label: "Room Separator" }, { id: "tag-room", label: "Tag Room" },
+      { id: "room", label: "Room" }, { id: "room-sep", label: "Room Separator" }, { id: "tag-room", label: "Tag Room" }, { id: "room-settings", label: "Area and Volume" },
       { id: "area", label: "Area" } ] },
     { label: "Datum", items: [
       { id: "level", label: "Level", big: true }, { id: "grid", label: "Grid", big: true } ] },
@@ -108,7 +108,7 @@ const RIBBON = {
       { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true } ] },
     { label: "Tag", items: [
       { id: "tag-all", label: "Tag All", big: true }, { id: "tag-cat", label: "Tag by Category", big: true },
-      { id: "tag-mat", label: "Material Tag", big: true } ] },
+      { id: "tag-mat", label: "Material Tag", big: true }, { id: "tag-revision", label: "Revision Tag", big: true } ] },
     { label: "Symbol", items: [
       { id: "symbol", label: "Symbol", big: true }, { id: "north", label: "North Arrow", big: true }, { id: "scale-bar", label: "Scale Bar", big: true } ] },
   ],

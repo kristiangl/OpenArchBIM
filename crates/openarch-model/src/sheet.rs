@@ -59,6 +59,8 @@ pub struct Sheet {
     pub issue_date: String,
     #[serde(default)]
     pub current_revision: String,
+    #[serde(default)]
+    pub additional_revisions: Vec<Id>,
     /// Listed in the drawing register (and offered by Export's "Show in sheet list only").
     #[serde(default = "yes")]
     pub appears_in_list: bool,
@@ -304,6 +306,7 @@ impl Document {
             approved_by: String::new(),
             issue_date: String::new(),
             current_revision: String::new(),
+            additional_revisions: vec![],
             appears_in_list: true,
             placeholder,
             collection,
@@ -316,6 +319,7 @@ impl Document {
         if self.sheet(id).is_none() {
             return Err("not a sheet".into());
         }
+        if s.additional_revisions.iter().any(|id|self.revision_record(*id).is_none()){return Err("Unknown sheet revision.".into());}
         if s.number.trim().is_empty() || self.sheet_number_taken(&s.number, s.collection, Some(id)) {
             let inside = s.collection.and_then(|c| match self.get(c) {
                 Some(Element::SheetCollection(c)) => Some(format!(" in {}", c.name)),
@@ -367,11 +371,13 @@ impl Document {
         } else {
             vec![]
         };
-        let sheet_details: Vec<Element> = if how == DuplicateSheet::WithDetailing { self.iter().filter(|(_, e)| view_owner(e) == Some(id)).map(|(_, e)| e.clone()).collect() } else { vec![] };
+        let sheet_details: Vec<(Id,Element)> = if how == DuplicateSheet::WithDetailing { self.iter().filter(|(_, e)| view_owner(e) == Some(id)).map(|(id, e)| (id,e.clone())).collect() } else { vec![] };
         let schedules: Vec<SheetSchedule> = if how == DuplicateSheet::Empty { vec![] } else { self.sheet_schedules(id).into_iter().map(|(_, p)| p.clone()).collect() };
+        for (_,e)in detailing.iter().chain(&sheet_details){if let Element::RevisionCloud(c)=e{if self.revision_record(c.revision).is_some_and(|r|r.issued){return Err("Unissue revisions before duplicating their clouds.".into());}}}
         self.transact("Duplicate Sheet", |tx| {
             let sheet = tx.add(Element::Sheet(Sheet { number, ..s }));
-            for e in sheet_details { tx.add(with_view(e, sheet)); }
+            let mut detail_map=std::collections::BTreeMap::new();let mut copied_tags=vec![];
+            for (old,e) in sheet_details {let e=with_view(e,sheet);let new=tx.add(e.clone());detail_map.insert(old,new);if let Element::RevisionTag(t)=e{copied_tags.push((new,t));}}
             // a schedule is placed again: it can be on many sheets
             for p in schedules {
                 tx.add(Element::SheetSchedule(SheetSchedule { sheet, ..p }));
@@ -382,10 +388,11 @@ impl Document {
                     None => (vp.view, vp.view),
                 };
                 tx.add(Element::Viewport(Viewport { sheet, view: new, ..vp }));
-                for (_, e) in detailing.iter().filter(|(_, e)| view_owner(e) == Some(old)) {
-                    tx.add(with_view(e.clone(), new));
+                for (old_id, e) in detailing.iter().filter(|(_, e)| view_owner(e) == Some(old)) {
+                    let e=with_view(e.clone(),new);let new=tx.add(e.clone());detail_map.insert(*old_id,new);if let Element::RevisionTag(t)=e{copied_tags.push((new,t));}
                 }
             }
+            for(id,mut tag)in copied_tags{if let Some(cloud)=detail_map.get(&tag.cloud){tag.cloud=*cloud;tx.update(id,Element::RevisionTag(tag))?;}}
             Ok(sheet)
         })
     }
@@ -555,7 +562,9 @@ impl Document {
             "Designed By" => s.designed_by.clone(),
             "Approved By" => s.approved_by.clone(),
             "Sheet Issue Date" => s.issue_date.clone(),
-            "Current Revision" => s.current_revision.clone(),
+            "Current Revision" => self.current_revision(sheet).map(|id|self.revision_number(id,Some(sheet))).unwrap_or_else(||s.current_revision.clone()),
+            "Current Revision Date" => self.current_revision(sheet).map(|id|self.revision_value(id,Some(sheet),"Date")).unwrap_or_default(),
+            "Current Revision Description" => self.current_revision(sheet).map(|id|self.revision_value(id,Some(sheet),"Description")).unwrap_or_default(),
             "Scale" => self.sheet_scale(sheet),
             "Project Name" => p.name,
             "Project Number" => p.number,
@@ -583,6 +592,9 @@ impl Document {
 /// The view a detail item, text note, dimension or spot annotation is drawn in.
 fn view_owner(e: &Element) -> Option<Id> {
     match e {
+        Element::RoomTag(x)=>Some(x.view),
+        Element::RevisionCloud(x)=>Some(x.view),
+        Element::RevisionTag(x)=>Some(x.view),
         Element::DetailLine(x) => Some(x.view),
         Element::DetailRegion(x) => Some(x.view),
         Element::TextNote(x) => Some(x.view),
@@ -595,6 +607,9 @@ fn view_owner(e: &Element) -> Option<Id> {
 /// The same detail item, text note, dimension or spot annotation in another view.
 fn with_view(e: Element, view: Id) -> Element {
     match e {
+        Element::RoomTag(x)=>Element::RoomTag(crate::rooms::RoomTag{view,..x}),
+        Element::RevisionCloud(x)=>Element::RevisionCloud(crate::revisions::RevisionCloud{view,..x}),
+        Element::RevisionTag(x)=>Element::RevisionTag(crate::revisions::RevisionTag{view,..x}),
         Element::DetailLine(x) => Element::DetailLine(crate::detail::DetailLine { view, ..x }),
         Element::DetailRegion(x) => Element::DetailRegion(crate::detail::DetailRegion { view, ..x }),
         Element::TextNote(x) => Element::TextNote(crate::detail::TextNote { view, ..x }),

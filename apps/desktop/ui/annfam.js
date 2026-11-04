@@ -28,6 +28,9 @@ const AnnModel = (() => {
   const PAPER_OPTS = { cornerRadius: 0, radius: 5, filletRadius: 1, offsetDist: 1, wallOffset: 0 };
   const LENGTHS = [1000, 500, 100, 50, 10];
   const NOTE = {
+    title_block:"Title block: the border, labels and revision schedule are saved in this family.",
+    room_tag:"Room tag: labels read the room in the project.",
+    revision_tag:"Revision tag: labels read the cloud revision and sheet numbering.",
     level_head: "Level head: the level line arrives from the left and ends at the vertical reference line.",
     elevation_marker: "Elevation mark: the body is drawn once. The pointer is drawn for each view, turned to point along +x here.",
     section_marker: "Section mark: the body is drawn at the head of the line. The pointer is drawn at each end for the view direction, along +x here.",
@@ -72,7 +75,7 @@ const AnnModel = (() => {
     fit();
   }
 
-  const hasPointer = () => S.fam.family_kind !== "level_head";
+  const hasPointer = () => ["elevation_marker","section_marker"].includes(S.fam.family_kind);
   const docInfo = () => (S ? { name: S.fam.name, dirty: S.dirty || S.fileDirty, id: S.id } : null);
   const ctxRefresh = () => { if (typeof renderFamContext === "function") renderFamContext(); };
 
@@ -319,6 +322,7 @@ const AnnModel = (() => {
     syncRibbon();
     const bar = $q("#fam-options");
     bar.replaceChildren();
+    if(S.fam.family_kind==="title_block"&&!S.mode)bar.append(button("Revision Schedule...",()=>Revisions.tableDialog(S.id,S.fam,table=>edit(f=>{f.revision_schedule=table;}))));
     if (S.mode === "lines" || (S.mode === "region" && S.region.index == null)) {
       if (hasPointer()) {
         const s = el("select");
@@ -968,6 +972,7 @@ const AnnModel = (() => {
     const d = S.drawing || {};
     const opt = (layer) => ({ pats: S.pats, hidden: true, only: (x) => !inSession(layer, x) });
     Ann.paths(ctx, d.body, base, null, bg, opt("body"));
+    if(fam.revision_schedule)Revisions.drawTable(ctx,{style:fam.revision_schedule,rows:[{cells:fam.revision_schedule.columns.map(c=>({Number:"1",Date:"02/11/2026",Description:"Sample revision",Sequence:"1","Issued To":"Client","Issued By":"Author",Issued:"No"})[c.field]||"")}]},p=>toScreen(p.x,p.y),S.view.k);
     if (hasPointer()) Ann.paths(ctx, d.pointer, base, POINTER_INK, bg, opt("pointer"));
     if (S.sel && S.sel.kind === "region") {
       const r = fam.regions[S.sel.i];

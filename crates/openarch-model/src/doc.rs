@@ -34,6 +34,8 @@ pub struct Document {
     defer_settle: u32,
     /// Set while the constraint solver itself is moving elements.
     settling: bool,
+    pub(crate) key_writing: bool,
+    pub(crate) room_cache: std::cell::RefCell<crate::rooms::RoomCache>,
 }
 
 /// Handle passed to a transaction closure. Every change is recorded so the
@@ -55,6 +57,8 @@ impl Tx<'_> {
 
     pub fn update(&mut self, id: Id, e: Element) -> Result<(), String> {
         let before = self.doc.elements.get(&id).cloned().ok_or_else(|| format!("no element {id}"))?;
+        self.doc.check_key_change(id, &before, &e)?;
+        self.doc.check_revision_change(id,&before,Some(&e))?;
         self.doc.edit_count += 1;
         self.doc.elements.insert(id, e.clone());
         self.changes.push(Change { id, before: Some(before), after: Some(e) });
@@ -62,11 +66,25 @@ impl Tx<'_> {
     }
 
     pub fn remove(&mut self, id: Id) -> Result<(), String> {
+        if let Some(before)=self.doc.get(id){self.doc.check_revision_change(id,before,None)?;}
+        if matches!(self.doc.get(id), Some(Element::ProjectParameter(_))) && self.doc.schedules().iter().any(|(_, v)| v.schedule.as_ref().and_then(|s| s.key.as_ref()).is_some_and(|k| k.bindings.values().any(|b| b.project_parameter == Some(id)))) {
+            return Err("That parameter is used by a key schedule.".into());
+        }
         self.doc.edit_count += 1;
         let before = self.doc.elements.remove(&id).ok_or_else(|| format!("no element {id}"))?;
         let is_annotation = matches!(before, Element::Dimension(_) | Element::Spot(_));
         self.changes.push(Change { id, before: Some(before), after: None });
+        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
+        for tid in tags {self.remove(tid)?;}
         if !is_annotation {
+            // Remove references before IDs can be reused after a project is reopened.
+            let keys: Vec<_> = self.doc.schedules().into_iter().filter_map(|(sid, v)| {
+                let mut v = v.clone(); let key = v.schedule.as_mut()?.key.as_mut()?;
+                key.assignments.remove(&id).map(|_| (sid, v))
+            }).collect();
+            for (sid, v) in keys { self.update(sid, Element::View(v))?; }
+            let params: Vec<_> = self.doc.project_parameters().into_iter().filter_map(|(pid, p)| { let mut p = p.clone(); p.values.remove(&id).map(|_| (pid, p)) }).collect();
+            for (pid, p) in params { self.update(pid, Element::ProjectParameter(p))?; }
             // spots standing on this element go with it
             for sid in self.doc.spots_on(&[id]) {
                 if self.doc.elements.contains_key(&sid) {
@@ -95,7 +113,7 @@ impl Tx<'_> {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default() }
     }
 }
 
@@ -618,6 +636,11 @@ impl Document {
     /// Whether an element is pinned (walls, floors, doors and windows can be).
     pub fn is_pinned(&self, id: Id) -> bool {
         match self.get(id) {
+            Some(Element::Room(r)) => r.pinned,
+            Some(Element::RoomTag(r)) => r.pinned,
+            Some(Element::RoomSeparation(r)) => r.pinned,
+            Some(Element::RevisionCloud(r)) => r.pinned,
+            Some(Element::RevisionTag(r)) => r.pinned,
             Some(Element::Wall(w)) => w.pinned,
             Some(Element::Floor(f)) => f.pinned,
             Some(Element::Roof(r)) => r.pinned,
@@ -647,10 +670,15 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
+                Element::Room(r)=>r.pinned=pinned,
+                Element::RoomTag(r)=>r.pinned=pinned,
+                Element::RoomSeparation(r)=>r.pinned=pinned,
+                Element::RevisionCloud(r)=>r.pinned=pinned,
+                Element::RevisionTag(r)=>r.pinned=pinned,
                 Element::Wall(w) => w.pinned = pinned,
                 Element::Floor(f) => f.pinned = pinned,
                 Element::Roof(r) => r.pinned = pinned,
@@ -683,6 +711,7 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,

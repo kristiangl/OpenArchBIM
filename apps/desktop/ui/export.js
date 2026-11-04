@@ -16,6 +16,7 @@ const ExportFlow = (() => {
     folder: "{ProjectDir}\\Exports\\{Date}_",
     dateFormat: "yyMMdd",
     pdf: true, dxf: true, ifc: false,
+    ifcScheduleSets: false, ifcScheduleSelected: true, ifcScheduleNamed: false,
     pdfName: "{ProjectNumber}_{ProjectName}_{Date}",
     pdfCombine: true, pdfPaper: "default", pdfOrientation: "landscape", pdfZoom: "fit", pdfColour: "colour",
     dxfName: "{ProjectNumber}_{ProjectName}_DXF_{Date}_{SheetNumber}_{SheetName}",
@@ -342,7 +343,7 @@ const ExportFlow = (() => {
     }
     if (set.ifc) {
       report("Writing IFC...");
-      const r = await Backend.call("export_ifc", { path: join(folder, `${fill(set.ifcName, set, ctx)}.ifc`) });
+      const r = await Backend.call("export_ifc", { path: join(folder, `${fill(set.ifcName, set, ctx)}.ifc`), schedules: !!set.ifcScheduleSets, selected_only: set.ifcScheduleSelected !== false, named_only: !!set.ifcScheduleNamed });
       written.push(r.path);
     }
     return { folder, written };
@@ -465,6 +466,9 @@ const ExportFlow = (() => {
         );
         else tabBody.replaceChildren(
           row("Filename template:", inp("ifcName")), ifcPrev,
+          chk("ifcScheduleSets", "Export schedules as property and quantity sets"),
+          chk("ifcScheduleSelected", "Only schedules enabled in Schedule Properties"),
+          chk("ifcScheduleNamed", "Only titles containing IFC, Pset or Common"),
           el("div", { className: "ex-note", textContent: "The whole model as IFC4, once per export." }),
         );
         preview();

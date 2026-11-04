@@ -66,7 +66,7 @@ const SheetView = (() => {
         if ((ring[i][1] > q.y) !== (ring[j][1] > q.y) && q.x < (ring[j][0] - ring[i][0]) * (q.y - ring[i][1]) / (ring[j][1] - ring[i][1]) + ring[i][0]) hit = !hit;
       return hit;
     };
-    return Det.elements().filter((e) => (e.rings || [e.ring]).filter(inside).length % 2).reverse()[0];
+    return [...Det.elements(),...Revisions.elements(sheet,cam.s)].filter((e) => (e.rings || [e.ring]).filter(inside).length % 2).reverse()[0];
   }
 
   // ---- drawing, onto any context: `at(x, y)` maps paper mm to the context's pixels, `k` pixels per mm
@@ -99,6 +99,7 @@ const SheetView = (() => {
       }
     }
     for (const p of s.schedules || []) drawSchedule(c, p, at, k, opt.selected && opt.selected.has(p.id) ? opt.accent || "#2f6fd6" : null);
+    Revisions.drawTable(c,s.revision_table,q=>at(q.x,q.y),k);
     if (s.title_block) {
       const o0 = at(0, 0), o1 = at(1, 0);
       if (c.oaTag) c.oaTag({ cat: "Title Blocks", sub: null, kind: "projection" });
@@ -112,6 +113,7 @@ const SheetView = (() => {
         render() {}, thin: () => false, held: () => false });
       d.drawItems(new Set(), new Set(), "#2f6fd6", false);
       d.drawNotes(new Set(), new Set(), "#2f6fd6", false);
+      Revisions.draw(c,s,q=>at(q.x,q.y),k);
     }
     c.restore();
   }
@@ -264,6 +266,7 @@ const SheetView = (() => {
     const accent = css("--accent");
     Det.drawItems(sel, new Set(), accent, tool === "select");
     Det.drawNotes(sel, new Set(), accent, tool === "select");
+    Revisions.draw(ctx,sheet,q=>toScreen(q.x,q.y),cam.s,sel);
     if (down?.delta) {
       ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1;
       for (const e of Det.elements()) if (sel.has(e.id)) for (const ring of e.rings || [e.ring]) {
@@ -466,7 +469,9 @@ const SheetView = (() => {
           const a = toPaper(Math.min(b.x0, b.x1), Math.max(b.y0, b.y1)), z = toPaper(Math.max(b.x0, b.x1), Math.min(b.y0, b.y1));
           Sketch.bandSelect({ x0: a.x, y0: a.y, x1: z.x, y1: z.y }, b.x1 >= b.x0, e);
         } else Sketch.click(snap(x, y), x, y, e);
-      } else if (tool === "text") Det.toolClick(Det.toolSnap(x, y));
+      } else if(tool==="sheetedit") Revisions.sheetClick(toPaper(x,y));
+      else if (tool === "revisiontag") Revisions.place(toPaper(x,y));
+      else if (tool === "text") Det.toolClick(Det.toolSnap(x, y));
       else if (tool === "noteleader") Det.leaderClick(Det.toolSnap(x, y));
       render(); return;
     }

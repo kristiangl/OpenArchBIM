@@ -780,7 +780,7 @@ pub const MODEL_CATEGORIES: &[&str] = &[
 pub const SITE_POINT_CATEGORIES: [&str; 2] = ["Project Base Point", "Survey Point"];
 
 pub const ANNOTATION_CATEGORIES: &[&str] = &[
-    "Dimensions", "Elevations", "Grids", "Levels", "Matchline", "Room Tags", "Scope Boxes", "Sections", "Spot Coordinates", "Spot Elevations", "Spot Slopes", "Text Notes",
+    "Dimensions", "Elevations", "Grids", "Levels", "Matchline", "Room Tags", "Room Separation", "Revision Tags", "Scope Boxes", "Sections", "Spot Coordinates", "Spot Elevations", "Spot Slopes", "Text Notes",
     "Reference Planes", "Revision Clouds", "Detail Items", "Generic Annotations", "Keynote Tags", "Door Tags", "Window Tags", "Wall Tags",
 ];
 

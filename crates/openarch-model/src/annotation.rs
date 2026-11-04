@@ -38,6 +38,8 @@ pub enum AnnotationKind {
     SectionMarker,
     /// A sheet's border and title panel; its paper size is the family's `paper_mm`.
     TitleBlock,
+    RoomTag,
+    RevisionTag,
 }
 
 impl AnnotationKind {
@@ -47,6 +49,8 @@ impl AnnotationKind {
             AnnotationKind::ElevationMarker => "Elevation Marker",
             AnnotationKind::SectionMarker => "Section Marker",
             AnnotationKind::TitleBlock => "Title Block",
+            AnnotationKind::RoomTag => "Room Tag",
+            AnnotationKind::RevisionTag => "Revision Tag",
         }
     }
 
@@ -57,6 +61,8 @@ impl AnnotationKind {
             AnnotationKind::ElevationMarker => "Elevation Marks",
             AnnotationKind::SectionMarker => "Section Marks",
             AnnotationKind::TitleBlock => "Title Blocks",
+            AnnotationKind::RoomTag => "Room Tags",
+            AnnotationKind::RevisionTag => "Revision Tags",
         }
     }
 
@@ -67,6 +73,8 @@ impl AnnotationKind {
             AnnotationKind::ElevationMarker => VIEW_PARAMS,
             AnnotationKind::SectionMarker => SECTION_PARAMS,
             AnnotationKind::TitleBlock => TITLE_BLOCK_PARAMS,
+            AnnotationKind::RevisionTag => &["Revision Number","Revision Description","Revision Date"],
+            AnnotationKind::RoomTag => &["Room Number", "Room Name", "Area", "Perimeter", "Volume", "Department", "Occupancy", "Level"],
         }
     }
 }
@@ -75,7 +83,7 @@ pub const LEVEL_PARAMS: &[&str] = &["Name", "Elevation", "Survey Elevation", "Pr
 pub const VIEW_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number"];
 pub const SECTION_PARAMS: &[&str] = &["View Name", "View Number", "Sheet Number", "Reference Label"];
 pub const TITLE_BLOCK_PARAMS: &[&str] = &[
-    "Sheet Number", "Sheet Name", "Scale", "Sheet Issue Date", "Drawn By", "Checked By", "Designed By", "Approved By", "Current Revision",
+    "Sheet Number", "Sheet Name", "Scale", "Sheet Issue Date", "Drawn By", "Checked By", "Designed By", "Approved By", "Current Revision", "Current Revision Date", "Current Revision Description",
     "Project Name", "Project Number", "Client Name", "Project Address", "Project Status", "Author",
 ];
 
@@ -414,6 +422,8 @@ pub struct AnnotationFamily {
     /// A title block: the paper's width and height, mm (its origin is the paper's bottom left).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub paper_mm: Option<[f64; 2]>,
+    #[serde(default,skip_serializing_if="Option::is_none")]
+    pub revision_schedule: Option<crate::revisions::RevisionTable>,
 }
 
 fn reference_label() -> String {
@@ -469,6 +479,7 @@ impl AnnotationFamily {
             old_shapes: shapes,
             old_pointer: pointer,
             paper_mm: None,
+            revision_schedule: None,
         };
         f.read_old_drawing();
         f
@@ -507,6 +518,7 @@ impl AnnotationFamily {
         let (x1, x0) = (w - m, w - m - panel);
         let mut f = AnnotationFamily::drawn_with(name, AnnotationKind::TitleBlock, vec![], vec![], vec![]);
         f.paper_mm = Some(paper);
+        let mut table=crate::revisions::RevisionTable::default();table.at=[x0,h-20.0*k];for c in &mut table.columns{c.width_mm*=k;}table.row_height_mm*=k;table.text_mm*=k;f.revision_schedule=Some(table);
         let size = |n: &str, mm: f64, bold: bool| TextType::new(n, mm, bold);
         f.label_types = vec![size("Small", 2.5 * k, false), size("Value", 3.5 * k, false), size("Name", 5.0 * k, true), size("Number", 10.0 * k, true)];
         f.text_types = vec![size("Heading", 2.0 * k, false)];
@@ -1054,6 +1066,30 @@ impl Document {
 
     /// Fill in the families and the level type a project needs (new projects, and projects saved before
     /// annotation families), and point levels that have no type at the first one.
+    pub(crate) fn ensure_room_tag_family(&mut self) -> Id {
+        if let Some((id,_))=self.annotation_families().into_iter().find(|(_,f)|f.kind==AnnotationKind::RoomTag){return id;}
+        let mut family=AnnotationFamily::drawn_with("Room Tag",AnnotationKind::RoomTag,vec![],vec![],vec![
+            old_label(0.0,3.0,HAlign::Center,VAlign::Middle,2.5,false,vec![LabelLine::new("Room Number","","","101")]),
+            old_label(0.0,0.0,HAlign::Center,VAlign::Middle,2.5,false,vec![LabelLine::new("Room Name","","","Room")]),
+            old_label(0.0,-3.0,HAlign::Center,VAlign::Middle,2.0,false,vec![LabelLine::new("Area","","","12.00 m²")])]);
+        family.read_old_drawing();
+        self.transact("Load room tag",|tx|Ok(tx.add(Element::AnnotationFamily(family)))).expect("valid default room tag")
+    }
+
+    pub(crate) fn ensure_revision_tag_family(&mut self)->Id{
+        if let Some((id,_))=self.annotation_families().into_iter().find(|(_,f)|f.kind==AnnotationKind::RevisionTag){return id;}
+        let mut f=AnnotationFamily::drawn_with("Revision Tag",AnnotationKind::RevisionTag,vec![],vec![],vec![old_label(0.0,0.0,HAlign::Center,VAlign::Middle,2.5,false,vec![LabelLine::new("Revision Number","","","1")])]);f.read_old_drawing();
+        for(a,b)in[([-4.0,-3.0],[4.0,-3.0]),([4.0,-3.0],[0.0,4.0]),([0.0,4.0],[-4.0,-3.0])]{f.lines.push(AnnLine{curve:Curve::line(pt(a),pt(b)),subcategory:String::new(),visible:true,pointer:false});}
+        self.transact("Load revision tag",|tx|Ok(tx.add(Element::AnnotationFamily(f)))).expect("valid revision tag")
+    }
+
+    pub fn room_tag_labels(&self,tag:&crate::rooms::RoomTag)->Vec<DrawnText>{
+        let Some(room)=self.room(tag.room)else{return vec![]};let Some(calc)=self.room_calculation(tag.room)else{return vec![]};
+        let family=tag.family.and_then(|id|self.annotation_family(id)).or_else(||self.annotation_families().into_iter().find(|(_,f)|f.kind==AnnotationKind::RoomTag).map(|(_,f)|f));let Some(family)=family else{return vec![]};
+        self.symbol_texts(family,&|name|Some(match name{
+            "Room Number"=>room.number.clone(),"Room Name"=>room.name.clone(),"Area"=>if calc.status==crate::rooms::RoomStatus::Placed{format!("{:.2} m²",calc.area_mm2/1e6)}else{format!("{:?}",calc.status)},"Perimeter"=>format!("{:.0}",calc.perimeter_mm),"Volume"=>calc.volume_mm3.map(|v|format!("{:.2} m³",v/1e9)).unwrap_or("Not Calculated".into()),"Department"=>room.department.clone(),"Occupancy"=>room.occupancy.clone(),"Level"=>self.level(room.level).map_or(String::new(),|l|l.name.clone()),_=>return None}),false)
+    }
+
     pub fn ensure_annotation_defaults(&mut self) {
         self.upgrade_section_markers();
         self.upgrade_annotation_drawings();
@@ -1149,6 +1185,7 @@ impl Document {
 
     /// Check a family's drawing: line styles the category has, regions that close, types and patterns that exist.
     pub fn check_symbol(&self, f: &AnnotationFamily) -> Result<(), String> {
+        if let Some(t)=&f.revision_schedule{if f.kind!=AnnotationKind::TitleBlock{return Err("Only title block families contain revision schedules.".into());}t.check()?;}
         let subs = self.symbol_subcategories(f.kind);
         let style_ok = |s: &str| s.is_empty() || s == INVISIBLE_LINES || subs.iter().any(|x| x == s);
         let curve_ok = |c: &Curve| {
@@ -1311,6 +1348,7 @@ impl Document {
     /// Whether a level type, an elevation marker or a section draws with this family.
     pub fn annotation_family_in_use(&self, id: Id) -> bool {
         self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| self.elevation_symbol(m) == Some(id)) || self.sections().iter().any(|(_, s)| { let symbols = self.section_symbols(s); symbols.0 == Some(id) || symbols.1 == Some(id) })
+            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),_=>false})
             || self.view_marker_types().iter().any(|(_, t)| t.head == Some(id) || t.tail == Some(id))
     }
 

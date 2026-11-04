@@ -1504,7 +1504,7 @@ const FamModel = (() => {
     category: S.def.category, host: S.def.host,
     always_vertical: !!S.body.always_vertical, cut_with_voids: !!S.body.cut_with_voids,
     can_host_rebar: !!S.settings.can_host_rebar, part_type: S.settings.part_type || "Normal", shared: !!S.settings.shared,
-    room_calculation_point: !!S.settings.room_calculation_point, room_point: [...(S.settings.room_point || [0, 0, 0])],
+    room_calculation_point: !!S.settings.room_calculation_point, room_point: [...(S.settings.room_point || [0, 0, 0])],room_from:S.settings.room_from? [...S.settings.room_from]:null,room_to:S.settings.room_to?[...S.settings.room_to]:null,room_bounding:S.settings.room_bounding??null,
     maintain_annotation_orientation: !!S.settings.maintain_annotation_orientation,
   });
 
@@ -1527,6 +1527,8 @@ const FamModel = (() => {
       ["x", "y", "z"].forEach((a, i) => { const t = el("input"); t.type = "text"; t.title = `${a} (mm)`; t.value = String(w.room_point[i] || 0); t.onchange = () => { w.room_point[i] = num(t.value); go(); }; pt.append(t); });
       row("Point (x, y, z mm)", pt);
     }
+    row("Room Bounding",selIn([["auto","Category default"],["yes","Yes"],["no","No"]],w.room_bounding==null?"auto":w.room_bounding?"yes":"no",v=>{w.room_bounding=v==="auto"?null:v==="yes";go();}));
+    if(w.room_calculation_point&&w.host==="wall"){for(const [key,label,y]of [["room_from","From point (x, y, z mm)",-300],["room_to","To point (x, y, z mm)",300]]){const use=checkIn(!!w[key],v=>{w[key]=v?[0,y,0]:null;go();});row("Custom "+label,use);if(w[key]){const pt=el("div","famed-pt");for(let i=0;i<3;i++){const t=el("input");t.type="text";t.value=String(w[key][i]);t.onchange=()=>{w[key][i]=num(t.value);go();};pt.append(t);}row(label,pt);}}}
     row("Maintain Annotation Orientation", checkIn(w.maintain_annotation_orientation, (v) => { w.maintain_annotation_orientation = v; go(); }));
     return rows;
   }
@@ -1540,10 +1542,10 @@ const FamModel = (() => {
     }
     const before = snapshot();
     const o = currentSettings();
-    const same = ["always_vertical", "cut_with_voids", "can_host_rebar", "part_type", "shared", "room_calculation_point", "maintain_annotation_orientation"].every((k) => o[k] === w[k]) && JSON.stringify(o.room_point) === JSON.stringify(w.room_point);
+    const same = ["always_vertical", "cut_with_voids", "can_host_rebar", "part_type", "shared", "room_calculation_point", "maintain_annotation_orientation"].every((k) => o[k] === w[k]) && JSON.stringify([o.room_point,o.room_from,o.room_to,o.room_bounding]) === JSON.stringify([w.room_point,w.room_from,w.room_to,w.room_bounding]);
     if (same) { props(); return true; }
     S.body.always_vertical = w.always_vertical; S.body.cut_with_voids = w.cut_with_voids;
-    S.settings = { ...S.settings, can_host_rebar: w.can_host_rebar, part_type: w.part_type, shared: w.shared, room_calculation_point: w.room_calculation_point, room_point: w.room_point, maintain_annotation_orientation: w.maintain_annotation_orientation };
+    S.settings = { ...S.settings, can_host_rebar: w.can_host_rebar, part_type: w.part_type, shared: w.shared, room_calculation_point: w.room_calculation_point, room_point: w.room_point,room_from:w.room_from,room_to:w.room_to,room_bounding:w.room_bounding, maintain_annotation_orientation: w.maintain_annotation_orientation };
     S.undo.push(before); S.redo = []; touch(); S.msg = "";
     props(); status(); render();
     return true;

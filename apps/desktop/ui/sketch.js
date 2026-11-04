@@ -1079,6 +1079,7 @@ function makeSketch() {
   // Returns true when the key was used.
   function key(e) {
     if (!S) return false;
+    if(S.kind==="revisioncloud"&&e.key===" "){e.preventDefault();cb.flip?.();host.render();return true;}
     if (e.key === "Escape") {
       if (S.grip) { S.grip = null; host.render(); return true; }
       if (S.typed) { S.typed = ""; host.render(); return true; }

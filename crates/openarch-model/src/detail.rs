@@ -420,7 +420,7 @@ impl Document {
             .collect()
     }
 
-    fn check_detail_view(&self, view: Id) -> Result<(), String> {
+    pub(crate) fn check_detail_view(&self, view: Id) -> Result<(), String> {
         if let Some(s) = self.sheet(view) {
             return if s.placeholder { Err("clear Placeholder before drawing on a sheet".into()) } else { Ok(()) };
         }

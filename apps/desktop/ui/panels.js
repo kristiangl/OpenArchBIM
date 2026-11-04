@@ -17,6 +17,7 @@ async function applyPatch(target, patch) {
 }
 
 function rowCells(r, target) {
+  const patchFor = (v) => r.patch_path ? r.patch_path.reduceRight((value,key)=>({[key]:value}),v) : nestPatch(r.path,v);
   const label = document.createElement("td");
   label.textContent = r.label;
   const val = document.createElement("td");
@@ -39,7 +40,7 @@ function rowCells(r, target) {
     inp.onchange = () => {
       const value = r.kind === "number" ? parseFloat(inp.value) : inp.value;
       if (r.kind === "number" && Number.isNaN(value)) return;
-      applyPatch(target, nestPatch(r.path, value));
+      applyPatch(target, patchFor(value));
     };
     val.append(dis(inp));
   } else if (r.kind === "bool") {
@@ -48,7 +49,7 @@ function rowCells(r, target) {
     cb.checked = !!r.raw;
     if (r.varies) cb.indeterminate = true;
     cb.onchange = async () => {
-      const patch = nestPatch(r.path, cb.checked);
+      const patch = patchFor(cb.checked);
       // switching a crop on gives it a region around the model
       if (r.path === "crop.enabled" && cb.checked) {
         const b = Plan.bounds();
@@ -75,11 +76,17 @@ function rowCells(r, target) {
     b.textContent = r.value;
     b.className = "edit-btn";
     const sched = (tab) => () => Sched.edit(target.id, tab);
-    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange, schedule_fields: sched("fields"), schedule_filter: sched("filter"), schedule_sorting: sched("sorting"), schedule_formatting: sched("formatting"), schedule_appearance: sched("appearance") })[r.dialog]?.());
+    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange, sheet_revisions: () => Revisions.sheetDialog(target.id), schedule_fields: sched("fields"), schedule_filter: sched("filter"), schedule_sorting: sched("sorting"), schedule_formatting: sched("formatting"), schedule_appearance: sched("appearance") })[r.dialog]?.());
     val.append(dis(b));
   } else {
     val.textContent = r.value;
     val.classList.add("ro");
+  }
+  if (r.key_control) {
+    const indicator = document.createElement("span");
+    indicator.textContent = r.key_control.aligned ? " =" : " ≠";
+    indicator.title = "Controlled by " + r.key_control.name;
+    val.append(indicator);
   }
   // a global parameter can set this value, or label this dimension segment
   const gb = typeof globalRowButton === "function" ? globalRowButton(r, target) : null;

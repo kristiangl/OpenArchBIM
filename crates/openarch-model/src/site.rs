@@ -506,6 +506,8 @@ impl Document {
                 Element::FamilyInstance(i) => i.level == level,
                 Element::ElevationMarker(m) => m.level == level,
                 Element::Section(s) => s.level == level,
+                Element::Room(r) => r.level==level || r.upper_level==Some(level),
+                Element::RoomSeparation(s) => s.level==level,
                 _ => false,
             };
             if uses {
@@ -526,6 +528,7 @@ impl Document {
             o.remove("end_locks"); // locks change only through lock_datum_ends and unlock_datum_ends
         }
         let mut new: Level = apply_patch(&old, &patch)?;
+        if !new.computation_height_mm.is_finite()||new.computation_height_mm<0.0{return Err("Computation height must be a non-negative distance.".into());}
         if let Some(v) = display.and_then(|v| v.as_f64()) {
             if !v.is_finite() {
                 return Err("the elevation must be a number".into());

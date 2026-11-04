@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -370,15 +370,20 @@ impl Document {
         // updates (moving) or additions (copying), planned before anything changes
         let mut updates: Vec<(Id, Element)> = vec![];
         let mut new_walls: Vec<(Id, Wall)> = vec![];
-        let mut new_floors: Vec<Floor> = vec![];
+        let mut new_floors: Vec<(Id, Floor)> = vec![];
         let mut new_grids: Vec<Grid> = vec![];
-        let mut new_roofs: Vec<crate::roof::Roof> = vec![];
+        let mut new_roofs: Vec<(Id, crate::roof::Roof)> = vec![];
         let mut new_insts: Vec<(Id, FamilyInstance, bool)> = vec![]; // (original, copy, follows a copied wall)
-        let mut new_details: Vec<Element> = vec![];
+        let mut new_details: Vec<(Id,Element)> = vec![];
 
         // detail lines and regions are curves in their view: they carry the change as it is
         for &id in &details {
             let e = match self.get(id) {
+                Some(Element::Room(r))=>{let mut r=r.clone();r.at=r.at.map(|p|x.apply(p));r.pinned=r.pinned&&!opt.copy;if opt.copy{r.ifc.guid=crate::element::new_ifc_guid();}Element::Room(r)},
+                Some(Element::RoomTag(t))=>{let mut t=t.clone();t.at=x.apply(t.at);t.pinned=t.pinned&&!opt.copy;Element::RoomTag(t)},
+                Some(Element::RoomSeparation(s))=>{let mut s=s.clone();s.curve=s.curve.transform(x);s.pinned=s.pinned&&!opt.copy;Element::RoomSeparation(s)},
+                Some(Element::RevisionCloud(c))=>{if self.revision_record(c.revision).is_some_and(|r|r.issued){return Err("Unissue the revision before moving or copying its cloud.".into());}let mut c=c.clone();c.curves=c.curves.iter().map(|c|c.transform(x)).collect();c.pinned=c.pinned&&!opt.copy;Element::RevisionCloud(c)},
+                Some(Element::RevisionTag(t))=>{let mut t=t.clone();t.at=x.apply(t.at);t.pinned=t.pinned&&!opt.copy;Element::RevisionTag(t)},
                 Some(Element::DetailLine(l)) => Element::DetailLine(crate::detail::DetailLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
                 Some(Element::DetailRegion(r)) => {
                     let mut nr = r.clone();
@@ -413,7 +418,7 @@ impl Document {
                 _ => continue,
             };
             if opt.copy {
-                new_details.push(e);
+                new_details.push((id,e));
             } else {
                 updates.push((id, e));
             }
@@ -466,7 +471,7 @@ impl Document {
             }
             if opt.copy {
                 nf.pinned = false;
-                new_floors.push(nf);
+                new_floors.push((id, nf));
             } else {
                 updates.push((id, Element::Floor(nf)));
             }
@@ -481,9 +486,9 @@ impl Document {
             }
             if opt.copy {
                 nr.pinned = false;
-                nr.mark.clear();
+                if self.key_control(id, &["mark".into()], None).is_none() { nr.mark.clear(); }
                 nr.ifc.guid = new_ifc_guid();
-                new_roofs.push(nr);
+                new_roofs.push((id, nr));
             } else {
                 updates.push((id, Element::Roof(nr)));
             }
@@ -514,7 +519,7 @@ impl Document {
             let Some(Element::FamilyInstance(i)) = self.get(id) else { continue };
             let mut ni = i.clone();
             ni.pinned = false;
-            ni.mark.clear();
+            if self.key_control(id, &["mark".into()], None).is_none() { ni.mark.clear(); }
             ni.ifc.guid = new_ifc_guid();
             if mirror {
                 ni.flip_facing = !ni.flip_facing;
@@ -559,7 +564,7 @@ impl Document {
             }
             if opt.copy {
                 ni.pinned = false;
-                ni.mark.clear();
+                if self.key_control(id, &["mark".into()], None).is_none() { ni.mark.clear(); }
                 ni.ifc.guid = new_ifc_guid();
                 new_insts.push((id, ni, false));
             } else {
@@ -579,24 +584,25 @@ impl Document {
             let mut wall_map: BTreeMap<Id, Id> = BTreeMap::new();
             for (orig, w) in new_walls {
                 let id = tx.add(Element::Wall(w));
+                tx.copy_parameter_data(orig, id)?;
                 wall_map.insert(orig, id);
                 result.push(id);
             }
-            for f in new_floors {
-                result.push(tx.add(Element::Floor(f)));
+            for (orig, f) in new_floors {
+                let id=tx.add(Element::Floor(f)); tx.copy_parameter_data(orig,id)?; result.push(id);
             }
-            for r in new_roofs {
-                result.push(tx.add(Element::Roof(r)));
+            for (orig, r) in new_roofs {
+                let id=tx.add(Element::Roof(r)); tx.copy_parameter_data(orig,id)?; result.push(id);
             }
-            for e in new_details {
-                result.push(tx.add(e));
-            }
+            let mut detail_map=BTreeMap::new();let mut added_details=vec![];
+            for (orig,e) in new_details {let id=tx.add(e.clone());tx.copy_parameter_data(orig,id)?;detail_map.insert(orig,id);added_details.push((id,e));result.push(id);}
+            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},_=>false};if changed{tx.update(id,e)?;}}
             for mut g in new_grids {
                 g.name = tx.doc_ref().next_grid_name();
                 result.push(tx.add(Element::Grid(g)));
             }
             let mut added: Vec<(Id, FamilyInstance)> = vec![];
-            for (_orig, mut ni, follows) in new_insts {
+            for (orig, mut ni, follows) in new_insts {
                 if follows {
                     if let Some(h) = ni.host {
                         if let Some(&nw) = wall_map.get(&h.wall) {
@@ -605,6 +611,7 @@ impl Document {
                     }
                 }
                 let id = tx.add(Element::FamilyInstance(ni.clone()));
+                tx.copy_parameter_data(orig,id)?;
                 added.push((id, ni));
                 result.push(id);
             }

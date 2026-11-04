@@ -1041,6 +1041,7 @@ const Elev = (() => {
       ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.6; ctx.setLineDash([12, 4, 3, 4]);
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
     }
+    Revisions.draw(ctx,data,p=>toScreen(p.x,p.y),cam.s,sel);
     Det.drawNotes(selD, hov, accent, tool === "select", sel);
     if (tool === "text") Det.preview(hover);
     if (detDrag) drawGhost(detDrag.d.x, detDrag.d.y);
@@ -1160,7 +1161,7 @@ const Elev = (() => {
     if (tool === "select" && data && e.button === 0 && ESpots.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data) {
       // pressing on a selected detail line, region or text note and moving carries the selected ones
-      const dids = new Set(Det.elements().map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
+      const dids = new Set([...Det.elements(),...Revisions.elements(data,cam.s)].map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
       if (at.some((i) => sel.has(i)) && [...sel].every((i) => dids.has(i))) down.drag = { ids: [...sel], p0: snap(e.offsetX, e.offsetY) };
       const cg = cropBoxes.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (cg) { cropDrag = { side: cg.side, v: 0, moved: false }; down = null; return; }
@@ -1354,6 +1355,7 @@ const Elev = (() => {
         Sketch.click(p, e.offsetX, e.offsetY, e);
         return;
       }
+      if(tool==="revisiontag"){const p=toWorld(e.offsetX,e.offsetY);down=null;Revisions.place({x:p.u,y:p.z});return;}
       if (tool === "text" || tool === "noteleader") {
         const p = Det.toolSnap(e.offsetX, e.offsetY);
         Snap.clearOverride(); snapCycle = 0; down = null;
@@ -1479,7 +1481,7 @@ const Elev = (() => {
   function detailAt(sx, sy) {
     if (!data) return [];
     const p = W(sx, sy), out = [];
-    for (const e of Det.elements()) {
+    for (const e of [...Det.elements(),...Revisions.elements(data,cam.s)]) {
       const rings = e.rings || [e.ring];
       const hit = e.kind === "region" ? rings.reduce((n, r) => n + (inRing(p, r) ? 1 : 0), 0) % 2 === 1 : rings.some((r) => inRing(p, r));
       if (hit && !out.includes(e.id)) out.push(e.id);
@@ -1622,7 +1624,7 @@ const Elev = (() => {
     setTool,
     setData(d, refit) {
       data = d;
-      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || [])].map((x) => x.id)]);
+      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || []),...(d.revision_clouds||[]),...(d.revision_tags||[])].map((x) => x.id)]);
       modelGroups.forEach((g) => ids.add(g.id));
       for (const it of d.items) if (it.part != null) ids.add(it.part);
       for (const f of d.curtains || []) for (const l of f.lines) ids.add(l.id);

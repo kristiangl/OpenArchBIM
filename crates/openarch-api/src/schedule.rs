@@ -91,14 +91,18 @@ fn cell_of(row: &Value, target: &Value) -> Option<Cell> {
         (_, "integer") => Cell { num: raw, unit: Unit::Integer, ..Cell::text(text.clone()) },
         (_, "number") => Cell { num: raw, unit: Unit::Number, ..Cell::text(text.clone()) },
         (_, "text" | "material" | "url") => Cell::text(text.clone()),
+        // typed text stays text when it looks like a number (a room number "101", a Mark "12"): it sorts in
+        // natural order and exports to IFC as a label
+        ("text", _) => Cell::text(text.clone()),
         _ => {
             let t = text.trim();
+            // a read-only value can carry its unrounded number as `raw`, so totals and IFC skip display rounding
             let (n, unit) = if let Some(x) = t.strip_suffix("m²") {
-                (x.trim().parse().ok(), Unit::Area)
+                (raw.or_else(|| x.trim().parse().ok()), Unit::Area)
             } else if let Some(x) = t.strip_suffix("m³") {
-                (x.trim().parse().ok(), Unit::Volume)
+                (raw.or_else(|| x.trim().parse().ok()), Unit::Volume)
             } else if let Some(x) = t.strip_suffix('°') {
-                (x.trim().parse().ok(), Unit::Angle)
+                (raw.or_else(|| x.trim().parse().ok()), Unit::Angle)
             } else {
                 let n = raw.or_else(|| t.parse().ok());
                 (n, if n.is_some() && (path.ends_with("_mm") || lengthy(label)) { Unit::Length } else if n.is_some() { Unit::Number } else { Unit::Text })
@@ -114,6 +118,10 @@ fn cell_of(row: &Value, target: &Value) -> Option<Cell> {
             c.text = show(n, c.unit);
         }
     }
+    if let Ok(unit) = serde_json::from_value::<Unit>(row["parameter_unit"].clone()) {
+        c.unit = unit;
+        if let Some(n) = c.num { c.text = show(n, unit); }
+    }
     c.edit = edit;
     c.global = row["global"]["name"].as_str().map(str::to_string);
     Some(c)
@@ -123,6 +131,7 @@ fn cell_of(row: &Value, target: &Value) -> Option<Cell> {
 pub(crate) fn model_categories() -> Vec<String> {
     let mut cats: Vec<String> = openarch_model::view::MODEL_CATEGORIES.iter().map(|c| c.to_string()).collect();
     cats.retain(|c| !openarch_model::view::SITE_POINT_CATEGORIES.contains(&c.as_str()));
+    cats.extend(["Revisions".into(),"Revision Clouds".into()]);
     cats
 }
 
@@ -137,6 +146,9 @@ impl Session {
     pub(crate) fn schedule_category(&self, id: Id) -> Option<String> {
         let d = &self.doc;
         match d.get(id)? {
+            Element::Room(_) => Some("Rooms".into()),
+            Element::Revision(_) => Some("Revisions".into()),
+            Element::RevisionCloud(_) => Some("Revision Clouds".into()),
             Element::Wall(_) => Some("Walls".into()),
             Element::Floor(_) => Some("Floors".into()),
             Element::Roof(_) => Some("Roofs".into()),
@@ -184,9 +196,10 @@ impl Session {
                 instance.insert("View Type".to_string(), Cell::text(t));
             }
             let target = v["target"].clone();
-            for row in v["groups"].as_array().into_iter().flatten().flat_map(|g| g["rows"].as_array().into_iter().flatten()) {
-                if let (Some(label), Some(c)) = (row["label"].as_str(), cell_of(row, &target)) {
-                    instance.entry(label.to_string()).or_insert(c);
+            for group in v["groups"].as_array().into_iter().flatten() {
+                let target = if group["target"].is_object() { &group["target"] } else { &target };
+                for row in group["rows"].as_array().into_iter().flatten() {
+                    if let (Some(label), Some(c)) = (row["label"].as_str(), cell_of(row, target)) { instance.entry(label.to_string()).or_insert(c); }
                 }
             }
             if let Some(t) = v["type_id"].as_u64() {
@@ -281,6 +294,23 @@ impl Session {
     /// offers the parameters two or more categories share, and the category; a material takeoff adds the material's.
     pub(crate) fn schedule_fields(&self, category: &str, takeoff: bool) -> Value {
         let mut out = if category == MULTI_CATEGORY { self.shared_fields() } else { self.own_fields(category) };
+        if category == "Revisions" {for(name,unit)in [("Number","text"),("Sequence","integer"),("Date","text"),("Description","text"),("Issued To","text"),("Issued By","text"),("Issued","yes_no")]{if !out.iter().any(|f|f["name"]==name){out.push(json!({"name":name,"kind":"instance","unit":unit}));}}}
+        if category == "Rooms" { for f in Self::room_fields(){if !out.iter().any(|a|a["name"]==f["name"]){out.push(f);}} }
+        if category != MULTI_CATEGORY {
+            for (_, family) in self.doc.families().into_iter().filter(|(_, f)| f.category.label() == category) {
+                for param in family.params.iter().filter(|p| p.instance) {
+                    if !out.iter().any(|f| f["name"] == param.name) { out.push(json!({ "name": param.name, "kind": "instance", "unit": crate::keys::unit(param.param_kind) })); }
+                }
+            }
+            for (_, p) in self.doc.project_parameters().into_iter().filter(|(_, p)| p.categories.iter().any(|c| c == category)) {
+                if !out.iter().any(|f| f["name"] == p.name) { out.push(json!({ "name": p.name, "kind": "instance", "unit": p.unit })); }
+            }
+            for (_, v) in self.doc.schedules() {
+                if let Some(key) = v.schedule.as_ref().filter(|d| d.category == category).and_then(|d| d.key.as_ref()) {
+                    if !out.iter().any(|f| f["name"] == key.parameter_name) { out.push(json!({ "name": key.parameter_name, "kind": "instance", "unit": "text" })); }
+                }
+            }
+        }
         if takeoff {
             out.extend(MATERIAL_FIELDS.iter().map(|(n, u)| json!({ "name": n, "kind": "material", "unit": u })));
         }
@@ -345,6 +375,7 @@ impl Session {
             if v.view_kind.is_plan() {
                 let Ok(data) = self.plan(&json!({ "view_id": vp.view })) else { continue };
                 let crop = if v.crop.enabled { v.crop.region } else { None };
+                for room in data["rooms"].as_array().into_iter().flatten(){if let(Some(id),Some(x),Some(y))=(room["id"].as_u64(),room["at"]["x"].as_f64(),room["at"]["y"].as_f64()){if crop.is_none_or(|(lo,hi)|x>=lo.x&&x<=hi.x&&y>=lo.y&&y<=hi.y){out.insert(id);}}}
                 for (key, pts) in [("walls", "corners"), ("inserts", "footprint"), ("floors", "points"), ("roofs", "points"), ("curtains", "line")] {
                     for item in data[key].as_array().into_iter().flatten() {
                         let Some(id) = item["id"].as_u64() else { continue };
@@ -376,17 +407,31 @@ impl Session {
     }
 
     /// The table of only some elements (what a sheet's views show).
-    pub(crate) fn schedule_table_for(&self, view: Id, only: Option<&HashSet<Id>>) -> Res {
+    pub(crate) fn schedule_table_for(&self, view: Id, only: Option<&HashSet<Id>>) -> Res { self.schedule_table_definition(view, only, None) }
+
+    pub(crate) fn schedule_table_definition(&self, view: Id, only: Option<&HashSet<Id>>, definition: Option<&ScheduleDef>) -> Res {
         let v = self.doc.view(view).ok_or("not a view")?;
-        let def = v.schedule.as_ref().ok_or("not a schedule")?;
+        let def = definition.or(v.schedule.as_ref()).ok_or("not a schedule")?;
         // sheets and views aren't shown by a sheet's views
-        let only = only.filter(|_| !matches!(def.category.as_str(), SHEETS | VIEWS));
+        let only = only.filter(|_| def.key.is_none() && !matches!(def.category.as_str(), SHEETS | VIEWS));
         let units = self.schedule_param_units(&def.category);
-        let unit_of = |f: &SchedField| def.unit_of(f, &|g: &SchedField| units.get(&g.name).copied().unwrap_or(Unit::Text));
+        let unit_of = |f: &SchedField| if def.key.is_some() { f.unit } else { def.unit_of(f, &|g: &SchedField| units.get(&g.name).copied().unwrap_or(Unit::Text)) };
         // every element: its fields' values
         let mut types = BTreeMap::new();
         let mut rows: Vec<(Vec<Id>, Vec<Cell>)> = vec![];
+        if let Some(key) = &def.key {
+            let editors = self.key_fields(&def.category, Some(view));
+            for row in &key.rows {
+                let target = json!({ "method": "patch_key_row", "id": view, "extra": { "row": row.id } });
+                let cells = def.fields.iter().map(|f| {
+                    let editor = self.key_cell(&editors, row, f);
+                    cell_of(&editor, &target).unwrap_or_else(Cell::blank)
+                }).collect();
+                rows.push((vec![row.id], cells));
+            }
+        }
         for id in self.category_elements(&def.category).into_iter().filter(|id| only.is_none_or(|o| o.contains(id))) {
+            if def.key.is_some() { break; }
             let p = self.params(id, &mut types);
             let base: Vec<Cell> = def
                 .fields
@@ -537,12 +582,15 @@ impl Session {
             def.fields[i].highlights.iter().find(|h| (if h.field.is_empty() { Some(i) } else { col(&h.field) }).is_some_and(|j| cells[j].passes(h.op, &h.value))).map(|h| format!("#{:02x}{:02x}{:02x}", h.colour[0], h.colour[1], h.colour[2]))
         };
         let item = |ids: &Vec<Id>, cells: &Vec<Cell>| -> Value {
-            json!({ "kind": "item", "ids": ids, "cells": shown.iter().map(|&i| {
+            json!({ "kind": "item", "ids": if def.key.is_some() { vec![] } else { ids.clone() }, "key_row": if def.key.is_some() { ids.first().copied() } else { None }, "cells": shown.iter().map(|&i| {
                 let c = &cells[i];
                 let mut v = match &c.edit {
                     Some((row, targets)) => json!({ "text": c.text, "row": row, "targets": targets }),
                     None => json!({ "text": c.text }),
                 };
+                v["value"] = if !c.present { Value::Null } else if c.unit == Unit::YesNo {
+                    c.num.map(|n| json!(n != 0.0)).or_else(|| c.edit.as_ref().and_then(|(r,_)| r["raw"].as_bool().map(|b| json!(b)))).unwrap_or_else(|| match c.text.as_str() { "Yes" => json!(true), "No" => json!(false), _ => Value::Null })
+                } else if let Some(n) = c.num { json!(n) } else { json!(c.text) };
                 // a type's value says which type and how many elements an edit changes
                 if let (true, Some((_, targets))) = (c.of_type, &c.edit) {
                     let uses: Vec<(String, usize)> = targets.iter().filter_map(|t| t["id"].as_u64()).map(|t| self.type_use(t)).collect();
@@ -595,7 +643,8 @@ impl Session {
         if def.grand_totals {
             out.push(totals_row("grand", format!("{}:", def.grand_title), &rows));
         }
-        let columns: Vec<Value> = shown.iter().map(|&i| { let f = &def.fields[i]; json!({ "name": f.name, "heading": f.heading(), "align": f.align, "unit": unit_of(f), "highlight_on_sheets": f.highlight_on_sheets }) }).collect();
+        let mut columns: Vec<Value> = shown.iter().map(|&i| { let f = &def.fields[i]; json!({ "name": f.name, "heading": f.heading(), "align": f.align, "unit": unit_of(f), "highlight_on_sheets": f.highlight_on_sheets }) }).collect();
+        self.embed_room_contents(view,def,&mut columns,&mut out,only)?;
         Ok(json!({
             "id": view, "name": v.name, "category": def.category, "title": v.name, "show_title": def.show_title, "show_headers": def.show_headers,
             "columns": columns, "rows": out, "count": count_of(&rows), "def": def,

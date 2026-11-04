@@ -22,6 +22,8 @@ pub struct Level {
     /// named by `elevation_base` (see `Document::level_display_elevation`).
     pub elevation_mm: f64,
     #[serde(default)]
+    pub computation_height_mm: f64,
+    #[serde(default)]
     pub elevation_base: ElevationBase,
     /// A level that is a storey of the building (Building Story).
     #[serde(default = "yes")]
@@ -53,7 +55,7 @@ fn default_bubbles() -> [bool; 2] {
 
 impl Level {
     pub fn new(name: &str, elevation_mm: f64) -> Level {
-        Level { name: name.into(), elevation_mm, elevation_base: ElevationBase::default(), building_story: true, structural: false, bubbles: default_bubbles(), extent: None, pinned: false, level_type: None, number: String::new(), end_locks: Default::default() }
+        Level { name: name.into(), elevation_mm, computation_height_mm: 0.0, elevation_base: ElevationBase::default(), building_story: true, structural: false, bubbles: default_bubbles(), extent: None, pinned: false, level_type: None, number: String::new(), end_locks: Default::default() }
     }
 }
 
@@ -593,11 +595,13 @@ pub struct Floor {
     /// Structural (instance): the floor is a structural slab, for the analytical model and structural schedules.
     #[serde(default)]
     pub structural: bool,
+    #[serde(default = "yes")]
+    pub room_bounding: bool,
 }
 
 impl Floor {
     pub fn new(floor_type: Id, level: Id, loops: Vec<Vec<crate::curve::Curve>>) -> Floor {
-        Floor { floor_type, level, boundary: vec![], loops, slope: None, span: None, offset_mm: 0.0, pinned: false, structural: false }
+        Floor { floor_type, level, boundary: vec![], loops, slope: None, span: None, offset_mm: 0.0, pinned: false, structural: false, room_bounding: true }
     }
 
     /// The closed loops of the floor, whichever way it was stored.
@@ -679,6 +683,15 @@ pub enum Element {
     Viewport(crate::sheet::Viewport),
     SheetCollection(crate::sheet::SheetCollection),
     SheetSchedule(crate::sheet::SheetSchedule),
+    ProjectParameter(crate::key_schedule::ProjectParameter),
+    Room(crate::rooms::Room),
+    RoomSeparation(crate::rooms::RoomSeparation),
+    RoomTag(crate::rooms::RoomTag),
+    RoomSettings(crate::rooms::RoomSettings),
+    Revision(crate::revisions::Revision),
+    RevisionSettings(crate::revisions::RevisionSettings),
+    RevisionCloud(crate::revisions::RevisionCloud),
+    RevisionTag(crate::revisions::RevisionTag),
 }
 
 impl Element {
@@ -728,6 +741,15 @@ impl Element {
             Element::Viewport(_) => "Viewport",
             Element::SheetCollection(_) => "SheetCollection",
             Element::SheetSchedule(_) => "SheetSchedule",
+            Element::ProjectParameter(_) => "ProjectParameter",
+            Element::Room(_) => "Room",
+            Element::RoomSeparation(_) => "RoomSeparation",
+            Element::RoomTag(_) => "RoomTag",
+            Element::RoomSettings(_) => "RoomSettings",
+            Element::Revision(_) => "Revision",
+            Element::RevisionSettings(_) => "RevisionSettings",
+            Element::RevisionCloud(_) => "RevisionCloud",
+            Element::RevisionTag(_) => "RevisionTag",
         }
     }
 }

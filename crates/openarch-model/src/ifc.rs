@@ -39,6 +39,7 @@ const GROUP: u64 = 14;
 const GROUP_MEMBERS: u64 = 15;
 const CURTAIN_PART: u64 = 16;
 const CURTAIN_PARTS: u64 = 17;
+const SPACES: u64 = 18;
 
 /// A STEP string: quotes doubled, backslashes escaped, anything outside printable ASCII as \X2\ or \X4\.
 fn s(text: &str) -> String {
@@ -283,6 +284,30 @@ impl Step {
         self.add(format!("IFCRELDEFINESBYPROPERTIES({},$,$,$,(#{ent}),#{set})", s(&derived(PSET_DEFINES, key))));
     }
 
+    fn schedule_property(&mut self, p: &crate::ifc_properties::IfcProperty, quantity: bool) -> Option<u64> {
+        use crate::schedule::Unit;
+        if p.value.is_null() { return None; }
+        let n = p.value.as_f64().filter(|n| n.is_finite());
+        if quantity {
+            let n = n.filter(|n| *n >= 0.0)?;
+            let kind = match p.unit { Unit::Length => "LENGTH", Unit::Area => "AREA", Unit::Volume => "VOLUME", Unit::Integer | Unit::Number => "COUNT", _ => return None };
+            return Some(self.add(format!("IFCQUANTITY{kind}({},$,$,{},$)", s(&p.name), real(n))));
+        }
+        let value = match p.unit {
+            // IfcLabel holds up to 255 characters; longer text needs IfcText
+            Unit::Text => { let t = p.value.as_str()?; format!("{}({})", if t.chars().count() <= 255 { "IFCLABEL" } else { "IFCTEXT" }, s(t)) }
+            Unit::YesNo => format!("IFCBOOLEAN({})", if p.value.as_bool()? { ".T." } else { ".F." }),
+            Unit::Integer => format!("IFCINTEGER({})", p.value.as_i64().map(|v| v.to_string()).unwrap_or_else(|| format!("{:.0}", n.unwrap_or(0.0)))),
+            Unit::Length => format!("IFCLENGTHMEASURE({})", real(n?)),
+            Unit::Area => format!("IFCAREAMEASURE({})", real(n?)),
+            Unit::Volume => format!("IFCVOLUMEMEASURE({})", real(n?)),
+            Unit::Angle => format!("IFCPLANEANGLEMEASURE({})", real(n?.to_radians())),
+            Unit::Number => format!("IFCREAL({})", real(n?)),
+            Unit::Currency => format!("IFCMONETARYMEASURE({})", real(n?)),
+        };
+        Some(self.add(format!("IFCPROPERTYSINGLEVALUE({},$,{value},$)", s(&p.name))))
+    }
+
     fn boolean(&mut self, name: &str, v: bool) -> u64 {
         self.add(format!("IFCPROPERTYSINGLEVALUE({},$,IFCBOOLEAN({}),$)", s(name), if v { ".T." } else { ".F." }))
     }
@@ -305,7 +330,9 @@ fn component_class(cat: FamilyCategory) -> &'static str {
 
 impl Document {
     /// The model as an IFC4 file (ISO 10303-21 text), named `name` in its header and on the project.
-    pub fn export_ifc(&self, name: &str) -> String {
+    pub fn export_ifc(&self, name: &str) -> String { self.export_ifc_with_properties(name, &[]) }
+
+    pub fn export_ifc_with_properties(&self, name: &str, properties: &[crate::ifc_properties::IfcPropertySet]) -> String {
         let mut w = Step { out: String::new(), next: 0, z: 0, world: 0, context: 0, body: 0, axis: 0, materials: BTreeMap::new() };
         let origin = w.add("IFCCARTESIANPOINT((0.,0.,0.))");
         w.z = w.add("IFCDIRECTION((0.,0.,1.))");
@@ -524,6 +551,11 @@ impl Document {
             }
         }
 
+        // Placed rooms are spatial elements, aggregated by their building storey.
+        let mut spaces:BTreeMap<Id,Vec<u64>>=BTreeMap::new();
+        for (id,r) in self.rooms(){let Some(calc)=self.room_calculation(id)else{continue};let Some(region)=calc.region else{continue};if skip(&r.ifc){continue;}let lv=storey_of(r.level);let(_,parent,sz)=storeys[&lv];let base=self.level(r.level).map_or(0.0,|l|l.elevation_mm)+r.base_offset_mm;let at=w.place(Some(parent),(0.0,0.0,0.0),None);let profile=w.profile(&region.outer,&region.holes);let shape=w.swept(&[(profile,base-sz,calc.height_mm)],&[]);let opt=|t:&str|if t.trim().is_empty(){"$".to_string()}else{s(t)};let ent=w.add(format!("IFCSPACE({},$,{},{},$,#{at},#{shape},{},.ELEMENT.,.INTERNAL.,$)",s(&if valid_guid(&r.ifc.guid){r.ifc.guid.clone()}else{derived(ELEMENT,id)}),s(&r.number),opt(&r.comments),opt(&r.name)));products.insert(id,ent);spaces.entry(lv).or_default().push(ent);}
+        for(lv,ents)in spaces{let parent=storeys[&lv].0;w.add(format!("IFCRELAGGREGATES({},$,$,$,#{parent},({}))",s(&derived(SPACES,lv)),refs(&ents)));}
+
         // floors: flat ones their regions swept down from the top, sloped ones their 3D mesh
         for (id, e) in self.iter() {
             let Element::Floor(f) = e else { continue };
@@ -681,6 +713,24 @@ impl Document {
             if !members.is_empty() {
                 w.add(format!("IFCRELASSIGNSTOGROUP({},$,$,$,({}),$,#{})", s(&derived(GROUP_MEMBERS, gid)), refs(&members), group_ents[&gid]));
             }
+        }
+
+        for set in properties {
+            let Some(&ent) = products.get(&set.element) else { continue };
+            let props: Vec<u64> = set.properties.iter().filter_map(|p| w.schedule_property(p, set.quantities)).collect();
+            if props.is_empty() { continue; }
+            // Stable IDs use the schedule and product identities, never transient STEP entity numbers.
+            let identity = |role: u8| {
+                let mut hash = 0x6c62272e07bb014262b821756295c58du128;
+                for b in [role].into_iter().chain(set.source.to_le_bytes()).chain(set.element.to_le_bytes()).chain(set.name.bytes()) { hash ^= b as u128; hash = hash.wrapping_mul(0x1000000000000000000013b); }
+                compress(hash)
+            };
+            let object = if set.quantities {
+                w.add(format!("IFCELEMENTQUANTITY({},$,{},$,$,({}))", s(&identity(32)), s(&set.name), refs(&props)))
+            } else {
+                w.add(format!("IFCPROPERTYSET({},$,{},$,({}))", s(&identity(30)), s(&set.name), refs(&props)))
+            };
+            w.add(format!("IFCRELDEFINESBYPROPERTIES({},$,$,$,(#{ent}),#{object})", s(&identity(if set.quantities {33} else {31}))));
         }
 
         for (level, (storey, ..)) in &storeys {

@@ -24,6 +24,11 @@ fn ro(label: &str, value: impl Into<String>) -> Value {
     json!({ "label": label, "value": value.into(), "kind": "ro" })
 }
 
+/// A read-only measured value: shown rounded, with the unrounded number for schedules, totals and IFC.
+fn ro_measure(label: &str, value: String, raw: f64) -> Value {
+    json!({ "label": label, "value": value, "raw": raw, "kind": "ro" })
+}
+
 fn num(label: &str, path: &str, v: f64, enabled: bool) -> Value {
     json!({ "label": label, "value": format!("{v}"), "raw": v, "kind": if enabled { "number" } else { "ro" }, "path": path })
 }
@@ -149,8 +154,8 @@ pub fn wall_props(d: &Document, id: Id, w: &Wall) -> Value {
             group("Dimensions", vec![
                 ro("Length", format!("{len:.0}")),
                 ro("Thickness", format!("{thick:.0}")),
-                ro("Area", format!("{area:.3} m\u{b2}")),
-                ro("Volume", format!("{:.3} m\u{b3}", area * thick / 1000.0)),
+                ro_measure("Area", format!("{area:.3} m\u{b2}"), area),
+                ro_measure("Volume", format!("{:.3} m\u{b3}", area * thick / 1000.0), area * thick / 1000.0),
             ]),
             group("Identity Data", vec![text("Comments", "comments", &w.comments), text("Mark", "mark", &w.mark)]),
             group("Phasing", vec![ro("Phase Created", "New Construction"), ro("Phase Demolished", "None")]),
@@ -187,10 +192,11 @@ pub fn floor_props(d: &Document, id: Id, f: &Floor) -> Value {
                 ro("Level", d.level(f.level).map_or("?", |l| l.name.as_str())),
                 num("Height Offset From Level", "offset_mm", f.offset_mm, !f.pinned),
                 boolean("Pinned", "pinned", f.pinned, true),
+                boolean("Room Bounding", "room_bounding", f.room_bounding, true),
             ]),
             group("Structural", vec![boolean("Structural", "structural", f.structural, !f.pinned)]),
             group("Dimensions", vec![
-                ro("Area", format!("{:.2} m\u{b2}", f.area_mm2() / 1e6)),
+                ro_measure("Area", format!("{:.2} m\u{b2}", f.area_mm2() / 1e6), f.area_mm2() / 1e6),
                 ro("Thickness", format!("{:.0}", t.map_or(0.0, |t| t.thickness_mm()))),
                 ro("Slope", d.floor_surface(f).map_or("Flat".to_string(), |s| if s.rise.abs() < 1e-9 { "Flat".to_string() } else { format!("{:.2}%", s.percent()) })),
             ]),
@@ -236,8 +242,8 @@ pub fn roof_props(d: &Document, id: Id, r: &openarch_model::roof::Roof) -> Value
             group("Dimensions", vec![
                 slope_row,
                 ro("Thickness", format!("{thick:.0}")),
-                ro("Area", format!("{:.2} m\u{b2}", area / 1e6)),
-                ro("Volume", format!("{:.2} m\u{b3}", area * thick / 1e9)),
+                ro_measure("Area", format!("{:.2} m\u{b2}", area / 1e6), area / 1e6),
+                ro_measure("Volume", format!("{:.2} m\u{b3}", area * thick / 1e9), area * thick / 1e9),
                 ro("Maximum Ridge Height", g.as_ref().map_or(String::new(), |g| format!("{:.0}", g.top_z - d.level(r.level).map_or(0.0, |l| l.elevation_mm)))),
             ]),
             group("Identity Data", vec![text("Mark", "mark", &r.mark), text("Comments", "comments", &r.comments)]),
@@ -451,7 +457,7 @@ fn param_row(d: &Document, i: &FamilyInstance, p: &ParamDef, ro_only: bool) -> V
     let v = d.instance_param(i, &p.name).unwrap_or_else(|| p.default.clone());
     let editable = p.instance && !p.reporting && !ro_only;
     let path = format!("values.{}", p.name);
-    match (&v, p.param_kind) {
+    let mut row = match (&v, p.param_kind) {
         (ParamValue::Bool(b), _) => boolean(&p.name, &path, *b, editable),
         (ParamValue::Number(n), _) => num(&p.name, &path, *n, editable),
         (ParamValue::Text(t), _) if editable && !p.choices.is_empty() => {
@@ -459,7 +465,11 @@ fn param_row(d: &Document, i: &FamilyInstance, p: &ParamDef, ro_only: bool) -> V
         }
         (ParamValue::Text(t), _) if editable => text(&p.name, &path, t),
         (other, _) => ro(&p.name, other.display()),
-    }
+    };
+    row["path"] = json!(path);
+    row["patch_path"] = json!(["values", p.name]);
+    row["raw"] = serde_json::to_value(v).unwrap_or(Value::Null);
+    row
 }
 
 /// Properties of a placed door, window or other family instance.
@@ -877,7 +887,7 @@ pub fn level_props(d: &Document, id: Id, l: &Level) -> Value {
             group("Constraints", vec![
                 num("Elevation", "display_elevation_mm", d.level_display_elevation(l), true),
                 ro("Story Above", above.unwrap_or_else(|| "Default".into())),
-                ro("Computation Height", format!("{:.0}", l.elevation_mm - d.level_datum_z(l) + 0.0)),
+                num("Computation Height", "computation_height_mm", l.computation_height_mm, true),
             ]),
             group("Identity Data", vec![
                 text("Name", "name", &l.name),
@@ -987,7 +997,7 @@ pub fn detail_region_props(d: &Document, id: Id, r: &openarch_model::detail::Det
         groups.push(group("Graphics", vec![select("Filled Region Type", types)]));
     }
     groups.push(group("Constraints", vec![boolean("Pinned", "pinned", r.pinned, true)]));
-    groups.push(group("Dimensions", vec![ro("Area", format!("{area:.3} m²"))]));
+    groups.push(group("Dimensions", vec![ro_measure("Area", format!("{area:.3} m²"), area)]));
     json!({
         "id": id, "kind": "DetailRegion", "title": if r.masking { "Masking Region" } else { "Filled Region" },
         "type_label": if r.masking { "Masking Region" } else { "Filled region" },
@@ -1414,7 +1424,7 @@ pub fn curtain_part_props(d: &Document, id: Id) -> Res {
                     group("Dimensions", vec![
                         num("Width", "", round(width), false),
                         num("Height", "", round(height), false),
-                        ro("Area", format!("{:.3} m\u{b2}", width * height / 1e6)),
+                        ro_measure("Area", format!("{:.3} m\u{b2}", width * height / 1e6), width * height / 1e6),
                         num("Thickness", "", if panel.kind == PanelKind::Empty { 0.0 } else { round(panel.thickness_mm) }, false),
                         num("Offset", "", round(panel.offset_mm), false),
                     ]),
@@ -1488,7 +1498,10 @@ pub fn sheet_props(d: &Document, id: Id, s: &openarch_model::sheet::Sheet) -> Va
                 boolean("Placeholder", "placeholder", s.placeholder, true),
                 boolean("Appears In Sheet List", "appears_in_list", s.appears_in_list, true),
                 text("Sheet Issue Date", "issue_date", &s.issue_date),
-                text("Current Revision", "current_revision", &s.current_revision),
+                if d.current_revision(id).is_some(){ro("Current Revision",d.sheet_param(id,"Current Revision").unwrap_or_default())}else{text("Current Revision", "current_revision", &s.current_revision)},
+                ro("Current Revision Date",d.sheet_param(id,"Current Revision Date").unwrap_or_default()),
+                ro("Current Revision Description",d.sheet_param(id,"Current Revision Description").unwrap_or_default()),
+                dialog("Revisions on Sheet", "sheet_revisions", "Edit..."),
                 text("Drawn By", "drawn_by", &s.drawn_by),
                 text("Checked By", "checked_by", &s.checked_by),
                 text("Designed By", "designed_by", &s.designed_by),

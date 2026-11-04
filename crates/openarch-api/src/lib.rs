@@ -19,6 +19,10 @@ use openarch_model::{mesh, symbol, Document, Element, EndJoin, FamilyCategory, I
 mod graphics;
 mod props;
 mod schedule;
+mod ifc_schedule;
+mod keys;
+mod rooms;
+mod revisions;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -208,6 +212,57 @@ impl Session {
 
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
         match method {
+            "add_project_parameter" => self.create_project_parameter(p),
+            "add_key_row" => Ok(json!({ "row": self.doc.add_key_row(id_of(p, "id")?)? })),
+            "patch_key_row" => { self.doc.patch_key_row(id_of(p, "id")?, id_of(p, "row")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) },
+            "delete_key_rows" => { self.doc.delete_key_rows(id_of(p, "id")?, &ids_of(p, "rows")?)?; Ok(json!({})) },
+            "patch_element_keys" | "patch_project_values" => {
+                let ids = if p["ids"].is_array() { ids_of(p, "ids")? } else { vec![id_of(p, "id")?] };
+                let patch = p.get("patch").ok_or("missing patch")?;
+                self.doc.grouped("Change instance parameters", |d| {
+                    if method == "patch_element_keys" {
+                        for (schedule, key) in patch["keys"].as_object().ok_or("missing keys")? {
+                            let schedule: Id = schedule.parse().map_err(|_| "invalid schedule ID")?;
+                            let row = if key.is_null() { None } else { Some(key.as_u64().ok_or("invalid key ID")?) };
+                            d.assign_key(schedule, &ids, row)?;
+                        }
+                    } else {
+                        for (parameter, value) in patch["values"].as_object().ok_or("missing values")? {
+                            let parameter: Id = parameter.parse().map_err(|_| "invalid parameter ID")?;
+                            for id in &ids { d.set_project_value(parameter, *id, value.clone())?; }
+                        }
+                    }
+                    Ok(())
+                })?;
+                Ok(json!({}))
+            }
+            "embedded_categories" => Ok(json!(openarch_model::FamilyCategory::all().iter().map(|c|c.label()).collect::<Vec<_>>())),
+            "revisions" => Ok(self.revision_data()),
+            "add_revision" => Ok(json!({"id":self.doc.add_revision(p["sequence"].as_str().unwrap_or("numeric"))?})),
+            "patch_revision" => {self.doc.patch_revision(id_of(p,"id")?,&p["patch"])?;Ok(json!({}))},
+            "set_revision_settings" => {self.doc.set_revision_settings(serde_json::from_value(p["settings"].clone()).map_err(|e|e.to_string())?)?;Ok(json!({}))},
+            "reorder_revisions" => {self.doc.reorder_revisions(&serde_json::from_value::<Vec<Id>>(p["ids"].clone()).map_err(|e|e.to_string())?)?;Ok(json!({}))},
+            "merge_revisions" => {self.doc.merge_revisions(id_of(p,"source")?,id_of(p,"target")?)?;Ok(json!({}))},
+            "set_sheet_revisions" => {self.doc.set_sheet_revisions(id_of(p,"sheet_id")?,serde_json::from_value(p["ids"].clone()).map_err(|e|e.to_string())?)?;Ok(json!({}))},
+            "set_revision_table" => self.set_revision_table(p),
+            "revision_drawing" => Ok(revisions::drawing(&self.doc,id_of(p,"view_id")?)),
+            "add_revision_cloud" => {let c=serde_json::from_value(p["cloud"].clone()).map_err(|e|e.to_string())?;Ok(json!({"id":self.doc.add_revision_cloud(c,p["tag"].as_bool().unwrap_or(true))?}))},
+            "patch_revision_cloud" => {self.doc.patch_revision_cloud(id_of(p,"id")?,&p["patch"])?;Ok(json!({}))},
+            "add_revision_tag" => Ok(json!({"id":self.doc.add_revision_tag(id_of(p,"view_id")?,id_of(p,"cloud_id")?,point_of(&p["point"])?)?})),
+            "patch_revision_tag" => {self.doc.patch_revision_tag(id_of(p,"id")?,&p["patch"])?;Ok(json!({}))},
+            "rooms" => Ok(json!(self.doc.rooms().iter().map(|(id,r)|json!({"id":id,"at":r.at,"level":r.level,"number":r.number,"name":r.name})).collect::<Vec<_>>())),
+            "place_all_rooms" => {let level=id_of(p,"level_id")?;let faces=self.doc.room_faces(level);let points:Vec<_>=faces.iter().filter_map(|r|{let(pts,tris)=openarch_model::geom::triangulate_region(r)?;let t=tris.first()?;Some(Point::new((pts[t[0]].x+pts[t[1]].x+pts[t[2]].x)/3.0,(pts[t[0]].y+pts[t[1]].y+pts[t[2]].y)/3.0))}).filter(|p|self.doc.room_at(level,*p).is_none()).collect();let view=p["view_id"].as_u64().filter(|_|p["tag"].as_bool().unwrap_or(true));let ids=self.doc.grouped("Place rooms automatically",|d|points.into_iter().map(|p|d.add_room(level,Some(p),view)).collect::<Result<Vec<_>,_>>())?;Ok(json!({"ids":ids}))},
+            "add_room" => self.add_room_api(p),
+            "patch_room" => { self.doc.patch_room(id_of(p,"id")?,p.get("patch").ok_or("missing patch")?)?;Ok(json!({})) },
+            "unplace_room" => { self.doc.unplace_room(id_of(p,"id")?)?;Ok(json!({})) },
+            "place_room" => { self.doc.place_unplaced_room(id_of(p,"id")?,id_of(p,"level_id")?,point_of(p.get("point").ok_or("missing point")?)?)?;Ok(json!({})) },
+            "room_settings" => Ok(json!(self.doc.room_settings())),
+            "set_room_settings" => { let settings=serde_json::from_value(p.get("settings").cloned().ok_or("missing settings")?).map_err(|e|e.to_string())?;self.doc.set_room_settings(settings)?;Ok(json!({})) },
+            "room_at" => { let level=id_of(p,"level_id")?;let point=point_of(p.get("point").ok_or("missing point")?)?;Ok(json!({"id":self.doc.room_at(level,point)})) },
+            "add_room_tag" => { let room=if let Some(id)=p["room_id"].as_u64().or_else(||p["room"].as_u64()){id}else{self.doc.room_at(id_of(p,"level_id")?,point_of(p.get("point").ok_or("missing point")?)?).ok_or("No room at this point")?};Ok(json!({"id":self.doc.add_room_tag(id_of(p,"view_id")?,room,point_of(p.get("point").ok_or("missing point")?)?)?})) },
+            "patch_room_tag" => {self.doc.patch_room_tag(id_of(p,"id")?,p.get("patch").ok_or("missing patch")?)?;Ok(json!({}))},
+            "patch_room_separation" => {let id=id_of(p,"id")?;let Some(Element::RoomSeparation(old))=self.doc.get(id)else{return Err("not a room separator".into())};let new:openarch_model::rooms::RoomSeparation=openarch_model::doc::apply_patch(old,&p["patch"])?;if old.pinned&&old.curve!=new.curve{return Err("Unpin the separator before changing it.".into());}if new.level!=old.level||new.curve.length()<0.1||new.curve.tessellate(1.0).iter().any(|p|!p.x.is_finite()||!p.y.is_finite()){return Err("Invalid room separation curve.".into());}self.doc.transact("Room separation",|tx|tx.update(id,Element::RoomSeparation(new)))?;Ok(json!({}))},
+            "set_room_separators" => {let curves:Vec<Curve>=p["curves"].as_array().ok_or("missing curves")?.iter().map(|v|serde_json::from_value(v.clone()).map_err(|e|e.to_string())).collect::<Result<_,_>>()?;Ok(json!({"ids":self.doc.add_room_separators(id_of(p,"level_id")?,curves)?}))},
             "doc_info" => Ok(self.doc_info()),
             "standards" => graphics::standards(&self.doc),
             "patch_object_styles" => graphics::patch_object_styles(&mut self.doc, p),
@@ -515,7 +570,12 @@ impl Session {
                 self.doc.patch_project_location_ui(p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
             }
-            "describe_multi" => props::multi_props(&self.doc, &ids_of(p, "ids")?),
+            "describe_multi" => {
+                let ids = ids_of(p, "ids")?;
+                let mut props = props::multi_props(&self.doc, &ids)?;
+                self.add_key_properties(&ids, &mut props);
+                Ok(props)
+            },
             "patch_multi" => {
                 // one patch to every selected element, as one undo step
                 let (ids, patch) = (ids_of(p, "ids")?, p.get("patch").ok_or("missing patch")?);
@@ -1154,6 +1214,16 @@ impl Session {
                     .collect();
                 if ids.iter().any(|i| *i == SITE_BASE_ID || *i == SITE_SURVEY_ID) {
                     return Err("the project base point and survey point cannot be deleted".into());
+                }
+                // Delete in a model view removes a room from the model only: it stays in the project, unplaced, with
+                // its data (a room schedule's Delete Row removes it for good)
+                if p["unplace_rooms"].as_bool().unwrap_or(false) && ids.iter().any(|i| self.doc.room(*i).is_some()) {
+                    let (rooms, rest): (Vec<Id>, Vec<Id>) = ids.into_iter().partition(|i| self.doc.room(*i).is_some());
+                    self.doc.grouped("Delete", |d| {
+                        for id in &rooms { if d.room(*id).is_some_and(|r| r.at.is_some()) { d.unplace_room(*id)?; } }
+                        if rest.is_empty() { Ok(()) } else { d.delete_items(&rest) }
+                    })?;
+                    return Ok(json!({ "unplaced": rooms.len() }));
                 }
                 // grid lines and mullions of curtain walls go one by one, highest first so the rest keep their places
                 let (mut parts, rest): (Vec<Id>, Vec<Id>) = ids.into_iter().partition(|i| openarch_model::curtain::part_of(*i).is_some());
@@ -1852,6 +1922,7 @@ impl Session {
                 Ok(json!(out))
             }
             "add_schedule" => {
+                if p["key"].as_bool().unwrap_or(false) { return self.create_key_schedule(p); }
                 let category = p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?;
                 let takeoff = p.get("takeoff").and_then(|v| v.as_bool()).unwrap_or(false);
                 let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).unwrap_or_else(|| match category {
@@ -1884,6 +1955,7 @@ impl Session {
                 let id = id_of(p, "id")?;
                 let def = self.doc.schedule(id).ok_or("not a schedule")?.clone();
                 let def = openarch_model::doc::apply_patch(&def, p.get("patch").ok_or("missing patch")?)?;
+                let def = self.prepare_key_definition(id, def)?;
                 let units = self.schedule_param_units(&def.category);
                 self.doc.set_schedule(id, def, &|f| units.get(&f.name).copied().unwrap_or(openarch_model::schedule::Unit::Text))?;
                 Ok(json!({}))
@@ -1899,10 +1971,15 @@ impl Session {
                 self.doc.set_sheet_schedule(id, s)?;
                 Ok(json!({}))
             }
-            "schedule_fields" => Ok(self.schedule_fields(p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?, p.get("takeoff").and_then(|v| v.as_bool()).unwrap_or(false))),
+            "schedule_fields" => {
+                let category = p["category"].as_str().ok_or("missing category")?;
+                if p["key"].as_bool().unwrap_or(false) { Ok(json!(self.key_fields(category, p["id"].as_u64()))) }
+                else { Ok(self.schedule_fields(category, p["takeoff"].as_bool().unwrap_or(false))) }
+            },
             "set_schedule" => {
                 let id = id_of(p, "id")?;
                 let def: openarch_model::schedule::ScheduleDef = serde_json::from_value(p.get("def").cloned().ok_or("missing def")?).map_err(|e| format!("bad schedule: {e}"))?;
+                let def = self.prepare_key_definition(id, def)?;
                 let units = self.schedule_param_units(&def.category);
                 self.doc.set_schedule(id, def, &|f| units.get(&f.name).copied().unwrap_or(openarch_model::schedule::Unit::Text))?;
                 Ok(json!({}))
@@ -1964,7 +2041,7 @@ impl Session {
                     let table = self.schedule_table_for(p.schedule, if by_sheet { visible.as_ref() } else { None }).unwrap_or(Value::Null);
                     schedules.push(json!({ "id": sid, "schedule": p.schedule, "segments": p.segments, "repeat_headers": p.repeat_headers, "table": table }));
                 }
-                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules,
+                Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules, "revision_table":self.revision_table(id), "revision_clouds":revisions::drawing(d,id)["revision_clouds"], "revision_tags":revisions::drawing(d,id)["revision_tags"], "additional_revisions":s.additional_revisions, "applicable_revisions":d.sheet_revisions(id),
                     "detail": d.detail_paths(id, 1.0, true, true), "text_notes": d.text_note_draws(id, 1.0),
                     "detail_lines": d.detail_lines(id).iter().map(|(i, l)| json!({ "id": i, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
                     "regions": d.detail_regions(id).iter().map(|(i, r)| json!({ "id": i, "masking": r.masking, "region_type": r.region_type })).collect::<Vec<_>>(),
@@ -2082,12 +2159,14 @@ impl Session {
                 Ok(json!({}))
             }
             // IFC4 export: { path, name? } (the name defaults to the file's stem)
+            "ifc_schedule_properties" => Ok(json!(self.ifc_schedule_properties(p)?)),
             "export_ifc" => {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
                 let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string())).unwrap_or_else(|| "OpenArch project".into());
-                let text = self.doc.export_ifc(&name);
+                let properties = self.ifc_schedule_properties(p)?;
+                let text = self.doc.export_ifc_with_properties(&name, &properties);
                 std::fs::write(&path, &text).map_err(|e| format!("could not write {}: {e}", path.display()))?;
-                Ok(json!({ "path": path.to_string_lossy(), "bytes": text.len() }))
+                Ok(json!({ "path": path.to_string_lossy(), "bytes": text.len(), "schedule_sets": properties.len() }))
             }
             "save" => {
                 let path = match p.get("path").and_then(|v| v.as_str()) {
@@ -2135,6 +2214,7 @@ impl Session {
         // detail lines, regions and text notes drawn in the view, in its own frame (along the view, and height)
         if let Some(o) = v.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
+            if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
         }
         // permanent dimensions, measured in the view's own frame
         let hidden_here = d.view(vid).map(|x| x.hidden_elements.clone()).unwrap_or_default();
@@ -2757,7 +2837,9 @@ impl Session {
             "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
         });
         if let Some(o) = out.as_object_mut() {
+            if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
             o.extend(detail_json(d, vid, &settings));
+            if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
         }
         Ok(out)
     }
@@ -2871,6 +2953,13 @@ impl Session {
     }
 
     fn describe(&self, id: Id) -> Res {
+        let mut props = self.describe_base(id)?;
+        if matches!(self.doc.get(id),Some(Element::FamilyInstance(_))){props["groups"].as_array_mut().unwrap().push(json!({"name":"Room","rows":self.component_room_fields(id)}));}
+        self.add_key_properties(&[id], &mut props);
+        Ok(props)
+    }
+
+    fn describe_base(&self, id: Id) -> Res {
         let d = &self.doc;
         if id == SITE_BASE_ID {
             return props::site_point_props(d, openarch_model::site::SitePoint::Base);
@@ -2882,6 +2971,10 @@ impl Session {
             return props::curtain_part_props(d, id);
         }
         match d.get(id).ok_or("no such element")? {
+            Element::Revision(_)|Element::RevisionCloud(_)|Element::RevisionTag(_)=>self.revision_properties(id),
+            Element::Room(r) => Ok(rooms::room_properties(d,id,r)),
+            Element::RoomTag(t) => Ok(self.room_tag_props(id,t)),
+            Element::RoomSeparation(_) => Ok(json!({"id":id,"kind":"RoomSeparation","title":"Room Separation","type_label":"Room Separation","groups":[],"target":{"method":"patch_room_separation","id":id}})),
             Element::Wall(w) => Ok(props::wall_props(d, id, w)),
             Element::Floor(f) => Ok(props::floor_props(d, id, f)),
             Element::Roof(r) => Ok(props::roof_props(d, id, r)),
