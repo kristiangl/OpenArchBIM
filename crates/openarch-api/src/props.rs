@@ -301,7 +301,7 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
             locked(enum_select("Discipline", "settings.discipline", &name_of(&s.discipline), &[("architectural", "Architectural"), ("structural", "Structural"), ("mechanical", "Mechanical"), ("electrical", "Electrical"), ("plumbing", "Plumbing"), ("coordination", "Coordination")]), inc(TemplateProp::Discipline)),
             locked(enum_select("Show Hidden Lines", "settings.show_hidden_lines", &name_of(&s.show_hidden_lines), &[("by_discipline", "By Discipline"), ("none", "None"), ("all", "All")]), inc(TemplateProp::ShowHiddenLines)),
             locked(enum_select("Color Scheme Location", "settings.color_scheme_location", &name_of(&s.color_scheme_location), &[("background", "Background"), ("foreground", "Foreground")]), inc(TemplateProp::ColorScheme)),
-            locked(ro("Color Scheme", "<none>"), inc(TemplateProp::ColorScheme)),
+            locked(if d.color_category_of_view(id).is_some() { dialog("Color Scheme", "color_scheme", &d.view_color_scheme(id).and_then(|s| d.color_fill_scheme(s)).map_or("<none>".to_string(), |s| s.name.clone())) } else { ro("Color Scheme", "<none>") }, inc(TemplateProp::ColorScheme)),
             locked(boolean("Sun Path", "settings.sun_path", s.sun_path, true), inc(TemplateProp::SunPath)),
         ]);
     }

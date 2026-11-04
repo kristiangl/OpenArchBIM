@@ -671,3 +671,11 @@ button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent)
 #ribbon .rb-field { display: flex; align-items: center; gap: 5px; min-height: 22px; padding: 0 5px; font-size: 12px; white-space: nowrap; }
 #ribbon .rb-field > span { min-width: 52px; }
 #ribbon .rb-field input, #ribbon .rb-field select { width: 72px; font: inherit; padding: 1px 3px; }
+
+/* Edit Color Scheme */
+.cs-wrap { display: flex; gap: 14px; align-items: flex-start; }
+.cs-list { min-width: 170px; display: flex; flex-direction: column; gap: 4px; }
+.cs-item.on a { font-weight: 600; }
+.cs-tools { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
+.cs-edit { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+.cs-table input[type=color] { width: 44px; height: 22px; padding: 0; border: 0; }

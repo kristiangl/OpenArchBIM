@@ -12,7 +12,8 @@ A free, open-source building information modelling (BIM) application for archite
 - Layered walls with wall types, mitred and butted joins, and join cleanup
 - Floors and roofs drawn from sketch boundaries, with slope-defining edges and slope arrows
 - Ceilings placed automatically inside walls or sketched, with compound or basic ceiling types, ceiling grids that move and turn, reflected ceiling plans that look up, sections that cut them, and room volumes that stop at them
-- Area schemes (Gross Building, Rentable), area plans with boundaries round the building, areas, area tags and area schedules
+- Area schemes (Gross Building, Rentable and your own), area plans with boundaries that follow their walls and sit where the area rules put them (centreline, face or glass, by the area types each side), areas, area tags and area schedules
+- Colour fill schemes for rooms and areas, by value or by range, with colour fill legends
 - Ceiling-hosted families of any category (lights, air diffusers, smoke detectors and so on) that hang from a ceiling and follow it
 - Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry), numbered Marks, and tags placed one at a time, all at once or as they are placed
 - Plan, elevation and section views, with view ranges, templates, graphic display options and reusable marker types linked to view types
@@ -30,7 +31,6 @@ A free, open-source building information modelling (BIM) application for archite
 
 ## What is planned
 
-- Area boundaries that follow their walls, and colour fill legends
 - Stairs, ramps and railings
 
 Australian standards and metric units come first. Other regions are welcome later.
@@ -75,7 +75,7 @@ then open http://127.0.0.1:8765. Windows previews use the Explorer file picker; 
 
 Selecting a section line shows its view properties. Edit Type selects a Section Tag; Marker Type Properties edits or duplicates its head and tail symbol choices. Elevation view types similarly select an Elevation Mark. Section end grips lengthen or shorten along the current cut plane, with a perpendicular range box throughout the drag; Align and Rotate can change its angle. New projects include separate Section Head and Section Tail families, anchored where their reference planes cross. The editable source families are in `crates/openarch-model/families`. Existing project families keep their saved artwork and type choices.
 
-Projects saved with this build use file format 13, which adds project instance parameters, key schedules, rooms, revisions, door and window tags, ceilings and areas. Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
+Projects saved with this build use file format 13, which adds project instance parameters, key schedules, rooms, revisions, door and window tags, ceilings, areas and colour fill schemes. Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
 
 For a key schedule, choose Schedule keys in New Schedule, select a category and name the key selector. Add instance fields or use Add Parameter for a project/shared parameter. Insert Data Row creates a key; edit its values, then assign it to elements in Properties or an ordinary schedule. Set the selector to (none) to unlock the values while keeping them.
 

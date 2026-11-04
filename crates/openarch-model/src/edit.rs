@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -386,7 +386,8 @@ impl Document {
                 Some(Element::RevisionTag(t))=>{let mut t=t.clone();t.at=x.apply(t.at);t.pinned=t.pinned&&!opt.copy;Element::RevisionTag(t)},
                 Some(Element::Area(a)) => { let mut a = a.clone(); a.at = a.at.map(|p| x.apply(p)); a.pinned = a.pinned && !opt.copy; Element::Area(a) }
                 Some(Element::AreaTag(t)) => { let mut t = t.clone(); t.at = x.apply(t.at); t.pinned = t.pinned && !opt.copy; Element::AreaTag(t) }
-                Some(Element::AreaBoundary(b)) => { let mut b = b.clone(); b.curve = b.curve.transform(x); b.pinned = b.pinned && !opt.copy; b.wall = None; Element::AreaBoundary(b) }
+                Some(Element::ColorFillLegend(l)) => { let mut l = l.clone(); l.at = x.apply(l.at); l.pinned = l.pinned && !opt.copy; Element::ColorFillLegend(l) }
+                Some(Element::AreaBoundary(b)) => { let mut b = b.clone(); b.curve = self.area_boundary_curve(id).unwrap_or_else(|| b.curve.clone()).transform(x); b.pinned = b.pinned && !opt.copy; b.wall = None; Element::AreaBoundary(b) }
                 // a ceiling's boundary, slope arrow and grid origin carry the change, as a floor's do
                 Some(Element::Ceiling(c)) => {
                     let mut c = c.clone();

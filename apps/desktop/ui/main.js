@@ -60,6 +60,8 @@ const COMMANDS = {
   "area-plan": () => Areas.newPlan(),
   "area-boundary": () => Areas.start("areaboundary"),
   "tag-area": () => Areas.start("areatag"),
+  "area-schemes": () => ColorFill.schemes(),
+  "color-legend": () => ColorFill.start(),
   "tag-cat": () => Tags.start(),
   "tag-all": () => Tags.tagAll(),
   room: () => Spatial.start(),
@@ -326,6 +328,9 @@ function currentContext() {
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
+  if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
+  const cf = ColorFill.selectionContext();
+  if (cf) return cf;
   const cs = Ceilings.selectionContext();
   if (cs) return cs;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation

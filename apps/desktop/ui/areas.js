@@ -1,7 +1,7 @@
 // Areas: Area Plan, Area Boundary (Pick Walls by the scheme's rule, or Draw lines), Area, Tag Area, and how an area
 // plan draws its areas, boundary lines and tags. Private notes: areas.md.
 const Areas = (() => {
-  let tagOnPlacement = true;
+  let tagOnPlacement = true, applyRules = true;
   const isAreaPlan = () => app.view.kind === "plan" && (app.info.views || []).find((v) => v.id === app.view.viewId)?.view_kind === "area_plan";
   const schemeOfView = () => { const v = (app.info.views || []).find((x) => x.id === app.view.viewId); return (app.info.area_schemes || []).find((s) => s.id === v?.area_scheme); };
 
@@ -37,7 +37,7 @@ const Areas = (() => {
     if (!(await needPlan(tool === "area" ? "An area" : tool === "areatag" ? "An area tag" : "An area boundary"))) return;
     Plan.setTool(tool);
     updateRibbonContext(true);
-    setPrompt(tool === "area" ? "Click inside closed area boundaries to place an area. Esc finishes." : tool === "areatag" ? "Click inside a placed area to tag it. Esc finishes." : `Pick walls: the boundary goes ${schemeOfView()?.rules === "rentable" ? "on the wall centreline" : "on the outside face"}. Draw for lines of your own. Esc finishes.`);
+    setPrompt(tool === "area" ? "Click inside closed area boundaries to place an area. Esc finishes." : tool === "areatag" ? "Click inside a placed area to tag it. Esc finishes." : "Pick walls: the boundary follows the wall, placed by the area rules (Apply Area Rules) or on its centre. Line draws lines of your own. Esc finishes.");
   }
   function context() {
     const mode = { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => Plan.setTool("select") }] };
@@ -46,9 +46,11 @@ const Areas = (() => {
       { label: "Place Areas Automatically", ico: "Au", onclick: async () => { const r = await run("place_all_areas", { view_id: app.view.viewId, tag: tagOnPlacement }); if (r) { await refresh(); setPrompt(r.ids.length ? `Placed ${r.ids.length} area${r.ids.length === 1 ? "" : "s"}.` : "Every enclosed area already has an area."); } } },
     ] }] };
     if (Plan.tool === "areatag") return { auto: true, key: "areatag", title: "Tag Area", groups: [mode] };
-    return { auto: true, key: "areaboundary", title: "Place Area Boundary", groups: [mode, { label: "Draw", items: [
-      { label: "Pick Walls (Apply Area Rules)", icon: "wall", on: Plan.tool === "areaboundary", onclick: () => Plan.setTool("areaboundary") },
+    return { auto: true, key: `areaboundary:${applyRules}`, title: "Place Area Boundary", groups: [mode, { label: "Draw", items: [
+      { label: "Pick Walls", icon: "wall", on: Plan.tool === "areaboundary", onclick: () => Plan.setTool("areaboundary") },
       { label: "Line", icon: "line", onclick: () => drawLines() },
+    ] }, { label: "Options", items: [
+      { label: "Apply Area Rules", ico: "Ru", on: applyRules, onclick: () => { applyRules = !applyRules; updateRibbonContext(); } },
     ] }] };
   }
   async function click(tool, p, wallId) {
@@ -58,8 +60,7 @@ const Areas = (() => {
       if (await run("add_area_tag", { view_id: app.view.viewId, point: [p.x, p.y] })) await refresh();
     } else if (tool === "areaboundary") {
       if (wallId == null) { setPrompt("Pick a wall.", true); return; }
-      const r = await run("area_boundary_for_wall", { view_id: app.view.viewId, wall_id: wallId });
-      if (r && (await run("add_area_boundaries", { view_id: app.view.viewId, curves: [r.curve], apply_rules: true }))) await refresh();
+      if (await run("add_wall_area_boundaries", { view_id: app.view.viewId, wall_ids: [wallId], apply_rules: applyRules, offset_mm: 0 })) await refresh();
     }
   }
   function drawLines() {

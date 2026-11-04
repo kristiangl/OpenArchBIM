@@ -255,7 +255,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Areas.elements(data, cam.s));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -394,7 +394,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, floor: 3, ceiling: 3 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, floor: 3, ceiling: 3 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1175,6 +1175,8 @@ const Plan = (() => {
       const a = toScreen({ x: c0[0], y: c1[1] }), b = toScreen({ x: c1[0], y: c0[1] });
       ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.clip();
     }
+    // colour fills behind the model (Color Scheme Location: Background)
+    ColorFill.drawFills(ctx, data, toScreen, "background");
 
     const bg = css("--view-bg");
     // line weights and pattern lengths are paper sizes: pixels = paper mm x scale x zoom
@@ -1530,8 +1532,10 @@ const Plan = (() => {
     drawGroups();
     const hov = new Set(tool === "select" && selHover ? selHover : []);
     Det.drawItems(sel, hov, accent, tool === "select");
+    ColorFill.drawFills(ctx, data, toScreen, "foreground");
     ctx.restore();
     annCrop(() => {
+      ColorFill.drawLegends(ctx, data, toScreen, cam.s, sel);
       Spatial.draw(ctx,data,toScreen,cam.s,sel,printing);
       Areas.draw(ctx, data, toScreen, cam.s, sel, printing);
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
@@ -2223,6 +2227,7 @@ const Plan = (() => {
     if (tool === "room" || tool === "roomtag") { Spatial.place(tool,toWorld(sx,sy)); return; }
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
+    if (tool === "colorlegend") { ColorFill.place(toWorld(sx, sy)); return; }
     if (tool === "ceilinggrid") { Ceilings.gridClick(snap(sx, sy)); return; }
     if (tool === "area" || tool === "areatag" || tool === "areaboundary") {
       const walls = new Set(data.walls.map((w) => w.id));

@@ -52,7 +52,7 @@ pub enum RoomStatus { Placed, NotPlaced, NotEnclosed, Redundant }
 pub struct RoomCalculation { pub status: RoomStatus, pub region: Option<Region>, pub area_mm2: f64, pub perimeter_mm: f64, pub volume_mm3: Option<f64>, pub height_mm: f64 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,RoomCalculation>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
+pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<Id,Arc<Vec<Region>>>, pub area_lines: BTreeMap<Id,Arc<Vec<(Id,Curve)>>>, pub area_faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,RoomCalculation>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
 
 /// The faces left when `clips` are cut out of the plane: the enclosed ones, and the holes of the outside face (the
 /// outlines the outside meets).
@@ -73,7 +73,7 @@ pub fn contains(region:&Region,at:Point)->bool {curve::point_in_polygon(at,&regi
 fn strip(a:Point,b:Point,left:f64,right:f64,extend:f64)->Vec<Point>{let l=a.dist(&b);if l<1e-6{return vec![];}let (dx,dy)=((b.x-a.x)/l,(b.y-a.y)/l);vec![Point::new(a.x-dx*extend+dy*right,a.y-dy*extend-dx*right),Point::new(b.x+dx*extend+dy*right,b.y+dy*extend-dx*right),Point::new(b.x+dx*extend-dy*left,b.y+dy*extend+dx*left),Point::new(a.x-dx*extend-dy*left,a.y-dy*extend+dx*left)]}
 
 impl Document {
-    fn room_cache_reset(&self){let mut c=self.room_cache.borrow_mut();if c.edit!=self.edit_count{*c=RoomCache{edit:self.edit_count,..Default::default()};}}
+    pub(crate) fn room_cache_reset(&self){let mut c=self.room_cache.borrow_mut();if c.edit!=self.edit_count{*c=RoomCache{edit:self.edit_count,..Default::default()};}}
     pub fn rooms(&self)->Vec<(Id,&Room)>{self.iter().filter_map(|(id,e)|if let Element::Room(r)=e{Some((id,r))}else{None}).collect()}
     pub fn room(&self,id:Id)->Option<&Room>{match self.get(id){Some(Element::Room(r))=>Some(r),_=>None}}
     pub fn room_tags(&self,view:Id)->Vec<(Id,&RoomTag)>{self.iter().filter_map(|(id,e)|match e{Element::RoomTag(t)if t.view==view=>Some((id,t)),_=>None}).collect()}

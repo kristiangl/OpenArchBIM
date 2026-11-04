@@ -699,6 +699,8 @@ pub enum Element {
     AreaBoundary(crate::areas::AreaBoundary),
     Area(crate::areas::Area),
     AreaTag(crate::areas::AreaTag),
+    ColorFillScheme(crate::colorfill::ColorFillScheme),
+    ColorFillLegend(crate::colorfill::ColorFillLegend),
 }
 
 impl Element {
@@ -764,6 +766,8 @@ impl Element {
             Element::AreaBoundary(_) => "AreaBoundary",
             Element::Area(_) => "Area",
             Element::AreaTag(_) => "AreaTag",
+            Element::ColorFillScheme(_) => "ColorFillScheme",
+            Element::ColorFillLegend(_) => "ColorFillLegend",
         }
     }
 }

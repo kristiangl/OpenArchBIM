@@ -76,7 +76,7 @@ function rowCells(r, target) {
     b.textContent = r.value;
     b.className = "edit-btn";
     const sched = (tab) => () => Sched.edit(target.id, tab);
-    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange, sheet_revisions: () => Revisions.sheetDialog(target.id), schedule_fields: sched("fields"), schedule_filter: sched("filter"), schedule_sorting: sched("sorting"), schedule_formatting: sched("formatting"), schedule_appearance: sched("appearance") })[r.dialog]?.());
+    b.onclick = () => (target && target.dialogs && target.dialogs[r.dialog] ? target.dialogs[r.dialog]() : ({ vg: openVG, view_range: openViewRange, sheet_revisions: () => Revisions.sheetDialog(target.id), color_scheme: () => ColorFill.edit(target.id), schedule_fields: sched("fields"), schedule_filter: sched("filter"), schedule_sorting: sched("sorting"), schedule_formatting: sched("formatting"), schedule_appearance: sched("appearance") })[r.dialog]?.());
     val.append(dis(b));
   } else {
     val.textContent = r.value;

@@ -70,11 +70,23 @@ impl Tx<'_> {
         if matches!(self.doc.get(id), Some(Element::ProjectParameter(_))) && self.doc.schedules().iter().any(|(_, v)| v.schedule.as_ref().and_then(|s| s.key.as_ref()).is_some_and(|k| k.bindings.values().any(|b| b.project_parameter == Some(id)))) {
             return Err("That parameter is used by a key schedule.".into());
         }
+        // area boundaries that followed a deleted wall stay where it put them
+        let frozen: Vec<(Id, crate::areas::AreaBoundary, Vec<crate::curve::Curve>)> = if matches!(self.doc.get(id), Some(Element::Wall(_))) {
+            let follow: Vec<(Id, crate::areas::AreaBoundary)> = self.doc.iter().filter_map(|(bid, e)| match e { Element::AreaBoundary(b) if b.wall == Some(id) => Some((bid, b.clone())), _ => None }).collect();
+            follow.into_iter().map(|(bid, mut b)| { let pieces = self.doc.area_boundary_pieces(bid); b.wall = None; (bid, b, pieces) }).collect()
+        } else { vec![] };
         self.doc.edit_count += 1;
         let before = self.doc.elements.remove(&id).ok_or_else(|| format!("no element {id}"))?;
+        // a boundary the wall split by the areas beside it stays as its parts, one line each
+        for (bid, b, pieces) in frozen {
+            if !self.doc.elements.contains_key(&bid) { continue; }
+            let mut pieces = pieces.into_iter();
+            self.update(bid, Element::AreaBoundary(crate::areas::AreaBoundary { curve: pieces.next().unwrap_or_else(|| b.curve.clone()), ..b.clone() }))?;
+            for c in pieces { self.add(Element::AreaBoundary(crate::areas::AreaBoundary { curve: c, pinned: false, ..b.clone() })); }
+        }
         let is_annotation = matches!(before, Element::Dimension(_) | Element::Spot(_));
         self.changes.push(Change { id, before: Some(before), after: None });
-        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::FamilyInstance(i) if i.face_host.is_some_and(|h|h.element==id)=>Some(tid),Element::AreaTag(t) if t.area==id||t.view==id=>Some(tid),Element::AreaBoundary(b) if b.view==id=>Some(tid),Element::Area(a) if a.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
+        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::FamilyInstance(i) if i.face_host.is_some_and(|h|h.element==id)=>Some(tid),Element::AreaTag(t) if t.area==id||t.view==id=>Some(tid),Element::AreaBoundary(b) if b.view==id=>Some(tid),Element::Area(a) if a.view==id=>Some(tid),Element::ColorFillLegend(l) if l.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
         // one dependant can go with another first (an area's tag with the area, both with their view)
         for tid in tags { if self.doc.elements.contains_key(&tid) { self.remove(tid)?; } }
         if !is_annotation {
@@ -653,6 +665,7 @@ impl Document {
             Some(Element::Area(a)) => a.pinned,
             Some(Element::AreaTag(t)) => t.pinned,
             Some(Element::AreaBoundary(b)) => b.pinned,
+            Some(Element::ColorFillLegend(l)) => l.pinned,
             Some(Element::Roof(r)) => r.pinned,
             Some(Element::FamilyInstance(i)) => i.pinned,
             Some(Element::ElevationMarker(m)) => m.pinned,
@@ -680,7 +693,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -694,6 +707,7 @@ impl Document {
                 Element::Area(a)=>a.pinned=pinned,
                 Element::AreaTag(t)=>t.pinned=pinned,
                 Element::AreaBoundary(b)=>b.pinned=pinned,
+                Element::ColorFillLegend(l)=>l.pinned=pinned,
                 Element::Wall(w) => w.pinned = pinned,
                 Element::Floor(f) => f.pinned = pinned,
                 Element::Roof(r) => r.pinned = pinned,
@@ -726,7 +740,7 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_)) => {},
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,

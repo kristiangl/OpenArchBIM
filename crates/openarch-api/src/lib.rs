@@ -26,6 +26,7 @@ mod revisions;
 mod tags;
 mod ceilings;
 mod areas;
+mod colorfill;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -221,6 +222,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_areas(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_color_fills(method, p) {
             return r;
         }
         match method {
@@ -2361,7 +2365,7 @@ impl Session {
                 }))
             }).collect::<Vec<_>>(),
             "floor_types": d.floor_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
-            "area_schemes": d.area_schemes().iter().map(|(id, s)| json!({ "id": id, "name": s.name, "rules": s.rules, "built_in": s.built_in })).collect::<Vec<_>>(),
+            "area_schemes": d.area_schemes().iter().map(|(id, s)| json!({ "id": id, "name": s.name, "description": s.description, "rules": s.rules, "built_in": s.built_in, "has_areas": d.areas().iter().any(|(_, a)| d.scheme_of_area(a) == Some(*id)) })).collect::<Vec<_>>(),
             "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
             "roof_types": d.roof_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "undo": d.undo_name(),
@@ -2871,6 +2875,7 @@ impl Session {
             if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
             if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(a) = areas::drawing(d, vid).as_object() { o.extend(a.clone()); }
+            if let Some(c) = colorfill::drawing(d, vid).as_object() { o.extend(c.clone()); }
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
@@ -3013,7 +3018,8 @@ impl Session {
             Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
             Element::Area(a) => Ok(self.area_props(id, a)),
             Element::AreaTag(t) => Ok(self.area_tag_props(id, t)),
-            Element::AreaBoundary(_) => Ok(json!({ "id": id, "kind": "AreaBoundary", "title": "Area Boundary", "type_label": "Area Boundary", "groups": [], "target": { "method": "patch_area_boundary", "id": id } })),
+            Element::ColorFillLegend(l) => Ok(self.color_legend_props(id, l)),
+            Element::AreaBoundary(b) => Ok(self.area_boundary_props(id, b)),
             Element::RoomSeparation(_) => Ok(json!({"id":id,"kind":"RoomSeparation","title":"Room Separation","type_label":"Room Separation","groups":[],"target":{"method":"patch_room_separation","id":id}})),
             Element::Wall(w) => Ok(props::wall_props(d, id, w)),
             Element::Floor(f) => Ok(props::floor_props(d, id, f)),

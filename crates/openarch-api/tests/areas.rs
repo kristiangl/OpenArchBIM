@@ -64,9 +64,9 @@ fn rentable_boundaries_split_areas_types_unplace_and_schedules() {
     let _ = info;
     let walls: Vec<u64> = call(&mut m.s, "plan", json!({ "view_id": plan }))["walls"].as_array().unwrap().iter().map(|w| w["id"].as_u64().unwrap()).collect();
     let middle = *walls.last().unwrap();
-    let curve = call(&mut m.s, "area_boundary_for_wall", json!({ "view_id": plan, "wall_id": middle }))["curve"].clone();
-    assert_eq!(curve["a"]["x"], 4000.0, "on the centreline");
-    call(&mut m.s, "add_area_boundaries", json!({ "view_id": plan, "curves": [curve] }));
+    let b = call(&mut m.s, "add_wall_area_boundaries", json!({ "view_id": plan, "wall_ids": [middle] }))["ids"][0].as_u64().unwrap();
+    let drawn = call(&mut m.s, "plan", json!({ "view_id": plan }))["area_boundaries"].as_array().unwrap().iter().find(|x| x["id"] == b).unwrap().clone();
+    assert!(drawn["pts"].as_array().unwrap().iter().all(|p| p[0] == 4000.0), "on the centreline: {drawn}");
     let ids = call(&mut m.s, "place_all_areas", json!({ "view_id": plan }))["ids"].as_array().unwrap().clone();
     assert_eq!(ids.len(), 2, "one area each side of the middle boundary");
     let left = ids.iter().map(|v| v.as_u64().unwrap()).min().unwrap();
@@ -97,4 +97,57 @@ fn rentable_boundaries_split_areas_types_unplace_and_schedules() {
     // deleting the area plan takes its boundaries, areas and tags with it
     call(&mut again, "delete", json!({ "ids": [plan] }));
     assert!(again.handle("describe", &json!({ "id": left })).is_err());
+}
+
+fn area_of(s: &mut Session, id: u64) -> f64 { row(s, id, "Area")["raw"].as_f64().unwrap() }
+
+#[test]
+fn rentable_rules_follow_the_area_types_each_side_and_the_glass() {
+    let mut m = model();
+    let plan = call(&mut m.s, "create_area_plans", json!({ "scheme_id": m.rentable, "levels": [m.level], "boundaries": true }))["ids"][0].as_u64().unwrap();
+    let walls: Vec<u64> = call(&mut m.s, "plan", json!({ "view_id": plan }))["walls"].as_array().unwrap().iter().map(|w| w["id"].as_u64().unwrap()).collect();
+    call(&mut m.s, "add_wall_area_boundaries", json!({ "view_id": plan, "wall_ids": [walls[4]] }));
+    // picking the same wall again adds nothing
+    assert!(m.s.handle("add_wall_area_boundaries", &json!({ "view_id": plan, "wall_ids": [walls[4]] })).is_err());
+    let ids: Vec<u64> = call(&mut m.s, "place_all_areas", json!({ "view_id": plan }))["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let (left, right) = (ids[0].min(ids[1]), ids[0].max(ids[1]));
+    // office beside office at the centreline, the exterior walls to their inside faces
+    assert!((area_of(&mut m.s, left) - 3.942 * 4.884).abs() < 0.001, "{}", area_of(&mut m.s, left));
+    // a store measures to the outside faces of its exterior walls; the walls it shares with the office split there
+    call(&mut m.s, "patch_area", json!({ "id": right, "patch": { "area_type": "store_area" } }));
+    assert!((area_of(&mut m.s, right) - 4.058 * 5.116).abs() < 0.001, "{}", area_of(&mut m.s, right));
+    assert!((area_of(&mut m.s, left) - 3.942 * 4.884).abs() < 0.001, "{}", area_of(&mut m.s, left));
+    call(&mut m.s, "patch_area", json!({ "id": right, "patch": { "area_type": "office_area" } }));
+    // a shaft: the boundary goes to the face of the wall on the office side
+    call(&mut m.s, "patch_area", json!({ "id": left, "patch": { "area_type": "major_vertical_penetration" } }));
+    assert!((area_of(&mut m.s, left) - 4.000 * 4.884).abs() < 0.001, "{}", area_of(&mut m.s, left));
+    assert!((area_of(&mut m.s, right) - 3.884 * 4.884).abs() < 0.001, "{}", area_of(&mut m.s, right));
+    // a floor-length window in the south wall: the boundary goes to the glass, at the middle of the wall
+    let info = call(&mut m.s, "doc_info", json!({}));
+    let ty = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 2400 x 2100").unwrap()["id"].clone();
+    call(&mut m.s, "place_instance", json!({ "type_id": ty, "host_id": walls[0], "point": [6000, 0] }));
+    assert!((area_of(&mut m.s, right) - 3.884 * 4.942).abs() < 0.001, "{}", area_of(&mut m.s, right));
+    // rules off: the line sits at its offset from the wall centre, toward the exterior
+    let b = call(&mut m.s, "plan", json!({ "view_id": plan }))["area_boundaries"].as_array().unwrap().iter().find(|x| x["wall"] == walls[4]).unwrap()["id"].as_u64().unwrap();
+    call(&mut m.s, "patch_area_boundary", json!({ "id": b, "patch": { "apply_rules": false, "offset_mm": 0 } }));
+    assert!((area_of(&mut m.s, right) - 3.942 * 4.942).abs() < 0.001, "{}", area_of(&mut m.s, right));
+}
+
+#[test]
+fn boundaries_follow_their_walls_and_stay_when_a_wall_goes() {
+    let mut m = model();
+    let plan = call(&mut m.s, "create_area_plans", json!({ "scheme_id": m.gross, "levels": [m.level], "boundaries": true }))["ids"][0].as_u64().unwrap();
+    let drawn = call(&mut m.s, "plan", json!({ "view_id": plan }));
+    assert_eq!(drawn["area_boundaries"].as_array().unwrap().iter().filter(|b| b["wall"].is_u64()).count(), 4, "one boundary on each exterior wall");
+    let walls: Vec<u64> = drawn["walls"].as_array().unwrap().iter().map(|w| w["id"].as_u64().unwrap()).collect();
+    let area = call(&mut m.s, "add_area", json!({ "view_id": plan, "point": [2000, 2500] }))["id"].as_u64().unwrap();
+    // the north wall moves 1000 north: the area grows with it
+    call(&mut m.s, "transform", json!({ "ids": [walls[2]], "kind": "move", "dx": 0, "dy": 1000 }));
+    assert!((area_of(&mut m.s, area) - 8.116 * 6.116).abs() < 0.01, "{}", area_of(&mut m.s, area));
+    // deleting it leaves its boundary where it was
+    call(&mut m.s, "delete", json!({ "ids": [walls[2]] }));
+    assert!((area_of(&mut m.s, area) - 8.116 * 6.116).abs() < 0.01, "{}", area_of(&mut m.s, area));
+    call(&mut m.s, "undo", json!({}));
+    let b = call(&mut m.s, "plan", json!({ "view_id": plan }))["area_boundaries"].as_array().unwrap().iter().filter(|b| b["wall"].is_u64()).count();
+    assert_eq!(b, 4, "undo brings the wall and its boundary back together");
 }
