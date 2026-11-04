@@ -141,6 +141,10 @@ async function renderProperties() {
     types = app.info.floor_types; current = d.type_id;
     onType = async (id) => { await run("set_floor_type", { id: d.id, type_id: id }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "Ceiling") {
+    types = app.info.ceiling_types; current = d.type_id;
+    onType = async (id) => { await run("patch_ceiling", { id: d.id, patch: { ceiling_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Roof") {
     types = app.info.roof_types; current = d.type_id;
     onType = async (id) => { await run("set_roof_type", { id: d.id, type_id: id }); await refresh(); };
@@ -223,6 +227,15 @@ async function renderProperties() {
     onType = (id) => { if (tool === "door") app.doorTypeId = id; else app.windowTypeId = id; syncPlacement(tool); renderProperties(); };
     title = tool === "door" ? "Place Door" : "Place Window";
     groups.push({ name: "Constraints", rows: [{ label: "Host", value: "Wall (click to place)", kind: "ro" }] });
+  } else if (tool === "ceiling" || (tool === "sketch" && Sketch.kind === "ceiling" && !Sketch.editingId)) {
+    // placing a ceiling: its type and its height above the level
+    types = app.info.ceiling_types || []; current = Ceilings.typeId();
+    onType = (id) => { app.ceilingTypeId = id; renderProperties(); };
+    title = tool === "ceiling" ? "Place Ceiling" : "Create Ceiling Boundary";
+    groups.push({ name: "Constraints", target: { apply: (patch) => { if (Number.isFinite(patch.offset)) app.ceilingOffset = patch.offset; renderProperties(); } }, rows: [
+      { label: "Level", value: currentLevel().name, kind: "ro" },
+      { label: "Height Offset From Level", kind: "number", raw: Ceilings.offset(), value: String(Ceilings.offset()), path: "offset" },
+    ] });
   } else if (tool === "sketch" && Sketch.kind === "floor" && !Sketch.editingId) {
     types = app.info.floor_types; current = app.floorTypeId;
     onType = (id) => { app.floorTypeId = id; renderProperties(); };
@@ -307,7 +320,7 @@ async function renderProperties() {
 // ---- Type Selector ----------------------------------------------------------------
 // A button showing the family and type, and a drop-down that lists every type under its family, with a search box
 // and the most recently used types at the bottom. The native select stays (hidden) as the value holder.
-const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
+const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.ceiling_types || [], "Compound Ceiling"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
 function typeEntries(types) {
   const group = TYPE_GROUP().get(types) || "";
   return (types || []).map((t) => ({ id: t.id, family: t.family || group, name: t.name, category: t.category || "" }));

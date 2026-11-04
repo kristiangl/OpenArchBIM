@@ -147,6 +147,7 @@ impl Session {
         let d = &self.doc;
         match d.get(id)? {
             Element::Room(_) => Some("Rooms".into()),
+            Element::Ceiling(_) => Some("Ceilings".into()),
             Element::Revision(_) => Some("Revisions".into()),
             Element::RevisionCloud(_) => Some("Revision Clouds".into()),
             Element::Wall(_) => Some("Walls".into()),

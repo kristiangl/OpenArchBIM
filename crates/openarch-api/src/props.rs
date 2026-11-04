@@ -603,6 +603,7 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         Some(Element::WallType(t)) => (&t.name, &t.coarse_fill, &t.info),
         Some(Element::FloorType(t)) => (&t.name, &t.coarse_fill, &t.info),
         Some(Element::RoofType(t)) => (&t.name, &t.coarse_fill, &t.info),
+        Some(Element::CeilingType(t)) => (&t.name, &t.coarse_fill, &t.info),
         _ => unreachable!(),
     };
     let v = assembly_values(d, layers);
@@ -616,6 +617,7 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         SysKind::Wall => d.wall_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
         SysKind::Floor => d.floor_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
         SysKind::Roof => d.roof_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
+        SysKind::Ceiling => d.ceiling_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
     };
     let mut wall_extra = json!(null);
     match d.get(id) {
@@ -652,6 +654,13 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         Some(Element::FloorType(t)) => {
             construction.push(ro("Default Thickness", format!("{}", v.thickness_mm)));
             construction.push(enum_select("Function", "function", &name_of(&t.function), &[("interior", "Interior"), ("exterior", "Exterior")]));
+        }
+        // a ceiling type: its thickness and the grid its reflected ceiling plans draw (blank for a plain ceiling)
+        Some(Element::CeilingType(t)) => {
+            construction.push(ro("Thickness", format!("{}", v.thickness_mm)));
+            let [across, along] = t.grid.unwrap_or([0.0, 0.0]);
+            construction.push(num("Grid Spacing Across", "grid_across", across, true));
+            construction.push(num("Grid Spacing Along", "grid_along", along, true));
         }
         _ => construction.push(ro("Default Thickness", format!("{}", v.thickness_mm))),
     }

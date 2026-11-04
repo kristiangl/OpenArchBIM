@@ -693,6 +693,8 @@ pub enum Element {
     RevisionCloud(crate::revisions::RevisionCloud),
     RevisionTag(crate::revisions::RevisionTag),
     ElementTag(crate::tags::ElementTag),
+    CeilingType(crate::ceiling::CeilingType),
+    Ceiling(crate::ceiling::Ceiling),
 }
 
 impl Element {
@@ -752,6 +754,8 @@ impl Element {
             Element::RevisionCloud(_) => "RevisionCloud",
             Element::RevisionTag(_) => "RevisionTag",
             Element::ElementTag(_) => "ElementTag",
+            Element::CeilingType(_) => "CeilingType",
+            Element::Ceiling(_) => "Ceiling",
         }
     }
 }

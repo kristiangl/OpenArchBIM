@@ -318,7 +318,17 @@ pub fn instance_meshes(doc: &Document, id: u64) -> Option<(FamilyCategory, Vec<f
 }
 
 pub fn floor_mesh(doc: &Document, f: &Floor) -> Option<Vec<f32>> {
-    let t = doc.floor_type(f.floor_type)?.thickness_mm();
+    slab_mesh(doc, f, doc.floor_type(f.floor_type)?.thickness_mm())
+}
+
+/// A ceiling: its slab from the underside up through its layers; a basic ceiling is one plane seen from both sides.
+pub fn ceiling_mesh(doc: &Document, c: &crate::ceiling::Ceiling) -> Option<Vec<f32>> {
+    let t = doc.ceiling_thickness(c);
+    slab_mesh(doc, &c.as_slab(t), t)
+}
+
+/// A slab `t` thick under the top surface of `f`'s level, offset and slope, filling its loops.
+fn slab_mesh(doc: &Document, f: &Floor, t: f64) -> Option<Vec<f32>> {
     let surf = doc.floor_surface(f)?;
     let regions = f.regions(0.5);
     if regions.is_empty() {
@@ -337,6 +347,9 @@ pub fn floor_mesh(doc: &Document, f: &Floor) -> Option<Vec<f32>> {
             let (a, b, c) = (pts[tr[0]], pts[tr[1]], pts[tr[2]]);
             tri(&mut out, top(a), top(b), top(c), up);
             tri(&mut out, bot(a), bot(c), bot(b), down);
+        }
+        if t <= 0.0 {
+            continue;
         }
         // sides: the material is on the left of every edge, so the outside is on the right
         for ring in std::iter::once(&r.outer).chain(r.holes.iter()) {

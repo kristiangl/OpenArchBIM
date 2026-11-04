@@ -596,6 +596,24 @@ impl Document {
             }
         }
 
+        // ceilings: IfcCovering CEILING, their 3D mesh (a basic ceiling is a plane)
+        for (id, c) in self.ceilings() {
+            if skip(&c.ifc) {
+                continue;
+            }
+            let lv = storey_of(c.level);
+            let (_, storey_at, sz) = storeys[&lv];
+            let Some(set) = crate::mesh::ceiling_mesh(self, c).and_then(|v| w.faceset(&v, -sz)) else { continue };
+            let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+            let shape = w.tessellated(&[set]);
+            let name = self.ceiling_type(c.ceiling_type).map_or("Ceiling".to_string(), |t| t.name.clone());
+            let guid = if valid_guid(&c.ifc.guid) { c.ifc.guid.clone() } else { derived(ELEMENT, id) };
+            let tag = if c.mark.trim().is_empty() { "$".to_string() } else { s(&c.mark) };
+            let ent = w.add(format!("IFCCOVERING({},$,{},$,{},#{at},#{shape},{tag},.CEILING.)", s(&guid), s(&name), s(&name)));
+            contained.entry(lv).or_default().push(ent);
+            products.insert(id, ent);
+        }
+
         // roofs: their 3D mesh
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };

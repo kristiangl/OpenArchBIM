@@ -70,7 +70,14 @@ impl Document {
     /// Enclosed free-space faces after subtracting room-bounding wall bodies and separation lines.
     pub fn room_faces(&self,level:Id)->Arc<Vec<Region>>{
         self.room_cache_reset();if let Some(f)=self.room_cache.borrow().faces.get(&level){return f.clone();}
-        let z=self.level(level).map_or(0.0,|l|l.elevation_mm+l.computation_height_mm);let settings=self.room_settings();
+        let z=self.level(level).map_or(0.0,|l|l.elevation_mm+l.computation_height_mm);
+        let faces=Arc::new(self.enclosed_faces(level,z,self.room_settings().boundary,true));self.room_cache.borrow_mut().faces.insert(level,faces.clone());faces
+    }
+
+    /// The free-space faces walls (that reach height `z`), room-bounding columns and families, and (with `separators`)
+    /// room separation lines enclose on a level: what rooms and automatic ceilings fill.
+    pub fn enclosed_faces(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Region>{
+        let settings=RoomSettings{boundary,..Default::default()};
         let mut walls=vec![];
         for (id,w) in self.iter().filter_map(|(id,e)|if let Element::Wall(w)=e{Some((id,w))}else{None}){
             let (lo,hi)=self.wall_extent(w);if !w.room_bounding||z<lo-0.01||z>=hi-0.001{continue;}
@@ -86,7 +93,7 @@ impl Document {
             for f in &mut facets{f.level=level;}walls.extend(facets);
         }
         let mut clips:Vec<Vec<Point>>=crate::join::join_walls(&walls).into_values().map(|q|q.to_vec()).collect();
-        for (_,e) in self.iter(){if let Element::RoomSeparation(s)=e{if s.level==level{let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
+        for (_,e) in self.iter().filter(|_|separators){if let Element::RoomSeparation(s)=e{if s.level==level{let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
         // Columns and explicitly room-bounding loadable families contribute their actual horizontal mesh section.
         for (id,i) in self.instances(){let Some((family,_))=self.instance_family(i)else{continue};let bounded=family.settings.room_bounding.unwrap_or(matches!(family.category,crate::family::FamilyCategory::Columns|crate::family::FamilyCategory::StructuralColumns));if !bounded{continue;}if let Some((_,solid,_))=crate::mesh::instance_meshes(self,id){clips.extend(horizontal_rings(&solid,z+0.001));}}
         let pts:Vec<_>=clips.iter().flatten().copied().collect();let faces=if pts.is_empty(){vec![]}else{
@@ -94,7 +101,7 @@ impl Document {
             let frame=vec![Point::new(minx-pad,miny-pad),Point::new(maxx+pad,miny-pad),Point::new(maxx+pad,maxy+pad),Point::new(minx-pad,maxy+pad)];
             crate::layers::subtract(&frame,clips.iter()).into_iter().filter_map(|mut s|{if s.is_empty(){return None;}let outer=s.remove(0);if outer.iter().any(|p|p.x<=minx-pad+0.1||p.x>=maxx+pad-0.1||p.y<=miny-pad+0.1||p.y>=maxy+pad-0.1){return None;}let r=Region{outer,holes:s};(r.area()>100.0).then_some(r)}).collect()
         };
-        let faces=Arc::new(faces);self.room_cache.borrow_mut().faces.insert(level,faces.clone());faces
+        faces
     }
 
     pub fn room_calculation(&self,id:Id)->Option<RoomCalculation>{
@@ -124,7 +131,7 @@ impl Document {
     /// Room-aware family point, or the insertion point; doors/windows sample both sides of their host.
     pub fn instance_rooms(&self,id:Id)->(Option<Id>,Option<Id>,Option<Id>){let Some(Element::FamilyInstance(i))=self.get(id)else{return(None,None,None)};let Some(frame)=self.instance_frame(id)else{return(None,None,None)};let family=self.instance_family(i).map(|(f,_)|f);let settings=family.map(|f|&f.settings);let local=settings.filter(|s|s.room_calculation_point).map_or([0.0;3],|s|s.room_point);let p=frame.fam_point(local);let at=|p:[f64;3]|self.room_at(i.level,Point::new(p[0],p[1])).filter(|id|self.room(*id).is_some_and(|r|{let base=self.level(r.level).map_or(0.0,|l|l.elevation_mm)+r.base_offset_mm;p[2]>=base-0.1&&p[2]<=base+self.room_height(r)+0.1}));let room=at(p);if i.host.is_none(){return(room,None,None);}let span=frame.wall_left.abs().max(frame.wall_right.abs())+100.0;let from=settings.filter(|s|s.room_calculation_point).and_then(|s|s.room_from).map(|p|frame.fam_point(p)).unwrap_or_else(||{let p=frame.fam_world(0.0,-span);[p.x,p.y,frame.z_ref]});let to=settings.filter(|s|s.room_calculation_point).and_then(|s|s.room_to).map(|p|frame.fam_point(p)).unwrap_or_else(||{let p=frame.fam_world(0.0,span);[p.x,p.y,frame.z_ref]});(room,at(from),at(to)) }
 
-    fn room_caps(&self)->Arc<Vec<[[f64;3];3]>>{self.room_cache_reset();if let Some(c)=&self.room_cache.borrow().caps{return c.clone();}let mut tris=vec![];for (_,e) in self.iter(){let mesh=match e{Element::Floor(f)if f.room_bounding=>crate::mesh::floor_mesh(self,f),Element::Roof(r)if r.room_bounding=>crate::mesh::roof_mesh(self,r),_=>None};if let Some(mesh)=mesh{for t in mesh.chunks_exact(18){tris.push([[t[0]as f64*1000.0,t[1]as f64*1000.0,t[2]as f64*1000.0],[t[6]as f64*1000.0,t[7]as f64*1000.0,t[8]as f64*1000.0],[t[12]as f64*1000.0,t[13]as f64*1000.0,t[14]as f64*1000.0]]);}}}let tris=Arc::new(tris);self.room_cache.borrow_mut().caps=Some(tris.clone());tris}
+    fn room_caps(&self)->Arc<Vec<[[f64;3];3]>>{self.room_cache_reset();if let Some(c)=&self.room_cache.borrow().caps{return c.clone();}let mut tris=vec![];for (_,e) in self.iter(){let mesh=match e{Element::Floor(f)if f.room_bounding=>crate::mesh::floor_mesh(self,f),Element::Roof(r)if r.room_bounding=>crate::mesh::roof_mesh(self,r),Element::Ceiling(c)if c.room_bounding=>crate::mesh::ceiling_mesh(self,c),_=>None};if let Some(mesh)=mesh{for t in mesh.chunks_exact(18){tris.push([[t[0]as f64*1000.0,t[1]as f64*1000.0,t[2]as f64*1000.0],[t[6]as f64*1000.0,t[7]as f64*1000.0,t[8]as f64*1000.0],[t[12]as f64*1000.0,t[13]as f64*1000.0,t[14]as f64*1000.0]]);}}}let tris=Arc::new(tris);self.room_cache.borrow_mut().caps=Some(tris.clone());tris}
     fn room_volume(&self,r:&Room,region:&Region)->f64{let base=self.level(r.level).map_or(0.0,|l|l.elevation_mm)+r.base_offset_mm;let top=base+self.room_height(r);let caps=self.room_caps();let height=|p:Point|{let cap=caps.iter().filter_map(|t|z_at(p,t)).filter(|z|*z>base+0.1).fold(top,f64::min);(cap-base).max(0.0)};let Some((pts,tris))=crate::geom::triangulate_region(region)else{return 0.0};tris.iter().map(|t|integrate([pts[t[0]],pts[t[1]],pts[t[2]]],&height,0)).sum()}
 }
 

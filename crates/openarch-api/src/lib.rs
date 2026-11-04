@@ -24,6 +24,7 @@ mod keys;
 mod rooms;
 mod revisions;
 mod tags;
+mod ceilings;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -213,6 +214,9 @@ impl Session {
 
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
         if let Some(r) = self.handle_tags(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_ceilings(method, p) {
             return r;
         }
         match method {
@@ -2339,6 +2343,7 @@ impl Session {
                 }))
             }).collect::<Vec<_>>(),
             "floor_types": d.floor_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
+            "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
             "roof_types": d.roof_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "undo": d.undo_name(),
             "redo": d.redo_name(),
@@ -2843,6 +2848,7 @@ impl Session {
         });
         if let Some(o) = out.as_object_mut() {
             if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
+            if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
@@ -2920,6 +2926,7 @@ impl Session {
                 }
                 Element::Floor(f) if shown("Floors") => ("Floor", mesh::floor_mesh(d, f)),
                 Element::Roof(r) if shown("Roofs") => ("Roof", mesh::roof_mesh(d, r)),
+                Element::Ceiling(c) if shown("Ceilings") => ("Ceiling", mesh::ceiling_mesh(d, c)),
                 _ => continue,
             };
             if let Some(v) = verts {
@@ -2981,6 +2988,7 @@ impl Session {
             Element::Room(r) => Ok(rooms::room_properties(d,id,r)),
             Element::RoomTag(t) => Ok(self.room_tag_props(id,t)),
             Element::ElementTag(t) => Ok(self.tag_props(id, t)),
+            Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
             Element::RoomSeparation(_) => Ok(json!({"id":id,"kind":"RoomSeparation","title":"Room Separation","type_label":"Room Separation","groups":[],"target":{"method":"patch_room_separation","id":id}})),
             Element::Wall(w) => Ok(props::wall_props(d, id, w)),
             Element::Floor(f) => Ok(props::floor_props(d, id, f)),
@@ -3023,7 +3031,7 @@ impl Session {
                 v["family_id"] = json!(t.family);
                 v
             }
-            Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) => props::sys_type_props(d, id)?,
+            Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) => props::sys_type_props(d, id)?,
             Element::GridType(t) => {
                 let mut v = props::grid_type_props(d, id, t);
                 v["family"] = json!("Grid");

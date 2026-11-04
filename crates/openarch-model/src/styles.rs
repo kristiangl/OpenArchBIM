@@ -309,6 +309,7 @@ pub fn starter_materials() -> Vec<Material> {
         mat("Timber Rafter", "Wood", [190, 150, 100], Some("Diagonal up"), None, 500.0, 0.13),
         mat("Steel Purlin", "Metal", [150, 156, 164], Some("Diagonal crosshatch"), None, 7850.0, 50.0),
         mat("Aluminium", "Metal", [176, 180, 186], None, None, 2700.0, 160.0),
+        mat("Ceiling Tile", "Mineral Fibre", [238, 236, 230], None, None, 300.0, 0.06),
     ]
 }
 

@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -384,6 +384,16 @@ impl Document {
                 Some(Element::RoomSeparation(s))=>{let mut s=s.clone();s.curve=s.curve.transform(x);s.pinned=s.pinned&&!opt.copy;Element::RoomSeparation(s)},
                 Some(Element::RevisionCloud(c))=>{if self.revision_record(c.revision).is_some_and(|r|r.issued){return Err("Unissue the revision before moving or copying its cloud.".into());}let mut c=c.clone();c.curves=c.curves.iter().map(|c|c.transform(x)).collect();c.pinned=c.pinned&&!opt.copy;Element::RevisionCloud(c)},
                 Some(Element::RevisionTag(t))=>{let mut t=t.clone();t.at=x.apply(t.at);t.pinned=t.pinned&&!opt.copy;Element::RevisionTag(t)},
+                // a ceiling's boundary, slope arrow and grid origin carry the change, as a floor's do
+                Some(Element::Ceiling(c)) => {
+                    let mut c = c.clone();
+                    c.loops = c.loops.iter().map(|l| l.iter().map(|k| k.transform(x)).collect()).collect();
+                    if let Some(s) = &mut c.slope { s.tail = x.apply(s.tail); s.head = x.apply(s.head); }
+                    c.grid_origin = c.grid_origin.map(|p| x.apply(p));
+                    c.grid_angle_deg = (c.grid_angle_deg + turn).rem_euclid(360.0);
+                    if opt.copy { c.pinned = false; c.mark.clear(); c.ifc.guid = new_ifc_guid(); }
+                    Element::Ceiling(c)
+                }
                 // a tag is an offset from its element: moved with its element it keeps the offset (it follows the
                 // element), moved alone its head goes where the transform takes it
                 Some(Element::ElementTag(t)) => {

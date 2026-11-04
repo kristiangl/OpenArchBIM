@@ -55,6 +55,7 @@ const COMMANDS = {
   "m-revisions": () => Revisions.dialog(),
   "det-revcloud": () => Revisions.start(),
   "tag-revision": () => Revisions.tag(),
+  ceiling: () => Ceilings.start(),
   "tag-cat": () => Tags.start(),
   "tag-all": () => Tags.tagAll(),
   room: () => Spatial.start(),
@@ -212,6 +213,7 @@ function newPlanDialog(kind) {
 const BOUNDARY_EDITORS = {
   Floors: { label: "Edit Floor Boundary", run: (id) => startFloorSketch(id) },
   Roofs: { label: "Edit Roof Footprint", run: (id) => startRoofSketch(id) },
+  Ceilings: { label: "Edit Boundary", run: (id) => Ceilings.startSketch(id) },
   "Detail Items": { label: "Edit Boundary", run: (id) => startRegionSketch(null, id) },
 };
 function editBoundaryTarget() {
@@ -318,6 +320,7 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "wall") return wallContext();
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
+  if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
   const tv = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
   if (tv && tv.tool === "tag") return Tags.context();
@@ -747,6 +750,7 @@ function renderTree() {
       // level heads, elevation marks and section marks are annotation families: Edit opens them as documents
       if (app.info.annotation_families.length) byCat.set("Annotation Symbols", app.info.annotation_families.map((f) => ({ name: f.name, title: f.category, onopen: () => AnnModel.open(f.id), menu: annotationMenu(f) })));
       byCat.set("Floors", [{ name: "Floor", children: app.info.floor_types.map((t) => leaf(t.name)) }]);
+      if ((app.info.ceiling_types || []).length) byCat.set("Ceilings", [{ name: "Compound Ceiling", children: app.info.ceiling_types.map((t) => leaf(t.name)) }]);
       byCat.set("Roofs", [{ name: "Basic Roof", children: app.info.roof_types.map((t) => leaf(t.name)) }]);
       byCat.set("Walls", [{ name: "Basic Wall", children: app.info.wall_types.map((t) => leaf(t.name)) }]);
       return [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([cat, fams]) => ({ name: cat, children: fams.sort((a, b) => a.name.localeCompare(b.name)) }));
@@ -2895,7 +2899,8 @@ function sketchContext() {
     };
     groups.push({ label: "Line Style", items: [{ big: true, node: el("div", { className: "rb-select" }, [s]) }] });
   } else if (!Sketch.isRoof && !plain) {
-    groups.push({ label: "Slope and Span", items: Sketch.ANNOTATE.map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id })) });
+    // a ceiling slopes like a floor; it has no span direction
+    groups.push({ label: Sketch.kind === "ceiling" ? "Slope" : "Slope and Span", items: Sketch.ANNOTATE.filter((t) => Sketch.kind !== "ceiling" || !/span/i.test(t.id + t.label)).map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id })) });
   }
   return { auto: true, key: `sketch:${Sketch.kind}:${Sketch.tool}`, title: Sketch.title || "Sketch", groups };
 }
@@ -3015,6 +3020,7 @@ Sketch.callbacks.slope = () => openSlopeDialog();
 Sketch.callbacks.finish = async (o) => {
   if (o.kind === "revisioncloud") return Revisions.finish(o);
   if (o.kind === "roomseparation") return Spatial.finish(o);
+  if (o.kind === "ceiling") return Ceilings.finish(o);
   if (o.kind === "region") return finishRegion(o);
   if (o.kind === "profile") return finishProfile(o);
   const roof = o.kind === "roof";

@@ -11,7 +11,8 @@ use crate::element::{Element, Id};
 /// 2: elevation and 3D views draw in the Hidden Line style (before this the setting had no effect).
 /// 3: plans no longer put a pale wash over floors.
 /// 11: door and window tags (a new element kind).
-const FORMAT_VERSION: i64 = 11;
+/// 12: ceilings and ceiling types.
+const FORMAT_VERSION: i64 = 12;
 
 impl Document {
     /// Write the project. The file is written beside the target and renamed into

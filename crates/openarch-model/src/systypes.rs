@@ -16,6 +16,7 @@ pub enum SysKind {
     Wall,
     Floor,
     Roof,
+    Ceiling,
 }
 
 impl SysKind {
@@ -25,6 +26,7 @@ impl SysKind {
             SysKind::Wall => "Basic Wall",
             SysKind::Floor => "Floor",
             SysKind::Roof => "Basic Roof",
+            SysKind::Ceiling => "Compound Ceiling",
         }
     }
 
@@ -41,6 +43,7 @@ impl SysKind {
             SysKind::Wall => "wall",
             SysKind::Floor => "floor",
             SysKind::Roof => "roof",
+            SysKind::Ceiling => "ceiling",
         }
     }
 }
@@ -112,6 +115,10 @@ pub fn assembly_values(d: &Document, layers: &[Layer]) -> AssemblyValues {
 /// other layer has some; the core is one run of layers with at least one layer in it; at most one
 /// layer is the Structural Material (in the core) and, for floors and roofs, at most one is Variable.
 pub fn check_assembly(d: &Document, kind: SysKind, layers: &[Layer]) -> Result<(), String> {
+    // a ceiling with no layers is a basic ceiling: a plane with no thickness
+    if layers.is_empty() && kind == SysKind::Ceiling {
+        return Ok(());
+    }
     if layers.is_empty() {
         return Err("an assembly needs at least one layer".into());
     }
@@ -185,6 +192,7 @@ impl Document {
             Element::WallType(_) => Some(SysKind::Wall),
             Element::FloorType(_) => Some(SysKind::Floor),
             Element::RoofType(_) => Some(SysKind::Roof),
+            Element::CeilingType(_) => Some(SysKind::Ceiling),
             _ => None,
         }
     }
@@ -195,6 +203,7 @@ impl Document {
             Element::WallType(t) => Some(&t.layers),
             Element::FloorType(t) => Some(&t.layers),
             Element::RoofType(t) => Some(&t.layers),
+            Element::CeilingType(t) => Some(&t.layers),
             _ => None,
         }
     }
@@ -206,6 +215,7 @@ impl Document {
                     (SysKind::Wall, Element::WallType(t)) => t.name == name,
                     (SysKind::Floor, Element::FloorType(t)) => t.name == name,
                     (SysKind::Roof, Element::RoofType(t)) => t.name == name,
+                    (SysKind::Ceiling, Element::CeilingType(t)) => t.name == name,
                     _ => false,
                 }
         })
@@ -245,6 +255,23 @@ impl Document {
             }
             Element::FloorType(t) => Element::FloorType(apply_patch(t, patch)?),
             Element::RoofType(t) => Element::RoofType(apply_patch(t, patch)?),
+            Element::CeilingType(t) => {
+                // the grid's two spacings come as their own fields; zero for both means no grid
+                let mut patch = patch.clone();
+                if let Some(o) = patch.as_object_mut() {
+                    let (a, b) = (o.remove("grid_across"), o.remove("grid_along"));
+                    if a.is_some() || b.is_some() {
+                        let [ca, cb] = t.grid.unwrap_or([0.0, 0.0]);
+                        let (na, nb) = (a.and_then(|v| v.as_f64()).unwrap_or(ca), b.and_then(|v| v.as_f64()).unwrap_or(cb));
+                        o.insert("grid".into(), if na > 0.0 || nb > 0.0 { serde_json::json!([if na > 0.0 { na } else { nb }, if nb > 0.0 { nb } else { na }]) } else { serde_json::Value::Null });
+                    }
+                }
+                let n: crate::ceiling::CeilingType = apply_patch(t, &patch)?;
+                if n.grid.is_some_and(|g| g.iter().any(|v| !v.is_finite() || *v < 50.0)) {
+                    return Err("a ceiling grid spacing must be at least 50 mm".into());
+                }
+                Element::CeilingType(n)
+            }
             _ => unreachable!(),
         };
         if new == old {
@@ -254,6 +281,7 @@ impl Document {
             Element::WallType(t) => (&t.name, &t.layers),
             Element::FloorType(t) => (&t.name, &t.layers),
             Element::RoofType(t) => (&t.name, &t.layers),
+            Element::CeilingType(t) => (&t.name, &t.layers),
             _ => unreachable!(),
         };
         if name.trim().is_empty() {
@@ -270,6 +298,7 @@ impl Document {
             SysKind::Wall => "Change wall type",
             SysKind::Floor => "Change floor type",
             SysKind::Roof => "Change roof type",
+            SysKind::Ceiling => "Change ceiling type",
         };
         self.transact(label, |tx| tx.update(id, new))
     }
@@ -300,6 +329,7 @@ impl Document {
                 name: name.into(),
                 ..t
             }),
+            Element::CeilingType(t) => Element::CeilingType(crate::ceiling::CeilingType { name: name.into(), ..t }),
             _ => unreachable!(),
         };
         self.transact("Duplicate type", |tx| Ok(tx.add(e)))
@@ -323,6 +353,7 @@ impl Document {
             Element::WallType(_)
                 | Element::FloorType(_)
                 | Element::RoofType(_)
+                | Element::CeilingType(_)
                 | Element::FamilyType(_)
                 | Element::GridType(_)
                 | Element::LevelType(_)

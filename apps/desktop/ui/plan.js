@@ -255,7 +255,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -394,7 +394,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, floor: 3 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, floor: 3, ceiling: 3 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1523,6 +1523,10 @@ const Plan = (() => {
       for (const [a, b] of rf.ridges) { const s1 = toScreen({ x: a[0], y: a[1] }), s2 = toScreen({ x: b[0], y: b[1] }); ctx.beginPath(); ctx.moveTo(s1.x, s1.y); ctx.lineTo(s2.x, s2.y); ctx.stroke(); }
     }
     tag(null);
+    // a reflected ceiling plan's ceilings, with their grids
+    if (tag) tag({ cat: "Ceilings", sub: null, kind: "projection" });
+    Ceilings.draw(ctx, data, toScreen, cam.s, sel);
+    tag(null);
     drawGroups();
     const hov = new Set(tool === "select" && selHover ? selHover : []);
     Det.drawItems(sel, hov, accent, tool === "select");
@@ -1732,6 +1736,7 @@ const Plan = (() => {
     if (tool === "room") return "Click inside an enclosed area to place a room. Esc finishes.";
     if (tool === "roomtag") return "Click inside a placed room to tag it. Esc finishes.";
     if (tool === "tag") return "Click a door or window to tag it. Esc finishes.";
+    if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
     if (tool === "spot") return Spots.prompt();
@@ -2216,6 +2221,7 @@ const Plan = (() => {
     if (tool==="revisiontag") { Revisions.place(toWorld(sx,sy));return; }
     if (tool === "room" || tool === "roomtag") { Spatial.place(tool,toWorld(sx,sy)); return; }
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
+    if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
     if (ed && editClick(sx, sy, ev)) return;
     if (tool === "dimension") { Dims.click(sx, sy, ev); cb.prompt(promptText()); return; }
     if (tool === "spot") { Spots.click(sx, sy, ev); cb.prompt(promptText()); return; }
@@ -2477,6 +2483,7 @@ const Plan = (() => {
     editMove(e.offsetX, e.offsetY);
     if (tool === "select") { const c = candidates(e.offsetX, e.offsetY); selHover = c.length ? c[tabIdx % c.length] : null; }
     if (tool === "tag") { const id = taggableAt(e.offsetX, e.offsetY); selHover = id != null ? [id] : null; render(); }
+    if (tool === "ceiling") Ceilings.hover(toWorld(e.offsetX, e.offsetY));
     lastMouse = { x: e.offsetX, y: e.offsetY };
     hover = tool === "grid" ? gridSnap(e.offsetX, e.offsetY) : tool === "text" || tool === "noteleader" ? Det.toolSnap(e.offsetX, e.offsetY) : snap(e.offsetX, e.offsetY);
     cb.cursor(hover);
@@ -2729,7 +2736,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();
