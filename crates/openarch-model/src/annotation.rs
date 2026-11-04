@@ -43,6 +43,7 @@ pub enum AnnotationKind {
     /// A tag of a door or a window (tags.rs): its labels read the element's parameters.
     DoorTag,
     WindowTag,
+    AreaTag,
 }
 
 impl AnnotationKind {
@@ -56,6 +57,7 @@ impl AnnotationKind {
             AnnotationKind::RevisionTag => "Revision Tag",
             AnnotationKind::DoorTag => "Door Tag",
             AnnotationKind::WindowTag => "Window Tag",
+            AnnotationKind::AreaTag => "Area Tag",
         }
     }
 
@@ -70,6 +72,7 @@ impl AnnotationKind {
             AnnotationKind::RevisionTag => "Revision Tags",
             AnnotationKind::DoorTag => "Door Tags",
             AnnotationKind::WindowTag => "Window Tags",
+            AnnotationKind::AreaTag => "Area Tags",
         }
     }
 
@@ -83,6 +86,7 @@ impl AnnotationKind {
             AnnotationKind::RevisionTag => &["Revision Number","Revision Description","Revision Date"],
             AnnotationKind::RoomTag => &["Room Number", "Room Name", "Area", "Perimeter", "Volume", "Department", "Occupancy", "Level"],
             AnnotationKind::DoorTag | AnnotationKind::WindowTag => OPENING_TAG_PARAMS,
+            AnnotationKind::AreaTag => &["Name", "Number", "Area", "Perimeter", "Area Type", "Level", "Comments"],
         }
     }
 }
@@ -1115,6 +1119,35 @@ impl Document {
         self.transact(&format!("Load {}", name.to_lowercase()), |tx| Ok(tx.add(Element::AnnotationFamily(f))))
     }
 
+    /// The project's first Area Tag family, made when there is none: the area's name over its area.
+    pub(crate) fn ensure_area_tag_family(&mut self) -> Result<Id, String> {
+        if let Some((id, _)) = self.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::AreaTag) { return Ok(id); }
+        let mut f = AnnotationFamily::drawn_with("Area Tag", AnnotationKind::AreaTag, vec![], vec![], vec![
+            old_label(0.0, 1.8, HAlign::Center, VAlign::Middle, 2.5, true, vec![LabelLine::new("Name", "", "", "Area")]),
+            old_label(0.0, -1.8, HAlign::Center, VAlign::Middle, 2.5, false, vec![LabelLine::new("Area", "", "", "120.00 m²")]),
+        ]);
+        f.read_old_drawing();
+        self.transact("Load area tag", |tx| Ok(tx.add(Element::AnnotationFamily(f))))
+    }
+
+    pub fn area_tag_labels(&self, tag: &crate::areas::AreaTag) -> Vec<DrawnText> {
+        let Some(a) = self.area(tag.area) else { return vec![] };
+        let Some(c) = self.area_calculation(tag.area) else { return vec![] };
+        let family = tag.family.and_then(|id| self.annotation_family(id)).or_else(|| self.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::AreaTag).map(|(_, f)| f));
+        let Some(family) = family else { return vec![] };
+        let placed = c.status == crate::areas::AreaStatus::Placed;
+        self.symbol_texts(family, &|name| Some(match name {
+            "Name" => a.name.clone(),
+            "Number" => a.number.clone(),
+            "Area" => if placed { format!("{:.2} m²", c.area_mm2 / 1e6) } else { "Not Enclosed".into() },
+            "Perimeter" => format!("{:.0}", c.perimeter_mm),
+            "Area Type" => a.area_type.label().into(),
+            "Level" => self.level_of_area(a).and_then(|l| self.level(l)).map_or(String::new(), |l| l.name.clone()),
+            "Comments" => a.comments.clone(),
+            _ => return None,
+        }), false)
+    }
+
     pub fn room_tag_labels(&self,tag:&crate::rooms::RoomTag)->Vec<DrawnText>{
         let Some(room)=self.room(tag.room)else{return vec![]};let Some(calc)=self.room_calculation(tag.room)else{return vec![]};
         let family=tag.family.and_then(|id|self.annotation_family(id)).or_else(||self.annotation_families().into_iter().find(|(_,f)|f.kind==AnnotationKind::RoomTag).map(|(_,f)|f));let Some(family)=family else{return vec![]};
@@ -1380,7 +1413,7 @@ impl Document {
     /// Whether a level type, an elevation marker or a section draws with this family.
     pub fn annotation_family_in_use(&self, id: Id) -> bool {
         self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| self.elevation_symbol(m) == Some(id)) || self.sections().iter().any(|(_, s)| { let symbols = self.section_symbols(s); symbols.0 == Some(id) || symbols.1 == Some(id) })
-            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::ElementTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),_=>false})
+            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::ElementTag(t)=>t.family==Some(id),Element::AreaTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),_=>false})
             || self.view_marker_types().iter().any(|(_, t)| t.head == Some(id) || t.tail == Some(id))
     }
 

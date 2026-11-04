@@ -695,6 +695,10 @@ pub enum Element {
     ElementTag(crate::tags::ElementTag),
     CeilingType(crate::ceiling::CeilingType),
     Ceiling(crate::ceiling::Ceiling),
+    AreaScheme(crate::areas::AreaScheme),
+    AreaBoundary(crate::areas::AreaBoundary),
+    Area(crate::areas::Area),
+    AreaTag(crate::areas::AreaTag),
 }
 
 impl Element {
@@ -756,6 +760,10 @@ impl Element {
             Element::ElementTag(_) => "ElementTag",
             Element::CeilingType(_) => "CeilingType",
             Element::Ceiling(_) => "Ceiling",
+            Element::AreaScheme(_) => "AreaScheme",
+            Element::AreaBoundary(_) => "AreaBoundary",
+            Element::Area(_) => "Area",
+            Element::AreaTag(_) => "AreaTag",
         }
     }
 }

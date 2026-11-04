@@ -12,7 +12,8 @@ use crate::element::{Element, Id};
 /// 3: plans no longer put a pale wash over floors.
 /// 11: door and window tags (a new element kind).
 /// 12: ceilings and ceiling types.
-const FORMAT_VERSION: i64 = 12;
+/// 13: area schemes, area boundaries, areas and area tags.
+const FORMAT_VERSION: i64 = 13;
 
 impl Document {
     /// Write the project. The file is written beside the target and renamed into

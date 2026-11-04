@@ -56,6 +56,10 @@ const COMMANDS = {
   "det-revcloud": () => Revisions.start(),
   "tag-revision": () => Revisions.tag(),
   ceiling: () => Ceilings.start(),
+  area: () => Areas.start("area"),
+  "area-plan": () => Areas.newPlan(),
+  "area-boundary": () => Areas.start("areaboundary"),
+  "tag-area": () => Areas.start("areatag"),
   "tag-cat": () => Tags.start(),
   "tag-all": () => Tags.tagAll(),
   room: () => Spatial.start(),
@@ -321,6 +325,7 @@ function currentContext() {
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
+  if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   const cs = Ceilings.selectionContext();
   if (cs) return cs;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
@@ -699,6 +704,8 @@ function renderTree() {
     { name: "Views (all)", children: [
       ...byType("floor_plan", "Floor Plans"),
       ...byType("ceiling_plan", "Ceiling Plans"),
+      // area plans by area scheme, "Area Plans (Gross Building)"
+      ...(app.info.area_schemes || []).map((s) => ({ name: `Area Plans (${s.name})`, children: ofKind("area_plan").filter((x) => x.area_scheme === s.id).map(viewLeaf) })).filter((n) => n.children.length),
       ...byType("three_d", "3D Views"),
       ...byType("elevation", "Elevations"),
       ...byType("section", "Sections"),
@@ -956,7 +963,7 @@ async function closeTab(t) {
 // Tools that only work in a plan view ask where to go instead of switching on their own (the Go To View).
 // Returns true when a plan is showing, false when the person cancelled and the view stays as it was.
 function planViews() {
-  return app.info.views.filter((x) => x.view_kind === "floor_plan" || x.view_kind === "ceiling_plan" || x.view_kind === "structural_plan");
+  return app.info.views.filter((x) => x.view_kind === "floor_plan" || x.view_kind === "ceiling_plan" || x.view_kind === "structural_plan" || x.view_kind === "area_plan");
 }
 async function ensurePlan(what) {
   if (app.view.kind === "plan") return true;
@@ -1060,7 +1067,8 @@ function updateTitle() {
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
   if (app.activation) { const s = sheetById(app.activation.sheet); $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - Sheet: ${s ? `${s.number} - ${s.name}` : ""} (${v ? v.name : "view"} activated)`; updateUndoButtons(); return; }
-  const vn = app.view.kind === "plan" && v ? `${v.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : "Floor Plan"}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : `Schedule: ${tabName(app.view)}`;
+  const planKind = (x) => x.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : x.view_kind === "area_plan" ? `Area Plan (${(app.info.area_schemes || []).find((s) => s.id === x.area_scheme)?.name || ""})` : "Floor Plan";
+  const vn = app.view.kind === "plan" && v ? `${planKind(v)}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : `Schedule: ${tabName(app.view)}`;
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
   updateUndoButtons();
@@ -2891,7 +2899,7 @@ function sketchContext() {
     ];
   const detail = Sketch.kind === "detail" || Sketch.kind === "region";
   // annotation-like sketches (a revision cloud, room separation lines) draw lines only: no walls to pick, no slope
-  const plain = Sketch.kind === "revisioncloud" || Sketch.kind === "roomseparation";
+  const plain = Sketch.kind === "revisioncloud" || Sketch.kind === "roomseparation" || Sketch.kind === "areaboundary";
   const draw = Sketch.DRAW.filter((t) => !(detail || plain) || t.id !== "pick_walls").map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id }));
   const groups = [{ label: "Mode", items: modes }, { label: "Draw", items: draw }];
   if (Sketch.kind === "revisioncloud") groups.push(...Revisions.sketchGroups());
@@ -3032,6 +3040,7 @@ Sketch.callbacks.finish = async (o) => {
   if (o.kind === "revisioncloud") return Revisions.finish(o);
   if (o.kind === "roomseparation") return Spatial.finish(o);
   if (o.kind === "ceiling") return Ceilings.finish(o);
+  if (o.kind === "areaboundary") return Areas.finish(o);
   if (o.kind === "region") return finishRegion(o);
   if (o.kind === "profile") return finishProfile(o);
   const roof = o.kind === "roof";

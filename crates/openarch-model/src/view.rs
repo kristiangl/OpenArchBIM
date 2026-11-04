@@ -663,6 +663,9 @@ pub struct View {
     /// What a schedule lists and how.
     #[serde(default)]
     pub schedule: Option<crate::schedule::ScheduleDef>,
+    /// An area plan's area scheme (Gross Building, Rentable...).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub area_scheme: Option<Id>,
 }
 
 /// A view type: what the New Plan dialog's Type list offers. Each kind of plan has at least one, and a type can
@@ -736,7 +739,16 @@ impl View {
             section: None,
             view_type: None,
             schedule: None,
+            area_scheme: None,
         }
+    }
+
+    /// An area plan of a level in an area scheme: a floor plan that shows the scheme's areas and boundary lines.
+    pub fn area_plan(name: &str, level: Id, scheme: Id) -> View {
+        let mut v = View::floor_plan(name, level);
+        v.view_kind = ViewKind::AreaPlan;
+        v.area_scheme = Some(scheme);
+        v
     }
 
     /// A reflected ceiling plan of a level: it looks up from a cut plane 2300 above the level to the level above, so

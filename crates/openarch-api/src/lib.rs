@@ -25,6 +25,7 @@ mod rooms;
 mod revisions;
 mod tags;
 mod ceilings;
+mod areas;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -217,6 +218,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_ceilings(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_areas(method, p) {
             return r;
         }
         match method {
@@ -1229,10 +1233,15 @@ impl Session {
                 }
                 // Delete in a model view removes a room from the model only: it stays in the project, unplaced, with
                 // its data (a room schedule's Delete Row removes it for good)
-                if p["unplace_rooms"].as_bool().unwrap_or(false) && ids.iter().any(|i| self.doc.room(*i).is_some()) {
-                    let (rooms, rest): (Vec<Id>, Vec<Id>) = ids.into_iter().partition(|i| self.doc.room(*i).is_some());
+                // areas too: Delete in an area plan unplaces them
+                let spatial = |d: &openarch_model::Document, i: Id| d.room(i).is_some() || d.area(i).is_some();
+                if p["unplace_rooms"].as_bool().unwrap_or(false) && ids.iter().any(|i| spatial(&self.doc, *i)) {
+                    let (rooms, rest): (Vec<Id>, Vec<Id>) = ids.into_iter().partition(|i| spatial(&self.doc, *i));
                     self.doc.grouped("Delete", |d| {
-                        for id in &rooms { if d.room(*id).is_some_and(|r| r.at.is_some()) { d.unplace_room(*id)?; } }
+                        for id in &rooms {
+                            if d.room(*id).is_some_and(|r| r.at.is_some()) { d.unplace_room(*id)?; }
+                            if d.area(*id).is_some_and(|a| a.at.is_some()) { d.unplace_area(*id)?; }
+                        }
                         if rest.is_empty() { Ok(()) } else { d.delete_items(&rest) }
                     })?;
                     return Ok(json!({ "unplaced": rooms.len() }));
@@ -1931,6 +1940,11 @@ impl Session {
                 let all: usize = counts.values().sum();
                 let mut out = vec![json!({ "name": MULTI_CATEGORY, "count": all, "takeoff": true })];
                 out.extend(schedule::model_categories().iter().map(|c| json!({ "name": c, "count": counts.get(c).copied().unwrap_or(0), "takeoff": TAKEOFF_CATEGORIES.contains(&c.as_str()) })));
+                // area schedules, one category per area scheme
+                for (_, s) in self.doc.area_schemes() {
+                    let c = format!("Areas ({})", s.name);
+                    out.push(json!({ "name": c, "count": counts.get(&c).copied().unwrap_or(0), "takeoff": false }));
+                }
                 Ok(json!(out))
             }
             "add_schedule" => {
@@ -2297,7 +2311,7 @@ impl Session {
             "dirty": d.revision() != self.saved_revision,
             "path": self.path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "views": d.views().iter().map(|(id, v)| json!({
-                "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "template_id": v.template, "type_id": d.view_type_of(v),
+                "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "area_scheme": v.area_scheme, "template_id": v.template, "type_id": d.view_type_of(v),
                 "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
             })).collect::<Vec<_>>(),
             "arrays": d.group_arrays().iter().map(|(id, a)| json!({ "id": id, "members": a.members, "count": a.members.len(), "move_to": if a.to_last { "last" } else { "second" }, "kind": if matches!(a.step, openarch_model::array::ArrayKind::Radial { .. }) { "radial" } else { "linear" } })).collect::<Vec<_>>(),
@@ -2347,6 +2361,7 @@ impl Session {
                 }))
             }).collect::<Vec<_>>(),
             "floor_types": d.floor_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
+            "area_schemes": d.area_schemes().iter().map(|(id, s)| json!({ "id": id, "name": s.name, "rules": s.rules, "built_in": s.built_in })).collect::<Vec<_>>(),
             "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
             "roof_types": d.roof_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "undo": d.undo_name(),
@@ -2855,6 +2870,7 @@ impl Session {
         if let Some(o) = out.as_object_mut() {
             if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
             if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
+            if let Some(a) = areas::drawing(d, vid).as_object() { o.extend(a.clone()); }
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
@@ -2995,6 +3011,9 @@ impl Session {
             Element::RoomTag(t) => Ok(self.room_tag_props(id,t)),
             Element::ElementTag(t) => Ok(self.tag_props(id, t)),
             Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
+            Element::Area(a) => Ok(self.area_props(id, a)),
+            Element::AreaTag(t) => Ok(self.area_tag_props(id, t)),
+            Element::AreaBoundary(_) => Ok(json!({ "id": id, "kind": "AreaBoundary", "title": "Area Boundary", "type_label": "Area Boundary", "groups": [], "target": { "method": "patch_area_boundary", "id": id } })),
             Element::RoomSeparation(_) => Ok(json!({"id":id,"kind":"RoomSeparation","title":"Room Separation","type_label":"Room Separation","groups":[],"target":{"method":"patch_room_separation","id":id}})),
             Element::Wall(w) => Ok(props::wall_props(d, id, w)),
             Element::Floor(f) => Ok(props::floor_props(d, id, f)),

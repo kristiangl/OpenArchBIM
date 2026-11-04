@@ -41,6 +41,7 @@ pub mod rooms;
 pub mod revisions;
 pub mod tags;
 pub mod ceiling;
+pub mod areas;
 pub mod key_schedule;
 pub mod section;
 pub mod sharedparams;

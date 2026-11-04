@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -384,6 +384,9 @@ impl Document {
                 Some(Element::RoomSeparation(s))=>{let mut s=s.clone();s.curve=s.curve.transform(x);s.pinned=s.pinned&&!opt.copy;Element::RoomSeparation(s)},
                 Some(Element::RevisionCloud(c))=>{if self.revision_record(c.revision).is_some_and(|r|r.issued){return Err("Unissue the revision before moving or copying its cloud.".into());}let mut c=c.clone();c.curves=c.curves.iter().map(|c|c.transform(x)).collect();c.pinned=c.pinned&&!opt.copy;Element::RevisionCloud(c)},
                 Some(Element::RevisionTag(t))=>{let mut t=t.clone();t.at=x.apply(t.at);t.pinned=t.pinned&&!opt.copy;Element::RevisionTag(t)},
+                Some(Element::Area(a)) => { let mut a = a.clone(); a.at = a.at.map(|p| x.apply(p)); a.pinned = a.pinned && !opt.copy; Element::Area(a) }
+                Some(Element::AreaTag(t)) => { let mut t = t.clone(); t.at = x.apply(t.at); t.pinned = t.pinned && !opt.copy; Element::AreaTag(t) }
+                Some(Element::AreaBoundary(b)) => { let mut b = b.clone(); b.curve = b.curve.transform(x); b.pinned = b.pinned && !opt.copy; b.wall = None; Element::AreaBoundary(b) }
                 // a ceiling's boundary, slope arrow and grid origin carry the change, as a floor's do
                 Some(Element::Ceiling(c)) => {
                     let mut c = c.clone();
@@ -625,7 +628,7 @@ impl Document {
             }
             let mut detail_map=BTreeMap::new();let mut added_details=vec![];
             for (orig,e) in new_details {let id=tx.add(e.clone());tx.copy_parameter_data(orig,id)?;detail_map.insert(orig,id);added_details.push((id,e));result.push(id);}
-            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},_=>false};if changed{tx.update(id,e)?;}}
+            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},Element::AreaTag(t)=>if let Some(a)=detail_map.get(&t.area){t.area=*a;true}else{false},_=>false};if changed{tx.update(id,e)?;}}
             for mut g in new_grids {
                 g.name = tx.doc_ref().next_grid_name();
                 result.push(tx.add(Element::Grid(g)));

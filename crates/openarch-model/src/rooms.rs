@@ -54,6 +54,20 @@ pub struct RoomCalculation { pub status: RoomStatus, pub region: Option<Region>,
 #[derive(Debug, Clone, Default)]
 pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,RoomCalculation>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
 
+/// The faces left when `clips` are cut out of the plane: the enclosed ones, and the holes of the outside face (the
+/// outlines the outside meets).
+pub(crate) fn faces_of_clips(clips:&[Vec<Point>])->(Vec<Region>,Vec<Vec<Point>>){
+    let pts:Vec<_>=clips.iter().flatten().copied().collect();if pts.is_empty(){return (vec![],vec![]);}
+    let minx=pts.iter().map(|p|p.x).fold(f64::INFINITY,f64::min);let maxx=pts.iter().map(|p|p.x).fold(f64::NEG_INFINITY,f64::max);let miny=pts.iter().map(|p|p.y).fold(f64::INFINITY,f64::min);let maxy=pts.iter().map(|p|p.y).fold(f64::NEG_INFINITY,f64::max);let pad=(maxx-minx).max(maxy-miny).max(1000.0);
+    let frame=vec![Point::new(minx-pad,miny-pad),Point::new(maxx+pad,miny-pad),Point::new(maxx+pad,maxy+pad),Point::new(minx-pad,maxy+pad)];
+    let (mut inside,mut outlines)=(vec![],vec![]);
+    for mut s in crate::layers::subtract(&frame,clips.iter()){if s.is_empty(){continue;}let outer=s.remove(0);if outer.iter().any(|p|p.x<=minx-pad+0.1||p.x>=maxx+pad-0.1||p.y<=miny-pad+0.1||p.y>=maxy+pad-0.1){outlines.extend(s);continue;}let r=Region{outer,holes:s};if r.area()>100.0{inside.push(r);}}
+    (inside,outlines)
+}
+
+/// A thin band along a line (a separation or boundary line), as a clip.
+pub(crate) fn line_strip(a:Point,b:Point)->Vec<Point>{strip(a,b,0.005,0.005,0.02)}
+
 pub fn contains(region:&Region,at:Point)->bool {curve::point_in_polygon(at,&region.outer)&&!region.holes.iter().any(|h|curve::point_in_polygon(at,h))}
 
 fn strip(a:Point,b:Point,left:f64,right:f64,extend:f64)->Vec<Point>{let l=a.dist(&b);if l<1e-6{return vec![];}let (dx,dy)=((b.x-a.x)/l,(b.y-a.y)/l);vec![Point::new(a.x-dx*extend+dy*right,a.y-dy*extend-dx*right),Point::new(b.x+dx*extend+dy*right,b.y+dy*extend-dx*right),Point::new(b.x+dx*extend-dy*left,b.y+dy*extend+dx*left),Point::new(a.x-dx*extend-dy*left,a.y-dy*extend+dx*left)]}
@@ -77,6 +91,18 @@ impl Document {
     /// The free-space faces walls (that reach height `z`), room-bounding columns and families, and (with `separators`)
     /// room separation lines enclose on a level: what rooms and automatic ceilings fill.
     pub fn enclosed_faces(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Region>{
+        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators)).0
+    }
+
+    /// The outline of the building on a level at height `z`: the outer faces of the walls (and bounding columns)
+    /// that the outside meets, one ring per separate building.
+    pub fn building_outlines(&self,level:Id,z:f64)->Vec<Vec<Point>>{
+        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false)).1
+    }
+
+    /// What bounds rooms on a level at height `z`: wall bodies (to the boundary location), separation lines when
+    /// asked, and the plan sections of room-bounding columns and families.
+    pub(crate) fn enclosure_clips(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Vec<Point>>{
         let settings=RoomSettings{boundary,..Default::default()};
         let mut walls=vec![];
         for (id,w) in self.iter().filter_map(|(id,e)|if let Element::Wall(w)=e{Some((id,w))}else{None}){
@@ -96,12 +122,7 @@ impl Document {
         for (_,e) in self.iter().filter(|_|separators){if let Element::RoomSeparation(s)=e{if s.level==level{let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
         // Columns and explicitly room-bounding loadable families contribute their actual horizontal mesh section.
         for (id,i) in self.instances(){let Some((family,_))=self.instance_family(i)else{continue};let bounded=family.settings.room_bounding.unwrap_or(matches!(family.category,crate::family::FamilyCategory::Columns|crate::family::FamilyCategory::StructuralColumns));if !bounded{continue;}if let Some((_,solid,_))=crate::mesh::instance_meshes(self,id){clips.extend(horizontal_rings(&solid,z+0.001));}}
-        let pts:Vec<_>=clips.iter().flatten().copied().collect();let faces=if pts.is_empty(){vec![]}else{
-            let minx=pts.iter().map(|p|p.x).fold(f64::INFINITY,f64::min);let maxx=pts.iter().map(|p|p.x).fold(f64::NEG_INFINITY,f64::max);let miny=pts.iter().map(|p|p.y).fold(f64::INFINITY,f64::min);let maxy=pts.iter().map(|p|p.y).fold(f64::NEG_INFINITY,f64::max);let pad=(maxx-minx).max(maxy-miny).max(1000.0);
-            let frame=vec![Point::new(minx-pad,miny-pad),Point::new(maxx+pad,miny-pad),Point::new(maxx+pad,maxy+pad),Point::new(minx-pad,maxy+pad)];
-            crate::layers::subtract(&frame,clips.iter()).into_iter().filter_map(|mut s|{if s.is_empty(){return None;}let outer=s.remove(0);if outer.iter().any(|p|p.x<=minx-pad+0.1||p.x>=maxx+pad-0.1||p.y<=miny-pad+0.1||p.y>=maxy+pad-0.1){return None;}let r=Region{outer,holes:s};(r.area()>100.0).then_some(r)}).collect()
-        };
-        faces
+        clips
     }
 
     pub fn room_calculation(&self,id:Id)->Option<RoomCalculation>{

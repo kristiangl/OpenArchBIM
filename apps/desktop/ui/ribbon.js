@@ -70,7 +70,7 @@ const RIBBON = {
       { id: "model-line", label: "Model Line" }, { id: "model-text", label: "Model Text" }, { id: "model-group", label: "Model Group" } ] },
     { label: "Room & Area", items: [
       { id: "room", label: "Room" }, { id: "room-sep", label: "Room Separator" }, { id: "tag-room", label: "Tag Room" }, { id: "room-settings", label: "Area and Volume" },
-      { id: "area", label: "Area" } ] },
+      { id: "area", label: "Area", menu: [{ id: "area", label: "Area" }, { id: "area-plan", label: "Area Plan" }] }, { id: "area-boundary", label: "Area Boundary" }, { id: "tag-area", label: "Tag Area" } ] },
     { label: "Datum", items: [
       { id: "level", label: "Level", big: true }, { id: "grid", label: "Grid", big: true } ] },
     { label: "Work Plane", items: [

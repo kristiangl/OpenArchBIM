@@ -74,8 +74,9 @@ impl Tx<'_> {
         let before = self.doc.elements.remove(&id).ok_or_else(|| format!("no element {id}"))?;
         let is_annotation = matches!(before, Element::Dimension(_) | Element::Spot(_));
         self.changes.push(Change { id, before: Some(before), after: None });
-        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::FamilyInstance(i) if i.face_host.is_some_and(|h|h.element==id)=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
-        for tid in tags {self.remove(tid)?;}
+        let tags:Vec<_>=self.doc.iter().filter_map(|(tid,e)|match e{Element::RoomTag(t) if t.room==id || t.view==id=>Some(tid),Element::RevisionTag(t)if t.cloud==id||t.view==id=>Some(tid),Element::ElementTag(t) if t.element==id||t.view==id=>Some(tid),Element::FamilyInstance(i) if i.face_host.is_some_and(|h|h.element==id)=>Some(tid),Element::AreaTag(t) if t.area==id||t.view==id=>Some(tid),Element::AreaBoundary(b) if b.view==id=>Some(tid),Element::Area(a) if a.view==id=>Some(tid),Element::RevisionCloud(c)if c.view==id=>Some(tid),_=>None}).collect();
+        // one dependant can go with another first (an area's tag with the area, both with their view)
+        for tid in tags { if self.doc.elements.contains_key(&tid) { self.remove(tid)?; } }
         if !is_annotation {
             // Remove references before IDs can be reused after a project is reopened.
             let keys: Vec<_> = self.doc.schedules().into_iter().filter_map(|(sid, v)| {
@@ -199,6 +200,7 @@ impl Document {
             Ok(())
         })
         .expect("default project");
+        d.ensure_area_schemes().expect("default area schemes");
         d.ensure_site_defaults();
         d.ensure_annotation_defaults();
         d.ensure_view_types();
@@ -648,6 +650,9 @@ impl Document {
             Some(Element::Wall(w)) => w.pinned,
             Some(Element::Floor(f)) => f.pinned,
             Some(Element::Ceiling(c)) => c.pinned,
+            Some(Element::Area(a)) => a.pinned,
+            Some(Element::AreaTag(t)) => t.pinned,
+            Some(Element::AreaBoundary(b)) => b.pinned,
             Some(Element::Roof(r)) => r.pinned,
             Some(Element::FamilyInstance(i)) => i.pinned,
             Some(Element::ElevationMarker(m)) => m.pinned,
@@ -675,7 +680,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -686,6 +691,9 @@ impl Document {
                 Element::RevisionTag(r)=>r.pinned=pinned,
                 Element::ElementTag(t)=>t.pinned=pinned,
                 Element::Ceiling(c)=>c.pinned=pinned,
+                Element::Area(a)=>a.pinned=pinned,
+                Element::AreaTag(t)=>t.pinned=pinned,
+                Element::AreaBoundary(b)=>b.pinned=pinned,
                 Element::Wall(w) => w.pinned = pinned,
                 Element::Floor(f) => f.pinned = pinned,
                 Element::Roof(r) => r.pinned = pinned,
@@ -718,7 +726,7 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_)) => {},
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
