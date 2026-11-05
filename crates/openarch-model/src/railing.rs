@@ -407,7 +407,14 @@ impl Document {
                 // in from the edge by half the widest upright, and a little
                 let inset = match r.placement {
                     RailingPlacement::Treads => t.posts.as_ref().map_or(0.0, |p| p.width_mm).max(t.balusters.as_ref().map_or(0.0, |b| b.width_mm)) / 2.0 + 25.0,
-                    RailingPlacement::Stringer => 0.0,
+                    // on the stringer's centre line, when the stair has one on this side
+                    RailingPlacement::Stringer => {
+                        let sup = self.stair(h.stair).and_then(|s| self.stair_type(s.stair_type)).map(|t| t.supports.clone()).unwrap_or_default();
+                        match if h.side == RailingSide::Left { sup.left } else { sup.right } {
+                            Some(s) if s.kind == crate::stairs::SupportKind::Stringer => -(s.offset_mm + s.width_mm / 2.0),
+                            _ => 0.0,
+                        }
+                    }
                 };
                 let d = if h.side == RailingSide::Left { -inset } else { inset };
                 Some(HostLine { pts: offset_line(&line.pts, d), runs: line.runs, tread: line.tread })

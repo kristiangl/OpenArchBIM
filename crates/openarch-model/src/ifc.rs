@@ -785,6 +785,23 @@ impl Document {
                 }
                 parts.push(f);
             }
+            // each run's stringers and carriages, one member
+            for run in &lay.runs {
+                let mut verts = vec![];
+                let mut mat = None;
+                for p in pieces.iter().filter(|p| p.part == StairPart::Support(run.index)) {
+                    p.solid.mesh(&mut verts);
+                    mat = mat.or(p.material.clone());
+                }
+                let Some(set) = w.faceset(&verts, -sz) else { continue };
+                let shape = w.tessellated(&[set]);
+                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let m = w.add(format!("IFCMEMBER({},$,{},$,$,#{pat},#{shape},$,.STRINGER.)", s(&derived(STAIR_PART, id * 1000 + 250 + run.index as u64)), s(&format!("Supports, run {}", run.index + 1))));
+                if let Some(mm) = mat {
+                    part_materials.entry(mm).or_default().push(m);
+                }
+                parts.push(m);
+            }
             for g in &lay.landings {
                 let mut verts = vec![];
                 let mut mat = None;

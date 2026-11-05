@@ -109,6 +109,8 @@ impl Session {
             })(),
             "set_stair_runs" => (|| { self.doc.set_stair_runs(id_of(p, "id")?, runs_of(p)?)?; Ok(json!({})) })(),
             "patch_stair" => (|| { self.doc.patch_stair(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            // one run: { id, run, patch }
+            "patch_stair_run" => (|| { self.doc.patch_stair_run(id_of(p, "id")?, p["run"].as_u64().ok_or("missing run")? as usize, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "patch_stair_type" => (|| { self.doc.patch_stair_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "duplicate_stair_type" => (|| Ok(json!({ "id": self.doc.duplicate_stair_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             _ => return None,
@@ -161,8 +163,52 @@ impl Session {
                 group("Calculation Rules", rules),
                 group("Identity Data", vec![text("Comments", "comments", &s.comments), text("Mark", "mark", &s.mark)]),
             ],
+            "run_groups": s.runs.iter().enumerate().map(|(k, r)| {
+                let len = l.as_ref().and_then(|l| l.runs.get(k)).map_or(0.0, |x| x.length);
+                json!({
+                    "name": format!("Run {}", k + 1),
+                    "target": { "method": "patch_stair_run", "id": id, "extra": { "run": k } },
+                    "rows": [
+                        enum_select("Location Line", "justification", &name_of(&r.justification), &[("left", "Run: Left"), ("center", "Run: Center"), ("right", "Run: Right"), ("left_exterior", "Exterior Support: Left"), ("right_exterior", "Exterior Support: Right")]),
+                        num("Actual Run Width", "width_mm", r.width_mm, free),
+                        num("Risers", "risers", r.risers as f64, free),
+                        boolean("Begin with Riser", "begins_with_riser", r.begins_with_riser, free),
+                        boolean("End with Riser", "ends_with_riser", r.ends_with_riser, free),
+                        json!({ "label": "Run Length", "kind": "ro", "value": format!("{len:.0}"), "raw": len }),
+                    ],
+                })
+            }).collect::<Vec<_>>(),
         })
     }
+}
+
+/// The type's supports: each side and the middle switched between none, stringer and carriage, with their sizes.
+fn support_rows(t: &StairType, material: &dyn Fn(&str, &str, &str) -> Value) -> Vec<Value> {
+    use openarch_model::stairs::{Support, SupportKind};
+    let sp = &t.supports;
+    let def = Support { kind: SupportKind::Stringer, width_mm: 45.0, total_depth_mm: 290.0, above_nosing_mm: 50.0, offset_mm: 0.0, material: String::new() };
+    let mut rows = vec![];
+    for (label, key, cur, kinds) in [("Left Support", "left", &sp.left, true), ("Right Support", "right", &sp.right, true), ("Middle Support", "middle", &sp.middle, false)] {
+        let with = |kind: &str| {
+            let mut v = serde_json::to_value(cur.clone().unwrap_or_else(|| def.clone())).unwrap_or_default();
+            v["kind"] = json!(kind);
+            json!({ "supports": { key: v } })
+        };
+        let mut opts = vec![("None".to_string(), json!({ "supports": { key: null } }), cur.is_none())];
+        if kinds { opts.push(("Stringer (Closed)".to_string(), with("stringer"), cur.as_ref().is_some_and(|s| s.kind == SupportKind::Stringer))); }
+        opts.push(("Carriage (Open)".to_string(), with("carriage"), cur.as_ref().is_some_and(|s| s.kind == SupportKind::Carriage)));
+        rows.push(select(label, opts));
+        if let Some(s) = cur {
+            let p = |f: &str| format!("supports.{key}.{f}");
+            rows.push(num(&format!("{label}: Width"), &p("width_mm"), s.width_mm, true));
+            rows.push(num(&format!("{label}: Total Depth"), &p("total_depth_mm"), s.total_depth_mm, true));
+            if s.kind == SupportKind::Stringer { rows.push(num(&format!("{label}: Above Nosing"), &p("above_nosing_mm"), s.above_nosing_mm, true)); }
+            rows.push(num(&format!("{label}: Offset"), &p("offset_mm"), s.offset_mm, true));
+            rows.push(material(&format!("{label}: Material"), &p("material"), &s.material));
+            if key == "middle" { rows.push(num("Number of Middle Supports", "supports.middle_count", sp.middle_count as f64, true)); }
+        }
+    }
+    rows
 }
 
 pub(crate) fn stair_type_props(d: &Document, id: Id, t: &StairType) -> Value {
@@ -190,7 +236,10 @@ pub(crate) fn stair_type_props(d: &Document, id: Id, t: &StairType) -> Value {
                 num("Minimum Risers per Flight", "rules.min_risers_per_run", r.min_risers_per_run as f64, true),
                 boolean("Check T - R of 120 or More", "rules.check_t_minus_r", r.check_t_minus_r, true),
                 boolean("Check R + T of 450 to 480", "rules.check_r_plus_t", r.check_r_plus_t, true),
+                boolean("Check Headroom", "rules.check_headroom", r.check_headroom, true),
+                num("Minimum Headroom", "rules.min_headroom_mm", r.min_headroom_mm, r.check_headroom),
             ]),
+            group("Supports", support_rows(t, &material)),
             group("Run Type", vec![
                 boolean("Monolithic", "run.monolithic", mono, true),
                 num("Structural Depth", "run.structural_depth_mm", t.run.structural_depth_mm, mono),
@@ -338,6 +387,17 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
             let zr = if r.z1 <= range.cut + 1e-6 { r.z0 } else { r.z1 };
             push(r.at(0.0, -w), r.at(r.length, -w), "outline", Some(r.index), zr);
             push(r.at(0.0, w), r.at(r.length, w), "outline", Some(r.index), zr);
+            // stringers beside the run: their faces
+            for (side, sup) in [(1.0, &t.supports.left), (-1.0, &t.supports.right)] {
+                let Some(sp) = sup.as_ref().filter(|x| x.kind == openarch_model::stairs::SupportKind::Stringer) else { continue };
+                for e in [w + sp.offset_mm, w + sp.offset_mm + sp.width_mm] {
+                    if (e - w).abs() < 1e-6 { continue; }
+                    push(r.at(0.0, side * e), r.at(r.length, side * e), "outline", Some(r.index), zr);
+                }
+                let e = side * (w + sp.offset_mm + sp.width_mm);
+                push(r.at(0.0, side * w), r.at(0.0, e), "outline", Some(r.index), r.z0);
+                push(r.at(r.length, side * w), r.at(r.length, e), "outline", Some(r.index), r.z1);
+            }
             let mut ends = vec![0.0, r.length];
             for (rs, top) in &r.risers {
                 ends.retain(|e| (e - rs).abs() > 1e-6);

@@ -292,6 +292,8 @@ async function renderProperties() {
     groups.push({ name: "Identity Data", rows: [{ label: "View Name", value: "Wall and Floor Quantities", kind: "ro" }, { label: "View Type", value: "Schedule", kind: "ro" }] });
   }
   if (d) groups.push(...d.groups);
+  // a stair's runs, each with its own properties
+  if (d && d.run_groups) groups.push(...d.run_groups);
 
   sel.replaceChildren();
   if (types) {

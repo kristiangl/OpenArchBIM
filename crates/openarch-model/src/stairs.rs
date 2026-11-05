@@ -26,6 +26,11 @@ fn d_riser() -> f64 { 19.0 }
 fn d_landing() -> f64 { 200.0 }
 fn d_angle() -> f64 { 30.0 }
 fn d_width() -> f64 { 1000.0 }
+fn d_headroom() -> f64 { 2000.0 }
+fn d_support_w() -> f64 { 45.0 }
+fn d_support_d() -> f64 { 290.0 }
+fn d_support_above() -> f64 { 50.0 }
+fn d_one() -> u32 { 1 }
 
 /// A stair type's calculation rules. Breaking one is a warning on the stair, not an error. The defaults follow the
 /// NCC for public stairs: risers 115 to 190, goings 250 to 355, 2R + G from 550 to 700, 2 to 18 risers a flight.
@@ -56,11 +61,16 @@ pub struct StairRules {
     /// Safety: R + T about 450 to 480 (off by default).
     #[serde(default)]
     pub check_r_plus_t: bool,
+    /// Clear height over the nosing line to floors and ceilings above (the NCC's 2 m).
+    #[serde(default = "d_headroom")]
+    pub min_headroom_mm: f64,
+    #[serde(default = "yes")]
+    pub check_headroom: bool,
 }
 
 impl Default for StairRules {
     fn default() -> Self {
-        StairRules { max_riser_mm: d_max_riser(), min_riser_mm: d_min_riser(), min_tread_mm: d_min_tread(), max_tread_mm: d_max_tread(), min_run_width_mm: d_min_width(), min_2r_t_mm: d_min_2rt(), max_2r_t_mm: d_max_2rt(), max_risers_per_run: d_max_risers(), min_risers_per_run: d_min_risers(), check_t_minus_r: false, check_r_plus_t: false }
+        StairRules { max_riser_mm: d_max_riser(), min_riser_mm: d_min_riser(), min_tread_mm: d_min_tread(), max_tread_mm: d_max_tread(), min_run_width_mm: d_min_width(), min_2r_t_mm: d_min_2rt(), max_2r_t_mm: d_max_2rt(), max_risers_per_run: d_max_risers(), min_risers_per_run: d_min_risers(), check_t_minus_r: false, check_r_plus_t: false, min_headroom_mm: d_headroom(), check_headroom: true }
     }
 }
 
@@ -106,6 +116,59 @@ pub struct LandingConstruction {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum SupportKind {
+    /// A closed stringer: a board along the outside of the run, its top above the nosing line.
+    #[default]
+    Stringer,
+    /// A carriage: under the treads, its top cut to the steps.
+    Carriage,
+}
+
+/// A support under or beside a run.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Support {
+    #[serde(default)]
+    pub kind: SupportKind,
+    #[serde(default = "d_support_w")]
+    pub width_mm: f64,
+    /// Square to the pitch.
+    #[serde(default = "d_support_d")]
+    pub total_depth_mm: f64,
+    /// A stringer's top above the nosing line.
+    #[serde(default = "d_support_above")]
+    pub above_nosing_mm: f64,
+    /// Out from the edge of the run (a stringer) or in from it (a carriage).
+    #[serde(default)]
+    pub offset_mm: f64,
+    #[serde(default)]
+    pub material: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct Supports {
+    #[serde(default)]
+    pub left: Option<Support>,
+    #[serde(default)]
+    pub right: Option<Support>,
+    /// Carriages under the middle of the run, evenly across it.
+    #[serde(default)]
+    pub middle: Option<Support>,
+    #[serde(default = "d_one")]
+    pub middle_count: u32,
+}
+
+impl Supports {
+    /// How far a side's stringer reaches out past the run's edge.
+    pub fn outside(&self, left: bool) -> f64 {
+        match if left { &self.left } else { &self.right } {
+            Some(s) if s.kind == SupportKind::Stringer => s.offset_mm + s.width_mm,
+            _ => 0.0,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum CutMarkStyle {
     #[default]
     Zigzag,
@@ -147,6 +210,8 @@ pub struct StairType {
     pub landing: LandingConstruction,
     #[serde(default)]
     pub cut_mark: CutMark,
+    #[serde(default)]
+    pub supports: Supports,
     #[serde(default)]
     pub function: StairFunction,
     #[serde(default)]
@@ -475,7 +540,12 @@ impl Document {
             let len = (d.x * d.x + d.y * d.y).sqrt();
             let dir = if len > 1e-9 { mul(d, 1.0 / len) } else { Point::new(1.0, 0.0) };
             let left = Point::new(-dir.y, dir.x);
-            let origin = add(run.start, mul(left, run.justification.centre_offset() * run.width_mm));
+            let mut origin = add(run.start, mul(left, run.justification.centre_offset() * run.width_mm));
+            match run.justification {
+                RunJustification::LeftExterior => origin = add(origin, mul(left, -t.supports.outside(true))),
+                RunJustification::RightExterior => origin = add(origin, mul(left, t.supports.outside(false))),
+                _ => {}
+            }
             let off = u32::from(!run.begins_with_riser);
             let nt = treads_in(run.risers, run.begins_with_riser, run.ends_with_riser);
             let risers: Vec<(f64, f64)> = (0..run.risers).map(|k| ((k + off) as f64 * tr, z + (k + 1) as f64 * r)).collect();
@@ -532,6 +602,13 @@ impl Document {
             }
             if run.width_mm < rl.min_run_width_mm - 1e-6 {
                 warnings.push(format!("Run {} is {} wide, under the minimum of {}.", i + 1, run.width_mm, rl.min_run_width_mm));
+            }
+        }
+        if rl.check_headroom {
+            for run in &runs {
+                if let Some(h) = self.headroom(run).filter(|h| *h < rl.min_headroom_mm - 1e-6) {
+                    warnings.push(format!("The headroom over run {} is {h:.0}, under {}.", run.index + 1, rl.min_headroom_mm));
+                }
             }
         }
         Some(StairLayout { base_z, top_z, height, desired_risers: n, actual_risers: actual, riser_mm: r, tread_mm: tr, runs, landings, warnings })
@@ -677,10 +754,103 @@ impl Document {
                 }
             }
         }
+        // supports: stringers beside the run, carriages under its treads
+        let sp = &t.supports;
+        let pitch = if l.tread_mm > 0.0 { l.riser_mm / l.tread_mm } else { 0.0 };
+        let slope = (1.0 + pitch * pitch).sqrt();
+        for run in &l.runs {
+            let w = run.width / 2.0;
+            let on_landing = l.landings.iter().any(|x| x.after_run + 1 == run.index);
+            let floor = run.z0 - if on_landing { t.landing.thickness_mm } else { 0.0 };
+            let above_floor = |c: Convex| c.clip(&|p| p[2], floor, true);
+            let under = if rc.treads && !rc.monolithic { rc.tread_thickness_mm } else { 0.0 };
+            // a carriage between `t0` and `t1` across the run: a column under each tread down to its soffit
+            let carriage = |s: &Support, t0: f64, t1: f64, out: &mut Vec<StairPiece>| {
+                let drop = s.total_depth_mm * slope;
+                for &(s0, s1, top) in &run.treads {
+                    let (b0, b1) = (run.nosing_z(s0) - under - drop, run.nosing_z(s1) - under - drop);
+                    let top = top - under;
+                    if top - b0.min(b1) < 1.0 { continue; }
+                    let profile = vec![[s0, b0.min(top)], [s1, b1.min(top)], [s1, top], [s0, top]];
+                    if let Some(c) = above_floor(Convex::across(run, &profile, t0, t1)) {
+                        out.push(StairPiece { part: StairPart::Support(run.index), material: mat(&s.material), solid: c });
+                    }
+                }
+            };
+            for (side, s) in [(1.0, &sp.left), (-1.0, &sp.right)] {
+                let Some(s) = s else { continue };
+                match s.kind {
+                    SupportKind::Stringer => {
+                        let (a, b) = (w + s.offset_mm, w + s.offset_mm + s.width_mm);
+                        let (t0, t1) = if side > 0.0 { (a, b) } else { (-b, -a) };
+                        let top = |sv: f64| run.nosing_z(sv) + s.above_nosing_mm;
+                        let drop = s.total_depth_mm * slope;
+                        let profile = vec![[0.0, top(0.0) - drop], [run.length, top(run.length) - drop], [run.length, top(run.length)], [0.0, top(0.0)]];
+                        if let Some(c) = above_floor(Convex::across(run, &profile, t0, t1)) {
+                            out.push(StairPiece { part: StairPart::Support(run.index), material: mat(&s.material), solid: c });
+                        }
+                    }
+                    SupportKind::Carriage => {
+                        let (a, b) = (w - s.offset_mm - s.width_mm, w - s.offset_mm);
+                        let (t0, t1) = if side > 0.0 { (a, b) } else { (-b, -a) };
+                        carriage(s, t0, t1, &mut out);
+                    }
+                }
+            }
+            if let Some(m) = &sp.middle {
+                let n = sp.middle_count.max(1);
+                for k in 0..n {
+                    let c = -w + run.width * (k + 1) as f64 / (n + 1) as f64;
+                    carriage(m, c - m.width_mm / 2.0, c + m.width_mm / 2.0, &mut out);
+                }
+            }
+        }
         for g in &l.landings {
             out.push(StairPiece { part: StairPart::Landing(g.index), material: mat(&t.landing.material), solid: Convex::prism(&g.outline, g.z - g.thickness, g.z) });
         }
         out
+    }
+
+    /// Change one run (its location line, width, risers, Begins and Ends with Riser), one undo step.
+    pub fn patch_stair_run(&mut self, id: Id, run: usize, patch: &serde_json::Value) -> Result<(), String> {
+        self.refuse_pinned(&[id], "edited")?;
+        let mut s = self.stair(id).cloned().ok_or("not a stair")?;
+        let old = s.runs.get(run).cloned().ok_or("no such run")?;
+        s.runs[run] = crate::doc::apply_patch(&old, patch)?;
+        s.landings = self.automatic_landings(&s);
+        self.check_stair(&s)?;
+        self.transact("Stair run properties", |tx| tx.update(id, Element::Stair(s)))
+    }
+
+    /// The least clear height over a run's nosings to the floors and ceilings above it, where one is lower than the
+    /// type allows.
+    fn headroom(&self, run: &RunLayout) -> Option<f64> {
+        let mut worst: Option<f64> = None;
+        let w = run.width / 2.0 - 50.0;
+        let mut overhead: Vec<(Vec<crate::geom::Region>, f64, crate::element::Floor)> = vec![];
+        for (_, f) in self.iter().filter_map(|(i, e)| if let Element::Floor(f) = e { Some((i, f)) } else { None }) {
+            let t = self.floor_type(f.floor_type).map_or(0.0, |t| t.thickness_mm());
+            overhead.push((f.regions(0.5), t, f.clone()));
+        }
+        for (_, c) in self.ceilings() {
+            let t = self.ceiling_thickness(c);
+            overhead.push((c.regions(0.5), t, self.ceiling_slab(c)));
+        }
+        for (s, z) in &run.risers {
+            for t in [-w, 0.0, w] {
+                let p = run.at(*s, t);
+                for (regions, thick, slab) in &overhead {
+                    if !regions.iter().any(|r| crate::rooms::contains(r, p)) { continue; }
+                    let Some(surf) = self.floor_surface(slab) else { continue };
+                    let under = surf.z(p) - thick;
+                    if under > z + 1.0 {
+                        let h = under - z;
+                        worst = Some(worst.map_or(h, |x: f64| x.min(h)));
+                    }
+                }
+            }
+        }
+        worst
     }
 
     /// The 3D view's meshes: one per material, the pieces made of it together.
@@ -743,6 +913,8 @@ impl Document {
 pub enum StairPart {
     /// A monolithic run's flight.
     Run(usize),
+    /// A stringer or carriage of a run.
+    Support(usize),
     Tread(usize),
     Riser(usize),
     Landing(usize),
@@ -959,6 +1131,7 @@ pub(crate) fn starter_stair_types() -> Vec<StairType> {
             run: RunConstruction { monolithic: true, structural_depth_mm: 150.0, material: "Concrete".into(), treads: false, tread_thickness_mm: 0.0, nosing_mm: 0.0, tread_material: String::new(), risers: false, riser_thickness_mm: 0.0, riser_material: String::new(), slanted_risers: false },
             landing: LandingConstruction { monolithic: true, thickness_mm: 200.0, material: "Concrete".into() },
             cut_mark: CutMark::default(),
+            supports: Supports::default(),
             function: StairFunction::Interior,
             info: TypeInfo::default(),
         },
@@ -968,6 +1141,12 @@ pub(crate) fn starter_stair_types() -> Vec<StairType> {
             run: RunConstruction { monolithic: false, structural_depth_mm: 0.0, material: String::new(), treads: true, tread_thickness_mm: 40.0, nosing_mm: 25.0, tread_material: "Timber Flooring".into(), risers: true, riser_thickness_mm: 19.0, riser_material: "Timber Flooring".into(), slanted_risers: false },
             landing: LandingConstruction { monolithic: false, thickness_mm: 200.0, material: "Timber Flooring".into() },
             cut_mark: CutMark::default(),
+            supports: Supports {
+                left: Some(Support { kind: SupportKind::Stringer, width_mm: 45.0, total_depth_mm: 290.0, above_nosing_mm: 50.0, offset_mm: 0.0, material: "Timber Joist".into() }),
+                right: Some(Support { kind: SupportKind::Stringer, width_mm: 45.0, total_depth_mm: 290.0, above_nosing_mm: 50.0, offset_mm: 0.0, material: "Timber Joist".into() }),
+                middle: None,
+                middle_count: 1,
+            },
             function: StairFunction::Interior,
             info: TypeInfo::default(),
         },
