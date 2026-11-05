@@ -48,9 +48,20 @@ const MODIFY_TAB = [
     modifyItem("Trim/Extend Multiple", "trim", {"project":"tm","family":"f-tm","annotation":"a-tm"}, { iconOnly: true, secondary: true }),
     modifyItem("Delete", "delete", {"project":"del","family":"f-del","annotation":"a-del"}, { iconOnly: true, secondary: true }) ] },
   { label: "View", items: [
-    modifyItem("Show Hidden", "showHidden", null, { iconOnly: true }),
-    modifyItem("Reveal Hidden", "revealHidden", null, { iconOnly: true }),
-    modifyItem("Temporary Hide/Isolate", "tempHide", null, { iconOnly: true }) ] },
+    modifyItem("Hide in View", "showHidden", { project: "hide-el" }, { iconOnly: true, menu: [
+      modifyItem("Hide Elements (EH)", "showHidden", { project: "hide-el" }),
+      modifyItem("Hide Category (VH)", "showHidden", { project: "hide-cat" }) ] }),
+    modifyItem("Override Graphics in View", "overrideGfx", { project: "override-el" }, { iconOnly: true, menu: [
+      modifyItem("By Element", "overrideGfx", { project: "override-el" }),
+      modifyItem("By Category", "overrideGfx", { project: "override-cat" }) ] }),
+    modifyItem("Reveal Hidden Elements (RH)", "revealHidden", { project: "reveal" }, { iconOnly: true }),
+    modifyItem("Temporary Hide/Isolate", "tempHide", { project: "temp-hide-el" }, { iconOnly: true, menu: [
+      modifyItem("Isolate Category (IC)", "tempHide", { project: "temp-iso-cat" }),
+      modifyItem("Hide Category (HC)", "tempHide", { project: "temp-hide-cat" }),
+      modifyItem("Isolate Element (HI)", "tempHide", { project: "temp-iso-el" }),
+      modifyItem("Hide Element (HH)", "tempHide", { project: "temp-hide-el" }),
+      modifyItem("Reset Temporary Hide/Isolate (HR)", "tempHide", { project: "temp-reset" }),
+      modifyItem("Apply Hide/Isolate to View", "tempHide", { project: "temp-apply" }) ] }) ] },
   { label: "Measure", items: [
     modifyItem("Measure", "measure", { project: "me" }, { big: true }) ] },
   { label: "Create", items: [

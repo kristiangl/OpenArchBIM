@@ -36,6 +36,8 @@ pub struct Document {
     settling: bool,
     pub(crate) key_writing: bool,
     pub(crate) room_cache: std::cell::RefCell<crate::rooms::RoomCache>,
+    /// Temporary Hide/Isolate and Reveal Hidden Elements: the session's, not saved and not undone.
+    pub(crate) display: crate::hide::ViewDisplay,
 }
 
 /// Handle passed to a transaction closure. Every change is recorded so the
@@ -126,7 +128,7 @@ impl Tx<'_> {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), display: Default::default() }
     }
 }
 

@@ -202,6 +202,7 @@ const ICONS = {
   matchType: '<path class="af" d="M4 20l3-1 10-10-2-2L5 17z"/><path d="M14 6l2-2 2 2-2 2z"/><path d="M4 20h5"/>',
   showHidden: '<path d="M2 12c3-5 7-7 10-7s7 2 10 7c-3 5-7 7-10 7S5 17 2 12z" stroke-dasharray="3 2"/><circle class="a2" cx="12" cy="12" r="2.5"/>',
   revealHidden: '<path d="M2 12c3-4.5 7-6.5 10-6.5S19 7.5 22 12c-3 4.5-7 6.5-10 6.5S5 16.5 2 12z"/><circle class="af" cx="12" cy="12" r="2.5"/><path class="a2" d="M18 3v3M16.5 4.5h3"/>',
+  overrideGfx: '<rect x="3" y="5" width="12" height="14"/><path class="a2" d="M13 17l7-7 2 2-7 7h-2z"/>',
   tempHide: '<path d="M2 12c3-4.5 7-6.5 10-6.5S19 7.5 22 12c-3 4.5-7 6.5-10 6.5S5 16.5 2 12z"/><path class="a2" d="M4 4l16 16"/>',
   createSimilar: '<rect x="3" y="3" width="11" height="11" rx="1"/><rect x="10" y="10" width="11" height="11" rx="1" stroke-dasharray="3 2"/><path class="a2" d="M5.5 8.5h6M8.5 5.5v6"/>',
   activate: '<path d="M3 17h6M15 17h6"/><path class="a2" d="M6 17V9M18 17V9M6 9h12"/><path d="M9 9V6M15 9V6"/>',

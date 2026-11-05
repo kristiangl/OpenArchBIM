@@ -182,6 +182,15 @@ table.props input { width: 100%; padding: 1px 4px; background: var(--panel); bor
 #viewport-wrap.activated > #plan, #viewport-wrap.activated > #elev { z-index: 2; box-shadow: 0 0 0 1px var(--accent); }
 #activation-bar { position: absolute; top: 8px; left: 50%; transform: translateX(-50%); z-index: 3; display: flex; align-items: center; gap: 10px; padding: 4px 6px 4px 12px; background: var(--panel); border: 1px solid var(--accent); border-radius: 4px; box-shadow: 0 1px 4px rgba(0,0,0,0.15); }
 #activation-bar[hidden] { display: none; }
+#viewport-wrap[data-display]::after { content: attr(data-label); position: absolute; inset: 0; z-index: 4; pointer-events: none; border: 3px solid var(--display-frame); padding: 2px 8px; font-size: 12px; color: var(--display-frame); }
+#viewport-wrap[data-display="temp"] { --display-frame: #10a6b8; }
+#viewport-wrap[data-display="reveal"] { --display-frame: #d200a0; }
+#viewbar button.on { background: var(--accent); color: #fff; }
+.eg-row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.eg-row > span:first-child { min-width: 140px; }
+.eg-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; margin-top: 8px; }
+.eg-grid fieldset { border: 1px solid var(--line, #ccc); padding: 4px 8px; }
+.eg-grid .eg-row > span:first-child { min-width: 60px; }
 #viewport-wrap.v-schedule > #schedule-view { display: block; overflow: auto; }
 #viewport-wrap.v-plan #hud, #viewport-wrap.v-elevation #hud, #viewport-wrap.v-schedule #hud, #viewport-wrap.v-sheet #hud { display: none; }
 

@@ -69,6 +69,17 @@ const COMMANDS = {
   "paste-current": () => Clip.pasteCurrent(),
   "paste-same": () => Clip.pasteSame(),
   "match-type": () => Clip.matchType(),
+  "temp-hide-el": () => Hide.temp("hide_elements"),
+  "temp-iso-el": () => Hide.temp("isolate_elements"),
+  "temp-hide-cat": () => Hide.temp("hide_categories"),
+  "temp-iso-cat": () => Hide.temp("isolate_categories"),
+  "temp-reset": () => Hide.temp("reset"),
+  "temp-apply": () => Hide.temp("apply"),
+  "hide-el": () => Hide.hideInView(false),
+  "hide-cat": () => Hide.hideInView(true),
+  reveal: () => Hide.reveal(),
+  "override-el": () => Hide.overrides(),
+  "override-cat": () => openVG(),
   "color-legend": () => ColorFill.start(),
   "tag-cat": () => Tags.start(),
   "tag-all": () => Tags.tagAll(),
@@ -284,6 +295,7 @@ function modifyEnabled(id) {
   }
   if (["sel", "props", "v-vg"].includes(id)) return true;
   if (id.startsWith("paste") || ["clip-copy", "clip-cut", "match-type"].includes(id)) return !Sketch.active && Clip.enabled(id);
+  if (id.startsWith("temp-") || ["hide-el", "hide-cat", "reveal", "override-el", "override-cat"].includes(id)) return !Sketch.active && Hide.enabled(id);
   if (Sketch.active) return id === "sel" || id === "del" || !!SKETCH_MODIFY[id];
   if (id === "gp") return app.selection.length > 0 && !app.groupEdit && app.view.kind !== "schedule";
   if (app.view.kind === "elevation") {
@@ -340,6 +352,8 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
   if (app.view.kind === "plan" && Plan.tool === "paste") return Clip.context();
   if (app.view.kind === "plan" && Plan.tool === "matchtype") return Clip.matchContext();
+  const rh = Hide.context();
+  if (rh) return rh;
   const cf = ColorFill.selectionContext();
   if (cf) return cf;
   const cs = Ceilings.selectionContext();
@@ -920,6 +934,7 @@ async function openView(kind, viewId, opt = {}) {
   renderTree();
   updateTitle();
   syncViewBar();
+  await Hide.load();
 }
 
 // ---- tabs of the open views, and the camera each view keeps --------------------------
@@ -1095,6 +1110,7 @@ async function refresh(force = false) {
   if (!info) return;
   app.info = info;
   await Clip.load(false);
+  await Hide.load();
   syncGroups();
   const pick = (cur, cat, label) => (cur && info.family_types.some((t) => t.id === cur) ? cur : (info.family_types.find((t) => t.label === label) || info.family_types.find((t) => t.category === cat) || {}).id || null);
   app.doorTypeId = pick(app.doorTypeId, "Doors", "Single-Flush: 820 x 2040");
@@ -2852,7 +2868,7 @@ document.addEventListener("keydown", (e) => {
     keyBuf = (keyBuf + e.key.toUpperCase()).slice(-2);
     clearTimeout(keyTimer);
     keyTimer = setTimeout(() => (keyBuf = ""), 900);
-    const map = Sketch.active ? {} : { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin" };
+    const map = Sketch.active ? {} : { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
     if (map[keyBuf] && COMMANDS[map[keyBuf]]) { COMMANDS[map[keyBuf]](); keyBuf = ""; }
     else if (app.view.kind === "plan" && Snap.isOverride(keyBuf) && (["wall", "sketch"].includes(Plan.tool) || Plan.isEditTool())) {
       Snap.setOverride(keyBuf);

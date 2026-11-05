@@ -383,6 +383,7 @@ impl Document {
         let paper = |p: Point| [p.x / s, p.y / s];
         self.text_notes(view)
             .into_iter()
+            .filter(|(id, _)| !self.hidden_in(view, *id))
             .map(|(id, t)| TextNoteDraw {
                 id,
                 text: DrawnText {
@@ -621,7 +622,7 @@ impl Document {
         };
         let mut out = SymbolPaths::default();
         if regions {
-            for (id, r) in self.detail_regions(view) {
+            for (id, r) in self.detail_regions(view).into_iter().filter(|(id, _)| !self.hidden_in(view, *id)) {
                 let polys: Vec<Vec<Point>> = r.loops.iter().map(|l| curve::loop_polygon(&l.iter().map(|e| e.curve.clone()).collect::<Vec<_>>(), TOL_MM)).collect();
                 let depth = curve::loop_depths(&polys);
                 let area: f64 = polys.iter().zip(&depth).map(|(p, d)| if d % 2 == 0 { 1.0 } else { -1.0 } * crate::geom::polygon_area_abs(p)).sum();
@@ -644,7 +645,7 @@ impl Document {
             }
         }
         if lines {
-            for (id, l) in self.detail_lines(view) {
+            for (id, l) in self.detail_lines(view).into_iter().filter(|(id, _)| !self.hidden_in(view, *id)) {
                 out.strokes.extend(stroke(&l.curve, &l.style, Some(id), None));
             }
         }

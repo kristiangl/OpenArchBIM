@@ -27,6 +27,7 @@ mod tags;
 mod ceilings;
 mod areas;
 mod clipboard;
+mod hide;
 mod colorfill;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
@@ -131,9 +132,9 @@ fn detail_json(d: &Document, vid: Id, settings: &openarch_model::view::ViewSetti
     let scale = settings.scale as f64;
     let v = json!({
         "detail": d.detail_paths(vid, scale, ann_shown("Lines"), ann_shown("Detail Items")),
-        "detail_lines": d.detail_lines(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+        "detail_lines": d.detail_lines(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
         "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, scale) } else { vec![] },
-        "regions": d.detail_regions(vid).iter().map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
+        "regions": d.detail_regions(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
         "line_styles": d.line_styles(),
         "filled_region_types": d.filled_region_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name })).collect::<Vec<_>>(),
     });
@@ -220,6 +221,17 @@ impl Session {
     }
 
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
+        // a view's drawing shows its Temporary Hide/Isolate, or Reveal Hidden Elements
+        if matches!(method, "plan" | "scene" | "elevation") {
+            return self.drawn(method, p, |s| s.handle_inner(method, p));
+        }
+        self.handle_inner(method, p)
+    }
+
+    fn handle_inner(&mut self, method: &str, p: &Value) -> Res {
+        if let Some(r) = self.handle_hide(method, p) {
+            return r;
+        }
         if let Some(r) = self.handle_tags(method, p) {
             return r;
         }
