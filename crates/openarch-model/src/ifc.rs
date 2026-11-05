@@ -771,60 +771,65 @@ impl Document {
             w.pset(stair, id, "Pset_StairCommon", &[props[0], props[1], props[2], props[3], ext]);
             let pieces = self.stair_pieces(st);
             let mut parts = vec![];
-            for run in &lay.runs {
-                let mut verts = vec![];
-                let mut mat = None;
-                for p in pieces.iter().filter(|p| matches!(p.part, StairPart::Run(i) | StairPart::Tread(i) | StairPart::Riser(i) if i == run.index)) {
-                    p.solid.mesh(&mut verts);
-                    mat = mat.or(p.material.clone());
+            // each storey of a multistory stair, its parts numbered a hundred apart
+            for (c, lay) in self.stair_layouts(st).iter().enumerate() {
+                let off = c * 100;
+                let storey = if c == 0 { String::new() } else { format!("Storey {}, ", c + 1) };
+                for run in &lay.runs {
+                    let mut verts = vec![];
+                    let mut mat = None;
+                    for p in pieces.iter().filter(|p| matches!(p.part, StairPart::Run(i) | StairPart::Tread(i) | StairPart::Riser(i) if i == off + run.index)) {
+                        p.solid.mesh(&mut verts);
+                        mat = mat.or(p.material.clone());
+                    }
+                    let Some(set) = w.faceset(&verts, -sz) else { continue };
+                    let shape = w.tessellated(&[set]);
+                    let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                    let key = id * 100_000 + c as u64 * 1000 + run.index as u64;
+                    let (nr, nt) = (run.risers.len(), run.treads.len());
+                    let kind = match st.runs.get(run.index).map(|r| &r.shape) { Some(crate::stairs::RunShape::Spiral { .. }) => "SPIRAL", Some(crate::stairs::RunShape::Winder { .. }) => "WINDER", _ => "STRAIGHT" };
+                    let f = w.add(format!("IFCSTAIRFLIGHT({},$,{},$,$,#{pat},#{shape},$,{nr},{nt},{},{},.{kind}.)", s(&derived(STAIR_PART, key)), s(&format!("{storey}Run {}", run.index + 1)), real(lay.riser_mm), real(lay.tread_mm)));
+                    let fp = [count(&mut w, "NumberOfRiser", nr), count(&mut w, "NumberOfTreads", nt), length(&mut w, "RiserHeight", lay.riser_mm), length(&mut w, "TreadLength", lay.tread_mm)];
+                    w.pset(f, (1 << 48) | key, "Pset_StairFlightCommon", &fp);
+                    if let Some(m) = mat {
+                        part_materials.entry(m).or_default().push(f);
+                    }
+                    parts.push(f);
                 }
-                let Some(set) = w.faceset(&verts, -sz) else { continue };
-                let shape = w.tessellated(&[set]);
-                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
-                let key = id * 1000 + run.index as u64;
-                let (nr, nt) = (run.risers.len(), run.treads.len());
-                let kind = match st.runs.get(run.index).map(|r| &r.shape) { Some(crate::stairs::RunShape::Spiral { .. }) => "SPIRAL", Some(crate::stairs::RunShape::Winder { .. }) => "WINDER", _ => "STRAIGHT" };
-                let f = w.add(format!("IFCSTAIRFLIGHT({},$,{},$,$,#{pat},#{shape},$,{nr},{nt},{},{},.{kind}.)", s(&derived(STAIR_PART, key)), s(&format!("Run {}", run.index + 1)), real(lay.riser_mm), real(lay.tread_mm)));
-                let fp = [count(&mut w, "NumberOfRiser", nr), count(&mut w, "NumberOfTreads", nt), length(&mut w, "RiserHeight", lay.riser_mm), length(&mut w, "TreadLength", lay.tread_mm)];
-                w.pset(f, (1 << 48) | key, "Pset_StairFlightCommon", &fp);
-                if let Some(m) = mat {
-                    part_materials.entry(m).or_default().push(f);
+                // each run's stringers and carriages, one member
+                for run in &lay.runs {
+                    let mut verts = vec![];
+                    let mut mat = None;
+                    for p in pieces.iter().filter(|p| p.part == StairPart::Support(off + run.index)) {
+                        p.solid.mesh(&mut verts);
+                        mat = mat.or(p.material.clone());
+                    }
+                    let Some(set) = w.faceset(&verts, -sz) else { continue };
+                    let shape = w.tessellated(&[set]);
+                    let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                    let m = w.add(format!("IFCMEMBER({},$,{},$,$,#{pat},#{shape},$,.STRINGER.)", s(&derived(STAIR_PART, id * 100_000 + c as u64 * 1000 + 250 + run.index as u64)), s(&format!("{storey}Supports, run {}", run.index + 1))));
+                    if let Some(mm) = mat {
+                        part_materials.entry(mm).or_default().push(m);
+                    }
+                    parts.push(m);
                 }
-                parts.push(f);
-            }
-            // each run's stringers and carriages, one member
-            for run in &lay.runs {
-                let mut verts = vec![];
-                let mut mat = None;
-                for p in pieces.iter().filter(|p| p.part == StairPart::Support(run.index)) {
-                    p.solid.mesh(&mut verts);
-                    mat = mat.or(p.material.clone());
+                for g in &lay.landings {
+                    let mut verts = vec![];
+                    let mut mat = None;
+                    for p in pieces.iter().filter(|p| p.part == StairPart::Landing(off + g.index)) {
+                        p.solid.mesh(&mut verts);
+                        mat = mat.or(p.material.clone());
+                    }
+                    let Some(set) = w.faceset(&verts, -sz) else { continue };
+                    let shape = w.tessellated(&[set]);
+                    let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                    let key = id * 100_000 + c as u64 * 1000 + 500 + g.index as u64;
+                    let l = w.add(format!("IFCSLAB({},$,{},$,$,#{pat},#{shape},$,.LANDING.)", s(&derived(STAIR_PART, key)), s(&format!("{storey}Landing {}", g.index + 1))));
+                    if let Some(m) = mat {
+                        part_materials.entry(m).or_default().push(l);
+                    }
+                    parts.push(l);
                 }
-                let Some(set) = w.faceset(&verts, -sz) else { continue };
-                let shape = w.tessellated(&[set]);
-                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
-                let m = w.add(format!("IFCMEMBER({},$,{},$,$,#{pat},#{shape},$,.STRINGER.)", s(&derived(STAIR_PART, id * 1000 + 250 + run.index as u64)), s(&format!("Supports, run {}", run.index + 1))));
-                if let Some(mm) = mat {
-                    part_materials.entry(mm).or_default().push(m);
-                }
-                parts.push(m);
-            }
-            for g in &lay.landings {
-                let mut verts = vec![];
-                let mut mat = None;
-                for p in pieces.iter().filter(|p| p.part == StairPart::Landing(g.index)) {
-                    p.solid.mesh(&mut verts);
-                    mat = mat.or(p.material.clone());
-                }
-                let Some(set) = w.faceset(&verts, -sz) else { continue };
-                let shape = w.tessellated(&[set]);
-                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
-                let key = id * 1000 + 500 + g.index as u64;
-                let l = w.add(format!("IFCSLAB({},$,{},$,$,#{pat},#{shape},$,.LANDING.)", s(&derived(STAIR_PART, key)), s(&format!("Landing {}", g.index + 1))));
-                if let Some(m) = mat {
-                    part_materials.entry(m).or_default().push(l);
-                }
-                parts.push(l);
             }
             // its railings are parts of it too
             for rid in self.stair_railings(id) {

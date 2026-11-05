@@ -9,6 +9,8 @@ const Stairs = (() => {
   // the run shape being drawn, and the clicks it takes: straight (start, end), full-step spiral (centre, start),
   // centre-ends spiral (centre, start, end), L winder (start, corner, end), U winder (start, two corners, end)
   let shape = "straight", clockwise = null, winderStyle = "balanced";
+  // a run or landing being sketched: the stair waits; a sketched run's new lines are boundaries or risers
+  let sketching = false, sketchRole = "boundary";
   const NEED = { straight: 2, spiral_full: 2, spiral_ends: 3, winder_l: 3, winder_u: 4 };
   const STAGE = {
     straight: ["Click the start of a run.", "Click the end of the run."],
@@ -29,7 +31,7 @@ const Stairs = (() => {
   function params(extra = {}) {
     const d = draft;
     return { type_id: d.typeId, base_level: d.baseLevel, top_level: d.topLevel, base_offset_mm: d.baseOffset, top_offset_mm: d.topOffset, unconnected_height_mm: d.height,
-      desired_risers: d.risers ?? undefined, tread_depth_mm: d.tread ?? undefined, runs: d.runs, railing_type: d.id ? undefined : (d.railing ?? undefined), ...extra };
+      desired_risers: d.risers ?? undefined, tread_depth_mm: d.tread ?? undefined, runs: d.runs, landings: d.landings || [], railing_type: d.id ? undefined : (d.railing ?? undefined), ...extra };
   }
   function pendingOf() {
     if (!clicks.length || !pendingEnd) return null;
@@ -44,10 +46,10 @@ const Stairs = (() => {
     if (edit) {
       const r = await run("stair_edit", { id: edit });
       if (!r) return;
-      draft = { id: edit, typeId: r.type_id, baseLevel: r.base_level, topLevel: r.top_level, baseOffset: r.base_offset_mm, topOffset: r.top_offset_mm, height: r.unconnected_height_mm, risers: r.desired_risers, tread: r.tread_depth_mm, justification: r.runs[0]?.justification || "center", width: r.runs[0]?.width_mm || 1000, runs: r.runs };
+      draft = { id: edit, landings: r.landings || [], typeId: r.type_id, baseLevel: r.base_level, topLevel: r.top_level, baseOffset: r.base_offset_mm, topOffset: r.top_offset_mm, height: r.unconnected_height_mm, risers: r.desired_risers, tread: r.tread_depth_mm, justification: r.runs[0]?.justification || "center", width: r.runs[0]?.width_mm || 1000, runs: r.runs };
     } else {
       const base = curLevelId();
-      draft = { id: null, railing: (app.info.railing_types || [])[0]?.id ?? null, typeId: typeId(), baseLevel: base, topLevel: levelAbove(base), baseOffset: 0, topOffset: 0, height: 3000, risers: null, tread: null, justification: "center", width: (app.info.stair_types || []).find((t) => t.id === typeId())?.width_mm || 1000, runs: [] };
+      draft = { id: null, landings: [], railing: (app.info.railing_types || [])[0]?.id ?? null, typeId: typeId(), baseLevel: base, topLevel: levelAbove(base), baseOffset: 0, topOffset: 0, height: 3000, risers: null, tread: null, justification: "center", width: (app.info.stair_types || []).find((t) => t.id === typeId())?.width_mm || 1000, runs: [] };
     }
     clicks = []; pendingEnd = null;
     app.selection = []; Plan.setSelection([]);
@@ -103,7 +105,7 @@ const Stairs = (() => {
   async function finish() {
     if (!draft) return;
     if (!draft.runs.length) { setPrompt("Draw at least one run first.", true); return; }
-    const r = draft.id ? await run("set_stair_runs", { id: draft.id, runs: draft.runs }) : await run("add_stair", params());
+    const r = draft.id ? await run("set_stair_runs", { id: draft.id, runs: draft.runs, landings: draft.landings }) : await run("add_stair", params());
     if (!r) return;
     const id = draft.id || r.id;
     draft = null; preview = null; clicks = []; pendingEnd = null;
@@ -120,6 +122,7 @@ const Stairs = (() => {
   function deleteLastRun() {
     if (!draft || !draft.runs.length) return;
     draft.runs.pop(); clicks = []; pendingEnd = null;
+    draft.landings = (draft.landings || []).filter((l) => l.after_run < draft.runs.length);
     ask().then(() => say());
   }
   // Esc drops the run being drawn; the stair stays in progress until Finish or Cancel
@@ -128,7 +131,52 @@ const Stairs = (() => {
     setPrompt("Finish the stair, or Cancel it.");
     return true;
   }
-  function endTool() { if (draft) { draft = null; preview = null; clicks = []; pendingEnd = null; } }
+  function endTool() { if (draft && !sketching) { draft = null; preview = null; clicks = []; pendingEnd = null; } }
+
+  // Sketch Run (two boundaries and riser lines, the first riser drawn at the bottom) and Sketch Landing (a closed
+  // outline at the top of the last run): the sketch's Finish gives the stair its new run or landing
+  const ROLE_INK = { boundary: "#2a8f3c", riser: "#1f5fbf" };
+  function sketch(kind) {
+    if (!draft || Sketch.active) return;
+    if (kind === "stairlanding" && !draft.runs.length) { setPrompt("Draw a run first: a landing stands at the top of the last run.", true); return; }
+    sketching = true; clicks = []; pendingEnd = null;
+    sketchRole = "boundary";
+    Plan.startSketch({ kind, levelId: draft.baseLevel, typeId: draft.typeId, curves: [], tool: "line", closed: kind === "stairlanding",
+      title: kind === "stairrun" ? "Sketch Run" : "Sketch Landing",
+      ...(kind === "stairrun" ? { attr: () => ({ role: sketchRole }), ink: (c) => ROLE_INK[c.attr?.role] || ROLE_INK.boundary } : {}) });
+    renderSketchUI();
+    setPrompt(kind === "stairrun" ? "Draw the run's two boundaries, then switch to Riser and draw its riser lines, the bottom one first." : "Draw the landing's outline as a closed loop.");
+  }
+  async function sketchFinished(o) {
+    let ok = false;
+    if (o.kind === "stairrun") {
+      const r = await run("stair_sketch_run", { edges: o.edges || [] });
+      if (r) { draft.runs.push(r.run); ok = true; }
+    } else {
+      const r = await run("stair_sketch_landing", { curves: o.curves });
+      if (r) { draft.landings = (draft.landings || []).filter((l) => l.after_run !== draft.runs.length - 1); draft.landings.push({ after_run: draft.runs.length - 1, outline: r.outline }); ok = true; }
+    }
+    if (!ok) return false;
+    backToStair();
+    return true;
+  }
+  function sketchCancelled() { backToStair(); }
+  function backToStair() {
+    Plan.endSketch(); endSketchUI();
+    sketching = false;
+    Plan.setTool("stair");
+    updateRibbonContext(true);
+    renderProperties();
+    ask().then(() => say());
+  }
+  const role = () => sketchRole;
+  function roleGroup() {
+    const set = (r) => { sketchRole = r; if (Sketch.selectedAttr && Sketch.selectedAttr()) Sketch.patchSelected({ role: r }); updateRibbonContext(); };
+    return { label: "Draw", items: [
+      { label: "Boundary", ico: "Bd", on: sketchRole === "boundary", onclick: () => set("boundary") },
+      { label: "Riser", ico: "Rs", on: sketchRole === "riser", onclick: () => set("riser") },
+    ] };
+  }
 
   function context() {
     const groups = [
@@ -143,6 +191,8 @@ const Stairs = (() => {
         })),
         { label: clockwise ? "Clockwise" : "Anticlockwise", ico: clockwise ? "↻" : "↺", disabled: !shape.startsWith("spiral"), onclick: () => { clockwise = !clockwise; updateRibbonContext(); ask(); } },
         { label: winderStyle === "balanced" ? "Balanced Winders" : "Single Point Winders", ico: winderStyle === "balanced" ? "Bw" : "Sp", disabled: !shape.startsWith("winder"), onclick: () => { winderStyle = winderStyle === "balanced" ? "single_point" : "balanced"; updateRibbonContext(); ask(); } },
+        { label: "Sketch Run", ico: "Sk", onclick: () => sketch("stairrun") },
+        { label: "Sketch Landing", ico: "Ld", onclick: () => sketch("stairlanding") },
         { label: "Delete Last Run", ico: "⌫", disabled: !draft?.runs.length, onclick: deleteLastRun },
       ] },
     ];
@@ -248,5 +298,5 @@ const Stairs = (() => {
     ctx.restore();
   }
 
-  return { start, click, hover, last, finish, cancel, escape, endTool, context, toolProps, selectionContext, elements, draw, typeId, active: () => !!draft };
+  return { start, click, hover, last, finish, cancel, escape, endTool, context, toolProps, selectionContext, elements, draw, typeId, active: () => !!draft, sketchFinished, sketchCancelled, roleGroup, role };
 })();

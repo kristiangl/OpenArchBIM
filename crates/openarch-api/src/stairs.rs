@@ -17,6 +17,31 @@ fn runs_of(p: &Value) -> Result<Vec<StairRun>, String> {
     }
 }
 
+/// The sketched landings drawn with the tool: [{ after_run, outline }].
+fn landings_of(p: &Value) -> Result<Vec<openarch_model::stairs::StairLanding>, String> {
+    match p.get("landings") {
+        Some(v) if !v.is_null() => serde_json::from_value(v.clone()).map_err(|e| format!("bad landings: {e}")),
+        _ => Ok(vec![]),
+    }
+}
+
+/// Sketched curves gathered into chains, each joined end to end.
+fn chains(curves: &[openarch_model::curve::Curve]) -> Vec<Vec<Point>> {
+    let mut left: Vec<openarch_model::curve::Curve> = curves.to_vec();
+    let mut out = vec![];
+    while !left.is_empty() {
+        // grow a group from the first curve: every curve touching it, until none more join
+        let mut group = vec![left.remove(0)];
+        loop {
+            let ends: Vec<Point> = group.iter().flat_map(|c| [c.start(), c.end()]).collect();
+            let Some(k) = left.iter().position(|c| ends.iter().any(|e| e.dist(&c.start()) < 1.0 || e.dist(&c.end()) < 1.0)) else { break };
+            group.push(left.remove(k));
+        }
+        if let Some(p) = openarch_model::railing::chain_path(&group) { out.push(p); }
+    }
+    out
+}
+
 /// The stair being drawn: its settings from the tool, and its runs so far.
 fn draft_of(d: &Document, p: &Value) -> Result<Stair, String> {
     let ty = id_of(p, "type_id")?;
@@ -34,6 +59,8 @@ fn draft_of(d: &Document, p: &Value) -> Result<Stair, String> {
     if let Some(n) = p["desired_risers"].as_u64() { s.desired_risers = n.max(1) as u32; }
     if let Some(v) = p["tread_depth_mm"].as_f64() { s.tread_depth_mm = v; }
     s.runs = runs_of(p)?;
+    s.landings = landings_of(p)?;
+    s.multistory_top = p["multistory_top"].as_u64();
     Ok(s)
 }
 
@@ -128,7 +155,11 @@ impl Session {
                 let pending = pending_run(&s, p)?;
                 if let Some(r) = &pending { s.runs.push(r.clone()); }
                 let mut probe = s.clone();
-                probe.landings = (0..probe.runs.len().saturating_sub(1)).map(|i| openarch_model::stairs::StairLanding { kind: Default::default(), after_run: i }).collect();
+                // the sketched landings drawn so far, and an automatic one wherever runs meet without one
+                let sketched = probe.landings.clone();
+                for i in 0..probe.runs.len().saturating_sub(1) {
+                    if !sketched.iter().any(|x| x.after_run == i) { probe.landings.push(openarch_model::stairs::StairLanding { kind: Default::default(), after_run: i, outline: None }); }
+                }
                 let l = d.stair_layout(&probe).ok_or("unknown stair type or level")?;
                 let created: u32 = s.runs.iter().map(|r| r.risers).sum();
                 Ok(json!({
@@ -151,9 +182,37 @@ impl Session {
             // Edit Stairs: what the tool reopens with
             "stair_edit" => (|| {
                 let s = self.doc.stair(id_of(p, "id")?).ok_or("not a stair")?;
-                Ok(json!({ "type_id": s.stair_type, "base_level": s.base_level, "top_level": s.top_level, "base_offset_mm": s.base_offset_mm, "top_offset_mm": s.top_offset_mm, "unconnected_height_mm": s.unconnected_height_mm, "desired_risers": s.desired_risers, "tread_depth_mm": s.tread_depth_mm, "runs": s.runs }))
+                Ok(json!({ "type_id": s.stair_type, "base_level": s.base_level, "top_level": s.top_level, "base_offset_mm": s.base_offset_mm, "top_offset_mm": s.top_offset_mm, "unconnected_height_mm": s.unconnected_height_mm, "desired_risers": s.desired_risers, "tread_depth_mm": s.tread_depth_mm, "runs": s.runs, "landings": s.landings.iter().filter(|l| l.outline.is_some()).collect::<Vec<_>>(), "multistory_top": s.multistory_top }))
             })(),
-            "set_stair_runs" => (|| { self.doc.set_stair_runs(id_of(p, "id")?, runs_of(p)?)?; Ok(json!({})) })(),
+            "set_stair_runs" => (|| { self.doc.set_stair_components(id_of(p, "id")?, runs_of(p)?, landings_of(p)?)?; Ok(json!({})) })(),
+            // a sketched run: { edges: [{ curve, role: boundary | riser }], width_mm } gives the run
+            "stair_sketch_run" => (|| {
+                let edges = p["edges"].as_array().ok_or("missing edges")?;
+                let mut bounds = vec![];
+                let mut risers = vec![];
+                for e in edges {
+                    let c: openarch_model::curve::Curve = serde_json::from_value(e["curve"].clone()).map_err(|x| format!("bad curve: {x}"))?;
+                    if e["role"] == "riser" { risers.push([c.start(), c.end()]); } else { bounds.push(c); }
+                }
+                let chains = chains(&bounds);
+                if chains.len() != 2 { return Err(format!("Draw two boundaries (one each side of the run): there are {}.", chains.len())); }
+                if risers.len() < 2 { return Err("Draw at least two riser lines across the run.".into()); }
+                let (left, right, risers) = openarch_model::runpath::arrange(&chains, &risers).ok_or("The boundaries and risers do not make a run.")?;
+                let n = risers.len() as u32;
+                let m = |r: &[Point; 2]| Point::new((r[0].x + r[1].x) / 2.0, (r[0].y + r[1].y) / 2.0);
+                let (start, end) = (m(&risers[0]), m(risers.last().unwrap()));
+                let width = risers[0][0].dist(&risers[0][1]);
+                let run = StairRun { shape: RunShape::Sketched { left, right, risers }, start, end, justification: RunJustification::Center, width_mm: width, risers: n, begins_with_riser: true, ends_with_riser: true };
+                Ok(json!({ "run": run }))
+            })(),
+            // a sketched landing: { curves } gives its outline
+            "stair_sketch_landing" => (|| {
+                let curves: Vec<openarch_model::curve::Curve> = p["curves"].as_array().ok_or("missing curves")?.iter().map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("bad curve: {e}"))).collect::<Result<_, _>>()?;
+                let mut outline = openarch_model::railing::chain_path(&curves).ok_or("A landing's outline must be one closed loop.")?;
+                if outline.len() > 2 && outline[0].dist(outline.last().unwrap()) < 1.0 { outline.pop(); }
+                if outline.len() < 3 { return Err("A landing's outline must be one closed loop.".into()); }
+                Ok(json!({ "outline": outline }))
+            })(),
             "patch_stair" => (|| { self.doc.patch_stair(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             // one run: { id, run, patch }
             "patch_stair_run" => (|| { self.doc.patch_stair_run(id_of(p, "id")?, p["run"].as_u64().ok_or("missing run")? as usize, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
@@ -196,6 +255,12 @@ impl Session {
                     select("Top Level", top_opts),
                     num("Top Offset", "top_offset_mm", s.top_offset_mm, free && s.top_level.is_some()),
                     num("Desired Stair Height", "unconnected_height_mm", l.as_ref().map_or(s.unconnected_height_mm, |l| l.height), free && s.top_level.is_none()),
+                    select("Multistory Top Level", {
+                        let top_z = s.top_level.and_then(|t| d.level(t)).map(|x| x.elevation_mm);
+                        let mut o = vec![("None".to_string(), json!({ "multistory_top": null }), s.multistory_top.is_none())];
+                        o.extend(levels.iter().filter(|(i, _)| top_z.is_some_and(|z| d.level(*i).is_some_and(|x| x.elevation_mm > z + 1.0))).map(|(i, n)| (n.clone(), json!({ "multistory_top": i }), Some(*i) == s.multistory_top)));
+                        o
+                    }),
                     boolean("Pinned", "pinned", s.pinned, true),
                 ]),
                 group("Dimensions", vec![
@@ -402,8 +467,10 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         let Some(line) = style_for(d, &settings, "Stairs", Some("Outlines"), eo, "projection", &Hint::default()) else { continue };
         let above = style_for(d, &settings, "Stairs", Some("<Above> Outlines"), eo, "projection", &Hint::default()).unwrap_or_else(|| line.clone());
         let cut_style = style_for(d, &settings, "Stairs", Some("Cut Marks"), eo, "projection", &Hint::default()).unwrap_or_else(|| line.clone());
-        let Some(l) = d.stair_layout(s) else { continue };
         let Some(t) = d.stair_type(s.stair_type) else { continue };
+        // Coarse: the outline and walkline only; Fine: the treads' nosings too
+        let detail = settings.detail_level;
+        for l in d.stair_layouts(s) {
         let (base, top) = (l.base_z, l.reached_z());
         // seen from this plan: up to the cut plane, and down to the view depth (the plan of the level a stair arrives
         // at sees it below)
@@ -434,7 +501,9 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         }
         // which side of the cut a point of run `i` (or a landing after run `i`) is on: below is drawn solid
         let mut lines: Vec<Value> = vec![];
+        let coarse = detail == openarch_model::view::DetailLevel::Coarse;
         let mut push = |a: Point, b: Point, kind: &str, run: Option<usize>, z: f64| {
+            if coarse && kind == "riser" { return; }
             let whole_above = cut_here && z > range.cut + 1e-6;
             match (&cut, run) {
                 (Some((ci, _, c, up)), Some(ri)) if *ci == ri => {
@@ -448,7 +517,12 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         };
         for r in &l.runs {
             if let Some(p) = &r.path {
-                // each tread's outline, above or below the cut by its height
+                // each tread's outline, above or below the cut by its height (Coarse: the run's outline)
+                if coarse {
+                    let f = r.footprint();
+                    for i in 0..f.len() { push(f[i], f[(i + 1) % f.len()], "outline", None, r.z0); }
+                    continue;
+                }
                 for (poly, top) in &p.treads {
                     for i in 0..poly.len() { push(poly[i], poly[(i + 1) % poly.len()], "riser", None, *top); }
                 }
@@ -471,9 +545,12 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
                 push(r.at(r.length, side * w), r.at(r.length, e), "outline", Some(r.index), r.z1);
             }
             let mut ends = vec![0.0, r.length];
+            let nosing = (detail == openarch_model::view::DetailLevel::Fine && !t.run.monolithic && t.run.treads).then_some(t.run.nosing_mm).filter(|n| *n > 0.0);
             for (rs, top) in &r.risers {
                 ends.retain(|e| (e - rs).abs() > 1e-6);
                 push(r.at(*rs, -w), r.at(*rs, w), "riser", Some(r.index), *top);
+                // Fine: the tread's front edge, past the riser
+                if let Some(nz) = nosing { if *rs - nz > -1e-6 { push(r.at(rs - nz, -w), r.at(rs - nz, w), "nosing", Some(r.index), *top); } }
             }
             for e in ends {
                 let z = if e < 1e-6 { r.z0 } else { r.z1 };
@@ -511,8 +588,9 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
             "cut": cut.as_ref().map(|c| c.1.clone()).unwrap_or_default(),
             "path": path_segs, "label": label, "label_at": path.first().map(|p| pt(*p)),
             "arrow": path.len().checked_sub(2).map(|k| json!({ "at": pt(path[k + 1]), "from": pt(path[k]) })),
-            "style": line, "above_style": above, "cut_style": cut_style,
+            "style": line.clone(), "above_style": above.clone(), "cut_style": cut_style.clone(),
         }));
+        }
     }
     json!({ "stairs": out })
 }

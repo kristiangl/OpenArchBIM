@@ -2974,7 +2974,8 @@ function sketchContext() {
     // a ceiling slopes like a floor; it has no span direction
     groups.push({ label: Sketch.kind === "ceiling" ? "Slope" : "Slope and Span", items: Sketch.ANNOTATE.filter((t) => Sketch.kind !== "ceiling" || !/span/i.test(t.id + t.label)).map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id })) });
   }
-  return { auto: true, key: `sketch:${Sketch.kind}:${Sketch.tool}`, title: Sketch.title || "Sketch", groups };
+  if (Sketch.kind === "stairrun") groups.push(Stairs.roleGroup());
+  return { auto: true, key: `sketch:${Sketch.kind}:${Sketch.tool}:${Stairs.role()}`, title: Sketch.title || "Sketch", groups };
 }
 const renderSketchRibbon = () => updateRibbonContext();
 
@@ -3094,6 +3095,7 @@ Sketch.callbacks.finish = async (o) => {
   if (o.kind === "roomseparation") return Spatial.finish(o);
   if (o.kind === "ceiling") return Ceilings.finish(o);
   if (o.kind === "railing") return Railings.finish(o);
+  if (o.kind === "stairrun" || o.kind === "stairlanding") return Stairs.sketchFinished(o);
   if (o.kind === "areaboundary") return Areas.finish(o);
   if (o.kind === "region") return finishRegion(o);
   if (o.kind === "profile") return finishProfile(o);
@@ -3114,6 +3116,8 @@ Sketch.callbacks.finish = async (o) => {
   return true;
 };
 Sketch.callbacks.cancel = () => {
+  // a stair's sketched run or landing goes back to the stair being drawn
+  if (Sketch.kind === "stairrun" || Sketch.kind === "stairlanding") { Stairs.sketchCancelled(); return; }
   sketchView().endSketch();
   endSketchUI();
   renderProperties();

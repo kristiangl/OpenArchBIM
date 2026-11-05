@@ -405,11 +405,18 @@ impl Document {
     /// The line a railing stands on: its sketched path on its level, or its side of its stair; moved in from a stair's
     /// edge when it stands on the treads.
     pub fn railing_host_line(&self, r: &Railing) -> Option<HostLine> {
+        match r.host {
+            Some(h) => self.host_line_on(r, &self.host_layout(h.stair)?),
+            None => self.host_line_on(r, &StairLayout { base_z: 0.0, top_z: 0.0, height: 0.0, desired_risers: 0, actual_risers: 0, riser_mm: 0.0, tread_mm: 0.0, runs: vec![], landings: vec![], warnings: vec![] }),
+        }
+    }
+
+    /// The line a railing stands on over one layout of its host (one storey of a multistory stair).
+    fn host_line_on(&self, r: &Railing, l: &StairLayout) -> Option<HostLine> {
         let t = self.railing_type(r.railing_type)?;
         match r.host {
             Some(h) => {
-                let l = self.host_layout(h.stair)?;
-                let mut line = stair_side(&l, h.side);
+                let mut line = stair_side(l, h.side);
                 // a ramp has no treads: its handrails run on level past both ends
                 if self.ramp(h.stair).is_some() { line.tread = Some(0.0); }
                 // in from the edge by half the widest upright, and a little
@@ -450,9 +457,16 @@ impl Document {
 
     /// A railing's parts: its top rail and handrails along the path, its balusters and posts.
     pub fn railing_pieces(&self, r: &Railing) -> Vec<RailPiece> {
-        let (Some(t), Some(line)) = (self.railing_type(r.railing_type), self.railing_host_line(r)) else { return vec![] };
+        // on a multistory stair, the railing repeats on every storey
+        if let Some(s) = r.host.and_then(|h| self.stair(h.stair)) {
+            return self.stair_layouts(s).into_iter().flat_map(|l| self.pieces_on(r, self.host_line_on(r, &l), Some(l))).collect();
+        }
+        self.pieces_on(r, self.railing_host_line(r), r.host.and_then(|h| self.host_layout(h.stair)))
+    }
+
+    fn pieces_on(&self, r: &Railing, line: Option<HostLine>, stair_layout: Option<StairLayout>) -> Vec<RailPiece> {
+        let (Some(t), Some(line)) = (self.railing_type(r.railing_type), line) else { return vec![] };
         let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
-        let stair_layout = r.host.and_then(|h| self.host_layout(h.stair));
         let mut out = vec![];
         let pts = &line.pts;
         let flight = |k: usize| line.runs.get(k).copied().flatten().is_some();

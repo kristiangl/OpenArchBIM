@@ -408,8 +408,17 @@ impl Document {
                         match &mut r.shape {
                             crate::stairs::RunShape::Spiral { centre, clockwise } => { *centre = x.apply(*centre); if mirror { *clockwise = !*clockwise; } }
                             crate::stairs::RunShape::Winder { corners, .. } => for c in corners.iter_mut() { *c = x.apply(*c); },
+                            crate::stairs::RunShape::Sketched { left, right, risers } => {
+                                for p in left.iter_mut().chain(right.iter_mut()) { *p = x.apply(*p); }
+                                for l in risers.iter_mut() { l[0] = x.apply(l[0]); l[1] = x.apply(l[1]); }
+                                // a mirror swaps the sides
+                                if mirror { std::mem::swap(left, right); for l in risers.iter_mut() { l.swap(0, 1); } }
+                            }
                             crate::stairs::RunShape::Straight => {}
                         }
+                    }
+                    for l in &mut s.landings {
+                        if let Some(o) = &mut l.outline { for p in o.iter_mut() { *p = x.apply(*p); } }
                     }
                     if opt.copy { s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid(); }
                     Element::Stair(s)

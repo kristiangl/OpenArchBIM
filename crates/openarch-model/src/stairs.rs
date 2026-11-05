@@ -262,6 +262,9 @@ pub enum RunShape {
     Spiral { centre: Point, #[serde(default)] clockwise: bool },
     /// From the run's start through each corner and on towards its end, with winders round the corners.
     Winder { corners: Vec<Point>, #[serde(default)] style: crate::runpath::WinderStyle },
+    /// Sketched: its left and right boundaries (up the run) and its riser lines from the bottom up, left to right. The
+    /// riser count is the number of riser lines.
+    Sketched { left: Vec<Point>, right: Vec<Point>, risers: Vec<[Point; 2]> },
 }
 
 /// A run: risers and treads along a location line from `start` towards `end`. Its riser count is its own; its
@@ -297,6 +300,10 @@ pub struct StairLanding {
     #[serde(default)]
     pub kind: LandingKind,
     pub after_run: usize,
+    /// A sketched landing's outline, at the top of run `after_run` (between it and the next, or at the top of the
+    /// last). None: automatic.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outline: Option<Vec<Point>>,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -318,6 +325,9 @@ pub struct Stair {
     pub runs: Vec<StairRun>,
     #[serde(default)]
     pub landings: Vec<StairLanding>,
+    /// Multistory Top Level: the stair repeats, storey by storey, up to this level.
+    #[serde(default)]
+    pub multistory_top: Option<Id>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -546,7 +556,7 @@ impl Document {
     /// A new stair from base to top level with its type's tread and the fewest risers its rules allow.
     pub fn new_stair(&self, stair_type: Id, base_level: Id, top_level: Option<Id>) -> Result<Stair, String> {
         let t = self.stair_type(stair_type).ok_or("unknown stair type")?;
-        let mut s = Stair { stair_type, base_level, base_offset_mm: 0.0, top_level, top_offset_mm: 0.0, unconnected_height_mm: 3000.0, desired_risers: 1, tread_depth_mm: t.rules.min_tread_mm, runs: vec![], landings: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } };
+        let mut s = Stair { stair_type, base_level, base_offset_mm: 0.0, top_level, top_offset_mm: 0.0, unconnected_height_mm: 3000.0, desired_risers: 1, tread_depth_mm: t.rules.min_tread_mm, runs: vec![], landings: vec![], multistory_top: None, pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } };
         let (b, top) = self.stair_heights(&s).ok_or("unknown level")?;
         if top - b <= 0.0 {
             return Err("The top of the stair must be above its base.".into());
@@ -576,6 +586,24 @@ impl Document {
                 RunJustification::RightExterior => origin = add(origin, mul(left, t.supports.outside(false))),
                 _ => {}
             }
+            if let RunShape::Sketched { left: bl, right: br, risers: lines } = &run.shape {
+                // where each riser line stands along the walkline through their middles
+                let mids: Vec<Point> = lines.iter().map(|[a, b]| Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)).collect();
+                let mut acc = 0.0;
+                let ss: Vec<f64> = mids.iter().enumerate().map(|(k, p)| { if k > 0 { acc += mids[k - 1].dist(p); } acc }).collect();
+                let risers: Vec<(f64, f64)> = ss.iter().enumerate().map(|(k, s)| (*s, z + (k + 1) as f64 * r)).collect();
+                let treads: Vec<(f64, f64, f64)> = (0..ss.len().saturating_sub(1)).map(|k| (ss[k], ss[k + 1], risers[k].1)).collect();
+                let tops: Vec<f64> = treads.iter().map(|x| x.2).collect();
+                let z1 = z + lines.len() as f64 * r;
+                let path = crate::runpath::sketched(bl, br, lines, &tops);
+                let first = mids.first().copied().unwrap_or(run.start);
+                let d = sub(mids.get(1).copied().unwrap_or(run.end), first);
+                let dl = (d.x * d.x + d.y * d.y).sqrt().max(1e-9);
+                let dir = mul(d, 1.0 / dl);
+                runs.push(RunLayout { index: i, origin: first, dir, left: Point::new(-dir.y, dir.x), width: run.width_mm, length: ss.last().copied().unwrap_or(0.0), z0: z, z1, risers, treads, path: Some(path) });
+                z = z1;
+                continue;
+            }
             let off = u32::from(!run.begins_with_riser);
             let nt = treads_in(run.risers, run.begins_with_riser, run.ends_with_riser);
             let risers: Vec<(f64, f64)> = (0..run.risers).map(|k| ((k + off) as f64 * tr, z + (k + 1) as f64 * r)).collect();
@@ -587,7 +615,7 @@ impl Document {
             let z1 = z + run.risers as f64 * r;
             let steps = crate::runpath::Steps { length: nt as f64 * tr, risers: risers.iter().map(|x| x.0).collect(), treads: treads.clone() };
             let path = match &run.shape {
-                RunShape::Straight => None,
+                RunShape::Straight | RunShape::Sketched { .. } => None,
                 RunShape::Spiral { centre, clockwise } => Some(crate::runpath::spiral(*centre, run.start, *clockwise, run.width_mm, &steps)),
                 RunShape::Winder { corners, style } => {
                     let mut pts = vec![run.start];
@@ -601,6 +629,12 @@ impl Document {
         }
         let mut landings = vec![];
         for (k, l) in s.landings.iter().enumerate() {
+            if let (Some(o), Some(a)) = (&l.outline, runs.get(l.after_run)) {
+                let mut outline = o.clone();
+                if crate::geom::signed_area(&outline) < 0.0 { outline.reverse(); }
+                landings.push(LandingLayout { index: k, after_run: l.after_run, outline, z: a.z1, thickness: t.landing.thickness_mm });
+                continue;
+            }
             let (Some(a), Some(b)) = (runs.get(l.after_run), runs.get(l.after_run + 1)) else { continue };
             if let Some(outline) = landing_between(a, b) {
                 landings.push(LandingLayout { index: k, after_run: l.after_run, outline, z: a.z1, thickness: t.landing.thickness_mm });
@@ -667,16 +701,72 @@ impl Document {
             if run.risers < 1 { return Err("A run needs at least one riser.".into()); }
             if run.start.dist(&run.end) < 1e-6 { return Err("A run needs a direction: its start and end must differ.".into()); }
         }
-        if s.landings.iter().any(|l| l.after_run + 1 >= s.runs.len()) { return Err("A landing must stand between two runs.".into()); }
+        if s.landings.iter().any(|l| if l.outline.is_some() { l.after_run >= s.runs.len() } else { l.after_run + 1 >= s.runs.len() }) { return Err("A landing must stand after one of the stair's runs.".into()); }
+        if s.landings.iter().any(|l| l.outline.as_ref().is_some_and(|o| o.len() < 3 || crate::geom::signed_area(o).abs() < 1000.0)) { return Err("A sketched landing needs a closed outline.".into()); }
+        for run in &s.runs {
+            if let RunShape::Sketched { risers, .. } = &run.shape {
+                if risers.len() < 2 { return Err("A sketched run needs at least two riser lines.".into()); }
+                if risers.len() as u32 != run.risers { return Err("A sketched run's riser count is its number of riser lines.".into()); }
+            }
+        }
+        if s.multistory_top.is_some_and(|m| self.level(m).is_none()) { return Err("unknown multistory top level".into()); }
         Ok(())
     }
 
     /// Landings between every pair of runs that do not simply continue one another.
     fn automatic_landings(&self, s: &Stair) -> Vec<StairLanding> {
+        let sketched: Vec<StairLanding> = s.landings.iter().filter(|l| l.outline.is_some() && l.after_run < s.runs.len()).cloned().collect();
         let mut probe = s.clone();
         probe.landings.clear();
-        let Some(l) = self.stair_layout(&probe) else { return vec![] };
-        (0..l.runs.len().saturating_sub(1)).filter(|i| landing_between(&l.runs[*i], &l.runs[i + 1]).is_some()).map(|i| StairLanding { kind: LandingKind::Automatic, after_run: i }).collect()
+        let Some(l) = self.stair_layout(&probe) else { return sketched };
+        let mut out: Vec<StairLanding> = (0..l.runs.len().saturating_sub(1))
+            .filter(|i| !sketched.iter().any(|x| x.after_run == *i) && landing_between(&l.runs[*i], &l.runs[i + 1]).is_some())
+            .map(|i| StairLanding { kind: LandingKind::Automatic, after_run: i, outline: None }).collect();
+        out.extend(sketched);
+        out.sort_by_key(|x| x.after_run);
+        out
+    }
+
+    /// A multistory stair's storeys: its own, then one per level up to its Multistory Top Level, each from one level to
+    /// the next. A storey of another height keeps the risers' depth and the runs; its riser count changes (on the
+    /// last run) only where the riser height would break the type's limits.
+    pub fn stair_storeys(&self, s: &Stair) -> Vec<Stair> {
+        let mut out = vec![s.clone()];
+        let (Some(top), Some(mt), Some(t)) = (s.top_level, s.multistory_top, self.stair_type(s.stair_type)) else { return out };
+        let mut levels: Vec<(Id, f64)> = self.levels().iter().map(|(i, l)| (*i, l.elevation_mm)).collect();
+        levels.sort_by(|a, b| a.1.total_cmp(&b.1));
+        let (Some(from), Some(to)) = (levels.iter().position(|l| l.0 == top), levels.iter().position(|l| l.0 == mt)) else { return out };
+        for k in from..to {
+            let mut c = s.clone();
+            c.base_level = levels[k].0;
+            c.top_level = Some(levels[k + 1].0);
+            c.landings.retain(|l| l.outline.is_none());
+            let h = levels[k + 1].1 + c.top_offset_mm - levels[k].1 - c.base_offset_mm;
+            if h <= 0.0 { break; }
+            let n = c.desired_risers.max(1);
+            let r = h / n as f64;
+            if r > t.rules.max_riser_mm + 1e-6 || r < t.rules.min_riser_mm - 1e-6 {
+                let want = (h / t.rules.max_riser_mm - 1e-9).ceil().max(1.0) as i64;
+                let mut change = want - n as i64;
+                c.desired_risers = want as u32;
+                let mut i = c.runs.len();
+                while change != 0 && i > 0 {
+                    i -= 1;
+                    if matches!(c.runs[i].shape, RunShape::Sketched { .. }) { continue; }
+                    let next = (c.runs[i].risers as i64 + change).max(1);
+                    change -= next - c.runs[i].risers as i64;
+                    c.runs[i].risers = next as u32;
+                    if change > 0 { break; }
+                }
+            }
+            out.push(c);
+        }
+        out
+    }
+
+    /// Every storey's layout (one for a stair that is not multistory).
+    pub fn stair_layouts(&self, s: &Stair) -> Vec<StairLayout> {
+        self.stair_storeys(s).iter().filter_map(|c| self.stair_layout(c)).collect()
     }
 
     /// The Stair tool's Finish: a stair with these runs (automatic landings between them), one undo step.
@@ -690,10 +780,17 @@ impl Document {
 
     /// Edit Stairs' Finish: the stair's runs drawn again, its landings worked out again, one undo step.
     pub fn set_stair_runs(&mut self, id: Id, runs: Vec<StairRun>) -> Result<(), String> {
+        let keep: Vec<StairLanding> = self.stair(id).map(|s| s.landings.iter().filter(|l| l.outline.is_some()).cloned().collect()).unwrap_or_default();
+        self.set_stair_components(id, runs, keep)
+    }
+
+    /// Edit Stairs' Finish with its sketched landings: runs and landings drawn again, one undo step.
+    pub fn set_stair_components(&mut self, id: Id, runs: Vec<StairRun>, sketched: Vec<StairLanding>) -> Result<(), String> {
         self.refuse_pinned(&[id], "edited")?;
         let mut s = self.stair(id).cloned().ok_or("not a stair")?;
         if runs.is_empty() { return Err("A stair needs at least one run.".into()); }
         s.runs = runs;
+        s.landings = sketched.into_iter().filter(|l| l.outline.is_some()).collect();
         s.landings = self.automatic_landings(&s);
         self.check_stair(&s)?;
         self.transact("Edit stair", |tx| tx.update(id, Element::Stair(s)))
@@ -758,6 +855,25 @@ impl Document {
 
     /// The stair's parts as convex solids, with the material each is made of.
     pub fn stair_pieces(&self, s: &Stair) -> Vec<StairPiece> {
+        let mut out = vec![];
+        for (c, st) in self.stair_storeys(s).iter().enumerate() {
+            let off = c * 100;
+            for mut p in self.storey_pieces(st) {
+                p.part = match p.part {
+                    StairPart::Run(i) => StairPart::Run(i + off),
+                    StairPart::Support(i) => StairPart::Support(i + off),
+                    StairPart::Tread(i) => StairPart::Tread(i + off),
+                    StairPart::Riser(i) => StairPart::Riser(i + off),
+                    StairPart::Landing(i) => StairPart::Landing(i + off),
+                };
+                out.push(p);
+            }
+        }
+        out
+    }
+
+    /// One storey's parts.
+    fn storey_pieces(&self, s: &Stair) -> Vec<StairPiece> {
         let (Some(t), Some(l)) = (self.stair_type(s.stair_type), self.stair_layout(s)) else { return vec![] };
         let mut out = vec![];
         let rc = &t.run;
@@ -1373,6 +1489,80 @@ mod tests {
         let id = d.add_stair(s).unwrap();
         let st = d.stair(id).unwrap().clone();
         assert!(d.stair_pieces(&st).iter().all(|x| x.solid.volume() > 0.0));
+    }
+
+    #[test]
+    fn a_sketched_run_is_arranged_from_its_lines_and_a_sketched_landing_takes_its_outline() {
+        let (mut d, l1, l2) = doc();
+        let ty = d.stair_types()[0].0;
+        let mut s = d.new_stair(ty, l1, Some(l2)).unwrap();
+        let n = s.desired_risers;
+        // boundaries drawn either way, risers in any order but the bottom one first
+        let len = (n - 1) as f64 * 260.0;
+        let bounds = vec![vec![Point::new(1000.0, len), Point::new(1000.0, 0.0)], vec![Point::new(0.0, 0.0), Point::new(0.0, len)]];
+        let mut lines: Vec<[Point; 2]> = (0..n).rev().map(|k| [Point::new(1000.0, k as f64 * 260.0), Point::new(0.0, k as f64 * 260.0)]).collect();
+        let bottom = lines.pop().unwrap();
+        lines.insert(0, bottom);
+        let (left, right, risers) = crate::runpath::arrange(&bounds, &lines).unwrap();
+        assert_eq!(left[0], Point::new(0.0, 0.0), "going up y, the left is x = 0");
+        assert_eq!(risers[0], [Point::new(0.0, 0.0), Point::new(1000.0, 0.0)]);
+        assert_eq!(risers[1][0].y, 260.0);
+        s.runs = vec![StairRun { shape: RunShape::Sketched { left, right, risers }, start: Point::new(500.0, 0.0), end: Point::new(500.0, len), justification: RunJustification::Center, width_mm: 1000.0, risers: n, begins_with_riser: true, ends_with_riser: true }];
+        let id = d.add_stair(s.clone()).unwrap();
+        let l = d.stair_layout(d.stair(id).unwrap()).unwrap();
+        assert_eq!(l.runs[0].path.as_ref().unwrap().treads.len() as u32, n - 1);
+        assert!((l.reached_z() - l.top_z).abs() < 1e-6);
+        assert!(d.stair_pieces(d.stair(id).unwrap()).iter().all(|p| p.solid.volume() > 0.0));
+        // two straight runs and a sketched landing of six sides between them
+        let half = n / 2;
+        let l0 = (half - 1) as f64 * 250.0;
+        let mut s2 = d.new_stair(ty, l1, Some(l2)).unwrap();
+        s2.runs = vec![
+            StairRun { shape: RunShape::Straight, start: Point::new(5000.0, 0.0), end: Point::new(5000.0, 1.0), justification: RunJustification::Center, width_mm: 1000.0, risers: half, begins_with_riser: true, ends_with_riser: true },
+            StairRun { shape: RunShape::Straight, start: Point::new(6200.0, l0), end: Point::new(6200.0, 0.0), justification: RunJustification::Center, width_mm: 1000.0, risers: n - half, begins_with_riser: true, ends_with_riser: true },
+        ];
+        let outline = vec![Point::new(4500.0, l0), Point::new(6700.0, l0), Point::new(6700.0, l0 + 800.0), Point::new(6200.0, l0 + 1300.0), Point::new(5000.0, l0 + 1300.0), Point::new(4500.0, l0 + 800.0)];
+        s2.landings = vec![StairLanding { kind: LandingKind::Automatic, after_run: 0, outline: Some(outline.clone()) }];
+        let id2 = d.add_stair(s2).unwrap();
+        let st2 = d.stair(id2).unwrap().clone();
+        assert_eq!(st2.landings.len(), 1, "the sketched landing stands in for the automatic one");
+        let lay = d.stair_layout(&st2).unwrap();
+        assert_eq!(lay.landings[0].outline.len(), 6);
+        assert!((lay.landings[0].z - lay.runs[0].z1).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_multistory_stair_repeats_up_to_its_top_level_with_its_railings() {
+        let (mut d, l1, l2) = doc();
+        let e2 = d.level(l2).unwrap().elevation_mm;
+        let e1 = d.level(l1).unwrap().elevation_mm;
+        let h = e2 - e1;
+        let l3 = d.add_level(Some("Level 3"), e2 + h, false).unwrap();
+        let l4 = d.add_level(Some("Level 4"), e2 + h + 2400.0, false).unwrap();
+        let ty = d.stair_types()[0].0;
+        let mut s = d.new_stair(ty, l1, Some(l2)).unwrap();
+        let n = s.desired_risers;
+        s.runs = vec![StairRun { shape: RunShape::Straight, start: Point::new(0.0, 0.0), end: Point::new(0.0, 1.0), justification: RunJustification::Center, width_mm: 1000.0, risers: n, begins_with_riser: true, ends_with_riser: true }];
+        s.multistory_top = Some(l4);
+        let id = d.add_stair(s).unwrap();
+        let st = d.stair(id).unwrap().clone();
+        let lays = d.stair_layouts(&st);
+        assert_eq!(lays.len(), 3);
+        assert!((lays[1].base_z - e2).abs() < 1e-6 && (lays[1].riser_mm - lays[0].riser_mm).abs() < 1e-6, "the same storey height, the same stair");
+        // the 2400 storey: fewer risers would be too low, so it keeps the count only if the riser stays in limits
+        assert!((lays[2].reached_z() - (e2 + h + 2400.0)).abs() < 1e-6);
+        assert!(lays[2].riser_mm >= 115.0 && lays[2].riser_mm <= 190.0, "{}", lays[2].riser_mm);
+        let pieces = d.stair_pieces(&st);
+        assert!(pieces.iter().any(|p| p.part == StairPart::Run(200)));
+        // a railing on it repeats too
+        let rt = d.railing_types()[0].0;
+        let rails = d.add_stair_railings(id, rt, crate::railing::RailingPlacement::Treads).unwrap();
+        let r = d.railing(rails[0]).unwrap().clone();
+        let posts = d.railing_pieces(&r).iter().filter(|p| p.part == crate::railing::RailPart::Post).count();
+        assert_eq!(posts, 3 * 2, "two posts a storey");
+        // the levels it uses cannot go
+        assert!(d.delete_level(l4).is_err());
+        let _ = l3;
     }
 
     #[test]

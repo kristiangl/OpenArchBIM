@@ -91,7 +91,7 @@ const Railings = (() => {
         for (const p of r.polys) {
           if (p.above !== above) continue;
           p.pts.forEach((q, i) => { const s = toScreen({ x: q[0], y: q[1] }); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); });
-          ctx.closePath();
+          if (!p.open) ctx.closePath();
         }
         ctx.strokeStyle = on ? "#2e6f9e" : pen.colour(r.style, r.style.line.color);
         ctx.lineWidth = Math.max(1, pen.lw(r.style) * 0.8) + (on ? 0.8 : 0);

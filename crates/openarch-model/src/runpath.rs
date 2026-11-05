@@ -198,3 +198,93 @@ pub fn winder(pts: &[Point], style: WinderStyle, width: f64, steps: &Steps) -> R
     };
     build(walk, &across, left, right, steps, width)
 }
+
+/// A polyline's points with their distances along it.
+fn measured(pts: &[Point]) -> Vec<(Point, f64)> {
+    let mut acc = 0.0;
+    pts.iter().enumerate().map(|(i, p)| { if i > 0 { acc += pts[i - 1].dist(p); } (*p, acc) }).collect()
+}
+
+/// A sketched run: its left and right boundaries (in the direction of travel) and its riser lines from the bottom up
+/// (each from the left boundary to the right). The walkline joins the risers' middles; each riser's height is `tops`.
+pub fn sketched(left: &[Point], right: &[Point], risers: &[[Point; 2]], tops: &[f64]) -> RunPath {
+    let (lm, rm) = (measured(left), measured(right));
+    // the walkline through the risers' middles, with its distances
+    let mids: Vec<Point> = risers.iter().map(|[a, b]| Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0)).collect();
+    let walk = measured(&mids);
+    let ul: Vec<f64> = risers.iter().map(|[a, _]| param(&lm, *a)).collect();
+    let ur: Vec<f64> = risers.iter().map(|[_, b]| param(&rm, *b)).collect();
+    // an edge's points between the first and last riser, each with the walkline distance it lies at
+    let edge = |m: &[(Point, f64)], u: &[f64], ends: &dyn Fn(usize) -> Point| -> Vec<(Point, f64)> {
+        let mut out = vec![(ends(0), walk[0].1)];
+        for k in 0..u.len().saturating_sub(1) {
+            for (p, v) in m.iter().filter(|(_, v)| *v > u[k] + 1e-6 && *v < u[k + 1] - 1e-6) {
+                let f = (v - u[k]) / (u[k + 1] - u[k]).max(1e-9);
+                out.push((*p, walk[k].1 + f * (walk[k + 1].1 - walk[k].1)));
+            }
+            out.push((ends(k + 1), walk[k + 1].1));
+        }
+        out
+    };
+    let left_edge = edge(&lm, &ul, &|k| risers[k][0]);
+    let right_edge = edge(&rm, &ur, &|k| risers[k][1]);
+    let treads = (0..risers.len().saturating_sub(1)).map(|k| {
+        let ([l0, r0], [l1, r1]) = (risers[k], risers[k + 1]);
+        let mut poly = vec![l0, r0];
+        poly.extend(rm.iter().filter(|(_, v)| *v > ur[k] + 1e-6 && *v < ur[k + 1] - 1e-6).map(|(p, _)| *p));
+        poly.extend([r1, l1]);
+        let mut back: Vec<Point> = lm.iter().filter(|(_, v)| *v > ul[k] + 1e-6 && *v < ul[k + 1] - 1e-6).map(|(p, _)| *p).collect();
+        back.reverse();
+        poly.extend(back);
+        poly.dedup_by(|a, b| a.dist(b) < 1e-6);
+        if crate::geom::signed_area(&poly) < 0.0 { poly.reverse(); }
+        (poly, tops[k])
+    }).collect();
+    RunPath { walk, riser_lines: risers.to_vec(), treads, left: left_edge, right: right_edge }
+}
+
+/// Sort sketched lines into a run: the two boundaries (oriented up the run, left then right) and the riser lines from
+/// the bottom (the first one drawn) up, each from left to right. None when they do not make a run.
+pub fn arrange(boundaries: &[Vec<Point>], risers: &[[Point; 2]]) -> Option<(Vec<Point>, Vec<Point>, Vec<[Point; 2]>)> {
+    if boundaries.len() != 2 || risers.len() < 2 { return None; }
+    let a = measured(&boundaries[0]);
+    // the risers in order along the first boundary, the first one drawn at the bottom
+    let mut order: Vec<(f64, [Point; 2])> = risers.iter().map(|r| {
+        let m = Point::new((r[0].x + r[1].x) / 2.0, (r[0].y + r[1].y) / 2.0);
+        (param(&a, m), *r)
+    }).collect();
+    let first = order[0].1;
+    order.sort_by(|x, y| x.0.total_cmp(&y.0));
+    if order.last().is_some_and(|x| x.1 == first) { order.reverse(); }
+    let mut rs: Vec<[Point; 2]> = order.into_iter().map(|x| x.1).collect();
+    // up the run: from the first riser's middle to the last's
+    let m = |r: &[Point; 2]| Point::new((r[0].x + r[1].x) / 2.0, (r[0].y + r[1].y) / 2.0);
+    let up = unit(sub(m(rs.last()?), m(&rs[0])));
+    let mut bs: Vec<Vec<Point>> = boundaries.to_vec();
+    for b in bs.iter_mut() {
+        let d = sub(*b.last()?, b[0]);
+        if d.x * up.x + d.y * up.y < 0.0 { b.reverse(); }
+    }
+    // the left boundary lies to the left of the walk
+    let mid = m(&rs[0]);
+    let side = |b: &Vec<Point>| { let c = b[b.len() / 2]; cross(up, sub(c, mid)) };
+    if side(&bs[0]) < side(&bs[1]) { bs.swap(0, 1); }
+    // each riser from the left boundary's end to the right's
+    let bl = measured(&bs[0]);
+    for r in rs.iter_mut() {
+        let (d0, d1) = (param_dist(&bl, r[0]), param_dist(&bl, r[1]));
+        if d1 < d0 { r.swap(0, 1); }
+    }
+    Some((bs[0].clone(), bs[1].clone(), rs))
+}
+
+/// How far a point is from a polyline.
+fn param_dist(pts: &[(Point, f64)], p: Point) -> f64 {
+    pts.windows(2).map(|w| {
+        let (a, b) = (w[0].0, w[1].0);
+        let ab = sub(b, a);
+        let l2 = (ab.x * ab.x + ab.y * ab.y).max(1e-12);
+        let t = (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / l2).clamp(0.0, 1.0);
+        add(a, mul(ab, t)).dist(&p)
+    }).fold(f64::INFINITY, f64::min)
+}

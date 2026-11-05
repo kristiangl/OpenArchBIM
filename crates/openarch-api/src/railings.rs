@@ -180,7 +180,11 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         let (lo, hi) = host.pts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));
         if lo > range.cut + 1e-6 || hi < range.depth - 1.0 { continue; }
         let mut polys = vec![];
-        for p in d.railing_pieces(r) {
+        // Coarse: the railing as a line along its path
+        if settings.detail_level == openarch_model::view::DetailLevel::Coarse {
+            polys.push(json!({ "pts": host.pts.iter().map(|(p, _)| [p.x, p.y]).collect::<Vec<_>>(), "above": false, "open": true }));
+        }
+        for p in d.railing_pieces(r).into_iter().filter(|_| settings.detail_level != openarch_model::view::DetailLevel::Coarse) {
             let (z0, _) = p.solid.z_range();
             let above = z0 > range.cut + 1e-6;
             if above && matches!(p.part, RailPart::Baluster | RailPart::Post) { continue; }
