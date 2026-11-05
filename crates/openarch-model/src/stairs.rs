@@ -697,25 +697,33 @@ impl Document {
     /// Elevations and sections: each piece as seen, the hull of its corners in the view (horizontal `u`, height),
     /// at the depth of its nearest corner, and for a section what its plane cuts. `d` is depth into the view.
     pub(crate) fn stair_view_items(&self, id: Id, s: &Stair, u: &dyn Fn(Point) -> f64, d: &dyn Fn(Point) -> f64, near: f64, far: f64, cut: Option<f64>) -> Vec<crate::site::ElevItem> {
+        let pieces: Vec<(Option<String>, Convex)> = self.stair_pieces(s).into_iter().map(|p| (p.material, p.solid)).collect();
+        self.convex_view_items(id, "Stairs", &pieces, u, d, near, far, cut)
+    }
+
+    /// Convex solids in an elevation or section: each as seen (the hull of its corners in the view, at the depth of its
+    /// nearest corner), or for a section's `cut` plane, what the plane cuts.
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn convex_view_items(&self, id: Id, category: &'static str, pieces: &[(Option<String>, Convex)], u: &dyn Fn(Point) -> f64, d: &dyn Fn(Point) -> f64, near: f64, far: f64, cut: Option<f64>) -> Vec<crate::site::ElevItem> {
         let mut out = vec![];
         let fill = |m: &Option<String>| m.as_deref().and_then(|m| self.material(m)).map_or([190, 186, 178], |m| m.graphics.shading_color);
         let dd = |p: [f64; 3]| d(Point::new(p[0], p[1]));
-        for p in self.stair_pieces(s) {
+        for (material, solid) in pieces {
             if let Some(plane) = cut {
-                let cutp: Vec<[f64; 2]> = p.solid.section(&dd, plane).iter().map(|q| [u(Point::new(q[0], q[1])), q[2]]).collect();
+                let cutp: Vec<[f64; 2]> = solid.section(&dd, plane).iter().map(|q| [u(Point::new(q[0], q[1])), q[2]]).collect();
                 let hull = crate::site::convex_hull_2d(cutp);
                 if hull.len() >= 3 {
-                    out.push(crate::site::ElevItem { id, category: "Stairs", depth: -1.0 + 0.004, polys: vec![hull], fill: fill(&p.material), cut: true, material: p.material.clone(), ..Default::default() });
+                    out.push(crate::site::ElevItem { id, category, depth: -1.0 + 0.004, polys: vec![hull], fill: fill(material), cut: true, material: material.clone(), ..Default::default() });
                 }
                 continue;
             }
             // what lies beyond the near plane (a section's cut plane, or the elevation's own) and before the far clip
-            let Some(seen) = p.solid.clip(&dd, near, true).and_then(|c| c.clip(&dd, far, false)) else { continue };
+            let Some(seen) = solid.clip(&dd, near, true).and_then(|c| c.clip(&dd, far, false)) else { continue };
             let pts: Vec<[f64; 2]> = seen.pts.iter().map(|q| [u(Point::new(q[0], q[1])), q[2]]).collect();
             let depth = seen.pts.iter().map(|q| dd(*q)).fold(f64::INFINITY, f64::min);
             let hull = crate::site::convex_hull_2d(pts);
             if hull.len() >= 3 {
-                out.push(crate::site::ElevItem { id, category: "Stairs", depth, polys: vec![hull], fill: fill(&p.material), stroke: true, ..Default::default() });
+                out.push(crate::site::ElevItem { id, category, depth, polys: vec![hull], fill: fill(material), stroke: true, ..Default::default() });
             }
         }
         out
@@ -783,6 +791,31 @@ impl Convex {
             faces.push(vec![i, n + i, n + j, j]);
         }
         Convex { pts, faces }.oriented()
+    }
+
+    /// A straight member from `a` to `b` whose cross-section is `profile`: points across it (horizontal, square to the
+    /// member) and up (square to both).
+    pub fn beam(a: [f64; 3], b: [f64; 3], profile: &[[f64; 2]]) -> Convex {
+        let ax = v3sub(b, a);
+        let l = v3dot(ax, ax).sqrt().max(1e-9);
+        let ax = [ax[0] / l, ax[1] / l, ax[2] / l];
+        let h = (ax[0] * ax[0] + ax[1] * ax[1]).sqrt();
+        let across = if h > 1e-6 { [-ax[1] / h, ax[0] / h, 0.0] } else { [1.0, 0.0, 0.0] };
+        let up = v3cross(across, ax);
+        let n = profile.len();
+        let at = |o: [f64; 3], q: [f64; 2]| [o[0] + across[0] * q[0] + up[0] * q[1], o[1] + across[1] * q[0] + up[1] * q[1], o[2] + across[2] * q[0] + up[2] * q[1]];
+        let pts: Vec<[f64; 3]> = profile.iter().map(|q| at(a, *q)).chain(profile.iter().map(|q| at(b, *q))).collect();
+        let mut faces = vec![(0..n).collect::<Vec<_>>(), (n..2 * n).rev().collect()];
+        for i in 0..n {
+            let j = (i + 1) % n;
+            faces.push(vec![i, n + i, n + j, j]);
+        }
+        Convex { pts, faces }.oriented()
+    }
+
+    /// The solid seen from above: the hull of its corners in plan.
+    pub fn plan_hull(&self) -> Vec<Point> {
+        hull(self.pts.iter().map(|p| Point::new(p[0], p[1])).collect())
     }
 
     fn centroid(&self) -> [f64; 3] {

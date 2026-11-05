@@ -703,6 +703,8 @@ pub enum Element {
     ColorFillLegend(crate::colorfill::ColorFillLegend),
     StairType(crate::stairs::StairType),
     Stair(crate::stairs::Stair),
+    RailingType(crate::railing::RailingType),
+    Railing(crate::railing::Railing),
 }
 
 impl Element {
@@ -772,6 +774,8 @@ impl Element {
             Element::ColorFillLegend(_) => "ColorFillLegend",
             Element::StairType(_) => "StairType",
             Element::Stair(_) => "Stair",
+            Element::RailingType(_) => "RailingType",
+            Element::Railing(_) => "Railing",
         }
     }
 }

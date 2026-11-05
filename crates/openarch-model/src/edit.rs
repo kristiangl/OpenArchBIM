@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -408,6 +408,15 @@ impl Document {
                     }
                     if opt.copy { s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid(); }
                     Element::Stair(s)
+                }
+                Some(Element::Railing(r)) => {
+                    let mut r = r.clone();
+                    if r.host.is_some() && !opt.copy { continue; }
+                    if r.host.is_some() { return Err("A railing on a stair is copied with its stair (copy and paste them together).".into()); }
+                    r.path = r.path.iter().map(|p| x.apply(*p)).collect();
+                    if mirror { r.flipped = !r.flipped; }
+                    if opt.copy { r.pinned = false; r.mark.clear(); r.ifc.guid = new_ifc_guid(); }
+                    Element::Railing(r)
                 }
                 // a tag is an offset from its element: moved with its element it keeps the offset (it follows the
                 // element), moved alone its head goes where the transform takes it

@@ -1089,6 +1089,16 @@ impl Document {
                 if !it.polys.is_empty() { out.push(it); }
             }
         }
+        // ---- railings
+        for (id, r) in self.railings() {
+            if hidden(id) {
+                continue;
+            }
+            for mut it in self.railing_view_items(id, r, &|p| sl.u(p), &|p| sl.d(p), 0.0, 0.0, Some(sl.plane + PLANE_EPS)) {
+                it.polys = it.polys.iter().map(|p| sl.clip_width(p)).filter(|p| p.len() >= 3).collect();
+                if !it.polys.is_empty() { out.push(it); }
+            }
+        }
         // ---- ceilings: cut through their layers from the top down, as floors are; a basic ceiling as a thin band
         for (id, c) in self.ceilings() {
             if hidden(id) {

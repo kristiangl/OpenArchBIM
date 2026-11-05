@@ -57,6 +57,9 @@ const COMMANDS = {
   "tag-revision": () => Revisions.tag(),
   ceiling: () => Ceilings.start(),
   stair: () => Stairs.start(),
+  railing: () => Railings.startSketch(),
+  "railing-sketch": () => Railings.startSketch(),
+  "railing-stair": () => Railings.placeOnStair(),
   area: () => Areas.start("area"),
   "area-plan": () => Areas.newPlan(),
   "area-boundary": () => Areas.start("areaboundary"),
@@ -350,6 +353,7 @@ function currentContext() {
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
   if (app.view.kind === "plan" && Plan.tool === "stair") return Stairs.context();
+  if (app.view.kind === "plan" && Plan.tool === "railingstair") return Railings.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
   if (app.view.kind === "plan" && Plan.tool === "paste") return Clip.context();
@@ -360,6 +364,8 @@ function currentContext() {
   if (cf) return cf;
   const ss = Stairs.selectionContext();
   if (ss) return ss;
+  const rs = Railings.selectionContext();
+  if (rs) return rs;
   const cs = Ceilings.selectionContext();
   if (cs) return cs;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
@@ -3083,6 +3089,7 @@ Sketch.callbacks.finish = async (o) => {
   if (o.kind === "revisioncloud") return Revisions.finish(o);
   if (o.kind === "roomseparation") return Spatial.finish(o);
   if (o.kind === "ceiling") return Ceilings.finish(o);
+  if (o.kind === "railing") return Railings.finish(o);
   if (o.kind === "areaboundary") return Areas.finish(o);
   if (o.kind === "region") return finishRegion(o);
   if (o.kind === "profile") return finishProfile(o);

@@ -145,6 +145,10 @@ async function renderProperties() {
     types = app.info.ceiling_types; current = d.type_id;
     onType = async (id) => { await run("patch_ceiling", { id: d.id, patch: { ceiling_type: id } }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "Railing") {
+    types = app.info.railing_types; current = d.type_id;
+    onType = async (id) => { await run("patch_railing", { id: d.id, patch: { railing_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Stair") {
     types = app.info.stair_types; current = d.type_id;
     onType = async (id) => { await run("patch_stair", { id: d.id, patch: { stair_type: id } }); await refresh(); };
@@ -231,6 +235,11 @@ async function renderProperties() {
     onType = (id) => { if (tool === "door") app.doorTypeId = id; else app.windowTypeId = id; syncPlacement(tool); renderProperties(); };
     title = tool === "door" ? "Place Door" : "Place Window";
     groups.push({ name: "Constraints", rows: [{ label: "Host", value: "Wall (click to place)", kind: "ro" }] });
+  } else if (tool === "railingstair" || (tool === "sketch" && Sketch.kind === "railing" && !Sketch.editingId)) {
+    types = app.info.railing_types || []; current = Railings.typeId();
+    onType = (id) => { app.railingTypeId = id; renderProperties(); };
+    title = tool === "railingstair" ? "Place Railing on Stair" : "Create Railing Path";
+    groups.push({ name: "Constraints", rows: [{ label: "Level", value: currentLevel().name, kind: "ro" }] });
   } else if (tool === "stair" && Stairs.toolProps()) {
     const tp = Stairs.toolProps();
     types = app.info.stair_types || []; current = tp.typeId;
@@ -330,7 +339,7 @@ async function renderProperties() {
 // ---- Type Selector ----------------------------------------------------------------
 // A button showing the family and type, and a drop-down that lists every type under its family, with a search box
 // and the most recently used types at the bottom. The native select stays (hidden) as the value holder.
-const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.ceiling_types || [], "Compound Ceiling"], [app.info.stair_types || [], "Stair"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
+const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.ceiling_types || [], "Compound Ceiling"], [app.info.stair_types || [], "Stair"], [app.info.railing_types || [], "Railing"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
 function typeEntries(types) {
   const group = TYPE_GROUP().get(types) || "";
   return (types || []).map((t) => ({ id: t.id, family: t.family || group, name: t.name, category: t.category || "" }));

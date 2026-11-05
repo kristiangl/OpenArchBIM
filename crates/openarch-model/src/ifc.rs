@@ -42,6 +42,8 @@ const CURTAIN_PARTS: u64 = 17;
 const SPACES: u64 = 18;
 const STAIR_PART: u64 = 19;
 const STAIR_PARTS: u64 = 20;
+const RAIL_PART: u64 = 21;
+const RAIL_PARTS: u64 = 22;
 
 /// A STEP string: quotes doubled, backslashes escaped, anything outside printable ASCII as \X2\ or \X4\.
 fn s(text: &str) -> String {
@@ -313,6 +315,53 @@ impl Step {
     fn boolean(&mut self, name: &str, v: bool) -> u64 {
         self.add(format!("IFCPROPERTYSINGLEVALUE({},$,IFCBOOLEAN({}),$)", s(name), if v { ".T." } else { ".F." }))
     }
+}
+
+/// A railing: an IfcRailing (GUARDRAIL, or HANDRAIL when it has no top rail) carrying its top rail, aggregating an
+/// IfcRailing HANDRAIL per handrail and an IfcMember per post and baluster. Returns the railing's entity.
+fn write_railing(w: &mut Step, d: &Document, id: Id, r: &crate::railing::Railing, storey_at: u64, sz: f64, mats: &mut BTreeMap<String, Vec<u64>>) -> Option<u64> {
+    use crate::railing::RailPart;
+    let t = d.railing_type(r.railing_type)?;
+    let pieces = d.railing_pieces(r);
+    let name = t.name.clone();
+    let tag = if r.mark.is_empty() { "$".into() } else { s(&r.mark) };
+    let shape_of = |w: &mut Step, ps: &[&crate::railing::RailPiece]| -> Option<u64> {
+        let mut verts = vec![];
+        for p in ps { p.solid.mesh(&mut verts); }
+        let set = w.faceset(&verts, -sz)?;
+        Some(w.tessellated(&[set]))
+    };
+    let tops: Vec<&crate::railing::RailPiece> = pieces.iter().filter(|p| p.part == RailPart::TopRail).collect();
+    let shape = shape_of(w, &tops).map_or("$".to_string(), |x| format!("#{x}"));
+    let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+    let kind = if t.top_rail.is_some() { "GUARDRAIL" } else { "HANDRAIL" };
+    let ent = w.add(format!("IFCRAILING({},$,{},$,{},#{at},{shape},{tag},.{kind}.)", own_guid(id, &r.ifc), s(&name), s(&name)));
+    if let Some(m) = tops.first().and_then(|p| p.material.clone()) { mats.entry(m).or_default().push(ent); }
+    let height = t.top_rail.as_ref().map(|x| x.height_mm).or_else(|| t.handrail_1.as_ref().map(|h| h.height_mm)).unwrap_or(0.0);
+    let hp = w.add(format!("IFCPROPERTYSINGLEVALUE('Height',$,IFCPOSITIVELENGTHMEASURE({}),$)", real(height)));
+    w.pset(ent, id, "Pset_RailingCommon", &[hp]);
+    let mut parts = vec![];
+    let mut k = 0u64;
+    let mut part = |w: &mut Step, ps: Vec<&crate::railing::RailPiece>, entity: &str, label: &str, predefined: &str, mats: &mut BTreeMap<String, Vec<u64>>, parts: &mut Vec<u64>| {
+        let Some(shape) = shape_of(w, &ps) else { return };
+        let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+        k += 1;
+        let e = w.add(format!("{entity}({},$,{},$,$,#{pat},#{shape},$,.{predefined}.)", s(&derived(RAIL_PART, id * 10_000 + k)), s(label)));
+        if let Some(m) = ps.first().and_then(|p| p.material.clone()) { mats.entry(m).or_default().push(e); }
+        parts.push(e);
+    };
+    for n in [1u8, 2] {
+        let hs: Vec<&crate::railing::RailPiece> = pieces.iter().filter(|p| p.part == RailPart::Handrail(n)).collect();
+        if !hs.is_empty() { part(w, hs, "IFCRAILING", &format!("Handrail {n}"), "HANDRAIL", mats, &mut parts); }
+    }
+    for p in pieces.iter().filter(|p| matches!(p.part, RailPart::Post | RailPart::Baluster)) {
+        let (label, kind) = if p.part == RailPart::Post { ("Post", "POST") } else { ("Baluster", "MEMBER") };
+        part(w, vec![p], "IFCMEMBER", label, kind, mats, &mut parts);
+    }
+    if !parts.is_empty() {
+        w.add(format!("IFCRELAGGREGATES({},$,$,$,#{ent},({}))", s(&derived(RAIL_PARTS, id)), refs(&parts)));
+    }
+    Some(ent)
 }
 
 /// An element's GlobalId: its own, or one made from its id.
@@ -753,8 +802,29 @@ impl Document {
                 }
                 parts.push(l);
             }
+            // its railings are parts of it too
+            for rid in self.stair_railings(id) {
+                let Some(r) = self.railing(rid) else { continue };
+                if skip(&r.ifc) { continue; }
+                if let Some(e) = write_railing(&mut w, self, rid, r, storey_at, sz, &mut part_materials) {
+                    products.insert(rid, e);
+                    parts.push(e);
+                }
+            }
             if !parts.is_empty() {
                 w.add(format!("IFCRELAGGREGATES({},$,$,$,#{stair},({}))", s(&derived(STAIR_PARTS, id)), refs(&parts)));
+            }
+        }
+        // railings on their own, in their storey
+        for (id, r) in self.railings() {
+            if skip(&r.ifc) || r.host.is_some() {
+                continue;
+            }
+            let lv = storey_of(r.level);
+            let (_, storey_at, sz) = storeys[&lv];
+            if let Some(e) = write_railing(&mut w, self, id, r, storey_at, sz, &mut part_materials) {
+                contained.entry(lv).or_default().push(e);
+                products.insert(id, e);
             }
         }
 
@@ -895,7 +965,7 @@ mod tests {
             ("IFCRELFILLSELEMENT", 6), ("IFCMATERIAL", 3), ("IFCSTYLEDREPRESENTATION", 4), ("IFCMATERIALDEFINITIONREPRESENTATION", 4),
             ("IFCMATERIALLAYER", 7), ("IFCMATERIALLAYERSET", 3), ("IFCMATERIALLAYERSETUSAGE", 5), ("IFCRELASSOCIATESMATERIAL", 6),
             ("IFCGROUP", 5), ("IFCRELASSIGNSTOGROUP", 7), ("IFCRELCONTAINEDINSPATIALSTRUCTURE", 6),
-            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9), ("IFCSTAIR", 9), ("IFCSTAIRFLIGHT", 13),
+            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9), ("IFCSTAIR", 9), ("IFCSTAIRFLIGHT", 13), ("IFCRAILING", 9),
         ]
         .into_iter()
         .collect();

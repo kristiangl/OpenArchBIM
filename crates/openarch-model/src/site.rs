@@ -509,6 +509,7 @@ impl Document {
                 Element::Room(r) => r.level==level || r.upper_level==Some(level),
                 Element::RoomSeparation(s) => s.level==level,
                 Element::Stair(s) => s.base_level == level || s.top_level == Some(level),
+                Element::Railing(r) => r.level == level,
                 _ => false,
             };
             if uses {
@@ -1740,6 +1741,19 @@ impl Document {
                 continue;
             }
             for mut it in self.stair_view_items(id, s, &u_of, &d_of, near, far, None) {
+                if let Some(slc) = &sl {
+                    it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
+                    if it.polys.is_empty() { continue; }
+                }
+                items.push(it);
+            }
+        }
+        // railings: rails, balusters and posts as seen
+        for (id, r) in self.railings() {
+            if hidden(id) {
+                continue;
+            }
+            for mut it in self.railing_view_items(id, r, &u_of, &d_of, near, far, None) {
                 if let Some(slc) = &sl {
                     it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
                     if it.polys.is_empty() { continue; }

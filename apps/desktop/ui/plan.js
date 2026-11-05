@@ -255,7 +255,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Stairs.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -394,7 +394,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, floor: 3, ceiling: 3 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, railing: 1, floor: 3, ceiling: 3 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1531,6 +1531,7 @@ const Plan = (() => {
     tag(null);
     if (tag) tag({ cat: "Stairs", sub: null, kind: "projection" });
     Stairs.draw(ctx, data, toScreen, cam.s, sel, { lw, colour, dash });
+    Railings.draw(ctx, data, toScreen, sel, { lw, colour, dash });
     tag(null);
     drawGroups();
     const hov = new Set(tool === "select" && selHover ? selHover : []);
@@ -2238,6 +2239,7 @@ const Plan = (() => {
     if (tool === "matchtype") { Clip.matchClick(rawCandidates(sx, sy).flat()[0] ?? null); return; }
     if (tool === "ceilinggrid") { Ceilings.gridClick(snap(sx, sy)); return; }
     if (tool === "stair") { const l = Stairs.last(); Stairs.click(l ? snap(sx, sy, { last: l }) : snap(sx, sy)); return; }
+    if (tool === "railingstair") { Railings.placeClick(rawCandidates(sx, sy).flat()); return; }
     if (tool === "area" || tool === "areatag" || tool === "areaboundary") {
       const walls = new Set(data.walls.map((w) => w.id));
       Areas.click(tool, toWorld(sx, sy), rawCandidates(sx, sy).flat().find((id) => walls.has(id)) ?? null);

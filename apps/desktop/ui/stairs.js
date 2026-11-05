@@ -18,7 +18,7 @@ const Stairs = (() => {
   function params(extra = {}) {
     const d = draft;
     return { type_id: d.typeId, base_level: d.baseLevel, top_level: d.topLevel, base_offset_mm: d.baseOffset, top_offset_mm: d.topOffset, unconnected_height_mm: d.height,
-      desired_risers: d.risers ?? undefined, tread_depth_mm: d.tread ?? undefined, runs: d.runs, ...extra };
+      desired_risers: d.risers ?? undefined, tread_depth_mm: d.tread ?? undefined, runs: d.runs, railing_type: d.id ? undefined : (d.railing ?? undefined), ...extra };
   }
   const pendingOf = () => (pendingStart && pendingEnd ? { start: [pendingStart.x, pendingStart.y], end: [pendingEnd.x, pendingEnd.y], justification: draft.justification, width_mm: draft.width } : null);
 
@@ -31,7 +31,7 @@ const Stairs = (() => {
       draft = { id: edit, typeId: r.type_id, baseLevel: r.base_level, topLevel: r.top_level, baseOffset: r.base_offset_mm, topOffset: r.top_offset_mm, height: r.unconnected_height_mm, risers: r.desired_risers, tread: r.tread_depth_mm, justification: r.runs[0]?.justification || "center", width: r.runs[0]?.width_mm || 1000, runs: r.runs };
     } else {
       const base = curLevelId();
-      draft = { id: null, typeId: typeId(), baseLevel: base, topLevel: levelAbove(base), baseOffset: 0, topOffset: 0, height: 3000, risers: null, tread: null, justification: "center", width: (app.info.stair_types || []).find((t) => t.id === typeId())?.width_mm || 1000, runs: [] };
+      draft = { id: null, railing: (app.info.railing_types || [])[0]?.id ?? null, typeId: typeId(), baseLevel: base, topLevel: levelAbove(base), baseOffset: 0, topOffset: 0, height: 3000, risers: null, tread: null, justification: "center", width: (app.info.stair_types || []).find((t) => t.id === typeId())?.width_mm || 1000, runs: [] };
     }
     pendingStart = pendingEnd = null;
     app.selection = []; Plan.setSelection([]);
@@ -148,6 +148,7 @@ const Stairs = (() => {
       { label: "Location Line", kind: "select", value: "", options: [["left", "Run: Left"], ["center", "Run: Center"], ["right", "Run: Right"]].map(([v, l]) => opt(l, { justification: v }, draft.justification === v)) },
       { label: "Actual Run Width", kind: "number", raw: draft.width, value: String(draft.width), path: "width" },
     ];
+    if (!editing) run.push({ label: "Railing", kind: "select", value: "", options: [opt("None", { railing: null }, draft.railing == null), ...(app.info.railing_types || []).map((t) => opt(t.name, { railing: t.id }, t.id === draft.railing))] });
     const apply = (patch) => {
       for (const [k, v] of Object.entries(patch)) draft[k] = ["baseOffset", "topOffset", "height", "width", "risers", "tread"].includes(k) ? Number(v) : v;
       if (patch.baseLevel != null || patch.topLevel !== undefined) draft.risers = null; // the count follows the new height

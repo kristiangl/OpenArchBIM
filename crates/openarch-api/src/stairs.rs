@@ -91,9 +91,16 @@ impl Session {
                     "end": l.runs.last().map(|r| pt(r.at(r.length, 0.0))),
                 }))
             })(),
+            // Finish; with `railing_type`, a railing on each side too, in the same undo step
             "add_stair" => (|| {
                 let s = draft_of(&self.doc, p)?;
-                Ok(json!({ "id": self.doc.add_stair(s)? }))
+                let rail = p["railing_type"].as_u64();
+                let id = self.doc.grouped("Create stair", |d| {
+                    let id = d.add_stair(s)?;
+                    if let Some(t) = rail { d.add_stair_railings(id, t, Default::default())?; }
+                    Ok(id)
+                })?;
+                Ok(json!({ "id": id, "railings": self.doc.stair_railings(id) }))
             })(),
             // Edit Stairs: what the tool reopens with
             "stair_edit" => (|| {

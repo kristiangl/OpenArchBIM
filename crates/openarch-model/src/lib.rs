@@ -59,6 +59,7 @@ pub mod tempdim;
 pub mod clipboard;
 pub mod hide;
 pub mod stairs;
+pub mod railing;
 pub mod colorfill;
 pub mod view;
 pub mod viewmarker;
