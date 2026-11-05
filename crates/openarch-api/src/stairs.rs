@@ -42,6 +42,9 @@ pub(crate) fn pt(p: Point) -> [f64; 2] { [p.x, p.y] }
 /// The run the cursor is drawing: from `start` towards `end`, as many risers as its length holds, no more than remain.
 fn pending_run(s: &Stair, p: &Value) -> Result<Option<StairRun>, String> {
     let Some(pr) = p.get("pending").filter(|v| !v.is_null()) else { return Ok(None) };
+    if let Some(kind) = pr["kind"].as_str().filter(|k| *k != "straight") {
+        return pending_shape(s, pr, kind);
+    }
     let start = point_of(&pr["start"])?;
     let end = point_of(&pr["end"])?;
     if start.dist(&end) < 1.0 { return Ok(None); }
@@ -55,10 +58,53 @@ fn pending_run(s: &Stair, p: &Value) -> Result<Option<StairRun>, String> {
     Ok(Some(StairRun { shape: RunShape::Straight, start, end, justification, width_mm: pr["width_mm"].as_f64().unwrap_or(1000.0), risers: n, begins_with_riser: begins, ends_with_riser: ends }))
 }
 
+/// A spiral or winder being drawn: { kind: spiral_full | spiral_ends | winder_l | winder_u, points, clockwise, style }.
+/// A full-step spiral takes every riser left; the others as many as their walkline holds, no more than remain.
+fn pending_shape(s: &Stair, pr: &Value, kind: &str) -> Result<Option<StairRun>, String> {
+    let pts: Vec<Point> = pr["points"].as_array().ok_or("missing points")?.iter().map(point_of).collect::<Result<_, _>>()?;
+    let need = match kind { "spiral_full" => 2, "spiral_ends" | "winder_l" => 3, "winder_u" => 4, _ => return Err(format!("unknown run shape {kind}")) };
+    if pts.len() < need || pts.windows(2).any(|w| w[0].dist(&w[1]) < 1.0) { return Ok(None); }
+    let have: u32 = s.runs.iter().map(|r| r.risers).sum();
+    let left = s.desired_risers.saturating_sub(have);
+    if left == 0 { return Ok(None); }
+    let justification: RunJustification = serde_json::from_value(pr["justification"].clone()).unwrap_or_default();
+    let width = pr["width_mm"].as_f64().unwrap_or(1000.0);
+    let tr = s.tread_depth_mm;
+    let (shape, start, end, risers) = match kind {
+        "spiral_full" | "spiral_ends" => {
+            let (c, a) = (pts[0], pts[1]);
+            let r = c.dist(&a);
+            if r < width / 2.0 + 1.0 { return Err("The spiral's radius must be more than half its width.".into()); }
+            let mut clockwise = pr["clockwise"].as_bool().unwrap_or(false);
+            let n = if kind == "spiral_full" { left } else {
+                let b = pts[2];
+                let (t0, t1) = ((a.y - c.y).atan2(a.x - c.x), (b.y - c.y).atan2(b.x - c.x));
+                let mut sweep = (t1 - t0).rem_euclid(std::f64::consts::TAU);
+                // the shorter way round, unless the direction was set
+                if pr["clockwise"].is_null() && sweep > std::f64::consts::PI { clockwise = true; }
+                if clockwise { sweep = std::f64::consts::TAU - sweep; }
+                risers_for_length(r * sweep, tr, true, true).min(left)
+            };
+            let tangent = if clockwise { Point::new(a.y - c.y, -(a.x - c.x)) } else { Point::new(-(a.y - c.y), a.x - c.x) };
+            (RunShape::Spiral { centre: c, clockwise }, a, Point::new(a.x + tangent.x / r, a.y + tangent.y / r), n)
+        }
+        _ => {
+            let len: f64 = pts.windows(2).map(|w| w[0].dist(&w[1])).sum();
+            let style = serde_json::from_value(pr["style"].clone()).unwrap_or_default();
+            (RunShape::Winder { corners: pts[1..pts.len() - 1].to_vec(), style }, pts[0], *pts.last().unwrap(), risers_for_length(len, tr, true, true).min(left))
+        }
+    };
+    Ok(Some(StairRun { shape, start, end, justification, width_mm: width, risers, begins_with_riser: true, ends_with_riser: true }))
+}
+
 /// Plan lines of a laid out stair for the tool's preview: footprints and risers.
 pub(crate) fn preview_lines(l: &StairLayout) -> Vec<[[f64; 2]; 2]> {
     let mut out = vec![];
     for r in &l.runs {
+        if let Some(p) = &r.path {
+            for (poly, _) in &p.treads { for i in 0..poly.len() { out.push([pt(poly[i]), pt(poly[(i + 1) % poly.len()])]); } }
+            continue;
+        }
         let f = r.footprint();
         for i in 0..f.len() { out.push([pt(f[i]), pt(f[(i + 1) % f.len()])]); }
         let w = r.width / 2.0;
@@ -282,6 +328,10 @@ pub(crate) fn split(a: Point, b: Point, side: &dyn Fn(Point) -> f64) -> (Option<
 pub(crate) fn walkline(l: &StairLayout) -> Vec<(Point, f64)> {
     let mut pts: Vec<(Point, f64)> = vec![];
     for (i, r) in l.runs.iter().enumerate() {
+        if let Some(p) = &r.path {
+            for (q, s) in &p.walk { pts.push((*q, r.nosing_z(*s).min(r.z1))); }
+            continue;
+        }
         let s0 = r.risers.first().map_or(0.0, |x| x.0);
         if i == 0 { pts.push((r.at(s0, 0.0), r.z0)); } else { pts.push((r.at(0.0, 0.0), r.z0)); }
         let end = r.at(r.length, 0.0);
@@ -313,8 +363,12 @@ pub(crate) fn cut_mark(r: &RunLayout, s: f64, angle_deg: f64, style: CutMarkStyl
     // along the cut line, and square to it pointing up the run
     let along = Point::new(r.left.x * a.cos() + r.dir.x * a.sin(), r.left.y * a.cos() + r.dir.y * a.sin());
     let up = Point::new(r.dir.x * a.cos() - r.left.x * a.sin(), r.dir.y * a.cos() - r.left.y * a.sin());
-    let c = r.at(s, 0.0);
     let half = r.width / 2.0 / a.cos().max(0.2) + 2.0 * scale;
+    cut_mark_at(r.at(s, 0.0), along, up, half, style, scale)
+}
+
+/// A cut mark centred on `c`, its line `along` (a unit direction) reaching `half` each way, `up` pointing up the stair.
+pub(crate) fn cut_mark_at(c: Point, along: Point, up: Point, half: f64, style: CutMarkStyle, scale: f64) -> (Vec<Vec<[f64; 2]>>, Point, Point) {
     let p = |t: f64, n: f64| [c.x + along.x * t + up.x * n, c.y + along.y * t + up.y * n];
     let z = 1.5 * scale; // the zigzag's size: 1.5 mm on paper
     let lines = match style {
@@ -359,7 +413,18 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         // where the cut plane crosses the walk: on the run that spans it
         let mut cut: Option<(usize, Vec<Vec<[f64; 2]>>, Point, Point)> = None;
         if cut_here {
-            if let Some(r) = l.runs.iter().find(|r| r.z0 < range.cut && r.z1 > range.cut) {
+            if let Some(r) = l.runs.iter().find(|r| r.z0 < range.cut && r.z1 > range.cut && r.path.is_some()) {
+                // on a spiral or winder: across the first riser above the cut
+                let p = r.path.as_ref().unwrap();
+                if let Some(k) = r.risers.iter().position(|x| x.1 > range.cut) {
+                    let [a, b] = p.riser_lines[k];
+                    let c = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+                    let len = a.dist(&b).max(1e-9);
+                    let along = Point::new((a.x - b.x) / len, (a.y - b.y) / len);
+                    let (lines, c, up) = cut_mark_at(c, along, Point::new(along.y, -along.x), len / 2.0 + 2.0 * scale, t.cut_mark.style, scale);
+                    cut = Some((usize::MAX, lines, c, up));
+                }
+            } else if let Some(r) = l.runs.iter().find(|r| r.z0 < range.cut && r.z1 > range.cut) {
                 let (a, b) = (r.risers.first(), r.risers.last());
                 let sc = match (a, b) { (Some(a), Some(b)) if b.1 > a.1 => a.0 + (range.cut - a.1) * (b.0 - a.0) / (b.1 - a.1), (Some(a), _) => a.0, _ => 0.0 };
                 let sc = sc.clamp(0.0, r.length);
@@ -382,6 +447,13 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
             }
         };
         for r in &l.runs {
+            if let Some(p) = &r.path {
+                // each tread's outline, above or below the cut by its height
+                for (poly, top) in &p.treads {
+                    for i in 0..poly.len() { push(poly[i], poly[(i + 1) % poly.len()], "riser", None, *top); }
+                }
+                continue;
+            }
             let w = r.width / 2.0;
             // a run above the cut, or below it, is wholly one or the other; the cut run splits
             let zr = if r.z1 <= range.cut + 1e-6 { r.z0 } else { r.z1 };

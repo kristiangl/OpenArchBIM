@@ -158,7 +158,7 @@ impl Document {
             let off = match run.justification { RunJustification::Left | RunJustification::LeftExterior => -0.5, RunJustification::Center => 0.0, _ => 0.5 } * run.width_mm;
             let origin = Point::new(run.start.x + left.x * off, run.start.y + left.y * off);
             let z1 = z + k * len;
-            runs.push(RunLayout { index: i, origin, dir, left, width: run.width_mm, length: len, z0: z, z1, risers: vec![], treads: vec![] });
+            runs.push(RunLayout { index: i, origin, dir, left, width: run.width_mm, length: len, z0: z, z1, risers: vec![], treads: vec![], path: None });
             z = z1;
         }
         let mut landings = vec![];

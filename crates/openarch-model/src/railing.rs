@@ -315,6 +315,14 @@ pub fn stair_side(l: &StairLayout, side: RailingSide) -> HostLine {
     };
     for (i, r) in l.runs.iter().enumerate() {
         let w = sign * r.width / 2.0;
+        if let Some(p) = &r.path {
+            // a spiral's or winder's edge, rising with the nosing line
+            let edge = if side == RailingSide::Left { &p.left } else { &p.right };
+            for (k, (q, s)) in edge.iter().enumerate() {
+                push(*q, r.nosing_z(*s), if k == 0 { None } else { Some(i) }, &mut pts, &mut runs);
+            }
+            continue;
+        }
         push(r.at(0.0, w), r.nosing_z(0.0), None, &mut pts, &mut runs);
         push(r.at(r.length, w), r.nosing_z(r.length), Some(i), &mut pts, &mut runs);
         if let Some(n) = l.runs.get(i + 1) {
@@ -506,7 +514,7 @@ impl Document {
                 // fractions along the segment, each with the height of what the baluster stands on
                 let mut at: Vec<(f64, f64)> = vec![];
                 match (run, b.per_tread) {
-                    (Some(rl), Some(n)) if n > 0 && !rl.treads.is_empty() => {
+                    (Some(rl), Some(n)) if n > 0 && !rl.treads.is_empty() && rl.path.is_none() => {
                         for (s0, s1, top) in &rl.treads {
                             for j in 0..n { let s = s0 + (j as f64 + 0.5) * (s1 - s0) / n as f64; at.push((s / rl.length.max(1e-9), *top)); }
                         }
@@ -515,6 +523,8 @@ impl Document {
                         for d in pattern(len, b.spacing_mm, b.justification) {
                             let f = d / len;
                             let base = match run {
+                                // along a spiral's or winder's edge: a riser under the nosing line, into the tread
+                                Some(rl) if rl.path.is_some() => z0 + (z1 - z0) * f - stair_layout.as_ref().map_or(0.0, |l| l.riser_mm),
                                 Some(rl) => { let s = f * rl.length; rl.treads.iter().find(|t| s >= t.0 - 1e-6 && s <= t.1 + 1e-6).map_or(z0 + (z1 - z0) * f, |t| t.2) }
                                 None => z0 + (z1 - z0) * f,
                             };

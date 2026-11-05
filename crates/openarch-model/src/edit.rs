@@ -405,6 +405,11 @@ impl Document {
                         r.start = x.apply(r.start);
                         r.end = x.apply(r.end);
                         if mirror { r.justification = r.justification.mirrored(); }
+                        match &mut r.shape {
+                            crate::stairs::RunShape::Spiral { centre, clockwise } => { *centre = x.apply(*centre); if mirror { *clockwise = !*clockwise; } }
+                            crate::stairs::RunShape::Winder { corners, .. } => for c in corners.iter_mut() { *c = x.apply(*c); },
+                            crate::stairs::RunShape::Straight => {}
+                        }
                     }
                     if opt.copy { s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid(); }
                     Element::Stair(s)

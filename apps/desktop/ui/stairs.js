@@ -5,7 +5,18 @@
 const Stairs = (() => {
   // the stair being drawn: its settings, its runs so far, and the run under the cursor
   let draft = null;
-  let pendingStart = null, pendingEnd = null, preview = null, asked = 0, lastAsk = 0;
+  let clicks = [], pendingEnd = null, preview = null, asked = 0, lastAsk = 0;
+  // the run shape being drawn, and the clicks it takes: straight (start, end), full-step spiral (centre, start),
+  // centre-ends spiral (centre, start, end), L winder (start, corner, end), U winder (start, two corners, end)
+  let shape = "straight", clockwise = null, winderStyle = "balanced";
+  const NEED = { straight: 2, spiral_full: 2, spiral_ends: 3, winder_l: 3, winder_u: 4 };
+  const STAGE = {
+    straight: ["Click the start of a run.", "Click the end of the run."],
+    spiral_full: ["Click the centre of the spiral.", "Click where the run starts (its radius)."],
+    spiral_ends: ["Click the centre of the spiral.", "Click where the run starts (its radius).", "Click where the run ends."],
+    winder_l: ["Click the start of the run.", "Click the corner.", "Click towards the end of the run."],
+    winder_u: ["Click the start of the run.", "Click the first corner.", "Click the second corner.", "Click towards the end of the run."],
+  };
 
   const typeId = () => {
     const ts = app.info.stair_types || [];
@@ -20,7 +31,12 @@ const Stairs = (() => {
     return { type_id: d.typeId, base_level: d.baseLevel, top_level: d.topLevel, base_offset_mm: d.baseOffset, top_offset_mm: d.topOffset, unconnected_height_mm: d.height,
       desired_risers: d.risers ?? undefined, tread_depth_mm: d.tread ?? undefined, runs: d.runs, railing_type: d.id ? undefined : (d.railing ?? undefined), ...extra };
   }
-  const pendingOf = () => (pendingStart && pendingEnd ? { start: [pendingStart.x, pendingStart.y], end: [pendingEnd.x, pendingEnd.y], justification: draft.justification, width_mm: draft.width } : null);
+  function pendingOf() {
+    if (!clicks.length || !pendingEnd) return null;
+    const pts = [...clicks, pendingEnd];
+    if (shape === "straight") return { start: [pts[0].x, pts[0].y], end: [pts[1].x, pts[1].y], justification: draft.justification, width_mm: draft.width };
+    return { kind: shape, points: pts.map((p) => [p.x, p.y]), clockwise: shape === "spiral_full" ? !!clockwise : clockwise ?? undefined, style: winderStyle, justification: draft.justification, width_mm: draft.width };
+  }
 
   async function start(edit = null) {
     if (!(app.info.stair_types || []).length) { if (!(await run("ensure_stair_types", {}))) return; await refresh(); }
@@ -33,7 +49,7 @@ const Stairs = (() => {
       const base = curLevelId();
       draft = { id: null, railing: (app.info.railing_types || [])[0]?.id ?? null, typeId: typeId(), baseLevel: base, topLevel: levelAbove(base), baseOffset: 0, topOffset: 0, height: 3000, risers: null, tread: null, justification: "center", width: (app.info.stair_types || []).find((t) => t.id === typeId())?.width_mm || 1000, runs: [] };
     }
-    pendingStart = pendingEnd = null;
+    clicks = []; pendingEnd = null;
     app.selection = []; Plan.setSelection([]);
     Plan.setTool("stair");
     updateRibbonContext(true);
@@ -56,12 +72,12 @@ const Stairs = (() => {
     const p = preview;
     if (p && p.error) { setPrompt(p.error, true); return; }
     const done = p ? `${p.created} of ${p.desired_risers} risers created, ${p.remaining} remaining.` : "";
-    if (p && p.remaining === 0 && !pendingStart) { setPrompt(`${done} Finish to make the stair, or delete the last run.`.trim()); return; }
-    setPrompt(`${pendingStart ? "Click the end of the run." : "Click the start of a run."} ${done} ${extra}`.trim());
+    if (p && p.remaining === 0 && !clicks.length) { setPrompt(`${done} Finish to make the stair, or delete the last run.`.trim()); return; }
+    setPrompt(`${STAGE[shape][clicks.length] || ""} ${done} ${extra}`.trim());
   }
 
   function hover(p) {
-    if (!draft || !pendingStart) return;
+    if (!draft || !clicks.length) return;
     pendingEnd = p;
     const now = performance.now();
     if (now - lastAsk < 60) return;
@@ -70,20 +86,19 @@ const Stairs = (() => {
   }
   async function click(p) {
     if (!draft) return;
-    if (!pendingStart) {
-      if (preview && preview.remaining === 0) { say(); return; }
-      pendingStart = p; pendingEnd = null; say(); return;
-    }
+    if (!clicks.length && preview && preview.remaining === 0) { say(); return; }
+    // a full-step spiral needs one click before it can be shown; each shape its own number
+    if (clicks.length + 1 < NEED[shape]) { clicks.push(p); pendingEnd = null; say(); return; }
     pendingEnd = p;
     const r = await run("stair_draft", params({ pending: pendingOf() }));
     if (!r || !r.pending) { setPrompt("The run needs a length: click further from its start.", true); return; }
     draft.runs.push(r.pending);
     // the next run starts where the cursor is clicked; a landing joins them on Finish
-    pendingStart = pendingEnd = null;
+    clicks = []; pendingEnd = null;
     await ask();
     say();
   }
-  const last = () => pendingStart;
+  const last = () => clicks[clicks.length - 1] || null;
 
   async function finish() {
     if (!draft) return;
@@ -91,7 +106,7 @@ const Stairs = (() => {
     const r = draft.id ? await run("set_stair_runs", { id: draft.id, runs: draft.runs }) : await run("add_stair", params());
     if (!r) return;
     const id = draft.id || r.id;
-    draft = null; preview = null; pendingStart = pendingEnd = null;
+    draft = null; preview = null; clicks = []; pendingEnd = null;
     Plan.setTool("select");
     await refresh();
     app.selection = [id]; Plan.setSelection([id]); app.vp?.setSelection([id]);
@@ -99,21 +114,21 @@ const Stairs = (() => {
     setPrompt("Stair finished.");
   }
   function cancel() {
-    draft = null; preview = null; pendingStart = pendingEnd = null;
+    draft = null; preview = null; clicks = []; pendingEnd = null;
     Plan.setTool("select"); updateRibbonContext(); renderProperties(); setPrompt("");
   }
   function deleteLastRun() {
     if (!draft || !draft.runs.length) return;
-    draft.runs.pop(); pendingStart = pendingEnd = null;
+    draft.runs.pop(); clicks = []; pendingEnd = null;
     ask().then(() => say());
   }
   // Esc drops the run being drawn; the stair stays in progress until Finish or Cancel
   function escape() {
-    if (pendingStart) { pendingStart = pendingEnd = null; ask().then(() => say()); return true; }
+    if (clicks.length) { clicks = []; pendingEnd = null; ask().then(() => say()); return true; }
     setPrompt("Finish the stair, or Cancel it.");
     return true;
   }
-  function endTool() { if (draft) { draft = null; preview = null; pendingStart = pendingEnd = null; } }
+  function endTool() { if (draft) { draft = null; preview = null; clicks = []; pendingEnd = null; } }
 
   function context() {
     const groups = [
@@ -121,12 +136,17 @@ const Stairs = (() => {
         { label: "Finish Edit Mode", ico: "✓", big: true, onclick: finish },
         { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: cancel },
       ] },
-      { label: "Components", items: [
-        { label: "Run", icon: "stair", big: true, on: true, onclick: () => {} },
+      { label: "Run", items: [
+        ...[["straight", "Straight", "stair"], ["spiral_full", "Full-Step Spiral", null], ["spiral_ends", "Centre-Ends Spiral", null], ["winder_l", "L-Shape Winder", null], ["winder_u", "U-Shape Winder", null]].map(([v, l, icon]) => ({
+          label: l, ...(icon ? { icon } : { ico: l.split(" ").map((w) => w[0]).join("").slice(0, 2) }), big: v === "straight", on: shape === v,
+          onclick: () => { shape = v; clicks = []; pendingEnd = null; updateRibbonContext(); ask().then(() => say()); },
+        })),
+        { label: clockwise ? "Clockwise" : "Anticlockwise", ico: clockwise ? "↻" : "↺", disabled: !shape.startsWith("spiral"), onclick: () => { clockwise = !clockwise; updateRibbonContext(); ask(); } },
+        { label: winderStyle === "balanced" ? "Balanced Winders" : "Single Point Winders", ico: winderStyle === "balanced" ? "Bw" : "Sp", disabled: !shape.startsWith("winder"), onclick: () => { winderStyle = winderStyle === "balanced" ? "single_point" : "balanced"; updateRibbonContext(); ask(); } },
         { label: "Delete Last Run", ico: "⌫", disabled: !draft?.runs.length, onclick: deleteLastRun },
       ] },
     ];
-    return { auto: true, key: `stair:${draft?.runs.length || 0}`, title: draft?.id ? "Edit Stairs" : "Create Stair", groups };
+    return { auto: true, key: `stair:${draft?.runs.length || 0}:${shape}:${clockwise}:${winderStyle}`, title: draft?.id ? "Edit Stairs" : "Create Stair", groups };
   }
   // Properties while drawing: the stair's type, levels and risers, and the run's location line and width
   function toolProps() {
@@ -220,8 +240,8 @@ const Stairs = (() => {
       ctx.beginPath();
       for (const [a, b] of preview.lines) seg(a, b);
       ctx.strokeStyle = "#d4572f"; ctx.lineWidth = 1.5; ctx.setLineDash([]); ctx.stroke();
-      if (pendingStart) {
-        const p = toScreen(pendingStart);
+      for (const c of clicks) {
+        const p = toScreen(c);
         ctx.beginPath(); ctx.arc(p.x, p.y, 4, 0, Math.PI * 2); ctx.fillStyle = "#d4572f"; ctx.fill();
       }
     }

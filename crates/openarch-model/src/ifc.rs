@@ -744,7 +744,13 @@ impl Document {
             // the stair's shape from the turns between its runs
             let turns: Vec<f64> = lay.runs.windows(2).map(|r| (r[0].dir.x * r[1].dir.y - r[0].dir.y * r[1].dir.x).atan2(r[0].dir.x * r[1].dir.x + r[0].dir.y * r[1].dir.y).to_degrees().abs()).collect();
             let near = |a: f64, b: f64| (a - b).abs() < 10.0;
+            let shapes: Vec<&crate::stairs::RunShape> = st.runs.iter().map(|r| &r.shape).collect();
+            let winders: usize = shapes.iter().map(|s| if let crate::stairs::RunShape::Winder { corners, .. } = s { corners.len() } else { 0 }).sum();
             let predefined = match turns.as_slice() {
+                _ if shapes.iter().any(|s| matches!(s, crate::stairs::RunShape::Spiral { .. })) => "SPIRAL_STAIR",
+                [] if winders == 1 => "QUARTER_WINDING_STAIR",
+                [] if winders == 2 => "HALF_WINDING_STAIR",
+                [] if winders > 2 => "NOTDEFINED",
                 [] => "STRAIGHT_RUN_STAIR",
                 [t] if near(*t, 0.0) => "TWO_STRAIGHT_RUN_STAIR",
                 [t] if near(*t, 90.0) => "QUARTER_TURN_STAIR",
@@ -777,7 +783,8 @@ impl Document {
                 let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
                 let key = id * 1000 + run.index as u64;
                 let (nr, nt) = (run.risers.len(), run.treads.len());
-                let f = w.add(format!("IFCSTAIRFLIGHT({},$,{},$,$,#{pat},#{shape},$,{nr},{nt},{},{},.STRAIGHT.)", s(&derived(STAIR_PART, key)), s(&format!("Run {}", run.index + 1)), real(lay.riser_mm), real(lay.tread_mm)));
+                let kind = match st.runs.get(run.index).map(|r| &r.shape) { Some(crate::stairs::RunShape::Spiral { .. }) => "SPIRAL", Some(crate::stairs::RunShape::Winder { .. }) => "WINDER", _ => "STRAIGHT" };
+                let f = w.add(format!("IFCSTAIRFLIGHT({},$,{},$,$,#{pat},#{shape},$,{nr},{nt},{},{},.{kind}.)", s(&derived(STAIR_PART, key)), s(&format!("Run {}", run.index + 1)), real(lay.riser_mm), real(lay.tread_mm)));
                 let fp = [count(&mut w, "NumberOfRiser", nr), count(&mut w, "NumberOfTreads", nt), length(&mut w, "RiserHeight", lay.riser_mm), length(&mut w, "TreadLength", lay.tread_mm)];
                 w.pset(f, (1 << 48) | key, "Pset_StairFlightCommon", &fp);
                 if let Some(m) = mat {

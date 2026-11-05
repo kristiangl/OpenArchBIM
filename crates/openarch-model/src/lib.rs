@@ -61,6 +61,7 @@ pub mod hide;
 pub mod stairs;
 pub mod railing;
 pub mod ramp;
+pub mod runpath;
 pub mod colorfill;
 pub mod view;
 pub mod viewmarker;

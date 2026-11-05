@@ -1,0 +1,200 @@
+//! Runs that are not straight: spirals round a centre, and winders that turn corners without a landing. Each is laid
+//! out along its walkline (the run's centre line): where each riser stands along it, the riser's line across the run,
+//! each tread's outline in plan, and the run's two edges. Straight runs keep their simpler frame in `stairs.rs`; every
+//! consumer of a run (plans, solids, railings, headroom) reads this layout when a run has one.
+
+use serde::{Deserialize, Serialize};
+
+use crate::Point;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WinderStyle {
+    /// The riser lines turn gradually through the corner, so the treads stay usable at the inside.
+    #[default]
+    Balanced,
+    /// The riser lines in the corner all radiate from its inside point.
+    SinglePoint,
+}
+
+/// A run laid out along a curved or cornered walkline.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct RunPath {
+    /// The walkline, finely, with each point's distance along it.
+    pub walk: Vec<(Point, f64)>,
+    /// Each riser's line across the run: its left end, its right end (looking up the run).
+    pub riser_lines: Vec<[Point; 2]>,
+    /// Each tread's outline (counter-clockwise) and its top.
+    pub treads: Vec<(Vec<Point>, f64)>,
+    /// The run's edges, each point with its distance along the walkline.
+    pub left: Vec<(Point, f64)>,
+    pub right: Vec<(Point, f64)>,
+}
+
+fn sub(a: Point, b: Point) -> Point { Point::new(a.x - b.x, a.y - b.y) }
+fn add(a: Point, b: Point) -> Point { Point::new(a.x + b.x, a.y + b.y) }
+fn mul(a: Point, k: f64) -> Point { Point::new(a.x * k, a.y * k) }
+fn cross(a: Point, b: Point) -> f64 { a.x * b.y - a.y * b.x }
+fn unit(a: Point) -> Point { let l = (a.x * a.x + a.y * a.y).sqrt().max(1e-12); Point::new(a.x / l, a.y / l) }
+fn left_of(d: Point) -> Point { Point::new(-d.y, d.x) }
+
+/// A point `s` along a polyline, and the direction there; past the ends it carries straight on.
+pub fn along(pts: &[Point], s: f64) -> (Point, Point) {
+    let mut acc = 0.0;
+    for (i, w) in pts.windows(2).enumerate() {
+        let l = w[0].dist(&w[1]);
+        let last = i + 2 == pts.len();
+        if s <= acc + l || last {
+            let d = unit(sub(w[1], w[0]));
+            let t = if s < 0.0 && i == 0 { s } else { s - acc };
+            return (add(w[0], mul(d, t)), d);
+        }
+        acc += l;
+    }
+    (pts[0], Point::new(1.0, 0.0))
+}
+
+/// Where a point lies along a polyline (its nearest point's distance from the start).
+fn param(pts: &[(Point, f64)], p: Point) -> f64 {
+    let mut best = (0.0, f64::INFINITY);
+    for w in pts.windows(2) {
+        let (a, b) = (w[0].0, w[1].0);
+        let ab = sub(b, a);
+        let l2 = (ab.x * ab.x + ab.y * ab.y).max(1e-12);
+        let t = (((p.x - a.x) * ab.x + (p.y - a.y) * ab.y) / l2).clamp(0.0, 1.0);
+        let d = add(a, mul(ab, t)).dist(&p);
+        if d < best.1 { best = (w[0].1 + (w[1].1 - w[0].1) * t, d); }
+    }
+    best.0
+}
+
+/// The first point where a ray from `o` along `d` meets a polyline.
+fn hit(pts: &[(Point, f64)], o: Point, d: Point) -> Option<Point> {
+    let mut best: Option<(f64, Point)> = None;
+    for w in pts.windows(2) {
+        let (a, b) = (w[0].0, w[1].0);
+        let e = sub(b, a);
+        let den = cross(d, e);
+        if den.abs() < 1e-12 { continue; }
+        let t = cross(sub(a, o), e) / den;
+        let u = cross(sub(a, o), d) / den;
+        if t > -1e-6 && (-1e-6..=1.0 + 1e-6).contains(&u) && best.is_none_or(|b| t < b.0) {
+            best = Some((t, add(o, mul(d, t))));
+        }
+    }
+    best.map(|b| b.1)
+}
+
+/// The edges of a polyline walkline `w` wide: points with their distance along the walkline.
+fn edges(walk: &[(Point, f64)], w: f64) -> (Vec<(Point, f64)>, Vec<(Point, f64)>) {
+    let pts: Vec<(Point, f64)> = walk.iter().map(|(p, _)| (*p, 0.0)).collect();
+    let l = crate::railing::offset_line(&pts, w / 2.0);
+    let r = crate::railing::offset_line(&pts, -w / 2.0);
+    (l.iter().zip(walk).map(|(a, b)| (a.0, b.1)).collect(), r.iter().zip(walk).map(|(a, b)| (a.0, b.1)).collect())
+}
+
+/// Each step's position: where risers stand along the walkline, and where its treads begin and end.
+pub struct Steps {
+    pub length: f64,
+    pub risers: Vec<f64>,
+    pub treads: Vec<(f64, f64, f64)>,
+}
+
+/// Lay a run out along a walkline: `walk` (with distances), the direction across the run at a distance (towards its
+/// left), its edges, and its steps.
+fn build(walk: Vec<(Point, f64)>, across: &dyn Fn(f64) -> (Point, Point), left: Vec<(Point, f64)>, right: Vec<(Point, f64)>, steps: &Steps, width: f64) -> RunPath {
+    // a riser's line: from the walkline out to each edge
+    let line = |s: f64| -> [Point; 2] {
+        let (o, u) = across(s);
+        let l = hit(&left, o, u).unwrap_or_else(|| add(o, mul(u, width / 2.0)));
+        let r = hit(&right, o, mul(u, -1.0)).unwrap_or_else(|| sub(o, mul(u, width / 2.0)));
+        [l, r]
+    };
+    let riser_lines: Vec<[Point; 2]> = steps.risers.iter().map(|s| line(*s)).collect();
+    let between = |edge: &[(Point, f64)], a: f64, b: f64| -> Vec<Point> { edge.iter().filter(|(_, s)| *s > a + 1e-6 && *s < b - 1e-6).map(|(p, _)| *p).collect() };
+    let treads = steps.treads.iter().map(|(s0, s1, top)| {
+        let ([l0, r0], [l1, r1]) = (line(*s0), line(*s1));
+        let (pl0, pl1) = (param(&left, l0), param(&left, l1));
+        let (pr0, pr1) = (param(&right, r0), param(&right, r1));
+        let mut poly = vec![l0, r0];
+        poly.extend(between(&right, pr0, pr1));
+        poly.extend([r1, l1]);
+        let mut back = between(&left, pl0, pl1);
+        back.reverse();
+        poly.extend(back);
+        poly.dedup_by(|a, b| a.dist(b) < 1e-6);
+        if crate::geom::signed_area(&poly) < 0.0 { poly.reverse(); }
+        (poly, *top)
+    }).collect();
+    RunPath { walk, riser_lines, treads, left, right }
+}
+
+/// A spiral round `centre` from `start`, `length` along its walkline (the run's centre line), anticlockwise unless
+/// `clockwise`.
+pub fn spiral(centre: Point, start: Point, clockwise: bool, width: f64, steps: &Steps) -> RunPath {
+    let r = centre.dist(&start).max(width / 2.0 + 1.0);
+    let a0 = (start.y - centre.y).atan2(start.x - centre.x);
+    let sign = if clockwise { -1.0 } else { 1.0 };
+    let at = |s: f64, rad: f64| { let a = a0 + sign * s / r; Point::new(centre.x + rad * a.cos(), centre.y + rad * a.sin()) };
+    let n = ((steps.length / 50.0).ceil() as usize).max(8);
+    let ss: Vec<f64> = (0..=n).map(|k| steps.length * k as f64 / n as f64).collect();
+    let walk: Vec<(Point, f64)> = ss.iter().map(|s| (at(*s, r), *s)).collect();
+    // looking up an anticlockwise run, its left is the inside
+    let (rl, rr) = if clockwise { (r + width / 2.0, r - width / 2.0) } else { (r - width / 2.0, r + width / 2.0) };
+    let left: Vec<(Point, f64)> = ss.iter().map(|s| (at(*s, rl), *s)).collect();
+    let right: Vec<(Point, f64)> = ss.iter().map(|s| (at(*s, rr), *s)).collect();
+    let across = |s: f64| { let o = at(s, r); let out = unit(sub(o, centre)); (o, if clockwise { out } else { mul(out, -1.0) }) };
+    build(walk, &across, left, right, steps, width)
+}
+
+/// A winder: along `pts` (the walkline: start, each corner, then on in the last direction), `steps.length` long,
+/// turning its risers round each corner.
+pub fn winder(pts: &[Point], style: WinderStyle, width: f64, steps: &Steps) -> RunPath {
+    // the walkline, taken on past its last point to the run's length
+    let mut line: Vec<Point> = pts.to_vec();
+    let drawn: f64 = line.windows(2).map(|w| w[0].dist(&w[1])).sum();
+    if let (Some(a), Some(b)) = (line.get(line.len().wrapping_sub(2)).copied(), line.last().copied()) {
+        let d = unit(sub(b, a));
+        let n = line.len();
+        line[n - 1] = add(b, mul(d, steps.length - drawn));
+    }
+    let mut walk: Vec<(Point, f64)> = vec![];
+    let mut acc = 0.0;
+    for (i, p) in line.iter().enumerate() {
+        if i > 0 { acc += line[i - 1].dist(p); }
+        walk.push((*p, acc));
+    }
+    let (left, right) = edges(&walk, width);
+    // each corner: where it is along the walkline, the way in and out, and its inside point
+    let corners: Vec<(f64, Point, Point, Point)> = (1..line.len().saturating_sub(1)).map(|i| {
+        let (a, b) = (unit(sub(line[i], line[i - 1])), unit(sub(line[i + 1], line[i])));
+        let inside = if cross(a, b) > 0.0 { left[i].0 } else { right[i].0 };
+        (walk[i].1, a, b, inside)
+    }).collect();
+    let across = |s: f64| -> (Point, Point) {
+        let (o, d) = along(&line, s);
+        let mut u = left_of(d);
+        if let Some((c, a, b, inside)) = corners.iter().copied().min_by(|x, y| (x.0 - s).abs().total_cmp(&(y.0 - s).abs())) {
+            match style {
+                WinderStyle::Balanced if (s - c).abs() < width => {
+                    // turn from square to the way in to square to the way out, evenly through the corner
+                    let f = ((s - (c - width)) / (2.0 * width)).clamp(0.0, 1.0);
+                    let (ua, ub) = (left_of(a), left_of(b));
+                    let (ta, mut tb) = (ua.y.atan2(ua.x), ub.y.atan2(ub.x));
+                    while tb - ta > std::f64::consts::PI { tb -= std::f64::consts::TAU; }
+                    while ta - tb > std::f64::consts::PI { tb += std::f64::consts::TAU; }
+                    let t = ta + (tb - ta) * f;
+                    u = Point::new(t.cos(), t.sin());
+                }
+                WinderStyle::SinglePoint if (s - c).abs() < width / 2.0 => {
+                    // through the corner's inside point
+                    let to = unit(sub(inside, o));
+                    u = if cross(a, b) > 0.0 { to } else { mul(to, -1.0) };
+                }
+                _ => {}
+            }
+        }
+        (o, u)
+    };
+    build(walk, &across, left, right, steps, width)
+}

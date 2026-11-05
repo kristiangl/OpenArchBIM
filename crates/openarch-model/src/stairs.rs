@@ -252,11 +252,16 @@ impl RunJustification {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RunShape {
     #[default]
     Straight,
+    /// Round `centre` from the run's start (its radius and where it begins), anticlockwise unless `clockwise`. A
+    /// full-step spiral and a centre-ends spiral are both this; they differ only in how they are drawn.
+    Spiral { centre: Point, #[serde(default)] clockwise: bool },
+    /// From the run's start through each corner and on towards its end, with winders round the corners.
+    Winder { corners: Vec<Point>, #[serde(default)] style: crate::runpath::WinderStyle },
 }
 
 /// A run: risers and treads along a location line from `start` towards `end`. Its riser count is its own; its
@@ -329,6 +334,20 @@ fn sub(a: Point, b: Point) -> Point { Point::new(a.x - b.x, a.y - b.y) }
 fn mul(a: Point, k: f64) -> Point { Point::new(a.x * k, a.y * k) }
 fn dot(a: Point, b: Point) -> f64 { a.x * b.x + a.y * b.y }
 fn cross(a: Point, b: Point) -> f64 { a.x * b.y - a.y * b.x }
+fn add_p(a: Point, b: Point) -> Point { add(a, b) }
+
+/// A plan polygon as convex pieces: itself when it is convex, else triangles.
+fn convex_parts(poly: &[Point]) -> Vec<Vec<Point>> {
+    let n = poly.len();
+    if n < 3 { return vec![]; }
+    let turns: Vec<f64> = (0..n).map(|i| cross(sub(poly[(i + 1) % n], poly[i]), sub(poly[(i + 2) % n], poly[(i + 1) % n]))).collect();
+    if turns.iter().all(|t| *t >= -1e-6) || turns.iter().all(|t| *t <= 1e-6) { return vec![poly.to_vec()]; }
+    let region = crate::geom::Region { outer: poly.to_vec(), holes: vec![] };
+    match crate::geom::triangulate_region(&region) {
+        Some((pts, tris)) => tris.iter().map(|t| vec![pts[t[0]], pts[t[1]], pts[t[2]]]).collect(),
+        None => vec![poly.to_vec()],
+    }
+}
 
 /// The convex hull of plan points, counter-clockwise.
 pub fn hull(mut pts: Vec<Point>) -> Vec<Point> {
@@ -374,6 +393,9 @@ pub struct RunLayout {
     pub risers: Vec<(f64, f64)>,
     /// Each tread: from and to along the run, and its top.
     pub treads: Vec<(f64, f64, f64)>,
+    /// A spiral's or winder's layout along its walkline (None for a straight run, which `at` describes).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path: Option<crate::runpath::RunPath>,
 }
 
 impl RunLayout {
@@ -384,6 +406,12 @@ impl RunLayout {
 
     /// The run's footprint, counter-clockwise.
     pub fn footprint(&self) -> Vec<Point> {
+        if let Some(p) = &self.path {
+            let mut out: Vec<Point> = p.right.iter().map(|x| x.0).collect();
+            out.extend(p.left.iter().rev().map(|x| x.0));
+            if crate::geom::signed_area(&out) < 0.0 { out.reverse(); }
+            return out;
+        }
         let w = self.width / 2.0;
         vec![self.at(0.0, -w), self.at(self.length, -w), self.at(self.length, w), self.at(0.0, w)]
     }
@@ -447,6 +475,8 @@ pub fn risers_for_length(length: f64, tread: f64, begins: bool, ends: bool) -> u
 /// where their sides meet, and as deep as the run is wide when the second run turns back. None when the runs simply
 /// continue one into the other.
 pub fn landing_between(a: &RunLayout, b: &RunLayout) -> Option<Vec<Point>> {
+    // spirals and winders turn without landings; one that meets another run joins it directly
+    if a.path.is_some() || b.path.is_some() { return None; }
     let (wa, wb) = (a.width / 2.0, b.width / 2.0);
     let e1 = [a.at(a.length, -wa), a.at(a.length, wa)];
     let s2 = [b.at(0.0, -wb), b.at(0.0, wb)];
@@ -555,7 +585,18 @@ impl Document {
                 (s0, s0 + tr, z + up as f64 * r)
             }).collect();
             let z1 = z + run.risers as f64 * r;
-            runs.push(RunLayout { index: i, origin, dir, left, width: run.width_mm, length: nt as f64 * tr, z0: z, z1, risers, treads });
+            let steps = crate::runpath::Steps { length: nt as f64 * tr, risers: risers.iter().map(|x| x.0).collect(), treads: treads.clone() };
+            let path = match &run.shape {
+                RunShape::Straight => None,
+                RunShape::Spiral { centre, clockwise } => Some(crate::runpath::spiral(*centre, run.start, *clockwise, run.width_mm, &steps)),
+                RunShape::Winder { corners, style } => {
+                    let mut pts = vec![run.start];
+                    pts.extend(corners.iter().copied());
+                    pts.push(run.end);
+                    Some(crate::runpath::winder(&pts, *style, run.width_mm, &steps))
+                }
+            };
+            runs.push(RunLayout { index: i, origin, dir, left, width: run.width_mm, length: nt as f64 * tr, z0: z, z1, risers, treads, path });
             z = z1;
         }
         let mut landings = vec![];
@@ -725,6 +766,10 @@ impl Document {
             let w = run.width / 2.0;
             let on_landing = l.landings.iter().any(|x| x.after_run + 1 == run.index);
             let floor = run.z0 - if on_landing { t.landing.thickness_mm } else { 0.0 };
+            if let Some(path) = &run.path {
+                self.path_pieces(run, path, &l, t, floor, &mut out);
+                continue;
+            }
             if rc.monolithic {
                 // one column under each tread, down to the soffit: a plane square to the pitch, the structural depth
                 // under the nosing line
@@ -759,6 +804,7 @@ impl Document {
         let pitch = if l.tread_mm > 0.0 { l.riser_mm / l.tread_mm } else { 0.0 };
         let slope = (1.0 + pitch * pitch).sqrt();
         for run in &l.runs {
+            if run.path.is_some() { continue; }
             let w = run.width / 2.0;
             let on_landing = l.landings.iter().any(|x| x.after_run + 1 == run.index);
             let floor = run.z0 - if on_landing { t.landing.thickness_mm } else { 0.0 };
@@ -811,6 +857,40 @@ impl Document {
         out
     }
 
+    /// A spiral's or winder's parts: a column under each tread (monolithic) stepping down a riser and the structural
+    /// depth, or each tread and riser.
+    fn path_pieces(&self, run: &RunLayout, path: &crate::runpath::RunPath, l: &StairLayout, t: &StairType, floor: f64, out: &mut Vec<StairPiece>) {
+        let rc = &t.run;
+        let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
+        let pitch = if l.tread_mm > 0.0 { l.riser_mm / l.tread_mm } else { 0.0 };
+        let drop = rc.structural_depth_mm * (1.0 + pitch * pitch).sqrt();
+        let mut add = |part: StairPart, m: Option<String>, poly: &[Point], z0: f64, z1: f64| {
+            if z1 - z0 < 1e-3 { return; }
+            for p in convex_parts(poly) {
+                out.push(StairPiece { part, material: m.clone(), solid: Convex::prism(&p, z0, z1) });
+            }
+        };
+        for (poly, top) in &path.treads {
+            if rc.monolithic {
+                add(StairPart::Run(run.index), mat(&rc.material), poly, (top - l.riser_mm - drop).max(floor), *top);
+            } else if rc.treads {
+                add(StairPart::Tread(run.index), mat(&rc.tread_material), poly, top - rc.tread_thickness_mm, *top);
+            }
+        }
+        if !rc.monolithic && rc.risers {
+            for (k, [a, b]) in path.riser_lines.iter().enumerate() {
+                let (_, top) = run.risers[k];
+                let below = if k == 0 { run.z0 } else { run.risers[k - 1].1 };
+                let hi = top - if rc.treads && run.risers[k].0 < run.length - 1e-6 { rc.tread_thickness_mm } else { 0.0 };
+                // up the run is square to the riser line, to its right-hand side
+                let lv = sub(*a, *b);
+                let n = (lv.x * lv.x + lv.y * lv.y).sqrt().max(1e-9);
+                let d = Point::new(lv.y / n * rc.riser_thickness_mm, -lv.x / n * rc.riser_thickness_mm);
+                add(StairPart::Riser(run.index), mat(&rc.riser_material), &[*a, *b, add_p(*b, d), add_p(*a, d)], below, hi);
+            }
+        }
+    }
+
     /// Change one run (its location line, width, risers, Begins and Ends with Riser), one undo step.
     pub fn patch_stair_run(&mut self, id: Id, run: usize, patch: &serde_json::Value) -> Result<(), String> {
         self.refuse_pinned(&[id], "edited")?;
@@ -836,9 +916,16 @@ impl Document {
             let t = self.ceiling_thickness(c);
             overhead.push((c.regions(0.5), t, self.ceiling_slab(c)));
         }
-        for (s, z) in &run.risers {
-            for t in [-w, 0.0, w] {
-                let p = run.at(*s, t);
+        let probes: Vec<(Point, f64)> = match &run.path {
+            Some(path) => path.riser_lines.iter().zip(&run.risers).flat_map(|([a, b], (_, z))| {
+                let m = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+                [(Point::new(a.x + (m.x - a.x) * 0.1, a.y + (m.y - a.y) * 0.1), *z), (m, *z), (Point::new(b.x + (m.x - b.x) * 0.1, b.y + (m.y - b.y) * 0.1), *z)]
+            }).collect(),
+            None => run.risers.iter().flat_map(|(s, z)| [-w, 0.0, w].map(|t| (run.at(*s, t), *z))).collect(),
+        };
+        for (p, z) in &probes {
+            {
+                let p = *p;
                 for (regions, thick, slab) in &overhead {
                     if !regions.iter().any(|r| crate::rooms::contains(r, p)) { continue; }
                     let Some(surf) = self.floor_surface(slab) else { continue };
@@ -1231,6 +1318,61 @@ mod tests {
         assert_eq!(half.faces.len(), 6);
         assert_eq!(c.section(&|p| p[2], 500.0).len(), 4 * 2, "each crossing edge is met from both faces");
         assert!(c.clip(&|p| p[0], 2000.0, true).is_none());
+    }
+
+    #[test]
+    fn a_spiral_turns_its_risers_round_the_centre_at_the_tread_depth_on_the_walkline() {
+        let (mut d, l1, l2) = doc();
+        let ty = d.stair_types()[0].0;
+        let mut s = d.new_stair(ty, l1, Some(l2)).unwrap();
+        let n = s.desired_risers;
+        s.runs = vec![StairRun { shape: RunShape::Spiral { centre: Point::new(0.0, 0.0), clockwise: false }, start: Point::new(1500.0, 0.0), end: Point::new(1500.0, 1.0), justification: RunJustification::Center, width_mm: 1000.0, risers: n, begins_with_riser: true, ends_with_riser: true }];
+        let id = d.add_stair(s).unwrap();
+        let st = d.stair(id).unwrap().clone();
+        let l = d.stair_layout(&st).unwrap();
+        let p = l.runs[0].path.as_ref().unwrap();
+        assert_eq!(p.riser_lines.len() as u32, n);
+        assert_eq!(p.treads.len() as u32, n - 1);
+        // the first riser along +x from radius 1000 to 2000, the last (n - 1) treads of 250 round at radius 1500
+        let [a, b] = p.riser_lines[0];
+        assert!(a.dist(&Point::new(1000.0, 0.0)) < 1e-6 && b.dist(&Point::new(2000.0, 0.0)) < 1e-6, "{a:?} {b:?}");
+        let [a, _] = p.riser_lines[(n - 1) as usize];
+        let angle = a.y.atan2(a.x).rem_euclid(std::f64::consts::TAU);
+        assert!((angle - ((n - 1) as f64 * 250.0 / 1500.0).rem_euclid(std::f64::consts::TAU)).abs() < 1e-6);
+        assert!(l.landings.is_empty());
+        let pieces = d.stair_pieces(&st);
+        assert!(pieces.len() as u32 >= n - 1 && pieces.iter().all(|x| x.solid.volume() > 0.0));
+        // a railing follows its outer edge round and up
+        let line = crate::railing::stair_side(&l, crate::railing::RailingSide::Right);
+        assert!(line.pts.iter().all(|(q, _)| (q.dist(&Point::new(0.0, 0.0)) - 2000.0).abs() < 1.0));
+        assert!((line.pts.last().unwrap().1 - l.reached_z()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_winder_turns_its_corner_without_its_risers_crossing() {
+        let (mut d, l1, l2) = doc();
+        let ty = d.stair_types()[0].0;
+        let mut s = d.new_stair(ty, l1, Some(l2)).unwrap();
+        let n = s.desired_risers;
+        for style in [crate::runpath::WinderStyle::Balanced, crate::runpath::WinderStyle::SinglePoint] {
+            s.runs = vec![StairRun { shape: RunShape::Winder { corners: vec![Point::new(0.0, 2000.0)], style }, start: Point::new(0.0, 0.0), end: Point::new(2000.0, 2000.0), justification: RunJustification::Center, width_mm: 1000.0, risers: n, begins_with_riser: true, ends_with_riser: true }];
+            let l = d.stair_layout(&s).unwrap();
+            let p = l.runs[0].path.as_ref().unwrap();
+            // consecutive riser lines do not cross inside the run
+            for w in p.riser_lines.windows(2) {
+                let ([a, b], [c, e]) = (w[0], w[1]);
+                let side = |p: Point, q: Point, r: Point| cross(sub(q, p), sub(r, p));
+                let crosses = side(a, b, c) * side(a, b, e) < -1e-6 && side(c, e, a) * side(c, e, b) < -1e-6;
+                assert!(!crosses, "{style:?}: {w:?}");
+            }
+            assert!(p.treads.iter().all(|(t, _)| crate::geom::signed_area(t) > 1000.0), "{style:?}");
+            // the last riser is on the way out, square to it
+            let [a, b] = *p.riser_lines.last().unwrap();
+            assert!((a.x - b.x).abs() < 1e-6 && a.x > 0.0, "{a:?} {b:?}");
+        }
+        let id = d.add_stair(s).unwrap();
+        let st = d.stair(id).unwrap().clone();
+        assert!(d.stair_pieces(&st).iter().all(|x| x.solid.volume() > 0.0));
     }
 
     #[test]
