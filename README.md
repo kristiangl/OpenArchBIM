@@ -29,6 +29,7 @@ A free, open-source building information modelling (BIM) application for archite
 - Text notes edited in place with their font, size, colour and alignment
 - Copy, Cut and Paste (at a picked point, aligned to selected levels, selected views, the current view or the same place) and Match Type
 - Hide in View, Temporary Hide/Isolate, Reveal Hidden Elements and Override Graphics in View by element
+- Stairs by component: straight runs with automatic landings, riser and tread rules, plans with the cut mark and UP/DN walkline, 3D, sections and IFC
 - Undo and redo, and a single-file project format (`.oab`) with loadable family files (`.oaf`)
 
 ## What is planned

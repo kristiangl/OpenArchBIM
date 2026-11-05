@@ -263,7 +263,7 @@ fn yes_stroke() -> bool {
 }
 
 /// Convex hull of 2D points (monotone chain), counter-clockwise.
-fn convex_hull_2d(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
+pub(crate) fn convex_hull_2d(mut pts: Vec<[f64; 2]>) -> Vec<[f64; 2]> {
     pts.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap_or(std::cmp::Ordering::Equal).then(a[1].partial_cmp(&b[1]).unwrap_or(std::cmp::Ordering::Equal)));
     pts.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-9 && (a[1] - b[1]).abs() < 1e-9);
     if pts.len() < 3 {
@@ -508,6 +508,7 @@ impl Document {
                 Element::Section(s) => s.level == level,
                 Element::Room(r) => r.level==level || r.upper_level==Some(level),
                 Element::RoomSeparation(s) => s.level==level,
+                Element::Stair(s) => s.base_level == level || s.top_level == Some(level),
                 _ => false,
             };
             if uses {
@@ -1731,6 +1732,19 @@ impl Document {
                     None => vec![rect(u0, u1, top - thick, top)],
                 };
                 items.push(ElevItem { id, category: "Floors", depth: dmin - 0.5, polys, lines: vec![], fill: [170, 172, 176], stroke: true , ..Default::default() });
+            }
+        }
+        // stairs: each tread, riser, flight and landing as seen
+        for (id, s) in self.stairs() {
+            if hidden(id) {
+                continue;
+            }
+            for mut it in self.stair_view_items(id, s, &u_of, &d_of, near, far, None) {
+                if let Some(slc) = &sl {
+                    it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
+                    if it.polys.is_empty() { continue; }
+                }
+                items.push(it);
             }
         }
         // ceilings seen edge on, as floors are (a basic ceiling, with no thickness, as a thin band)

@@ -148,6 +148,7 @@ impl Session {
         match d.get(id)? {
             Element::Room(_) => Some("Rooms".into()),
             Element::Ceiling(_) => Some("Ceilings".into()),
+            Element::Stair(_) => Some("Stairs".into()),
             Element::Area(a) => crate::areas::area_category(d, a),
             Element::Revision(_) => Some("Revisions".into()),
             Element::RevisionCloud(_) => Some("Revision Clouds".into()),

@@ -40,6 +40,8 @@ const GROUP_MEMBERS: u64 = 15;
 const CURTAIN_PART: u64 = 16;
 const CURTAIN_PARTS: u64 = 17;
 const SPACES: u64 = 18;
+const STAIR_PART: u64 = 19;
+const STAIR_PARTS: u64 = 20;
 
 /// A STEP string: quotes doubled, backslashes escaped, anything outside printable ASCII as \X2\ or \X4\.
 fn s(text: &str) -> String {
@@ -677,6 +679,85 @@ impl Document {
             products.insert(id, ent);
         }
 
+        // stairs: an IfcStair in its storey aggregating a flight (IfcStairFlight) per run and a landing (IfcSlab
+        // LANDING) per landing, each with the pieces it is made of
+        for (id, st) in self.stairs() {
+            use crate::stairs::StairPart;
+            if skip(&st.ifc) {
+                continue;
+            }
+            let Some(lay) = self.stair_layout(st) else { continue };
+            let lv = storey_of(st.base_level);
+            let (_, storey_at, sz) = storeys[&lv];
+            let st_type = self.stair_type(st.stair_type);
+            let tname = st_type.map_or("Stair".to_string(), |t| t.name.clone());
+            let tag = if st.mark.is_empty() { "$".into() } else { s(&st.mark) };
+            // the stair's shape from the turns between its runs
+            let turns: Vec<f64> = lay.runs.windows(2).map(|r| (r[0].dir.x * r[1].dir.y - r[0].dir.y * r[1].dir.x).atan2(r[0].dir.x * r[1].dir.x + r[0].dir.y * r[1].dir.y).to_degrees().abs()).collect();
+            let near = |a: f64, b: f64| (a - b).abs() < 10.0;
+            let predefined = match turns.as_slice() {
+                [] => "STRAIGHT_RUN_STAIR",
+                [t] if near(*t, 0.0) => "TWO_STRAIGHT_RUN_STAIR",
+                [t] if near(*t, 90.0) => "QUARTER_TURN_STAIR",
+                [t] if near(*t, 180.0) => "HALF_TURN_STAIR",
+                [a, b] if near(*a, 90.0) && near(*b, 90.0) => "TWO_QUARTER_TURN_STAIR",
+                [a, b, c] if near(*a, 90.0) && near(*b, 90.0) && near(*c, 90.0) => "THREE_QUARTER_TURN_STAIR",
+                _ => "NOTDEFINED",
+            };
+            let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+            let stair = w.add(format!("IFCSTAIR({},$,{},$,{},#{at},$,{tag},.{predefined}.)", own_guid(id, &st.ifc), s(&tname), s(&tname)));
+            contained.entry(lv).or_default().push(stair);
+            products.insert(id, stair);
+            let count = |w: &mut Step, name: &str, n: usize| w.add(format!("IFCPROPERTYSINGLEVALUE({},$,IFCCOUNTMEASURE({}),$)", s(name), real(n as f64)));
+            let length = |w: &mut Step, name: &str, v: f64| w.add(format!("IFCPROPERTYSINGLEVALUE({},$,IFCPOSITIVELENGTHMEASURE({}),$)", s(name), real(v)));
+            let treads: usize = lay.runs.iter().map(|r| r.treads.len()).sum();
+            let props = [count(&mut w, "NumberOfRiser", lay.actual_risers as usize), count(&mut w, "NumberOfTreads", treads), length(&mut w, "RiserHeight", lay.riser_mm), length(&mut w, "TreadLength", lay.tread_mm)];
+            let ext = w.boolean("IsExternal", st_type.is_some_and(|t| t.function == crate::stairs::StairFunction::Exterior));
+            w.pset(stair, id, "Pset_StairCommon", &[props[0], props[1], props[2], props[3], ext]);
+            let pieces = self.stair_pieces(st);
+            let mut parts = vec![];
+            for run in &lay.runs {
+                let mut verts = vec![];
+                let mut mat = None;
+                for p in pieces.iter().filter(|p| matches!(p.part, StairPart::Run(i) | StairPart::Tread(i) | StairPart::Riser(i) if i == run.index)) {
+                    p.solid.mesh(&mut verts);
+                    mat = mat.or(p.material.clone());
+                }
+                let Some(set) = w.faceset(&verts, -sz) else { continue };
+                let shape = w.tessellated(&[set]);
+                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let key = id * 1000 + run.index as u64;
+                let (nr, nt) = (run.risers.len(), run.treads.len());
+                let f = w.add(format!("IFCSTAIRFLIGHT({},$,{},$,$,#{pat},#{shape},$,{nr},{nt},{},{},.STRAIGHT.)", s(&derived(STAIR_PART, key)), s(&format!("Run {}", run.index + 1)), real(lay.riser_mm), real(lay.tread_mm)));
+                let fp = [count(&mut w, "NumberOfRiser", nr), count(&mut w, "NumberOfTreads", nt), length(&mut w, "RiserHeight", lay.riser_mm), length(&mut w, "TreadLength", lay.tread_mm)];
+                w.pset(f, (1 << 48) | key, "Pset_StairFlightCommon", &fp);
+                if let Some(m) = mat {
+                    part_materials.entry(m).or_default().push(f);
+                }
+                parts.push(f);
+            }
+            for g in &lay.landings {
+                let mut verts = vec![];
+                let mut mat = None;
+                for p in pieces.iter().filter(|p| p.part == StairPart::Landing(g.index)) {
+                    p.solid.mesh(&mut verts);
+                    mat = mat.or(p.material.clone());
+                }
+                let Some(set) = w.faceset(&verts, -sz) else { continue };
+                let shape = w.tessellated(&[set]);
+                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let key = id * 1000 + 500 + g.index as u64;
+                let l = w.add(format!("IFCSLAB({},$,{},$,$,#{pat},#{shape},$,.LANDING.)", s(&derived(STAIR_PART, key)), s(&format!("Landing {}", g.index + 1))));
+                if let Some(m) = mat {
+                    part_materials.entry(m).or_default().push(l);
+                }
+                parts.push(l);
+            }
+            if !parts.is_empty() {
+                w.add(format!("IFCRELAGGREGATES({},$,$,$,#{stair},({}))", s(&derived(STAIR_PARTS, id)), refs(&parts)));
+            }
+        }
+
         for (id, (ent, parts)) in &curtains {
             if !parts.is_empty() {
                 w.add(format!("IFCRELAGGREGATES({},$,$,$,#{ent},({}))", s(&derived(CURTAIN_PARTS, *id)), refs(parts)));
@@ -814,7 +895,7 @@ mod tests {
             ("IFCRELFILLSELEMENT", 6), ("IFCMATERIAL", 3), ("IFCSTYLEDREPRESENTATION", 4), ("IFCMATERIALDEFINITIONREPRESENTATION", 4),
             ("IFCMATERIALLAYER", 7), ("IFCMATERIALLAYERSET", 3), ("IFCMATERIALLAYERSETUSAGE", 5), ("IFCRELASSOCIATESMATERIAL", 6),
             ("IFCGROUP", 5), ("IFCRELASSIGNSTOGROUP", 7), ("IFCRELCONTAINEDINSPATIALSTRUCTURE", 6),
-            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9),
+            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9), ("IFCSTAIR", 9), ("IFCSTAIRFLIGHT", 13),
         ]
         .into_iter()
         .collect();

@@ -28,6 +28,7 @@ mod ceilings;
 mod areas;
 mod clipboard;
 mod hide;
+mod stairs;
 mod colorfill;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
@@ -230,6 +231,9 @@ impl Session {
 
     fn handle_inner(&mut self, method: &str, p: &Value) -> Res {
         if let Some(r) = self.handle_hide(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_stairs(method, p) {
             return r;
         }
         if let Some(r) = self.handle_tags(method, p) {
@@ -2393,6 +2397,7 @@ impl Session {
             "floor_types": d.floor_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "area_schemes": d.area_schemes().iter().map(|(id, s)| json!({ "id": id, "name": s.name, "description": s.description, "rules": s.rules, "built_in": s.built_in, "has_areas": d.areas().iter().any(|(_, a)| d.scheme_of_area(a) == Some(*id)) })).collect::<Vec<_>>(),
             "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
+            "stair_types": d.stair_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "width_mm": t.rules.min_run_width_mm, "family": "Stair" })).collect::<Vec<_>>(),
             "roof_types": d.roof_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "undo": d.undo_name(),
             "redo": d.redo_name(),
@@ -2900,6 +2905,7 @@ impl Session {
         if let Some(o) = out.as_object_mut() {
             if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
             if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
+            if let Some(c) = stairs::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(a) = areas::drawing(d, vid).as_object() { o.extend(a.clone()); }
             if let Some(c) = colorfill::drawing(d, vid).as_object() { o.extend(c.clone()); }
             o.extend(detail_json(d, vid, &settings));
@@ -2946,6 +2952,16 @@ impl Session {
                     }
                     continue;
                 }
+            }
+            // a stair: one mesh per material it is made of
+            if let Element::Stair(s) = e {
+                if shown("Stairs") {
+                    for (mat, verts) in d.stair_meshes(s) {
+                        let color = mat.as_deref().and_then(|m| d.material(m)).map_or([196, 190, 180], |m| m.graphics.shading_color);
+                        meshes.push(json!({ "id": id, "kind": "Stair", "material": mat, "color": color, "verts": verts }));
+                    }
+                }
+                continue;
             }
             if let (Element::Wall(w), Some(wl)) = (e, layered.get(&id)) {
                 // layered walls draw one mesh per layer in the material's shading colour
@@ -3042,6 +3058,7 @@ impl Session {
             Element::RoomTag(t) => Ok(self.room_tag_props(id,t)),
             Element::ElementTag(t) => Ok(self.tag_props(id, t)),
             Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
+            Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Area(a) => Ok(self.area_props(id, a)),
             Element::AreaTag(t) => Ok(self.area_tag_props(id, t)),
             Element::ColorFillLegend(l) => Ok(self.color_legend_props(id, l)),
@@ -3089,6 +3106,13 @@ impl Session {
                 v
             }
             Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) => props::sys_type_props(d, id)?,
+            Element::StairType(t) => {
+                let mut v = stairs::stair_type_props(d, id, t);
+                v["family"] = json!("Stair");
+                v["patch"] = json!("patch_stair_type");
+                v["duplicate"] = json!("duplicate_stair_type");
+                v
+            }
             Element::GridType(t) => {
                 let mut v = props::grid_type_props(d, id, t);
                 v["family"] = json!("Grid");

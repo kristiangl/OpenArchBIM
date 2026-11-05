@@ -56,6 +56,7 @@ const COMMANDS = {
   "det-revcloud": () => Revisions.start(),
   "tag-revision": () => Revisions.tag(),
   ceiling: () => Ceilings.start(),
+  stair: () => Stairs.start(),
   area: () => Areas.start("area"),
   "area-plan": () => Areas.newPlan(),
   "area-boundary": () => Areas.start("areaboundary"),
@@ -348,6 +349,7 @@ function currentContext() {
   if (app.view.kind === "plan" && (Plan.tool === "component" || Plan.tool === "hosted")) return componentContext();
   if (app.view.kind === "plan" && (Plan.tool === "room" || Plan.tool === "roomtag")) return Spatial.context();
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
+  if (app.view.kind === "plan" && Plan.tool === "stair") return Stairs.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
   if (app.view.kind === "plan" && Plan.tool === "paste") return Clip.context();
@@ -356,6 +358,8 @@ function currentContext() {
   if (rh) return rh;
   const cf = ColorFill.selectionContext();
   if (cf) return cf;
+  const ss = Stairs.selectionContext();
+  if (ss) return ss;
   const cs = Ceilings.selectionContext();
   if (cs) return cs;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation

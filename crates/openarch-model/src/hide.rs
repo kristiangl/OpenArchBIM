@@ -73,6 +73,7 @@ impl Document {
             Element::Floor(_) => "Floors",
             Element::Roof(_) => "Roofs",
             Element::Ceiling(_) => "Ceilings",
+            Element::Stair(_) => "Stairs",
             Element::FamilyInstance(i) => return self.instance_family(i).map(|(f, _)| f.category.label().to_string()),
             Element::Room(_) => "Rooms",
             Element::RoomSeparation(_) => "Room Separation",

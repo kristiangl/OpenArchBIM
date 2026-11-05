@@ -20,28 +20,28 @@ pub fn nest(path: &str, value: Value) -> Value {
     path.rsplit('.').fold(value, |v, k| json!({ k: v }))
 }
 
-fn ro(label: &str, value: impl Into<String>) -> Value {
+pub(crate) fn ro(label: &str, value: impl Into<String>) -> Value {
     json!({ "label": label, "value": value.into(), "kind": "ro" })
 }
 
 /// A read-only measured value: shown rounded, with the unrounded number for schedules, totals and IFC.
-fn ro_measure(label: &str, value: String, raw: f64) -> Value {
+pub(crate) fn ro_measure(label: &str, value: String, raw: f64) -> Value {
     json!({ "label": label, "value": value, "raw": raw, "kind": "ro" })
 }
 
-fn num(label: &str, path: &str, v: f64, enabled: bool) -> Value {
+pub(crate) fn num(label: &str, path: &str, v: f64, enabled: bool) -> Value {
     json!({ "label": label, "value": format!("{v}"), "raw": v, "kind": if enabled { "number" } else { "ro" }, "path": path })
 }
 
-fn text(label: &str, path: &str, v: &str) -> Value {
+pub(crate) fn text(label: &str, path: &str, v: &str) -> Value {
     json!({ "label": label, "value": v, "kind": "text", "path": path })
 }
 
-fn boolean(label: &str, path: &str, v: bool, enabled: bool) -> Value {
+pub(crate) fn boolean(label: &str, path: &str, v: bool, enabled: bool) -> Value {
     json!({ "label": label, "value": if v { "Yes" } else { "No" }, "raw": v, "kind": if enabled { "bool" } else { "ro" }, "path": path })
 }
 
-fn select(label: &str, opts: Vec<(String, Value, bool)>) -> Value {
+pub(crate) fn select(label: &str, opts: Vec<(String, Value, bool)>) -> Value {
     let shown = opts.iter().find(|(_, _, sel)| *sel).map(|(l, _, _)| l.clone()).unwrap_or_default();
     json!({
         "label": label, "value": shown, "kind": "select",
@@ -66,17 +66,17 @@ fn locked(mut row: Value, is: bool) -> Value {
     row
 }
 
-fn group(name: &str, rows: Vec<Value>) -> Value {
+pub(crate) fn group(name: &str, rows: Vec<Value>) -> Value {
     json!({ "name": name, "rows": rows })
 }
 
 /// Select over an enum serialised as snake_case: `current` and the variants are
 /// given as (json name, label).
-fn enum_select(label: &str, path: &str, current: &str, variants: &[(&str, &str)]) -> Value {
+pub(crate) fn enum_select(label: &str, path: &str, current: &str, variants: &[(&str, &str)]) -> Value {
     select(label, variants.iter().map(|(v, l)| (l.to_string(), nest(path, json!(v)), *v == current)).collect())
 }
 
-fn name_of<T: serde::Serialize>(v: &T) -> String {
+pub(crate) fn name_of<T: serde::Serialize>(v: &T) -> String {
     serde_json::to_value(v).ok().and_then(|v| v.as_str().map(String::from)).unwrap_or_default()
 }
 

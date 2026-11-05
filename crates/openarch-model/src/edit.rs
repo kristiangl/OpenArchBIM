@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -397,6 +397,17 @@ impl Document {
                     c.grid_angle_deg = (c.grid_angle_deg + turn).rem_euclid(360.0);
                     if opt.copy { c.pinned = false; c.mark.clear(); c.ifc.guid = new_ifc_guid(); }
                     Element::Ceiling(c)
+                }
+                // a stair's runs carry the change; a mirror swaps the side each run's location line is on
+                Some(Element::Stair(s)) => {
+                    let mut s = s.clone();
+                    for r in &mut s.runs {
+                        r.start = x.apply(r.start);
+                        r.end = x.apply(r.end);
+                        if mirror { r.justification = r.justification.mirrored(); }
+                    }
+                    if opt.copy { s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid(); }
+                    Element::Stair(s)
                 }
                 // a tag is an offset from its element: moved with its element it keeps the offset (it follows the
                 // element), moved alone its head goes where the transform takes it

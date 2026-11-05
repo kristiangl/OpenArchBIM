@@ -701,6 +701,8 @@ pub enum Element {
     AreaTag(crate::areas::AreaTag),
     ColorFillScheme(crate::colorfill::ColorFillScheme),
     ColorFillLegend(crate::colorfill::ColorFillLegend),
+    StairType(crate::stairs::StairType),
+    Stair(crate::stairs::Stair),
 }
 
 impl Element {
@@ -768,6 +770,8 @@ impl Element {
             Element::AreaTag(_) => "AreaTag",
             Element::ColorFillScheme(_) => "ColorFillScheme",
             Element::ColorFillLegend(_) => "ColorFillLegend",
+            Element::StairType(_) => "StairType",
+            Element::Stair(_) => "Stair",
         }
     }
 }

@@ -413,7 +413,16 @@ impl ObjectStyles {
                     }
                     s.subcategories.insert("Hidden Lines".into(), hidden());
                 }
-                "Roofs" | "Ceilings" | "Stairs" | "Columns" | "Casework" | "Furniture" => {
+                "Stairs" => {
+                    s.subcategories.insert("Hidden Lines".into(), hidden());
+                    for n in ["Outlines", "Riser Lines", "Cut Marks"] {
+                        s.subcategories.insert(n.into(), sub(1, None, SOLID));
+                    }
+                    for n in ["<Above> Outlines", "<Above> Riser Lines"] {
+                        s.subcategories.insert(n.into(), sub(1, None, "Hidden"));
+                    }
+                }
+                "Roofs" | "Ceilings" | "Columns" | "Casework" | "Furniture" => {
                     s.subcategories.insert("Hidden Lines".into(), hidden());
                 }
                 _ => {}

@@ -199,6 +199,9 @@ impl Document {
             for t in crate::ceiling::starter_ceiling_types() {
                 tx.add(Element::CeilingType(t));
             }
+            for t in crate::stairs::starter_stair_types() {
+                tx.add(Element::StairType(t));
+            }
             let levels: Vec<(Id, String)> = tx
                 .doc
                 .elements
@@ -664,6 +667,7 @@ impl Document {
             Some(Element::Wall(w)) => w.pinned,
             Some(Element::Floor(f)) => f.pinned,
             Some(Element::Ceiling(c)) => c.pinned,
+            Some(Element::Stair(s)) => s.pinned,
             Some(Element::Area(a)) => a.pinned,
             Some(Element::AreaTag(t)) => t.pinned,
             Some(Element::AreaBoundary(b)) => b.pinned,
@@ -695,7 +699,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Stair(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -706,6 +710,7 @@ impl Document {
                 Element::RevisionTag(r)=>r.pinned=pinned,
                 Element::ElementTag(t)=>t.pinned=pinned,
                 Element::Ceiling(c)=>c.pinned=pinned,
+                Element::Stair(s) => s.pinned = pinned,
                 Element::Area(a)=>a.pinned=pinned,
                 Element::AreaTag(t)=>t.pinned=pinned,
                 Element::AreaBoundary(b)=>b.pinned=pinned,
@@ -742,7 +747,7 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
