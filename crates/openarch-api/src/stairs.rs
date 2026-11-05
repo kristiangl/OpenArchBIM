@@ -37,7 +37,7 @@ fn draft_of(d: &Document, p: &Value) -> Result<Stair, String> {
     Ok(s)
 }
 
-fn pt(p: Point) -> [f64; 2] { [p.x, p.y] }
+pub(crate) fn pt(p: Point) -> [f64; 2] { [p.x, p.y] }
 
 /// The run the cursor is drawing: from `start` towards `end`, as many risers as its length holds, no more than remain.
 fn pending_run(s: &Stair, p: &Value) -> Result<Option<StairRun>, String> {
@@ -56,7 +56,7 @@ fn pending_run(s: &Stair, p: &Value) -> Result<Option<StairRun>, String> {
 }
 
 /// Plan lines of a laid out stair for the tool's preview: footprints and risers.
-fn preview_lines(l: &StairLayout) -> Vec<[[f64; 2]; 2]> {
+pub(crate) fn preview_lines(l: &StairLayout) -> Vec<[[f64; 2]; 2]> {
     let mut out = vec![];
     for r in &l.runs {
         let f = r.footprint();
@@ -220,7 +220,7 @@ pub(crate) fn stair_type_props(d: &Document, id: Id, t: &StairType) -> Value {
 // ---- plan drawing
 
 /// Split a segment by the cut line: the part below it (towards the start of the stair) and the part above.
-fn split(a: Point, b: Point, side: &dyn Fn(Point) -> f64) -> (Option<[Point; 2]>, Option<[Point; 2]>) {
+pub(crate) fn split(a: Point, b: Point, side: &dyn Fn(Point) -> f64) -> (Option<[Point; 2]>, Option<[Point; 2]>) {
     let (fa, fb) = (side(a), side(b));
     if fa <= 0.0 && fb <= 0.0 { return (Some([a, b]), None); }
     if fa >= 0.0 && fb >= 0.0 { return (None, Some([a, b])); }
@@ -230,7 +230,7 @@ fn split(a: Point, b: Point, side: &dyn Fn(Point) -> f64) -> (Option<[Point; 2]>
 }
 
 /// The walkline through the runs' centres, turning at the landings, each point with the height of the walk there.
-fn walkline(l: &StairLayout) -> Vec<(Point, f64)> {
+pub(crate) fn walkline(l: &StairLayout) -> Vec<(Point, f64)> {
     let mut pts: Vec<(Point, f64)> = vec![];
     for (i, r) in l.runs.iter().enumerate() {
         let s0 = r.risers.first().map_or(0.0, |x| x.0);
@@ -259,7 +259,7 @@ fn walkline(l: &StairLayout) -> Vec<(Point, f64)> {
 }
 
 /// The cut mark across `r` at `s`: its lines in plan, drawn at `scale` (paper sizes are 1:1 mm on the sheet).
-fn cut_mark(r: &RunLayout, s: f64, angle_deg: f64, style: CutMarkStyle, scale: f64) -> (Vec<Vec<[f64; 2]>>, Point, Point) {
+pub(crate) fn cut_mark(r: &RunLayout, s: f64, angle_deg: f64, style: CutMarkStyle, scale: f64) -> (Vec<Vec<[f64; 2]>>, Point, Point) {
     let a = angle_deg.to_radians();
     // along the cut line, and square to it pointing up the run
     let along = Point::new(r.left.x * a.cos() + r.dir.x * a.sin(), r.left.y * a.cos() + r.dir.y * a.sin());

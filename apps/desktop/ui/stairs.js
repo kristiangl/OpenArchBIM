@@ -171,7 +171,8 @@ const Stairs = (() => {
   }
 
   // pen: { lw(style), colour(style, hex), dash(style) } from the plan's own drawing
-  function draw(ctx, data, toScreen, k, sel, pen) {
+  // `list`: other items drawn as stairs are (a plan's ramps); without it, the plan's stairs and the stair being drawn
+  function draw(ctx, data, toScreen, k, sel, pen, list = null) {
     const seg = (a, b) => { const p = toScreen({ x: a[0], y: a[1] }), q = toScreen({ x: b[0], y: b[1] }); ctx.moveTo(p.x, p.y); ctx.lineTo(q.x, q.y); };
     const stroke = (st, selected, dashed) => {
       ctx.strokeStyle = selected ? "#2e6f9e" : pen.colour(st, st.line.color);
@@ -181,7 +182,7 @@ const Stairs = (() => {
     };
     ctx.save();
     ctx.lineCap = "butt";
-    for (const s of data?.stairs || []) {
+    for (const s of list || data?.stairs || []) {
       if (s.id === draft?.id) continue;
       const on = sel.has(s.id);
       for (const above of [false, true]) {
@@ -215,7 +216,7 @@ const Stairs = (() => {
       }
     }
     // the stair being drawn
-    if (draft && preview && preview.lines) {
+    if (!list && draft && preview && preview.lines) {
       ctx.beginPath();
       for (const [a, b] of preview.lines) seg(a, b);
       ctx.strokeStyle = "#d4572f"; ctx.lineWidth = 1.5; ctx.setLineDash([]); ctx.stroke();

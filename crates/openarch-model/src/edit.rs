@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -408,6 +408,16 @@ impl Document {
                     }
                     if opt.copy { s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid(); }
                     Element::Stair(s)
+                }
+                Some(Element::Ramp(r)) => {
+                    let mut r = r.clone();
+                    for run in &mut r.runs {
+                        run.start = x.apply(run.start);
+                        run.end = x.apply(run.end);
+                        if mirror { run.justification = run.justification.mirrored(); }
+                    }
+                    if opt.copy { r.pinned = false; r.mark.clear(); r.ifc.guid = new_ifc_guid(); }
+                    Element::Ramp(r)
                 }
                 Some(Element::Railing(r)) => {
                     let mut r = r.clone();

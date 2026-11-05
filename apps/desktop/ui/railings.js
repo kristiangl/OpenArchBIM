@@ -48,13 +48,13 @@ const Railings = (() => {
     Plan.setTool("railingstair");
     updateRibbonContext(true);
     renderProperties();
-    setPrompt("Click a stair to put a railing on each side of it. Esc finishes.");
+    setPrompt("Click a stair or a ramp to put a railing on each side of it. Esc finishes.");
   }
   // `ids`: what is under the click, nearest first
   async function placeClick(ids) {
-    const stairs = new Set((Plan.viewData()?.stairs || []).map((s) => s.id));
+    const stairs = new Set([...(Plan.viewData()?.stairs || []), ...(Plan.viewData()?.ramps || [])].map((s) => s.id));
     const id = ids.find((i) => stairs.has(i));
-    if (id == null) { setPrompt("Click a stair.", true); return; }
+    if (id == null) { setPrompt("Click a stair or a ramp.", true); return; }
     const r = await run("add_stair_railings", { stair_id: id, type_id: typeId(), placement });
     if (!r) return;
     await refresh();

@@ -30,6 +30,7 @@ mod clipboard;
 mod hide;
 mod stairs;
 mod railings;
+mod ramps;
 mod colorfill;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
@@ -238,6 +239,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_railings(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_ramps(method, p) {
             return r;
         }
         if let Some(r) = self.handle_tags(method, p) {
@@ -2403,6 +2407,7 @@ impl Session {
             "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
             "stair_types": d.stair_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "width_mm": t.rules.min_run_width_mm, "family": "Stair" })).collect::<Vec<_>>(),
             "railing_types": d.railing_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "family": "Railing" })).collect::<Vec<_>>(),
+            "ramp_types": d.ramp_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "family": "Ramp", "max_slope_ratio": t.max_slope_ratio })).collect::<Vec<_>>(),
             "roof_types": d.roof_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "undo": d.undo_name(),
             "redo": d.redo_name(),
@@ -2912,6 +2917,7 @@ impl Session {
             if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = stairs::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = railings::drawing(d, vid).as_object() { o.extend(c.clone()); }
+            if let Some(c) = ramps::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(a) = areas::drawing(d, vid).as_object() { o.extend(a.clone()); }
             if let Some(c) = colorfill::drawing(d, vid).as_object() { o.extend(c.clone()); }
             o.extend(detail_json(d, vid, &settings));
@@ -2965,6 +2971,15 @@ impl Session {
                     for (mat, verts) in d.stair_meshes(s) {
                         let color = mat.as_deref().and_then(|m| d.material(m)).map_or([196, 190, 180], |m| m.graphics.shading_color);
                         meshes.push(json!({ "id": id, "kind": "Stair", "material": mat, "color": color, "verts": verts }));
+                    }
+                }
+                continue;
+            }
+            if let Element::Ramp(r) = e {
+                if shown("Ramps") {
+                    for (mat, verts) in d.ramp_meshes(r) {
+                        let color = mat.as_deref().and_then(|m| d.material(m)).map_or([196, 190, 180], |m| m.graphics.shading_color);
+                        meshes.push(json!({ "id": id, "kind": "Ramp", "material": mat, "color": color, "verts": verts }));
                     }
                 }
                 continue;
@@ -3075,6 +3090,7 @@ impl Session {
             Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),
+            Element::Ramp(r) => Ok(self.ramp_props(id, r)),
             Element::Area(a) => Ok(self.area_props(id, a)),
             Element::AreaTag(t) => Ok(self.area_tag_props(id, t)),
             Element::ColorFillLegend(l) => Ok(self.color_legend_props(id, l)),
@@ -3122,6 +3138,13 @@ impl Session {
                 v
             }
             Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) => props::sys_type_props(d, id)?,
+            Element::RampType(t) => {
+                let mut v = ramps::ramp_type_props(d, id, t);
+                v["family"] = json!("Ramp");
+                v["patch"] = json!("patch_ramp_type");
+                v["duplicate"] = json!("duplicate_ramp_type");
+                v
+            }
             Element::RailingType(t) => {
                 let mut v = railings::railing_type_props(d, id, t);
                 v["family"] = json!("Railing");

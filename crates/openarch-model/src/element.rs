@@ -705,6 +705,8 @@ pub enum Element {
     Stair(crate::stairs::Stair),
     RailingType(crate::railing::RailingType),
     Railing(crate::railing::Railing),
+    RampType(crate::ramp::RampType),
+    Ramp(crate::ramp::Ramp),
 }
 
 impl Element {
@@ -776,6 +778,8 @@ impl Element {
             Element::Stair(_) => "Stair",
             Element::RailingType(_) => "RailingType",
             Element::Railing(_) => "Railing",
+            Element::RampType(_) => "RampType",
+            Element::Ramp(_) => "Ramp",
         }
     }
 }

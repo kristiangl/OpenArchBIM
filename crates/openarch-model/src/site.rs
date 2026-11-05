@@ -510,6 +510,7 @@ impl Document {
                 Element::RoomSeparation(s) => s.level==level,
                 Element::Stair(s) => s.base_level == level || s.top_level == Some(level),
                 Element::Railing(r) => r.level == level,
+                Element::Ramp(r) => r.base_level == level || r.top_level == Some(level),
                 _ => false,
             };
             if uses {
@@ -1741,6 +1742,19 @@ impl Document {
                 continue;
             }
             for mut it in self.stair_view_items(id, s, &u_of, &d_of, near, far, None) {
+                if let Some(slc) = &sl {
+                    it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
+                    if it.polys.is_empty() { continue; }
+                }
+                items.push(it);
+            }
+        }
+        // ramps: runs and landings as seen
+        for (id, r) in self.ramps() {
+            if hidden(id) {
+                continue;
+            }
+            for mut it in self.ramp_view_items(id, r, &u_of, &d_of, near, far, None) {
                 if let Some(slc) = &sl {
                     it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
                     if it.polys.is_empty() { continue; }

@@ -323,11 +323,13 @@ impl RunLayout {
         vec![self.at(0.0, -w), self.at(self.length, -w), self.at(self.length, w), self.at(0.0, w)]
     }
 
-    /// The height of the nosing line at `s`: through the front edge of every tread above a riser.
+    /// The height of the nosing line at `s`: through the front edge of every tread above a riser. A run with no
+    /// risers (a ramp's) is its sloped surface.
     pub fn nosing_z(&self, s: f64) -> f64 {
         match (self.risers.first(), self.risers.last()) {
             (Some(a), Some(b)) if self.risers.len() > 1 => a.1 + (s - a.0) * (b.1 - a.1) / (b.0 - a.0),
             (Some(a), _) => a.1,
+            _ if self.length > 1e-9 => self.z0 + (self.z1 - self.z0) * s / self.length,
             _ => self.z0,
         }
     }

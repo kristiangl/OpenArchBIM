@@ -815,6 +815,76 @@ impl Document {
                 w.add(format!("IFCRELAGGREGATES({},$,$,$,#{stair},({}))", s(&derived(STAIR_PARTS, id)), refs(&parts)));
             }
         }
+        // ramps: an IfcRamp aggregating a flight (IfcRampFlight) per run, a landing (IfcSlab LANDING) per landing and
+        // its railings
+        for (id, rp) in self.ramps() {
+            use crate::stairs::StairPart;
+            if skip(&rp.ifc) {
+                continue;
+            }
+            let Some(lay) = self.ramp_layout(rp) else { continue };
+            let lv = storey_of(rp.base_level);
+            let (_, storey_at, sz) = storeys[&lv];
+            let rt = self.ramp_type(rp.ramp_type);
+            let tname = rt.map_or("Ramp".to_string(), |t| t.name.clone());
+            let tag = if rp.mark.is_empty() { "$".into() } else { s(&rp.mark) };
+            let turns: Vec<f64> = lay.runs.windows(2).map(|r| (r[0].dir.x * r[1].dir.y - r[0].dir.y * r[1].dir.x).atan2(r[0].dir.x * r[1].dir.x + r[0].dir.y * r[1].dir.y).to_degrees().abs()).collect();
+            let near = |a: f64, b: f64| (a - b).abs() < 10.0;
+            let predefined = match turns.as_slice() {
+                [] => "STRAIGHT_RUN_RAMP",
+                [t] if near(*t, 0.0) => "TWO_STRAIGHT_RUN_RAMP",
+                [t] if near(*t, 90.0) => "QUARTER_TURN_RAMP",
+                [t] if near(*t, 180.0) => "HALF_TURN_RAMP",
+                [a, b] if near(*a, 90.0) && near(*b, 90.0) => "TWO_QUARTER_TURN_RAMP",
+                _ => "NOTDEFINED",
+            };
+            let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+            let ramp = w.add(format!("IFCRAMP({},$,{},$,{},#{at},$,{tag},.{predefined}.)", own_guid(id, &rp.ifc), s(&tname), s(&tname)));
+            contained.entry(lv).or_default().push(ramp);
+            products.insert(id, ramp);
+            let total: f64 = lay.runs.iter().map(|r| r.length).sum();
+            let slope = if total > 0.0 { (lay.height / total).atan() } else { 0.0 };
+            let req = rt.map_or(0.0, |t| (1.0 / t.max_slope_ratio.max(1.0)).atan());
+            let p1 = w.add(format!("IFCPROPERTYSINGLEVALUE('RequiredSlope',$,IFCPLANEANGLEMEASURE({}),$)", real(req)));
+            let p2 = w.boolean("HandicapAccessible", rt.is_some_and(|t| t.max_slope_ratio >= 14.0 - 1e-6));
+            let p3 = w.boolean("IsExternal", rt.is_some_and(|t| t.function == crate::stairs::StairFunction::Exterior));
+            w.pset(ramp, id, "Pset_RampCommon", &[p1, p2, p3]);
+            let pieces = self.ramp_pieces(rp);
+            let mut parts = vec![];
+            for (part, mat, solid) in &pieces {
+                let mut verts = vec![];
+                solid.mesh(&mut verts);
+                let Some(set) = w.faceset(&verts, -sz) else { continue };
+                let shape = w.tessellated(&[set]);
+                let pat = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let ent = match part {
+                    StairPart::Run(i) => {
+                        let key = id * 1000 + *i as u64;
+                        let e = w.add(format!("IFCRAMPFLIGHT({},$,{},$,$,#{pat},#{shape},$,.STRAIGHT.)", s(&derived(STAIR_PART, key)), s(&format!("Run {}", i + 1))));
+                        let width = lay.runs.get(*i).map_or(0.0, |r| r.width);
+                        let fs = w.add(format!("IFCPROPERTYSINGLEVALUE('Slope',$,IFCPLANEANGLEMEASURE({}),$)", real(slope)));
+                        let fw = w.add(format!("IFCPROPERTYSINGLEVALUE('ClearWidth',$,IFCPOSITIVELENGTHMEASURE({}),$)", real(width)));
+                        w.pset(e, (1 << 48) | key, "Pset_RampFlightCommon", &[fs, fw]);
+                        e
+                    }
+                    StairPart::Landing(i) => w.add(format!("IFCSLAB({},$,{},$,$,#{pat},#{shape},$,.LANDING.)", s(&derived(STAIR_PART, id * 1000 + 500 + *i as u64)), s(&format!("Landing {}", i + 1)))),
+                    _ => continue,
+                };
+                if let Some(m) = mat { part_materials.entry(m.clone()).or_default().push(ent); }
+                parts.push(ent);
+            }
+            for rid in self.stair_railings(id) {
+                let Some(r) = self.railing(rid) else { continue };
+                if skip(&r.ifc) { continue; }
+                if let Some(e) = write_railing(&mut w, self, rid, r, storey_at, sz, &mut part_materials) {
+                    products.insert(rid, e);
+                    parts.push(e);
+                }
+            }
+            if !parts.is_empty() {
+                w.add(format!("IFCRELAGGREGATES({},$,$,$,#{ramp},({}))", s(&derived(STAIR_PARTS, id)), refs(&parts)));
+            }
+        }
         // railings on their own, in their storey
         for (id, r) in self.railings() {
             if skip(&r.ifc) || r.host.is_some() {
@@ -965,7 +1035,7 @@ mod tests {
             ("IFCRELFILLSELEMENT", 6), ("IFCMATERIAL", 3), ("IFCSTYLEDREPRESENTATION", 4), ("IFCMATERIALDEFINITIONREPRESENTATION", 4),
             ("IFCMATERIALLAYER", 7), ("IFCMATERIALLAYERSET", 3), ("IFCMATERIALLAYERSETUSAGE", 5), ("IFCRELASSOCIATESMATERIAL", 6),
             ("IFCGROUP", 5), ("IFCRELASSIGNSTOGROUP", 7), ("IFCRELCONTAINEDINSPATIALSTRUCTURE", 6),
-            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9), ("IFCSTAIR", 9), ("IFCSTAIRFLIGHT", 13), ("IFCRAILING", 9),
+            ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9), ("IFCSTAIR", 9), ("IFCSTAIRFLIGHT", 13), ("IFCRAILING", 9), ("IFCRAMP", 9), ("IFCRAMPFLIGHT", 9),
         ]
         .into_iter()
         .collect();

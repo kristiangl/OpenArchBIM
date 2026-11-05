@@ -57,6 +57,7 @@ const COMMANDS = {
   "tag-revision": () => Revisions.tag(),
   ceiling: () => Ceilings.start(),
   stair: () => Stairs.start(),
+  ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),
   "railing-sketch": () => Railings.startSketch(),
   "railing-stair": () => Railings.placeOnStair(),
@@ -354,6 +355,7 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
   if (app.view.kind === "plan" && Plan.tool === "stair") return Stairs.context();
   if (app.view.kind === "plan" && Plan.tool === "railingstair") return Railings.context();
+  if (app.view.kind === "plan" && Plan.tool === "ramp") return Ramps.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
   if (app.view.kind === "plan" && Plan.tool === "paste") return Clip.context();
@@ -366,6 +368,8 @@ function currentContext() {
   if (ss) return ss;
   const rs = Railings.selectionContext();
   if (rs) return rs;
+  const ms = Ramps.selectionContext();
+  if (ms) return ms;
   const cs = Ceilings.selectionContext();
   if (cs) return cs;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation

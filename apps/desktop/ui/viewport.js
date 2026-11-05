@@ -738,7 +738,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     new ResizeObserver(() => (dirty = true)).observe(canvas);
     requestAnimationFrame(frame);
 
-    const TINT = { Wall: 0.0, Floor: 0.3, Roof: 0.15, Ceiling: 0.35, Stair: 0.25, Railing: 0.1, Door: 0.45, Window: 0.0, Glass: -1.0 };
+    const TINT = { Wall: 0.0, Floor: 0.3, Roof: 0.15, Ceiling: 0.35, Stair: 0.25, Railing: 0.1, Ramp: 0.25, Door: 0.45, Window: 0.0, Glass: -1.0 };
     // how see-through a mesh is: its material's transparency (glass half), a selection at least 30%
     const writeTint = (m, selected) => {
       const t = Math.max(m.transparency, selected ? 0.3 : 0);

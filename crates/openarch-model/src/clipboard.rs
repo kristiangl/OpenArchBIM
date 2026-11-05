@@ -61,6 +61,7 @@ impl Clipboard {
                 Element::Ceiling(c) => for l in &c.loops { for k in l { curve(k, &mut out); } },
                 Element::Stair(s) => for r in &s.runs { out.push(vec![r.start, r.end]); },
                 Element::Railing(r) => out.push(r.path.clone()),
+                Element::Ramp(r) => for x in &r.runs { out.push(vec![x.start, x.end]); },
                 Element::Roof(r) => { let crate::roof::RoofShape::Footprint { loops } = &r.shape; for l in loops { for k in l { curve(&k.curve, &mut out); } } }
                 Element::RoomSeparation(s) => curve(&s.curve, &mut out),
                 Element::Grid(g) => for c in &g.curves { curve(c, &mut out); },
@@ -111,7 +112,7 @@ fn point_of(e: &Element) -> Option<Point> {
 /// The model element's level (walls: their base).
 fn level_of(e: &Element) -> Option<Id> {
     match e {
-        Element::Wall(w) => Some(w.base_level), Element::Floor(f) => Some(f.level), Element::Roof(r) => Some(r.level), Element::Ceiling(c) => Some(c.level), Element::Stair(s) => Some(s.base_level), Element::Railing(r) => Some(r.level),
+        Element::Wall(w) => Some(w.base_level), Element::Floor(f) => Some(f.level), Element::Roof(r) => Some(r.level), Element::Ceiling(c) => Some(c.level), Element::Stair(s) => Some(s.base_level), Element::Railing(r) => Some(r.level), Element::Ramp(r) => Some(r.base_level),
         Element::FamilyInstance(i) => Some(i.level), Element::Room(r) => Some(r.level), Element::RoomSeparation(s) => Some(s.level),
         _ => None,
     }
@@ -121,7 +122,7 @@ fn level_of(e: &Element) -> Option<Id> {
 fn rank(e: &Element) -> u8 {
     match e {
         Element::Wall(_) => 0,
-        Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Stair(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_) => 1,
+        Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Stair(_) | Element::Ramp(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_) => 1,
         Element::FamilyInstance(_) | Element::Railing(_) => 2,
         Element::RoomTag(_) | Element::ElementTag(_) | Element::AreaTag(_) | Element::RevisionTag(_) => 4,
         _ => 3,
@@ -143,7 +144,7 @@ impl Document {
         let mut clip = Clipboard { elements: vec![], view, hosted_at: BTreeMap::new(), origin: Point::new(0.0, 0.0), skipped: BTreeMap::new() };
         for id in set {
             let Some(e) = self.get(id) else { continue };
-            let ok = matches!(e, Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Stair(_) | Element::Railing(_) | Element::FamilyInstance(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_)) || view_specific(e);
+            let ok = matches!(e, Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Stair(_) | Element::Ramp(_) | Element::Railing(_) | Element::FamilyInstance(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_)) || view_specific(e);
             if !ok { *clip.skipped.entry(e.kind()).or_default() += 1; continue; }
             if let Element::RevisionCloud(c) = e { if self.revision_record(c.revision).is_some_and(|r| r.issued) { return Err("Unissue the revision before copying its cloud.".into()); } }
             let mut e = e.clone();
@@ -269,6 +270,13 @@ impl Document {
                     s.base_level = base; s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid();
                 }
                 Element::Railing(r) => { r.level = lvl(r.level)?; r.pinned = false; r.mark.clear(); r.ifc.guid = new_ifc_guid(); }
+                Element::Ramp(r) => {
+                    let base = lvl(r.base_level)?;
+                    if let Some(t) = r.top_level {
+                        match shift(t) { Some(nt) => r.top_level = Some(nt), None => { r.unconnected_height_mm = elev(t) + r.top_offset_mm - elev(r.base_level) - r.base_offset_mm; r.top_level = None; } }
+                    }
+                    r.base_level = base; r.pinned = false; r.mark.clear(); r.ifc.guid = new_ifc_guid();
+                }
                 Element::Room(r) => {
                     let base = lvl(r.level)?;
                     if let Some(u) = r.upper_level { match shift(u) { Some(nu) => r.upper_level = Some(nu), None => { r.limit_offset_mm += elev(u) - elev(r.level); r.upper_level = None; } } }

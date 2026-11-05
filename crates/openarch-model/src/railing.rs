@@ -400,9 +400,10 @@ impl Document {
         let t = self.railing_type(r.railing_type)?;
         match r.host {
             Some(h) => {
-                let s = self.stair(h.stair)?;
-                let l = self.stair_layout(s)?;
-                let line = stair_side(&l, h.side);
+                let l = self.host_layout(h.stair)?;
+                let mut line = stair_side(&l, h.side);
+                // a ramp has no treads: its handrails run on level past both ends
+                if self.ramp(h.stair).is_some() { line.tread = Some(0.0); }
                 // in from the edge by half the widest upright, and a little
                 let inset = match r.placement {
                     RailingPlacement::Treads => t.posts.as_ref().map_or(0.0, |p| p.width_mm).max(t.balusters.as_ref().map_or(0.0, |b| b.width_mm)) / 2.0 + 25.0,
@@ -436,7 +437,7 @@ impl Document {
     pub fn railing_pieces(&self, r: &Railing) -> Vec<RailPiece> {
         let (Some(t), Some(line)) = (self.railing_type(r.railing_type), self.railing_host_line(r)) else { return vec![] };
         let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
-        let stair_layout = r.host.and_then(|h| self.stair(h.stair)).and_then(|s| self.stair_layout(s));
+        let stair_layout = r.host.and_then(|h| self.host_layout(h.stair));
         let mut out = vec![];
         let pts = &line.pts;
         let flight = |k: usize| line.runs.get(k).copied().flatten().is_some();
@@ -498,7 +499,7 @@ impl Document {
                 // fractions along the segment, each with the height of what the baluster stands on
                 let mut at: Vec<(f64, f64)> = vec![];
                 match (run, b.per_tread) {
-                    (Some(rl), Some(n)) if n > 0 => {
+                    (Some(rl), Some(n)) if n > 0 && !rl.treads.is_empty() => {
                         for (s0, s1, top) in &rl.treads {
                             for j in 0..n { let s = s0 + (j as f64 + 0.5) * (s1 - s0) / n as f64; at.push((s / rl.length.max(1e-9), *top)); }
                         }
@@ -552,16 +553,17 @@ impl Document {
     pub fn railing_warnings(&self, r: &Railing) -> Vec<String> {
         let mut out = vec![];
         let Some(t) = self.railing_type(r.railing_type) else { return out };
-        if r.host.is_some_and(|h| self.stair(h.stair).is_none()) { out.push("The railing's stair is gone.".into()); return out; }
+        if r.host.is_some_and(|h| self.host_layout(h.stair).is_none()) { out.push("The railing's stair or ramp is gone.".into()); return out; }
         let Some(b) = &t.balusters else { return out };
         let Some(line) = self.railing_host_line(r) else { return out };
         let tread = r.host.and_then(|h| self.stair(h.stair)).map(|s| s.tread_depth_mm);
+        let ramp = r.host.is_some_and(|h| self.ramp(h.stair).is_some());
         let mut worst: f64 = 0.0;
         for k in 0..line.pts.len().saturating_sub(1) {
             let len = line.pts[k].0.dist(&line.pts[k + 1].0);
             if len < 1.0 { continue; }
             let gap = match (line.runs[k], b.per_tread, tread) {
-                (Some(_), Some(n), Some(tr)) if n > 0 => tr / n as f64 - b.width_mm,
+                (Some(_), Some(n), Some(tr)) if n > 0 && !ramp => tr / n as f64 - b.width_mm,
                 _ => {
                     let at = pattern(len, b.spacing_mm, b.justification);
                     let mut stops = vec![0.0];
@@ -583,7 +585,7 @@ impl Document {
         if self.level(r.level).is_none() { return Err("unknown level".into()); }
         if !r.base_offset_mm.is_finite() { return Err("the offset must be a number".into()); }
         match r.host {
-            Some(h) => { if self.stair(h.stair).is_none() { return Err("unknown stair".into()); } }
+            Some(h) => { if self.host_layout(h.stair).is_none() { return Err("unknown stair or ramp".into()); } }
             None => { if r.path.len() < 2 { return Err("A railing path needs at least one line.".into()); } }
         }
         Ok(())
@@ -613,8 +615,7 @@ impl Document {
 
     /// Place on Stair: a railing on each side of the stair, one undo step (as part of a larger one when grouped).
     pub fn add_stair_railings(&mut self, stair: Id, railing_type: Id, placement: RailingPlacement) -> Result<Vec<Id>, String> {
-        let s = self.stair(stair).ok_or("Click a stair.")?;
-        let level = s.base_level;
+        let level = self.host_base_level(stair).ok_or("Click a stair or a ramp.")?;
         let mut out = vec![];
         let mut rs = vec![];
         for side in [RailingSide::Left, RailingSide::Right] {
