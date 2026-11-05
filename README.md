@@ -9,34 +9,29 @@ A free, open-source building information modelling (BIM) application for archite
 ## What it does today
 
 - Levels and grids, with datum alignment locks and a project base point and survey point
-- Layered walls with wall types, mitred and butted joins, and join cleanup
-- Floors and roofs drawn from sketch boundaries, with slope-defining edges and slope arrows
-- Ceilings placed automatically inside walls or sketched, with compound or basic ceiling types, ceiling grids that move and turn, reflected ceiling plans that look up, sections that cut them, and room volumes that stop at them
-- Area schemes (Gross Building, Rentable and your own), area plans with boundaries that follow their walls and sit where the area rules put them (centreline, face or glass, by the area types each side), areas, area tags and area schedules
-- Colour fill schemes for rooms and areas, by value or by range, with colour fill legends
-- Ceiling-hosted families of any category (lights, air diffusers, smoke detectors and so on) that hang from a ceiling and follow it
-- Doors and windows from loadable families, with a family editor (reference planes, parameters, types, nested geometry), numbered Marks, and tags placed one at a time, all at once or as they are placed
-- Plan, elevation and section views, with view ranges, templates, graphic display options and reusable marker types linked to view types
-- Permanent and temporary dimensions, spot elevations and spot coordinates
-- Rooms with live areas, perimeters and optional volumes, room separation lines, room tags, unplaced rooms that keep their data, and From/To Room for doors and windows
-- Schedules with calculated columns and cross-schedule totals, material takeoffs, sheet lists, view lists, key schedules, and room schedules that can embed a schedule of each room's contents
-- Key schedules for reusable instance values, with project/shared parameters, assignment in Properties or schedule cells, and controlled values that update together
-- Revisions with numbering sequences, issued revisions that lock, revision clouds and tags, and revision tables in title blocks
-- Sheets and title blocks, with placed views, schedules, detail lines, text, filled regions and masking regions
-- PDF and DXF export, including batch sheet export, plus IFC import and export, with rooms as spaces and chosen schedule fields as property and quantity sets
-- Linked models built for scale: shared definitions with cheap placements, aimed at masterplans with many linked buildings
-- Save and Save As for projects, model families and annotation families, with native file dialogs on desktop and in the Windows browser preview
-- Text notes edited in place with their font, size, colour and alignment
-- Copy, Cut and Paste (at a picked point, aligned to selected levels, selected views, the current view or the same place) and Match Type
-- Hide in View, Temporary Hide/Isolate, Reveal Hidden Elements and Override Graphics in View by element
-- Stairs by component: straight runs with automatic landings, riser and tread rules, plans with the cut mark and UP/DN walkline, 3D, sections and IFC
-- Railings: sketched or placed on stairs and ramps, with top rails, handrails and their extensions, balusters (per tread on flights) and posts
-- Ramps drawn by runs with automatic landings, checked for slope, run length and landing length
+- Layered walls with wall types, mitred and butted joins and join cleanup, plus curved walls and curtain walls (grids, panels, mullions, doors)
+- Floors, roofs and ceilings drawn from sketch boundaries, with slopes and slope arrows
+- Stairs with runs and automatic landings, ramps, and railings
+- Doors and windows from loadable families, with tags and mark numbering
+- A family editor: reference planes, parameters, types, lookup tables, nested families, and extrusions, blends, sweeps and voids
+- Plan, elevation, section and 3D views, with jogged sections, depth cueing, view ranges, templates, graphic display options, and hide and isolate
+- Permanent and temporary dimensions, spot elevations, coordinates and slopes, text notes, detail lines and filled regions
+- Rooms and areas (with colour fills), and schedules with calculated columns, key schedules, material takeoffs and cross-schedule totals
+- Sheets with schedules on them, and export of sheets and views to PDF and DXF
+- IFC4 export and IFC import
+- Groups, arrays, copy and paste, Match Type, and Move, Copy, Rotate and Mirror in the 3D view
 - Undo and redo, and a single-file project format (`.oab`) with loadable family files (`.oaf`)
 
 ## What is planned
 
-- Stairs, ramps and railings
+- Roofs by extrusion and by face, plus soffits, fascias and gutters
+- Legends and 2D drafting views
+- Columns, beams and other structural elements
+- Linked models in the app, on top of the engine already built for large masterplans
+- Site tools: toposurface, building pads, cut and fill
+- Phases, view filters and scope boxes
+- Sun path, shadows and render export
+- Worksharing, structural and MEP tools, once the architectural basics are in
 
 Australian standards and metric units come first. Other regions are welcome later.
 
