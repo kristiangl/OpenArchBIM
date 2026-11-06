@@ -306,6 +306,16 @@ pub struct StairLanding {
     pub outline: Option<Vec<Point>>,
 }
 
+/// One storey of a multistory stair, unpinned: its own runs and sketched landings instead of a repeat of the stair.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct StairStorey {
+    /// The level the storey starts from.
+    pub base_level: Id,
+    pub runs: Vec<StairRun>,
+    #[serde(default)]
+    pub landings: Vec<StairLanding>,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stair {
     pub stair_type: Id,
@@ -328,6 +338,9 @@ pub struct Stair {
     /// Multistory Top Level: the stair repeats, storey by storey, up to this level.
     #[serde(default)]
     pub multistory_top: Option<Id>,
+    /// Storeys of a multistory stair unpinned from the stair below, each with its own runs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub storeys: Vec<StairStorey>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -616,7 +629,7 @@ impl Document {
     /// A new stair from base to top level with its type's tread and the fewest risers its rules allow.
     pub fn new_stair(&self, stair_type: Id, base_level: Id, top_level: Option<Id>) -> Result<Stair, String> {
         let t = self.stair_type(stair_type).ok_or("unknown stair type")?;
-        let mut s = Stair { stair_type, base_level, base_offset_mm: 0.0, top_level, top_offset_mm: 0.0, unconnected_height_mm: 3000.0, desired_risers: 1, tread_depth_mm: t.rules.min_tread_mm, runs: vec![], landings: vec![], multistory_top: None, pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } };
+        let mut s = Stair { stair_type, base_level, base_offset_mm: 0.0, top_level, top_offset_mm: 0.0, unconnected_height_mm: 3000.0, desired_risers: 1, tread_depth_mm: t.rules.min_tread_mm, runs: vec![], landings: vec![], multistory_top: None, storeys: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } };
         let (b, top) = self.stair_heights(&s).ok_or("unknown level")?;
         if top - b <= 0.0 {
             return Err("The top of the stair must be above its base.".into());
@@ -803,6 +816,15 @@ impl Document {
             c.landings.retain(|l| l.outline.is_none());
             let h = levels[k + 1].1 + c.top_offset_mm - levels[k].1 - c.base_offset_mm;
             if h <= 0.0 { break; }
+            // unpinned: its own runs, risers and landings
+            if let Some(o) = s.storeys.iter().find(|o| o.base_level == levels[k].0) {
+                c.runs = o.runs.clone();
+                c.landings = o.landings.clone();
+                c.desired_risers = c.runs.iter().map(|r| r.risers).sum::<u32>().max(1);
+                c.landings = self.automatic_landings(&c);
+                out.push(c);
+                continue;
+            }
             let n = c.desired_risers.max(1);
             let r = h / n as f64;
             if r > t.rules.max_riser_mm + 1e-6 || r < t.rules.min_riser_mm - 1e-6 {
@@ -822,6 +844,40 @@ impl Document {
             out.push(c);
         }
         out
+    }
+
+    /// The storey of a multistory stair that starts at `level` (above its first).
+    pub fn stair_storey(&self, s: &Stair, level: Id) -> Option<Stair> {
+        self.stair_storeys(s).into_iter().skip(1).find(|c| c.base_level == level)
+    }
+
+    /// Unpin a storey from the stair below (it keeps the runs it has now, to change on their own), or pin it again.
+    fn pin_storey(&self, s: &mut Stair, level: Id, pinned: bool) -> Result<(), String> {
+        if pinned { s.storeys.retain(|o| o.base_level != level); return Ok(()); }
+        if s.storeys.iter().any(|o| o.base_level == level) { return Ok(()); }
+        let c = self.stair_storey(s, level).ok_or("The stair has no storey starting at that level.")?;
+        s.storeys.push(StairStorey { base_level: level, runs: c.runs, landings: c.landings.into_iter().filter(|l| l.outline.is_some()).collect() });
+        Ok(())
+    }
+
+    /// Pin or unpin one storey of a multistory stair, one undo step.
+    pub fn set_stair_storey_pinned(&mut self, id: Id, level: Id, pinned: bool) -> Result<(), String> {
+        self.refuse_pinned(&[id], "edited")?;
+        let mut s = self.stair(id).cloned().ok_or("not a stair")?;
+        self.pin_storey(&mut s, level, pinned)?;
+        self.transact(if pinned { "Pin storey" } else { "Unpin storey" }, |tx| tx.update(id, Element::Stair(s)))
+    }
+
+    /// The runs (and sketched landings) of an unpinned storey, to change; an error when it is pinned.
+    fn storey_mut<'a>(s: &'a mut Stair, level: Id) -> Result<&'a mut StairStorey, String> {
+        s.storeys.iter_mut().find(|o| o.base_level == level).ok_or_else(|| "This storey repeats the stair below: unpin it to change it on its own.".to_string())
+    }
+
+    /// Check an unpinned storey as laid out.
+    fn check_storey(&self, s: &Stair, level: Id) -> Result<(), String> {
+        let c = self.stair_storey(s, level).ok_or("The stair has no storey starting at that level.")?;
+        self.check_stair(&c)?;
+        self.stair_layout(&c).map(|_| ()).ok_or_else(|| "The storey cannot be laid out.".to_string())
     }
 
     /// Every storey's layout (one for a stair that is not multistory).
@@ -846,9 +902,21 @@ impl Document {
 
     /// Edit Stairs' Finish with its sketched landings: runs and landings drawn again, one undo step.
     pub fn set_stair_components(&mut self, id: Id, runs: Vec<StairRun>, sketched: Vec<StairLanding>) -> Result<(), String> {
+        self.set_stair_storey_components(id, None, runs, sketched)
+    }
+
+    /// Edit Stairs' Finish on the stair, or (`storey`: the level it starts from) on an unpinned storey.
+    pub fn set_stair_storey_components(&mut self, id: Id, storey: Option<Id>, runs: Vec<StairRun>, sketched: Vec<StairLanding>) -> Result<(), String> {
         self.refuse_pinned(&[id], "edited")?;
         let mut s = self.stair(id).cloned().ok_or("not a stair")?;
         if runs.is_empty() { return Err("A stair needs at least one run.".into()); }
+        if let Some(level) = storey.filter(|l| *l != s.base_level) {
+            let o = Self::storey_mut(&mut s, level)?;
+            o.runs = runs;
+            o.landings = sketched.into_iter().filter(|l| l.outline.is_some()).collect();
+            self.check_storey(&s, level)?;
+            return self.transact("Edit stair", |tx| tx.update(id, Element::Stair(s)));
+        }
         s.runs = runs;
         s.landings = sketched.into_iter().filter(|l| l.outline.is_some()).collect();
         s.landings = self.automatic_landings(&s);
@@ -862,7 +930,16 @@ impl Document {
         let old = self.stair(id).cloned().ok_or("not a stair")?;
         let mut patch = patch.clone();
         let width = patch.as_object_mut().and_then(|o| o.remove("run_width_mm")).and_then(|v| v.as_f64());
+        // { storey_pinned: { "<level id>": bool } }
+        let pins = patch.as_object_mut().and_then(|o| o.remove("storey_pinned"));
         let mut s: Stair = crate::doc::apply_patch(&old, &patch)?;
+        if let Some(serde_json::Value::Object(m)) = pins {
+            if old.pinned { return Err("Unpin the stair before changing it.".into()); }
+            for (k, v) in m {
+                let level: Id = k.parse().map_err(|_| "bad storey level")?;
+                self.pin_storey(&mut s, level, v.as_bool().unwrap_or(true))?;
+            }
+        }
         if let Some(w) = width {
             for r in &mut s.runs { r.width_mm = w; }
         }
@@ -1089,8 +1166,20 @@ impl Document {
 
     /// Change one run (its location line, width, risers, Begins and Ends with Riser), one undo step.
     pub fn patch_stair_run(&mut self, id: Id, run: usize, patch: &serde_json::Value) -> Result<(), String> {
+        self.patch_stair_storey_run(id, None, run, patch)
+    }
+
+    /// Change one run of the stair, or (`storey`: the level it starts from) of an unpinned storey.
+    pub fn patch_stair_storey_run(&mut self, id: Id, storey: Option<Id>, run: usize, patch: &serde_json::Value) -> Result<(), String> {
         self.refuse_pinned(&[id], "edited")?;
         let mut s = self.stair(id).cloned().ok_or("not a stair")?;
+        if let Some(level) = storey.filter(|l| *l != s.base_level) {
+            let o = Self::storey_mut(&mut s, level)?;
+            let old = o.runs.get(run).cloned().ok_or("no such run")?;
+            o.runs[run] = crate::doc::apply_patch(&old, patch)?;
+            self.check_storey(&s, level)?;
+            return self.transact("Stair run properties", |tx| tx.update(id, Element::Stair(s)));
+        }
         let old = s.runs.get(run).cloned().ok_or("no such run")?;
         s.runs[run] = crate::doc::apply_patch(&old, patch)?;
         s.landings = self.automatic_landings(&s);

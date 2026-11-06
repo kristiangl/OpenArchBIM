@@ -267,6 +267,9 @@ impl Document {
                     if let Some(t) = s.top_level {
                         match shift(t) { Some(nt) => s.top_level = Some(nt), None => { s.unconnected_height_mm = elev(t) + s.top_offset_mm - elev(s.base_level) - s.base_offset_mm; s.top_level = None; } }
                     }
+                    s.multistory_top = s.multistory_top.and_then(shift);
+                    if s.multistory_top.is_none() { s.storeys.clear(); }
+                    s.storeys = s.storeys.drain(..).filter_map(|mut o| { o.base_level = shift(o.base_level)?; Some(o) }).collect();
                     s.base_level = base; s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid();
                 }
                 Element::Railing(r) => { r.level = lvl(r.level)?; r.pinned = false; r.mark.clear(); r.ifc.guid = new_ifc_guid(); }

@@ -11,6 +11,8 @@ const Stairs = (() => {
   let shape = "straight", clockwise = null, winderStyle = "balanced";
   // a run or landing being sketched: the stair waits; a sketched run's new lines are boundaries or risers
   let sketching = false, sketchRole = "boundary";
+  // Edit Sketch: waiting for a click on a sketched run, then the run whose lines are being changed
+  let picking = false, editingRun = null;
   const NEED = { straight: 2, spiral_full: 2, spiral_ends: 3, winder_l: 3, winder_u: 4 };
   const STAGE = {
     straight: ["Click the start of a run.", "Click the end of the run."],
@@ -43,10 +45,12 @@ const Stairs = (() => {
   async function start(edit = null) {
     if (!(app.info.stair_types || []).length) { if (!(await run("ensure_stair_types", {}))) return; await refresh(); }
     if (!(await ensurePlan("A stair"))) return;
+    picking = false; editingRun = null;
     if (edit) {
-      const r = await run("stair_edit", { id: edit });
+      // in the plan of a level an unpinned storey starts from, that storey
+      const r = await run("stair_edit", { id: edit, level: curLevelId() });
       if (!r) return;
-      draft = { id: edit, landings: r.landings || [], typeId: r.type_id, baseLevel: r.base_level, topLevel: r.top_level, baseOffset: r.base_offset_mm, topOffset: r.top_offset_mm, height: r.unconnected_height_mm, risers: r.desired_risers, tread: r.tread_depth_mm, justification: r.runs[0]?.justification || "center", width: r.runs[0]?.width_mm || 1000, runs: r.runs };
+      draft = { id: edit, storey: r.storey ?? null, landings: r.landings || [], typeId: r.type_id, baseLevel: r.base_level, topLevel: r.top_level, baseOffset: r.base_offset_mm, topOffset: r.top_offset_mm, height: r.unconnected_height_mm, risers: r.desired_risers, tread: r.tread_depth_mm, justification: r.runs[0]?.justification || "center", width: r.runs[0]?.width_mm || 1000, runs: r.runs };
     } else {
       const base = curLevelId();
       draft = { id: null, landings: [], railing: (app.info.railing_types || [])[0]?.id ?? null, typeId: typeId(), baseLevel: base, topLevel: levelAbove(base), baseOffset: 0, topOffset: 0, height: 3000, risers: null, tread: null, justification: "center", width: (app.info.stair_types || []).find((t) => t.id === typeId())?.width_mm || 1000, runs: [] };
@@ -88,6 +92,13 @@ const Stairs = (() => {
   }
   async function click(p) {
     if (!draft) return;
+    if (picking) {
+      picking = false;
+      const k = draft.runs.findIndex((r) => r.shape && r.shape.sketched && inside(p, [...r.shape.sketched.left, ...[...r.shape.sketched.right].reverse()]));
+      if (k < 0) { setPrompt("That is not a sketched run. Click Edit Sketch again to pick one.", true); updateRibbonContext(); return; }
+      sketch("stairrun", k);
+      return;
+    }
     if (!clicks.length && preview && preview.remaining === 0) { say(); return; }
     // a full-step spiral needs one click before it can be shown; each shape its own number
     if (clicks.length + 1 < NEED[shape]) { clicks.push(p); pendingEnd = null; say(); return; }
@@ -105,7 +116,7 @@ const Stairs = (() => {
   async function finish() {
     if (!draft) return;
     if (!draft.runs.length) { setPrompt("Draw at least one run first.", true); return; }
-    const r = draft.id ? await run("set_stair_runs", { id: draft.id, runs: draft.runs, landings: draft.landings }) : await run("add_stair", params());
+    const r = draft.id ? await run("set_stair_runs", { id: draft.id, storey: draft.storey ?? undefined, runs: draft.runs, landings: draft.landings }) : await run("add_stair", params());
     if (!r) return;
     const id = draft.id || r.id;
     draft = null; preview = null; clicks = []; pendingEnd = null;
@@ -136,22 +147,46 @@ const Stairs = (() => {
   // Sketch Run (two boundaries and riser lines, the first riser drawn at the bottom) and Sketch Landing (a closed
   // outline at the top of the last run): the sketch's Finish gives the stair its new run or landing
   const ROLE_INK = { boundary: "#2a8f3c", riser: "#1f5fbf" };
-  function sketch(kind) {
+  // a point inside a polygon of { x, y } points
+  function inside(p, poly) {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) {
+      const a = poly[i], b = poly[j];
+      if ((a.y > p.y) !== (b.y > p.y) && p.x < ((b.x - a.x) * (p.y - a.y)) / (b.y - a.y) + a.x) c = !c;
+    }
+    return c;
+  }
+  // `runIndex`: Edit Sketch on that sketched run, its boundaries and risers (the bottom one first) back in the sketch
+  function sketch(kind, runIndex = null) {
     if (!draft || Sketch.active) return;
     if (kind === "stairlanding" && !draft.runs.length) { setPrompt("Draw a run first: a landing stands at the top of the last run.", true); return; }
-    sketching = true; clicks = []; pendingEnd = null;
+    sketching = true; clicks = []; pendingEnd = null; picking = false;
     sketchRole = "boundary";
-    Plan.startSketch({ kind, levelId: draft.baseLevel, typeId: draft.typeId, curves: [], tool: "line", closed: kind === "stairlanding",
-      title: kind === "stairrun" ? "Sketch Run" : "Sketch Landing",
+    editingRun = runIndex;
+    // a sketch line as the sketch keeps it: the curve, its points, and its snaps (ends and middle)
+    const line = (a, b, role) => ({
+      curve: { type: "line", a: { x: a.x, y: a.y }, b: { x: b.x, y: b.y } }, poly: [[a.x, a.y], [b.x, b.y]], closed: false, attr: { role },
+      snaps: [{ x: a.x, y: a.y, kind: "endpoint" }, { x: b.x, y: b.y, kind: "endpoint" }, { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2, kind: "midpoint" }],
+    });
+    const curves = [];
+    if (runIndex != null) {
+      const sk = draft.runs[runIndex].shape.sketched;
+      for (const side of [sk.left, sk.right]) for (let i = 0; i + 1 < side.length; i++) curves.push(line(side[i], side[i + 1], "boundary"));
+      for (const [a, b] of sk.risers) curves.push(line(a, b, "riser"));
+    }
+    Plan.startSketch({ kind, levelId: draft.baseLevel, typeId: draft.typeId, curves, tool: runIndex != null ? "select" : "line", closed: kind === "stairlanding",
+      title: kind === "stairrun" ? (runIndex != null ? `Edit Sketch: Run ${runIndex + 1}` : "Sketch Run") : "Sketch Landing",
       ...(kind === "stairrun" ? { attr: () => ({ role: sketchRole }), ink: (c) => ROLE_INK[c.attr?.role] || ROLE_INK.boundary } : {}) });
     renderSketchUI();
-    setPrompt(kind === "stairrun" ? "Draw the run's two boundaries, then switch to Riser and draw its riser lines, the bottom one first." : "Draw the landing's outline as a closed loop.");
+    setPrompt(kind !== "stairrun" ? "Draw the landing's outline as a closed loop."
+      : runIndex != null ? "Change the run's boundaries (green) and riser lines (blue); the bottom riser stays the first one. Finish when done."
+      : "Draw the run's two boundaries, then switch to Riser and draw its riser lines, the bottom one first.");
   }
   async function sketchFinished(o) {
     let ok = false;
     if (o.kind === "stairrun") {
       const r = await run("stair_sketch_run", { edges: o.edges || [] });
-      if (r) { draft.runs.push(r.run); ok = true; }
+      if (r) { if (editingRun != null) draft.runs[editingRun] = r.run; else draft.runs.push(r.run); ok = true; }
     } else {
       const r = await run("stair_sketch_landing", { curves: o.curves });
       if (r) { draft.landings = (draft.landings || []).filter((l) => l.after_run !== draft.runs.length - 1); draft.landings.push({ after_run: draft.runs.length - 1, outline: r.outline }); ok = true; }
@@ -163,7 +198,7 @@ const Stairs = (() => {
   function sketchCancelled() { backToStair(); }
   function backToStair() {
     Plan.endSketch(); endSketchUI();
-    sketching = false;
+    sketching = false; editingRun = null;
     Plan.setTool("stair");
     updateRibbonContext(true);
     renderProperties();
@@ -193,10 +228,11 @@ const Stairs = (() => {
         { label: winderStyle === "balanced" ? "Balanced Winders" : "Single Point Winders", ico: winderStyle === "balanced" ? "Bw" : "Sp", disabled: !shape.startsWith("winder"), onclick: () => { winderStyle = winderStyle === "balanced" ? "single_point" : "balanced"; updateRibbonContext(); ask(); } },
         { label: "Sketch Run", ico: "Sk", onclick: () => sketch("stairrun") },
         { label: "Sketch Landing", ico: "Ld", onclick: () => sketch("stairlanding") },
+        { label: "Edit Sketch", ico: "Es", disabled: !draft?.runs.some((r) => r.shape && r.shape.sketched), on: picking, onclick: () => { picking = !picking; clicks = []; pendingEnd = null; updateRibbonContext(); setPrompt(picking ? "Click the sketched run to change its lines." : ""); if (!picking) say(); } },
         { label: "Delete Last Run", ico: "⌫", disabled: !draft?.runs.length, onclick: deleteLastRun },
       ] },
     ];
-    return { auto: true, key: `stair:${draft?.runs.length || 0}:${shape}:${clockwise}:${winderStyle}`, title: draft?.id ? "Edit Stairs" : "Create Stair", groups };
+    return { auto: true, key: `stair:${draft?.runs.length || 0}:${shape}:${clockwise}:${winderStyle}:${picking}`, title: draft?.id ? (draft.storey != null ? "Edit Stairs: Storey" : "Edit Stairs") : "Create Stair", groups };
   }
   // Properties while drawing: the stair's type, levels and risers, and the run's location line and width
   function toolProps() {
@@ -237,7 +273,7 @@ const Stairs = (() => {
   }
 
   function elements(data) {
-    return (data?.stairs || []).filter((s) => s.id !== draft?.id && s.rings.length).map((s) => ({ id: s.id, kind: "stair", category: "Stairs", ring: s.rings[0], rings: s.rings, pinned: s.pinned, display: "normal" }));
+    return (data?.stairs || []).filter((s) => s.id !== draft?.id && s.rings.length).map((s) => ({ id: s.id, kind: "stair", category: "Stairs", ring: s.rings[0], rings: s.rings, comps: s.parts || [], pinned: s.pinned, display: "normal" }));
   }
 
   // pen: { lw(style), colour(style, hex), dash(style) } from the plan's own drawing

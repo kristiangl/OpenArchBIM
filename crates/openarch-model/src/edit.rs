@@ -401,7 +401,9 @@ impl Document {
                 // a stair's runs carry the change; a mirror swaps the side each run's location line is on
                 Some(Element::Stair(s)) => {
                     let mut s = s.clone();
-                    for r in &mut s.runs {
+                    let mut storeys = std::mem::take(&mut s.storeys);
+                    for (runs, landings) in std::iter::once((&mut s.runs, &mut s.landings)).chain(storeys.iter_mut().map(|o| (&mut o.runs, &mut o.landings))) {
+                    for r in runs.iter_mut() {
                         r.start = x.apply(r.start);
                         r.end = x.apply(r.end);
                         if mirror { r.justification = r.justification.mirrored(); }
@@ -417,9 +419,11 @@ impl Document {
                             crate::stairs::RunShape::Straight => {}
                         }
                     }
-                    for l in &mut s.landings {
+                    for l in landings.iter_mut() {
                         if let Some(o) = &mut l.outline { for p in o.iter_mut() { *p = x.apply(*p); } }
                     }
+                    }
+                    s.storeys = storeys;
                     if opt.copy { s.pinned = false; s.mark.clear(); s.ifc.guid = new_ifc_guid(); }
                     Element::Stair(s)
                 }

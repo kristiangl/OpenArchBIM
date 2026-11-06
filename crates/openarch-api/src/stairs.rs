@@ -180,11 +180,18 @@ impl Session {
                 Ok(json!({ "id": id, "railings": self.doc.stair_railings(id) }))
             })(),
             // Edit Stairs: what the tool reopens with
+            // with `level`: the unpinned storey that starts there, when there is one
             "stair_edit" => (|| {
                 let s = self.doc.stair(id_of(p, "id")?).ok_or("not a stair")?;
+                if let Some(c) = p["level"].as_u64().filter(|l| s.storeys.iter().any(|o| o.base_level == *l)).and_then(|l| self.doc.stair_storey(s, l)) {
+                    return Ok(json!({ "type_id": c.stair_type, "base_level": c.base_level, "top_level": c.top_level, "base_offset_mm": c.base_offset_mm, "top_offset_mm": c.top_offset_mm, "unconnected_height_mm": c.unconnected_height_mm, "desired_risers": c.desired_risers, "tread_depth_mm": c.tread_depth_mm, "runs": c.runs, "landings": c.landings.iter().filter(|l| l.outline.is_some()).collect::<Vec<_>>(), "storey": c.base_level }));
+                }
                 Ok(json!({ "type_id": s.stair_type, "base_level": s.base_level, "top_level": s.top_level, "base_offset_mm": s.base_offset_mm, "top_offset_mm": s.top_offset_mm, "unconnected_height_mm": s.unconnected_height_mm, "desired_risers": s.desired_risers, "tread_depth_mm": s.tread_depth_mm, "runs": s.runs, "landings": s.landings.iter().filter(|l| l.outline.is_some()).collect::<Vec<_>>(), "multistory_top": s.multistory_top }))
             })(),
-            "set_stair_runs" => (|| { self.doc.set_stair_components(id_of(p, "id")?, runs_of(p)?, landings_of(p)?)?; Ok(json!({})) })(),
+            "set_stair_runs" => (|| { self.doc.set_stair_storey_components(id_of(p, "id")?, p["storey"].as_u64(), runs_of(p)?, landings_of(p)?)?; Ok(json!({})) })(),
+            // one run or landing of a stair: { id, part: { kind: run | landing, index, storey } }
+            "stair_part" => (|| self.stair_part_props(id_of(p, "id")?, &p["part"]))(),
+            "set_stair_storey_pinned" => (|| { self.doc.set_stair_storey_pinned(id_of(p, "id")?, id_of(p, "level")?, p["pinned"].as_bool().unwrap_or(true))?; Ok(json!({})) })(),
             // a sketched run: { edges: [{ curve, role: boundary | riser }], width_mm } gives the run
             "stair_sketch_run" => (|| {
                 let edges = p["edges"].as_array().ok_or("missing edges")?;
@@ -215,7 +222,7 @@ impl Session {
             })(),
             "patch_stair" => (|| { self.doc.patch_stair(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             // one run: { id, run, patch }
-            "patch_stair_run" => (|| { self.doc.patch_stair_run(id_of(p, "id")?, p["run"].as_u64().ok_or("missing run")? as usize, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            "patch_stair_run" => (|| { self.doc.patch_stair_storey_run(id_of(p, "id")?, p["storey"].as_u64(), p["run"].as_u64().ok_or("missing run")? as usize, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "patch_stair_type" => (|| { self.doc.patch_stair_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "duplicate_stair_type" => (|| Ok(json!({ "id": self.doc.duplicate_stair_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             _ => return None,
@@ -237,6 +244,15 @@ impl Session {
             Some(_) => ro("Actual Run Width", "*Varies*"),
             None => ro("Actual Run Width", ""),
         };
+        // a multistory stair's storeys above its first: each pinned to the stair below, or unpinned with runs of its own
+        let level_name = |lv: Id| d.level(lv).map_or(String::new(), |x| x.name.clone());
+        let storeys: Vec<Value> = if s.multistory_top.is_some() {
+            let rows: Vec<Value> = d.stair_storeys(s).iter().skip(1).map(|c| {
+                let own = s.storeys.iter().any(|o| o.base_level == c.base_level);
+                boolean(&format!("{} to {}: Pinned", level_name(c.base_level), c.top_level.map_or(String::new(), level_name)), &format!("storey_pinned.{}", c.base_level), !own, free)
+            }).collect();
+            if rows.is_empty() { vec![] } else { vec![group("Multistory", rows)] }
+        } else { vec![] };
         let mut rules = vec![];
         match l.as_ref().map(|l| &l.warnings) {
             Some(w) if w.is_empty() => rules.push(ro("Calculation Rules", "Met")),
@@ -248,7 +264,7 @@ impl Session {
             "title": format!("Stairs: {}", t.map_or("?", |t| t.name.as_str())),
             "target": { "method": "patch_stair", "id": id },
             "warnings": l.as_ref().map(|l| l.warnings.clone()).unwrap_or_default(),
-            "groups": [
+            "groups": (vec![
                 group("Constraints", vec![
                     select("Base Level", base_opts),
                     num("Base Offset", "base_offset_mm", s.base_offset_mm, free),
@@ -273,24 +289,63 @@ impl Session {
                 ]),
                 group("Calculation Rules", rules),
                 group("Identity Data", vec![text("Comments", "comments", &s.comments), text("Mark", "mark", &s.mark)]),
-            ],
+            ].into_iter().chain(storeys).collect::<Vec<_>>()),
             "run_groups": s.runs.iter().enumerate().map(|(k, r)| {
                 let len = l.as_ref().and_then(|l| l.runs.get(k)).map_or(0.0, |x| x.length);
-                json!({
-                    "name": format!("Run {}", k + 1),
-                    "target": { "method": "patch_stair_run", "id": id, "extra": { "run": k } },
-                    "rows": [
-                        enum_select("Location Line", "justification", &name_of(&r.justification), &[("left", "Run: Left"), ("center", "Run: Center"), ("right", "Run: Right"), ("left_exterior", "Exterior Support: Left"), ("right_exterior", "Exterior Support: Right")]),
-                        num("Actual Run Width", "width_mm", r.width_mm, free),
-                        num("Risers", "risers", r.risers as f64, free),
-                        boolean("Begin with Riser", "begins_with_riser", r.begins_with_riser, free),
-                        boolean("End with Riser", "ends_with_riser", r.ends_with_riser, free),
-                        json!({ "label": "Run Length", "kind": "ro", "value": format!("{len:.0}"), "raw": len }),
-                    ],
-                })
+                json!({ "name": format!("Run {}", k + 1), "target": { "method": "patch_stair_run", "id": id, "extra": { "run": k } }, "rows": run_rows(r, len, free) })
             }).collect::<Vec<_>>(),
         })
     }
+
+    /// One run's or landing's own Properties (picked with Tab in a plan). A run of an unpinned storey changes that
+    /// storey only; on a pinned one it is the stair's run, which every pinned storey repeats.
+    fn stair_part_props(&self, id: Id, part: &Value) -> Result<Value, String> {
+        let d = &self.doc;
+        let s = d.stair(id).ok_or("not a stair")?;
+        let free = !s.pinned;
+        let storey = part["storey"].as_u64().filter(|l| s.storeys.iter().any(|o| o.base_level == *l));
+        let c = match storey { Some(lv) => d.stair_storey(s, lv).ok_or("no such storey")?, None => s.clone() };
+        let l = d.stair_layout(&c).ok_or("the stair cannot be laid out")?;
+        let k = part["index"].as_u64().ok_or("missing part index")? as usize;
+        let level_name = |lv: Id| d.level(lv).map_or(String::new(), |x| x.name.clone());
+        let storey_row = ro("Storey", format!("{} to {}{}", level_name(c.base_level), c.top_level.map_or(String::new(), level_name), if s.multistory_top.is_none() { "" } else if storey.is_some() { " (unpinned)" } else { " (pinned)" }));
+        if part["kind"] == "landing" {
+            let g = l.landings.iter().find(|g| g.index == k).ok_or("no such landing")?;
+            let sketched = c.landings.iter().find(|x| x.after_run == g.after_run).is_some_and(|x| x.outline.is_some());
+            let area = openarch_model::geom::signed_area(&g.outline).abs() / 1e6;
+            return Ok(json!({
+                "id": id, "kind": "StairLanding", "category": "Stairs", "title": format!("Stair Landing: Landing {}", k + 1),
+                "target": { "method": "patch_stair", "id": id },
+                "groups": [
+                    group("Constraints", vec![storey_row, json!({ "label": "Relative Height", "kind": "ro", "value": format!("{:.0}", g.z - l.base_z), "raw": g.z - l.base_z })]),
+                    group("Construction", vec![ro("Landing", if sketched { "Sketched" } else { "Automatic" }), json!({ "label": "Thickness", "kind": "ro", "value": format!("{:.0}", g.thickness), "raw": g.thickness }), ro("After Run", format!("Run {}", g.after_run + 1))]),
+                    group("Dimensions", vec![json!({ "label": "Area", "kind": "ro", "value": format!("{area:.2} m²"), "raw": area })]),
+                ],
+            }));
+        }
+        let r = c.runs.get(k).ok_or("no such run")?;
+        let len = l.runs.get(k).map_or(0.0, |x| x.length);
+        let shape = match r.shape { RunShape::Straight => "Straight", RunShape::Spiral { .. } => "Spiral", RunShape::Winder { .. } => "Winder", RunShape::Sketched { .. } => "Sketched" };
+        let mut rows = vec![storey_row, ro("Shape", shape)];
+        rows.extend(run_rows(r, len, free));
+        Ok(json!({
+            "id": id, "kind": "StairRun", "category": "Stairs", "title": format!("Stair Run: Run {}", k + 1),
+            "target": { "method": "patch_stair_run", "id": id, "extra": { "run": k, "storey": storey } },
+            "groups": [group("Run", rows)],
+        }))
+    }
+}
+
+/// A run's own rows: location line, width, risers, Begins and Ends with Riser, its length.
+fn run_rows(r: &StairRun, len: f64, free: bool) -> Vec<Value> {
+    vec![
+        enum_select("Location Line", "justification", &name_of(&r.justification), &[("left", "Run: Left"), ("center", "Run: Center"), ("right", "Run: Right"), ("left_exterior", "Exterior Support: Left"), ("right_exterior", "Exterior Support: Right")]),
+        num("Actual Run Width", "width_mm", r.width_mm, free),
+        num("Risers", "risers", r.risers as f64, free && !matches!(r.shape, RunShape::Sketched { .. })),
+        boolean("Begin with Riser", "begins_with_riser", r.begins_with_riser, free),
+        boolean("End with Riser", "ends_with_riser", r.ends_with_riser, free),
+        json!({ "label": "Run Length", "kind": "ro", "value": format!("{len:.0}"), "raw": len }),
+    ]
 }
 
 /// The type's supports: each side and the middle switched between none, stringer and carriage, with their sizes.
@@ -470,7 +525,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         let Some(t) = d.stair_type(s.stair_type) else { continue };
         // Coarse: the outline and walkline only; Fine: the treads' nosings too
         let detail = settings.detail_level;
-        for l in d.stair_layouts(s) {
+        for (storey, l) in d.stair_storeys(s).iter().filter_map(|c| d.stair_layout(c).map(|l| (s.storeys.iter().any(|o| o.base_level == c.base_level).then_some(c.base_level), l))) {
         let (base, top) = (l.base_z, l.reached_z());
         // seen from this plan: up to the cut plane, and down to the view depth (the plan of the level a stair arrives
         // at sees it below)
@@ -609,8 +664,11 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         let mut path: Vec<Point> = walk.iter().map(|p| p.0).collect();
         if down { path.reverse(); }
         let outlines: Vec<Vec<[f64; 2]>> = d.stair_outlines(s).iter().map(|o| o.iter().map(|p| pt(*p)).collect()).collect();
+        // each run and landing, for Tab to pick on its own
+        let mut parts: Vec<Value> = l.runs.iter().map(|r| json!({ "kind": "run", "index": r.index, "storey": storey, "ring": r.footprint().iter().map(|p| pt(*p)).collect::<Vec<_>>() })).collect();
+        parts.extend(l.landings.iter().map(|g| json!({ "kind": "landing", "index": g.index, "storey": storey, "ring": g.outline.iter().map(|p| pt(*p)).collect::<Vec<_>>() })));
         out.push(json!({
-            "id": id, "pinned": s.pinned, "rings": outlines, "lines": lines,
+            "id": id, "pinned": s.pinned, "rings": outlines, "lines": lines, "parts": parts, "storey": storey,
             "cut": cut.as_ref().map(|c| c.1.clone()).unwrap_or_default(),
             "path": path_segs, "label": label, "label_at": path.first().map(|p| pt(*p)),
             "arrow": path.len().checked_sub(2).map(|k| json!({ "at": pt(path[k + 1]), "from": pt(path[k]) })),

@@ -47,3 +47,119 @@ fn a_timber_spiral_draws_its_stringers_and_at_fine_its_nosings() {
     let scene = call(&mut s, "scene", json!({}));
     assert!(scene["meshes"].as_array().unwrap().iter().any(|x| x["id"] == w && x["material"] == "Timber Joist"));
 }
+
+struct M { s: Session, l1: u64, l2: u64, p1: u64, info: Value }
+
+fn model() -> M {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let mut levels: Vec<(u64, f64)> = info["levels"].as_array().unwrap().iter().map(|l| (l["id"].as_u64().unwrap(), l["elevation_mm"].as_f64().unwrap())).collect();
+    levels.sort_by(|a, b| a.1.total_cmp(&b.1));
+    let (l1, l2) = (levels[0].0, levels[1].0);
+    let p1 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == l1).unwrap()["id"].as_u64().unwrap();
+    M { s, l1, l2, p1, info }
+}
+
+/// A U-shaped stair of two straight runs with a landing between them.
+fn u_stair(m: &mut M, ty: &str) -> u64 {
+    let t = m.info["stair_types"].as_array().unwrap().iter().find(|t| t["name"] == ty).unwrap()["id"].as_u64().unwrap();
+    let base = json!({ "type_id": t, "base_level": m.l1, "top_level": m.l2 });
+    let n = call(&mut m.s, "stair_draft", base.clone())["desired_risers"].as_u64().unwrap();
+    let len = (n / 2 - 1) as f64 * 250.0;
+    let mut p = base.clone();
+    p["pending"] = json!({ "start": [0, 0], "end": [0, len], "justification": "center", "width_mm": 1000 });
+    let r1 = call(&mut m.s, "stair_draft", p)["pending"].clone();
+    let mut p = base.clone();
+    p["runs"] = json!([r1]);
+    p["pending"] = json!({ "start": [1200, len], "end": [1200, -10000], "justification": "center", "width_mm": 1000 });
+    let r2 = call(&mut m.s, "stair_draft", p)["pending"].clone();
+    let mut p = base;
+    p["runs"] = json!([r1, r2]);
+    call(&mut m.s, "add_stair", p)["id"].as_u64().unwrap()
+}
+
+fn plan_items(s: &mut Session, view: u64, id: u64) -> Vec<Value> {
+    call(s, "plan", json!({ "view_id": view }))["stairs"].as_array().unwrap().iter().filter(|x| x["id"] == id).cloned().collect()
+}
+
+#[test]
+fn a_run_or_landing_picked_on_its_own_has_its_own_properties() {
+    let mut m = model();
+    let id = u_stair(&mut m, "Concrete Stair");
+    let item = plan_items(&mut m.s, m.p1, id).remove(0);
+    let parts = item["parts"].as_array().unwrap().clone();
+    assert_eq!(parts.iter().filter(|p| p["kind"] == "run").count(), 2);
+    assert_eq!(parts.iter().filter(|p| p["kind"] == "landing").count(), 1);
+    // the second run: its rows, and a change through its target
+    let d = call(&mut m.s, "stair_part", json!({ "id": id, "part": { "kind": "run", "index": 1, "storey": null } }));
+    assert_eq!(d["title"], "Stair Run: Run 2");
+    let t = d["target"].clone();
+    assert_eq!(t["method"], "patch_stair_run");
+    let mut args = json!({ "id": id, "patch": { "width_mm": 1200 } });
+    for (k, v) in t["extra"].as_object().unwrap() { args[k] = v.clone(); }
+    call(&mut m.s, "patch_stair_run", args);
+    let e = call(&mut m.s, "stair_edit", json!({ "id": id }));
+    assert_eq!(e["runs"][1]["width_mm"], 1200.0);
+    assert_eq!(e["runs"][0]["width_mm"], 1000.0);
+    // the landing
+    let d = call(&mut m.s, "stair_part", json!({ "id": id, "part": { "kind": "landing", "index": 0, "storey": null } }));
+    assert_eq!(d["kind"], "StairLanding");
+    assert!(d.to_string().contains("Automatic") && d.to_string().contains("Thickness"));
+}
+
+#[test]
+fn a_storey_of_a_multistory_stair_unpins_to_change_on_its_own() {
+    let mut m = model();
+    let id = u_stair(&mut m, "Timber Stair");
+    let e1 = m.info["levels"].as_array().unwrap().iter().find(|l| l["id"] == m.l1).unwrap()["elevation_mm"].as_f64().unwrap();
+    let e2 = m.info["levels"].as_array().unwrap().iter().find(|l| l["id"] == m.l2).unwrap()["elevation_mm"].as_f64().unwrap();
+    let l3 = call(&mut m.s, "add_level", json!({ "name": "Level 3", "elevation": e2 + (e2 - e1), "make_plan": true }))["id"].as_u64().unwrap();
+    call(&mut m.s, "patch_stair", json!({ "id": id, "patch": { "multistory_top": l3 } }));
+    let info = call(&mut m.s, "doc_info", json!({}));
+    let p2 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == m.l2).unwrap()["id"].as_u64().unwrap();
+    // Properties list the storey above, pinned
+    let d = call(&mut m.s, "describe", json!({ "id": id }));
+    let row = d["groups"].as_array().unwrap().iter().find(|g| g["name"] == "Multistory").unwrap()["rows"][0].clone();
+    assert_eq!(row["raw"], true, "{row}");
+    // pinned: Edit Stairs from Level 2 edits the stair itself
+    assert!(call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }))["storey"].is_null());
+    assert!(m.s.handle("patch_stair_run", &json!({ "id": id, "storey": m.l2, "run": 0, "patch": { "width_mm": 1400 } })).is_err(), "a pinned storey is the stair's");
+    // unpin it through its row, then give it runs of its own
+    call(&mut m.s, "patch_stair", json!({ "id": id, "patch": { "storey_pinned": { m.l2.to_string(): false } } }));
+    let e = call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }));
+    assert_eq!(e["storey"], m.l2);
+    assert_eq!(e["base_level"], m.l2);
+    let mut runs = e["runs"].as_array().unwrap().clone();
+    runs[0]["width_mm"] = json!(1400);
+    runs[1]["width_mm"] = json!(1400);
+    call(&mut m.s, "set_stair_runs", json!({ "id": id, "storey": m.l2, "runs": runs, "landings": [] }));
+    let base = call(&mut m.s, "stair_edit", json!({ "id": id }));
+    assert_eq!(base["runs"][0]["width_mm"], 1000.0, "the stair below keeps its runs");
+    // the plan of Level 2 sees the storey leaving it with its own width, and it says which storey it is
+    let up = plan_items(&mut m.s, p2, id).into_iter().find(|x| x["label"] == "UP").unwrap();
+    assert_eq!(up["storey"], m.l2);
+    let ring = up["parts"].as_array().unwrap().iter().find(|p| p["kind"] == "run").unwrap()["ring"].clone();
+    let xs: Vec<f64> = ring.as_array().unwrap().iter().map(|p| p[0].as_f64().unwrap()).collect();
+    let w = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - xs.iter().cloned().fold(f64::INFINITY, f64::min);
+    assert!((w - 1400.0).abs() < 1e-6, "{w}");
+    // its run's own Properties change the storey only
+    let d = call(&mut m.s, "stair_part", json!({ "id": id, "part": { "kind": "run", "index": 1, "storey": m.l2 } }));
+    assert_eq!(d["target"]["extra"]["storey"], m.l2);
+    assert!(d.to_string().contains("(unpinned)"));
+    call(&mut m.s, "patch_stair_run", json!({ "id": id, "storey": m.l2, "run": 1, "patch": { "width_mm": 1100 } }));
+    assert_eq!(call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }))["runs"][1]["width_mm"], 1100.0);
+    // Move takes it along; IFC still has both storeys
+    call(&mut m.s, "transform", json!({ "ids": [id], "kind": "move", "dx": 5000, "dy": 0 }));
+    let e = call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }));
+    assert_eq!(e["runs"][0]["start"]["x"], 5000.0);
+    let path = std::env::temp_dir().join(format!("openarch-unpinned-{}.ifc", std::process::id()));
+    call(&mut m.s, "export_ifc", json!({ "path": path }));
+    let text = std::fs::read_to_string(&path).unwrap();
+    std::fs::remove_file(&path).unwrap();
+    assert!(text.contains("'Storey 2, Run 2'"));
+    // pinned again, it repeats the stair below
+    call(&mut m.s, "set_stair_storey_pinned", json!({ "id": id, "level": m.l2, "pinned": true }));
+    assert!(call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }))["storey"].is_null());
+    call(&mut m.s, "undo", json!({}));
+    assert_eq!(call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }))["storey"], m.l2);
+}

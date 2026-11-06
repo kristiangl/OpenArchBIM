@@ -416,7 +416,12 @@ const Plan = (() => {
       if (d !== Infinity) found.push({ e, d });
     }
     found.sort((a, b) => rank[a.e.kind] - rank[b.e.kind] || a.d - b.d);
-    const out = found.map((f) => [f.e.id]);
+    const out = [];
+    for (const f of found) {
+      out.push([f.e.id]);
+      // a stair's run or landing under the cursor: Tab reaches it after the stair (`part` says which)
+      for (const c of f.e.comps || []) if (inPoly(p, c.ring)) out.push(Object.assign([f.e.id], { part: { id: f.e.id, kind: c.kind, index: c.index, storey: c.storey ?? null, ring: c.ring } }));
+    }
     const firstWall = found.find((f) => f.e.kind === "wall");
     if (firstWall) {
       const chain = wallChain(firstWall.e.id);
@@ -1530,7 +1535,26 @@ const Plan = (() => {
     Ceilings.draw(ctx, data, toScreen, cam.s, sel);
     tag(null);
     if (tag) tag({ cat: "Stairs", sub: null, kind: "projection" });
-    Stairs.draw(ctx, data, toScreen, cam.s, sel, { lw, colour, dash });
+    // with one of its runs or landings picked, the stair itself is drawn as usual and the part lit up
+    Stairs.draw(ctx, data, toScreen, cam.s, app.stairPart && sel.has(app.stairPart.id) ? new Set([...sel].filter((i) => i !== app.stairPart.id)) : sel, { lw, colour, dash });
+    {
+      // a stair's run or landing on its own: picked (blue fill) or reached with Tab (orange)
+      const picked = app.stairPart && sel.has(app.stairPart.id) ? app.stairPart : null;
+      const over = tool === "select" && selHover && selHover.part ? selHover.part : null;
+      ctx.save(); ctx.setLineDash([]);
+      // the part as drawn now (a run changed in Properties has a new outline)
+      const ringOf = (q) => {
+        for (const s of data.stairs || []) if (s.id === q.id) for (const c of s.parts || []) if (c.kind === q.kind && c.index === q.index && (c.storey ?? null) === q.storey) return c.ring;
+        return q.ring;
+      };
+      for (const [q, stroke, fill] of [[picked, css("--accent"), "rgba(46,111,158,0.25)"], [over, "#d4572f", null]]) {
+        if (!q) continue;
+        polyPath(ringOf(q));
+        if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+        ctx.strokeStyle = stroke; ctx.lineWidth = 2.5; ctx.stroke();
+      }
+      ctx.restore();
+    }
     Ramps.draw(ctx, data, toScreen, cam.s, sel, { lw, colour, dash });
     Railings.draw(ctx, data, toScreen, sel, { lw, colour, dash });
     tag(null);
@@ -1574,7 +1598,8 @@ const Plan = (() => {
     // Select tool: pre-highlight what a click would pick (Tab steps through the choices)
     // and the Tag tool the door or window a click would tag
     if ((tool === "select" || tool === "tag") && selHover && !band) {
-      const ids = new Set(selHover);
+      // a stair's run or landing reached with Tab is outlined on its own (below), not the whole stair
+      const ids = new Set(selHover.part ? [] : selHover);
       ctx.strokeStyle = "#d4572f"; ctx.lineWidth = 2;
       for (const e of elements()) {
         if (!ids.has(e.id) || sel.has(e.id)) continue;
@@ -2218,6 +2243,7 @@ const Plan = (() => {
     else if (ev.shiftKey) ids.forEach((i) => sel.delete(i));
     else if (ev.ctrlKey) ids.forEach((i) => sel.add(i));
     else sel = new Set(ids);
+    app.stairPart = ids && ids.part && !ev.ctrlKey && !ev.shiftKey ? ids.part : null;
     selHover = null;
     cb.select([...sel]);
     if (!ids && !cropSel && !ev.ctrlKey && !ev.shiftKey) emptySelectionClick(hadSelection);
@@ -2600,6 +2626,7 @@ const Plan = (() => {
         cb.joinEnd(joinSel.map((j) => ({ id: j.id, end: j.end })));
       } else {
         const ids = bandPick(b);
+        app.stairPart = null;
         if (e.shiftKey) ids.forEach((i) => sel.delete(i));
         else if (e.ctrlKey) ids.forEach((i) => sel.add(i));
         else sel = new Set(ids);
@@ -2647,7 +2674,7 @@ const Plan = (() => {
     thin: () => thin,
     dims: () => data.dimensions || [],
     selection: () => [...sel],
-    select: (ids) => { sel = new Set(ids); cb.select([...sel]); render(); },
+    select: (ids) => { sel = new Set(ids); app.stairPart = null; cb.select([...sel]); render(); },
     viewId: () => (data.view && data.view.id),
     settings: () => cb.dimSettings(),
     prompt: (t) => cb.prompt(t),

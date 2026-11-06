@@ -116,7 +116,10 @@ async function renderProperties() {
   const sel = $("#type-select"), body = $("#prop-body");
   const token = ++propsRender;
   let d = null;
-  if (app.selection.length === 1) d = await run("describe", { id: app.selection[0] });
+  // a stair's run or landing picked with Tab: its own properties
+  const part = app.selection.length === 1 && app.stairPart && app.stairPart.id === app.selection[0] ? app.stairPart : null;
+  if (part) d = await run("stair_part", { id: part.id, part: { kind: part.kind, index: part.index, storey: part.storey } });
+  else if (app.selection.length === 1) d = await run("describe", { id: app.selection[0] });
   else if (app.selection.length > 1) d = await run("describe_multi", { ids: app.selection });
   else if (!app.selection.length && app.browserSel != null && viewById(app.browserSel)) d = await run("describe", { id: app.browserSel });
   // the view's own tool: a plan's, or an elevation's or section's
