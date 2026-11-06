@@ -2268,6 +2268,7 @@ const Plan = (() => {
     if (tool === "ceilinggrid") { Ceilings.gridClick(snap(sx, sy)); return; }
     if (tool === "stair") { const l = Stairs.last(); Stairs.click(l ? snap(sx, sy, { last: l }) : snap(sx, sy)); return; }
     if (tool === "railingstair") { Railings.placeClick(rawCandidates(sx, sy).flat()); return; }
+    if (tool === "railinghost") { Railings.hostClick(toWorld(sx, sy)); return; }
     if (tool === "ramp") { const l = Ramps.last(); Ramps.click(l ? snap(sx, sy, { last: l }) : snap(sx, sy)); return; }
     if (tool === "area" || tool === "areatag" || tool === "areaboundary") {
       const walls = new Set(data.walls.map((w) => w.id));

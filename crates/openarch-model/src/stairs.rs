@@ -4,6 +4,7 @@
 //! its type's calculation rules. Every part of the stair is a convex solid, so the 3D mesh, elevations, sections and
 //! IFC all come from one list (`stair_pieces`); plans are drawn from the layout itself (`stair_layout`).
 
+use crate::view::DetailLevel;
 use serde::{Deserialize, Serialize};
 
 use crate::element::{IfcParams, TypeInfo};
@@ -366,6 +367,21 @@ fn down_run(a: Point, b: Point, k: f64) -> Point {
     Point::new(-lv.y / n * k, lv.x / n * k)
 }
 
+/// A band between two lines that run side by side (point for point), from `bottom` to `top` by distance along the
+/// walkline, cut off at `floor`: one solid a stretch.
+#[allow(clippy::too_many_arguments)]
+fn band_pieces(a: &[(Point, f64)], b: &[(Point, f64)], top: &dyn Fn(f64) -> f64, bottom: &dyn Fn(f64) -> f64, floor: f64, part: StairPart, m: &Option<String>, out: &mut Vec<StairPiece>) {
+    for i in 0..a.len().min(b.len()).saturating_sub(1) {
+        let cloud: Vec<[f64; 3]> = [a[i], a[i + 1], b[i], b[i + 1]].iter().flat_map(|(p, s)| {
+            let hi = top(*s);
+            [[p.x, p.y, hi], [p.x, p.y, bottom(*s).min(hi)]]
+        }).collect();
+        if let Some(c) = Convex::hull_of(&cloud).and_then(|c| c.clip(&|p| p[2], floor, true)) {
+            out.push(StairPiece { part, material: m.clone(), solid: c });
+        }
+    }
+}
+
 /// A spiral's, winder's or sketched run's supports: stringers along its edges, carriages under each tread, in short
 /// straight stretches.
 fn path_supports(run: &RunLayout, path: &crate::runpath::RunPath, riser: f64, tread: f64, t: &StairType, floor: f64, out: &mut Vec<StairPiece>) {
@@ -379,15 +395,7 @@ fn path_supports(run: &RunLayout, path: &crate::runpath::RunPath, riser: f64, tr
     // a band between two lines that run side by side (point for point), from `bottom` to `top` by distance along the
     // walkline: one solid a stretch
     let band = |a: &[(Point, f64)], b: &[(Point, f64)], top: &dyn Fn(f64) -> f64, bottom: &dyn Fn(f64) -> f64, m: &Option<String>, out: &mut Vec<StairPiece>| {
-        for i in 0..a.len().min(b.len()).saturating_sub(1) {
-            let cloud: Vec<[f64; 3]> = [a[i], a[i + 1], b[i], b[i + 1]].iter().flat_map(|(p, s)| {
-                let hi = top(*s);
-                [[p.x, p.y, hi], [p.x, p.y, bottom(*s).min(hi)]]
-            }).collect();
-            if let Some(c) = Convex::hull_of(&cloud).and_then(|c| c.clip(&|p| p[2], floor, true)) {
-                out.push(StairPiece { part: StairPart::Support(run.index), material: m.clone(), solid: c });
-            }
-        }
+        band_pieces(a, b, top, bottom, floor, StairPart::Support(run.index), m, out);
     };
     let carriage = |s: &Support, a: &[(Point, f64)], b: &[(Point, f64)], out: &mut Vec<StairPiece>| {
         let drop = s.total_depth_mm * slope;
@@ -1009,6 +1017,42 @@ impl Document {
         out
     }
 
+    /// A stair's parts at a detail level: Coarse each run a plain sloped flight (no steps or supports) and its landings;
+    /// Medium and Fine every part.
+    pub fn stair_pieces_at(&self, s: &Stair, detail: DetailLevel) -> Vec<StairPiece> {
+        if detail != DetailLevel::Coarse { return self.stair_pieces(s); }
+        let mut out = vec![];
+        for (c, st) in self.stair_storeys(s).iter().enumerate() {
+            let off = c * 100;
+            let (Some(t), Some(l)) = (self.stair_type(st.stair_type), self.stair_layout(st)) else { continue };
+            let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
+            let m = mat(if t.run.monolithic { &t.run.material } else { &t.run.tread_material });
+            let pitch = if l.tread_mm > 0.0 { l.riser_mm / l.tread_mm } else { 0.0 };
+            let depth = if t.run.monolithic { t.run.structural_depth_mm } else { t.run.tread_thickness_mm.max(100.0) };
+            let drop = depth * (1.0 + pitch * pitch).sqrt();
+            for run in &l.runs {
+                let on_landing = l.landings.iter().any(|x| x.after_run + 1 == run.index);
+                let floor = run.z0 - if on_landing { t.landing.thickness_mm } else { 0.0 };
+                let part = StairPart::Run(run.index + off);
+                let w = run.width / 2.0;
+                if let Some(path) = &run.path {
+                    let (a, b) = (crate::railing::offset_line(&path.walk, w), crate::railing::offset_line(&path.walk, -w));
+                    band_pieces(&a, &b, &|sv| run.nosing_z(sv), &|sv| run.nosing_z(sv) - drop, floor, part, &m, &mut out);
+                    continue;
+                }
+                let (z0, z1) = (run.nosing_z(0.0), run.nosing_z(run.length));
+                let profile = vec![[0.0, z0 - drop], [run.length, z1 - drop], [run.length, z1], [0.0, z0]];
+                if let Some(c) = Convex::across(run, &profile, -w, w).clip(&|p| p[2], floor, true) {
+                    out.push(StairPiece { part, material: m.clone(), solid: c });
+                }
+            }
+            for g in &l.landings {
+                out.push(StairPiece { part: StairPart::Landing(g.index + off), material: mat(&t.landing.material), solid: Convex::prism(&g.outline, g.z - g.thickness, g.z) });
+            }
+        }
+        out
+    }
+
     /// One storey's parts.
     fn storey_pieces(&self, s: &Stair) -> Vec<StairPiece> {
         let (Some(t), Some(l)) = (self.stair_type(s.stair_type), self.stair_layout(s)) else { return vec![] };
@@ -1227,8 +1271,12 @@ impl Document {
 
     /// The 3D view's meshes: one per material, the pieces made of it together.
     pub fn stair_meshes(&self, s: &Stair) -> Vec<(Option<String>, Vec<f32>)> {
+        self.stair_meshes_at(s, DetailLevel::Medium)
+    }
+
+    pub fn stair_meshes_at(&self, s: &Stair, detail: DetailLevel) -> Vec<(Option<String>, Vec<f32>)> {
         let mut by: Vec<(Option<String>, Vec<f32>)> = vec![];
-        for p in self.stair_pieces(s) {
+        for p in self.stair_pieces_at(s, detail) {
             let k = match by.iter().position(|(m, _)| *m == p.material) {
                 Some(k) => k,
                 None => { by.push((p.material.clone(), vec![])); by.len() - 1 }
@@ -1240,8 +1288,9 @@ impl Document {
 
     /// Elevations and sections: each piece as seen, the hull of its corners in the view (horizontal `u`, height),
     /// at the depth of its nearest corner, and for a section what its plane cuts. `d` is depth into the view.
-    pub(crate) fn stair_view_items(&self, id: Id, s: &Stair, u: &dyn Fn(Point) -> f64, d: &dyn Fn(Point) -> f64, near: f64, far: f64, cut: Option<f64>) -> Vec<crate::site::ElevItem> {
-        let pieces: Vec<(Option<String>, Convex)> = self.stair_pieces(s).into_iter().map(|p| (p.material, p.solid)).collect();
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn stair_view_items(&self, id: Id, s: &Stair, u: &dyn Fn(Point) -> f64, d: &dyn Fn(Point) -> f64, near: f64, far: f64, cut: Option<f64>, detail: DetailLevel) -> Vec<crate::site::ElevItem> {
+        let pieces: Vec<(Option<String>, Convex)> = self.stair_pieces_at(s, detail).into_iter().map(|p| (p.material, p.solid)).collect();
         self.convex_view_items(id, "Stairs", &pieces, u, d, near, far, cut)
     }
 

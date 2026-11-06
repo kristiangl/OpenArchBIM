@@ -923,7 +923,7 @@ impl Document {
     /// Everything the cut plane passes through, as closed profiles in the section's own axes (u across, z up):
     /// wall layers with the openings of doors and windows taken out, floor layers, roofs. They draw over the
     /// projection. With the far clip on, `far_lines` also gets the outline of what the far clip plane passes through.
-    pub(crate) fn section_cut_items(&self, sl: &Slice, hidden: &dyn Fn(Id) -> bool, far_lines: &mut Vec<ElevItem>) -> Vec<ElevItem> {
+    pub(crate) fn section_cut_items(&self, sl: &Slice, hidden: &dyn Fn(Id) -> bool, far_lines: &mut Vec<ElevItem>, detail: crate::view::DetailLevel) -> Vec<ElevItem> {
         let mut out: Vec<ElevItem> = vec![];
         let shade = |m: &str| self.material(m).map_or([200, 200, 200], |m| [m.graphics.shading_color[0], m.graphics.shading_color[1], m.graphics.shading_color[2]]);
         let far_wanted = sl.far == FarClip::WithLine;
@@ -1084,7 +1084,7 @@ impl Document {
             if hidden(id) {
                 continue;
             }
-            for mut it in self.stair_view_items(id, s, &|p| sl.u(p), &|p| sl.d(p), 0.0, 0.0, Some(sl.plane + PLANE_EPS)) {
+            for mut it in self.stair_view_items(id, s, &|p| sl.u(p), &|p| sl.d(p), 0.0, 0.0, Some(sl.plane + PLANE_EPS), detail) {
                 it.polys = it.polys.iter().map(|p| sl.clip_width(p)).filter(|p| p.len() >= 3).collect();
                 if !it.polys.is_empty() { out.push(it); }
             }
@@ -1104,7 +1104,7 @@ impl Document {
             if hidden(id) {
                 continue;
             }
-            for mut it in self.railing_view_items(id, r, &|p| sl.u(p), &|p| sl.d(p), 0.0, 0.0, Some(sl.plane + PLANE_EPS)) {
+            for mut it in self.railing_view_items(id, r, &|p| sl.u(p), &|p| sl.d(p), 0.0, 0.0, Some(sl.plane + PLANE_EPS), detail) {
                 it.polys = it.polys.iter().map(|p| sl.clip_width(p)).filter(|p| p.len() >= 3).collect();
                 if !it.polys.is_empty() { out.push(it); }
             }

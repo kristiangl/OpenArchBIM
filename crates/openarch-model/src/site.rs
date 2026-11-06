@@ -1352,6 +1352,8 @@ impl Document {
     /// comes, for the reference lines of temporary dimensions.
     #[allow(clippy::type_complexity)]
     fn elevation_items(&self, v: &View, frame: &ElevFrame, sl: Option<&crate::section::Slice>, cue: Option<Cue>) -> (Vec<ElevItem>, std::collections::BTreeMap<Id, Vec<Vec<Point>>>, std::collections::BTreeMap<Id, f64>) {
+        // stairs and railings are drawn at the view's detail level
+        let detail = self.effective_settings_of(v).detail_level;
         let o = Point::new(frame.origin[0], frame.origin[1]);
         let (look, right) = (Point::new(frame.look[0], frame.look[1]), Point::new(frame.right[0], frame.right[1]));
         let u_of = |p: Point| (p.x - o.x) * right.x + (p.y - o.y) * right.y;
@@ -1741,7 +1743,7 @@ impl Document {
             if hidden(id) {
                 continue;
             }
-            for mut it in self.stair_view_items(id, s, &u_of, &d_of, near, far, None) {
+            for mut it in self.stair_view_items(id, s, &u_of, &d_of, near, far, None, detail) {
                 if let Some(slc) = &sl {
                     it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
                     if it.polys.is_empty() { continue; }
@@ -1767,7 +1769,7 @@ impl Document {
             if hidden(id) {
                 continue;
             }
-            for mut it in self.railing_view_items(id, r, &u_of, &d_of, near, far, None) {
+            for mut it in self.railing_view_items(id, r, &u_of, &d_of, near, far, None, detail) {
                 if let Some(slc) = &sl {
                     it.polys = it.polys.iter().map(|p| slc.clip_width(p)).filter(|p| p.len() >= 3).collect();
                     if it.polys.is_empty() { continue; }
@@ -1887,7 +1889,7 @@ impl Document {
             }
             items.retain(|it| !it.polys.is_empty() || !it.lines.is_empty());
             let mut far = vec![];
-            items.extend(self.section_cut_items(s, &hidden, &mut far));
+            items.extend(self.section_cut_items(s, &hidden, &mut far, detail));
             items.extend(far);
         }
         if let Some(c) = cue {

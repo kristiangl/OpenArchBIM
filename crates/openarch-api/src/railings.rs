@@ -29,7 +29,8 @@ impl Session {
             "railing_path" => (|| {
                 let r = self.doc.railing(id_of(p, "id")?).ok_or("not a railing")?;
                 if r.host.is_some() { return Err("A railing on a stair follows the stair: edit the stair.".into()); }
-                let curves: Vec<Value> = r.path.windows(2).map(|w| crate::describe_curve(&Curve::line(w[0], w[1]))).collect();
+                // as drawn (arcs stay arcs), or its points joined by lines
+                let curves: Vec<Value> = if r.curves.is_empty() { r.path.windows(2).map(|w| crate::describe_curve(&Curve::line(w[0], w[1]))).collect() } else { r.curves.iter().map(crate::describe_curve).collect() };
                 Ok(json!({ "level_id": r.level, "type_id": r.railing_type, "curves": curves }))
             })(),
             "set_railing_path" => (|| { self.doc.set_railing_path(id_of(p, "id")?, &curves_of(p)?)?; Ok(json!({})) })(),
@@ -54,11 +55,12 @@ impl Session {
         if rules.is_empty() { rules.push(ro("Maximum Opening", "Met")); }
         let mut constraints = vec![
             ro("Level", d.level(r.level).map_or(String::new(), |l| l.name.clone())),
-            ro("Host", if hosted { "Stair".to_string() } else { "None".to_string() }),
+            ro("Host", if hosted { if r.host.is_some_and(|h| d.ramp(h.stair).is_some()) { "Ramp" } else { "Stair" } } else if r.floor_host.is_some() { "Floor" } else { "Level" }),
         ];
         if let Some(h) = r.host {
             constraints.push(ro("Side", if h.side == openarch_model::railing::RailingSide::Left { "Left" } else { "Right" }));
             constraints.push(enum_select("Placement", "placement", &name_of(&r.placement), &[("treads", "Treads"), ("stringer", "Stringer")]));
+            constraints.push(boolean("Flipped", "flipped", r.flipped, free));
         } else {
             constraints.push(num("Base Offset", "base_offset_mm", r.base_offset_mm, free));
             constraints.push(boolean("Flipped", "flipped", r.flipped, free));
@@ -125,6 +127,8 @@ pub(crate) fn railing_type_props(d: &Document, id: Id, t: &RailingType) -> Value
                 num("Extension at Top", &format!("{part}.extension_top_mm"), h.extension_top_mm, true),
                 num("Extension at Bottom", &format!("{part}.extension_bottom_mm"), h.extension_bottom_mm, true),
                 enum_select("Termination", &format!("{part}.termination"), &name_of(&h.termination), &[("none", "None"), ("wall", "Wall"), ("floor", "Floor"), ("post", "Post")]),
+                num("Wall Clearance", &format!("{part}.clearance_mm"), h.clearance_mm, true),
+                num("Bracket Spacing", &format!("{part}.bracket_spacing_mm"), h.bracket_spacing_mm, true),
                 material("Material", &format!("{part}.profile.material"), &h.profile.material),
             ]);
         }
@@ -184,7 +188,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         if settings.detail_level == openarch_model::view::DetailLevel::Coarse {
             polys.push(json!({ "pts": host.pts.iter().map(|(p, _)| [p.x, p.y]).collect::<Vec<_>>(), "above": false, "open": true }));
         }
-        for p in d.railing_pieces(r).into_iter().filter(|_| settings.detail_level != openarch_model::view::DetailLevel::Coarse) {
+        for p in d.railing_pieces_at(r, settings.detail_level).into_iter().filter(|_| settings.detail_level != openarch_model::view::DetailLevel::Coarse) {
             let (z0, _) = p.solid.z_range();
             let above = z0 > range.cut + 1e-6;
             if above && matches!(p.part, RailPart::Baluster | RailPart::Post) { continue; }
@@ -199,7 +203,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
             let (nx, ny) = (-(b.y - a.y) / l * 100.0, (b.x - a.x) / l * 100.0);
             Some(vec![[a.x + nx, a.y + ny], [b.x + nx, b.y + ny], [b.x - nx, b.y - ny], [a.x - nx, a.y - ny]])
         }).collect();
-        out.push(json!({ "id": id, "pinned": r.pinned, "hosted": r.host.is_some(), "polys": polys, "rings": rings, "style": line }));
+        out.push(json!({ "id": id, "pinned": r.pinned, "hosted": r.host.is_some(), "flipped": r.flipped, "floor_host": r.floor_host, "polys": polys, "rings": rings, "style": line }));
     }
     json!({ "railings": out })
 }

@@ -163,3 +163,89 @@ fn a_storey_of_a_multistory_stair_unpins_to_change_on_its_own() {
     call(&mut m.s, "undo", json!({}));
     assert_eq!(call(&mut m.s, "stair_edit", json!({ "id": id, "level": m.l2 }))["storey"], m.l2);
 }
+
+fn railing_type(m: &M, name: &str) -> u64 {
+    m.info["railing_types"].as_array().unwrap().iter().find(|t| t["name"] == name).unwrap()["id"].as_u64().unwrap()
+}
+
+/// Each railing mesh's vertex count and lowest point (m), by id.
+fn railing_mesh(s: &mut Session, id: u64) -> (usize, f64) {
+    let scene = call(s, "scene", json!({}));
+    let mut n = 0;
+    let mut lo = f64::INFINITY;
+    for x in scene["meshes"].as_array().unwrap().iter().filter(|x| x["id"] == id) {
+        let v = x["verts"].as_array().unwrap();
+        n += v.len() / 6;
+        for k in (0..v.len()).step_by(6) { lo = lo.min(v[k + 2].as_f64().unwrap()); }
+    }
+    (n, lo)
+}
+
+#[test]
+fn handrails_end_in_their_termination_and_3d_follows_the_detail_level() {
+    let mut m = model();
+    let id = u_stair(&mut m, "Concrete Stair");
+    let rail = railing_type(&m, "Balustrade 1000");
+    let ids: Vec<u64> = call(&mut m.s, "add_stair_railings", json!({ "stair_id": id, "type_id": rail, "placement": "treads" }))["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    let r = ids[0];
+    let v3 = m.info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+    let detail = |s: &mut Session, d: &str| { call(s, "patch_view", json!({ "id": v3, "patch": { "settings": { "detail_level": d } } })); };
+    // Medium: the Wall termination returns each end; with None the rail just stops
+    let (wall, _) = railing_mesh(&mut m.s, r);
+    call(&mut m.s, "patch_railing_type", json!({ "id": rail, "patch": { "handrail_1": { "termination": "none" } } }));
+    let (none, _) = railing_mesh(&mut m.s, r);
+    assert!(wall > none, "{wall} {none}");
+    call(&mut m.s, "patch_railing_type", json!({ "id": rail, "patch": { "handrail_1": { "termination": "floor" } } }));
+    let (floor, _) = railing_mesh(&mut m.s, r);
+    assert!(floor > none);
+    // Fine: rounder rails and the handrail's brackets; Coarse: one bar
+    detail(&mut m.s, "fine");
+    let (fine, _) = railing_mesh(&mut m.s, r);
+    detail(&mut m.s, "coarse");
+    let (coarse, _) = railing_mesh(&mut m.s, r);
+    assert!(coarse < floor && floor < fine, "{coarse} {floor} {fine}");
+    let stair_verts = |s: &mut Session| -> usize { call(s, "scene", json!({}))["meshes"].as_array().unwrap().iter().filter(|x| x["id"] == id).map(|x| x["verts"].as_array().unwrap().len()).sum() };
+    let coarse_stair = stair_verts(&mut m.s);
+    detail(&mut m.s, "medium");
+    assert!(coarse_stair < stair_verts(&mut m.s), "a coarse stair is a plain flight");
+    // Flip moves a stair railing's handrail to the outside
+    let hand_x = |s: &mut Session| -> f64 {
+        let plan = call(s, "plan", json!({ "view_id": m.p1 }));
+        let it = plan["railings"].as_array().unwrap().iter().find(|x| x["id"] == r).unwrap().clone();
+        it["polys"].as_array().unwrap().iter().flat_map(|p| p["pts"].as_array().unwrap().iter().map(|q| q[0].as_f64().unwrap()).collect::<Vec<_>>()).fold(f64::INFINITY, f64::min)
+    };
+    let before = hand_x(&mut m.s);
+    call(&mut m.s, "patch_railing", json!({ "id": r, "patch": { "flipped": true } }));
+    assert!(hand_x(&mut m.s) < before - 50.0, "the handrail goes outside the stair's edge");
+}
+
+#[test]
+fn a_sketched_railing_stands_on_a_floor_and_keeps_its_arcs() {
+    let mut m = model();
+    let rail = railing_type(&m, "Balustrade 1000");
+    let ft = m.info["floor_types"][0]["id"].clone();
+    let floor = call(&mut m.s, "add_floor", json!({ "type_id": ft, "level_id": m.l1, "points": [[0, 0], [6000, 0], [6000, 4000], [0, 4000]] }))["id"].as_u64().unwrap();
+    call(&mut m.s, "patch_floor", json!({ "id": floor, "patch": { "offset_mm": 500 } }));
+    let curves = json!([
+        { "type": "line", "a": { "x": 500, "y": 500 }, "b": { "x": 3000, "y": 500 } },
+        { "type": "arc", "start": { "x": 3000, "y": 500 }, "end": { "x": 5000, "y": 2500 }, "centre": { "x": 3000, "y": 2500 }, "ccw": true },
+    ]);
+    let r = call(&mut m.s, "add_railing", json!({ "type_id": rail, "level_id": m.l1, "curves": curves }))["id"].as_u64().unwrap();
+    assert!(railing_mesh(&mut m.s, r).1.abs() < 1e-6, "on its level");
+    call(&mut m.s, "patch_railing", json!({ "id": r, "patch": { "floor_host": floor } }));
+    assert!((railing_mesh(&mut m.s, r).1 - 0.5).abs() < 1e-6, "on the floor's top");
+    let d = call(&mut m.s, "describe", json!({ "id": r }));
+    assert!(d.to_string().contains("\"Floor\""));
+    assert!(d["warnings"].as_array().unwrap().is_empty(), "{}", d["warnings"]);
+    // Edit Path gives the arc back as an arc
+    let p = call(&mut m.s, "railing_path", json!({ "id": r }));
+    assert!(p["curves"].as_array().unwrap().iter().any(|c| c["curve"]["type"] == "arc" || c["type"] == "arc"), "{p}");
+    // a path running off the floor warns
+    call(&mut m.s, "set_railing_path", json!({ "id": r, "curves": [{ "type": "line", "a": { "x": 500, "y": 500 }, "b": { "x": 9000, "y": 500 } }] }));
+    let d = call(&mut m.s, "describe", json!({ "id": r }));
+    assert!(d["warnings"].to_string().contains("off its floor"), "{}", d["warnings"]);
+    // a railing on a stair cannot also stand on a floor
+    let id = u_stair(&mut m, "Concrete Stair");
+    let ids = call(&mut m.s, "add_stair_railings", json!({ "stair_id": id, "type_id": rail, "placement": "treads" }))["ids"].clone();
+    assert!(m.s.handle("patch_railing", &json!({ "id": ids[0], "patch": { "floor_host": floor } })).is_err());
+}

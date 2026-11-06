@@ -355,6 +355,7 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "ceiling") return Ceilings.context();
   if (app.view.kind === "plan" && Plan.tool === "stair") return Stairs.context();
   if (app.view.kind === "plan" && Plan.tool === "railingstair") return Railings.context();
+  if (app.view.kind === "plan" && Plan.tool === "railinghost") return Railings.hostContext();
   if (app.view.kind === "plan" && Plan.tool === "ramp") return Ramps.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();

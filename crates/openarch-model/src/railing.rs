@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 use crate::curve::Curve;
 use crate::element::{IfcParams, TypeInfo};
 use crate::stairs::{Convex, StairLayout};
+use crate::view::DetailLevel;
 use crate::{Document, Element, Id, Point};
 
 fn yes() -> bool { true }
@@ -15,6 +16,8 @@ fn d_height() -> f64 { 1000.0 }
 fn d_hand() -> f64 { 900.0 }
 fn d_gap() -> f64 { 125.0 }
 fn d_ext() -> f64 { 300.0 }
+fn d_clear() -> f64 { 60.0 }
+fn d_bracket() -> f64 { 900.0 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -41,11 +44,11 @@ impl RailProfile {
         if self.shape == RailShape::Round { self.width_mm } else { self.height_mm }
     }
 
-    /// The section's outline across and up, about its centre.
-    fn outline(&self) -> Vec<[f64; 2]> {
+    /// The section's outline across and up, about its centre; a round one with `sides` sides.
+    fn outline(&self, sides: usize) -> Vec<[f64; 2]> {
         let (w, h) = (self.width_mm / 2.0, self.depth() / 2.0);
         match self.shape {
-            RailShape::Round => (0..12).map(|k| { let a = std::f64::consts::TAU * k as f64 / 12.0; [w * a.cos(), w * a.sin()] }).collect(),
+            RailShape::Round => (0..sides).map(|k| { let a = std::f64::consts::TAU * k as f64 / sides as f64; [w * a.cos(), w * a.sin()] }).collect(),
             RailShape::Rectangular => vec![[-w, -h], [w, -h], [w, h], [-w, h]],
         }
     }
@@ -89,6 +92,13 @@ pub struct Handrail {
     pub extension_bottom_mm: f64,
     #[serde(default)]
     pub termination: Termination,
+    /// The clear space between the rail and the wall it is fixed to (a Wall termination returns this far, and the
+    /// brackets reach it, when the rail is not set off a balustrade).
+    #[serde(default = "d_clear")]
+    pub clearance_mm: f64,
+    /// Brackets at most this far apart (0: none). Drawn at Fine detail.
+    #[serde(default = "d_bracket")]
+    pub bracket_spacing_mm: f64,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -195,9 +205,16 @@ pub struct Railing {
     pub placement: RailingPlacement,
     #[serde(default)]
     pub slope: RailingSlope,
-    /// Which side of a sketched path the handrails and balusters sit towards.
+    /// Which side of the path the handrails and balusters sit towards: the other one when flipped (on a stair, the
+    /// outside instead of the walking side).
     #[serde(default)]
     pub flipped: bool,
+    /// A sketched railing standing on a floor: it follows the floor's top (a sloped floor too).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub floor_host: Option<Id>,
+    /// A sketched railing's path as drawn (arcs stay arcs for Edit Path); `path` is it as points.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub curves: Vec<Curve>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -437,15 +454,48 @@ impl Document {
             None => {
                 let z = self.level(r.level)?.elevation_mm + r.base_offset_mm;
                 if r.path.len() < 2 { return None; }
-                Some(HostLine { pts: r.path.iter().map(|p| (*p, z)).collect(), runs: vec![None; r.path.len() - 1], tread: None })
+                let pts: Vec<(Point, f64)> = match self.railing_floor(r) {
+                    Some((f, surf)) => {
+                        // on its floor's top: points close enough to follow a slope that changes, then only those where it
+                        // does change kept
+                        let regions = f.regions(0.5);
+                        let on = |p: Point| if regions.iter().any(|g| crate::rooms::contains(g, p)) { surf.z(p) + r.base_offset_mm } else { z };
+                        let mut dense: Vec<Point> = vec![];
+                        for w in r.path.windows(2) {
+                            let n = (w[0].dist(&w[1]) / 250.0).ceil().max(1.0) as usize;
+                            for k in 0..n { let t = k as f64 / n as f64; dense.push(Point::new(w[0].x + (w[1].x - w[0].x) * t, w[0].y + (w[1].y - w[0].y) * t)); }
+                        }
+                        dense.push(*r.path.last()?);
+                        let corners: Vec<bool> = dense.iter().map(|p| r.path.iter().any(|q| q.dist(p) < 1e-6)).collect();
+                        let all: Vec<(Point, f64)> = dense.iter().map(|p| (*p, on(*p))).collect();
+                        let mut kept = vec![all[0]];
+                        for i in 1..all.len() - 1 {
+                            let (a, b, c) = (kept[kept.len() - 1], all[i], all[i + 1]);
+                            let t = a.0.dist(&b.0) / (a.0.dist(&b.0) + b.0.dist(&c.0)).max(1e-9);
+                            if corners[i] || (b.1 - (a.1 + (c.1 - a.1) * t)).abs() > 1.0 { kept.push(b); }
+                        }
+                        kept.push(all[all.len() - 1]);
+                        kept
+                    }
+                    None => r.path.iter().map(|p| (*p, z)).collect(),
+                };
+                let n = pts.len() - 1;
+                Some(HostLine { pts, runs: vec![None; n], tread: None })
             }
         }
+    }
+
+    /// A sketched railing's floor and the floor's top surface.
+    fn railing_floor(&self, r: &Railing) -> Option<(crate::element::Floor, crate::doc::FloorSurface)> {
+        let f = match self.get(r.floor_host?)? { Element::Floor(f) => f.clone(), _ => return None };
+        let s = self.floor_surface(&f)?;
+        Some((f, s))
     }
 
     /// Which way a railing's handrails and balusters face (left of the line: +1), towards the stair's walking side.
     fn railing_inward(&self, r: &Railing) -> f64 {
         match r.host {
-            Some(h) => if h.side == RailingSide::Left { -1.0 } else { 1.0 },
+            Some(h) => (if h.side == RailingSide::Left { -1.0 } else { 1.0 }) * if r.flipped { -1.0 } else { 1.0 },
             None => if r.flipped { -1.0 } else { 1.0 },
         }
     }
@@ -455,20 +505,27 @@ impl Document {
         self.railing_host_line(r).map_or(0.0, |l| l.pts.windows(2).map(|w| w[0].0.dist(&w[1].0)).sum())
     }
 
-    /// A railing's parts: its top rail and handrails along the path, its balusters and posts.
+    /// A railing's parts: its top rail and handrails along the path, its balusters and posts (at Medium detail).
     pub fn railing_pieces(&self, r: &Railing) -> Vec<RailPiece> {
-        // on a multistory stair, the railing repeats on every storey
-        if let Some(s) = r.host.and_then(|h| self.stair(h.stair)) {
-            return self.stair_layouts(s).into_iter().flat_map(|l| self.pieces_on(r, self.host_line_on(r, &l), Some(l))).collect();
-        }
-        self.pieces_on(r, self.railing_host_line(r), r.host.and_then(|h| self.host_layout(h.stair)))
+        self.railing_pieces_at(r, DetailLevel::Medium)
     }
 
-    fn pieces_on(&self, r: &Railing, line: Option<HostLine>, stair_layout: Option<StairLayout>) -> Vec<RailPiece> {
+    /// A railing's parts at a detail level: Coarse its top rail alone (or its first handrail), as a plain bar; Medium
+    /// every part, round rails as octagons; Fine rounder rails and the handrails' wall brackets.
+    pub fn railing_pieces_at(&self, r: &Railing, detail: DetailLevel) -> Vec<RailPiece> {
+        // on a multistory stair, the railing repeats on every storey
+        if let Some(s) = r.host.and_then(|h| self.stair(h.stair)) {
+            return self.stair_layouts(s).into_iter().flat_map(|l| self.pieces_on(r, self.host_line_on(r, &l), Some(l), detail)).collect();
+        }
+        self.pieces_on(r, self.railing_host_line(r), r.host.and_then(|h| self.host_layout(h.stair)), detail)
+    }
+
+    fn pieces_on(&self, r: &Railing, line: Option<HostLine>, stair_layout: Option<StairLayout>, detail: DetailLevel) -> Vec<RailPiece> {
         let (Some(t), Some(line)) = (self.railing_type(r.railing_type), line) else { return vec![] };
         let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
         let mut out = vec![];
         let pts = &line.pts;
+        let sides = if detail == DetailLevel::Fine { 16 } else { 8 };
         let flight = |k: usize| line.runs.get(k).copied().flatten().is_some();
         // the height of a rail over the line: one height over flights, another elsewhere, a vertex between the two
         // taking the flight's
@@ -477,13 +534,26 @@ impl Document {
             pts[k].1 + if near { on_flight } else { flat }
         };
         let beams = |line3: &[[f64; 3]], prof: &RailProfile, part: RailPart, out: &mut Vec<RailPiece>| {
-            let o = prof.outline();
+            let o = prof.outline(sides);
             for w in line3.windows(2) {
                 let (a, b) = (w[0], w[1]);
                 if ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt() < 1.0 { continue; }
                 out.push(RailPiece { part, material: mat(&prof.material), solid: Convex::beam(a, b, &o) });
             }
         };
+        // Coarse: one bar along the line at the railing's height
+        if detail == DetailLevel::Coarse {
+            let (h, flight, prof, part) = match (&t.top_rail, &t.handrail_1) {
+                (Some(tr), _) => (tr.height_mm, tr.flight_height_mm, &tr.profile, RailPart::TopRail),
+                (None, Some(h)) => (h.height_mm, h.height_mm, &h.profile, RailPart::Handrail(1)),
+                _ => return out,
+            };
+            let bar = RailProfile { shape: RailShape::Rectangular, width_mm: prof.width_mm, height_mm: prof.depth(), material: prof.material.clone() };
+            let c = bar.height_mm / 2.0;
+            let l3: Vec<[f64; 3]> = pts.iter().enumerate().map(|(k, (p, _))| [p.x, p.y, rail_z(k, flight, h) - c]).collect();
+            beams(&l3, &bar, part, &mut out);
+            return out;
+        }
         let mut top_at: Option<Vec<f64>> = None;
         if let Some(tr) = &t.top_rail {
             let zs: Vec<f64> = (0..pts.len()).map(|k| rail_z(k, tr.flight_height_mm, tr.height_mm)).collect();
@@ -516,6 +586,55 @@ impl Document {
                 }
             }
             beams(&l3, &h.profile, RailPart::Handrail(k as u8 + 1), &mut out);
+            if l3.len() < 2 { continue; }
+            // away from the walking side, square to the rail in plan, at an end or along it
+            let away = |a: [f64; 3], b: [f64; 3]| -> Option<Point> {
+                let u = norm(Point::new(b[0] - a[0], b[1] - a[1]))?;
+                Some(Point::new(u.y * inward, -u.x * inward))
+            };
+            // how far the rail stands off what it is fixed to: the balustrade it is set in from, or the wall
+            let reach = if h.offset_mm > 1.0 { h.offset_mm } else { h.clearance_mm + h.profile.width_mm / 2.0 };
+            let part = RailPart::Handrail(k as u8 + 1);
+            let n = l3.len();
+            let ends = [(l3[0], away(l3[0], l3[1])), (l3[n - 1], away(l3[n - 2], l3[n - 1]))];
+            let drop = h.height_mm - c;
+            for (e, o) in ends {
+                match h.termination {
+                    Termination::None => {}
+                    // a return to the wall or balustrade
+                    Termination::Wall => if let Some(o) = o {
+                        out.push(RailPiece { part, material: mat(&h.profile.material), solid: Convex::beam(e, [e[0] + o.x * reach, e[1] + o.y * reach, e[2]], &h.profile.outline(sides)) });
+                    },
+                    // turned down to the floor
+                    Termination::Floor => out.push(RailPiece { part, material: mat(&h.profile.material), solid: Convex::beam(e, [e[0], e[1], e[2] - drop], &h.profile.outline(sides)) }),
+                    // into a post of its own
+                    Termination::Post => {
+                        let w = h.profile.width_mm.max(40.0) / 2.0;
+                        let sq = [Point::new(e[0] - w, e[1] - w), Point::new(e[0] + w, e[1] - w), Point::new(e[0] + w, e[1] + w), Point::new(e[0] - w, e[1] + w)];
+                        out.push(RailPiece { part: RailPart::Post, material: mat(&h.profile.material), solid: Convex::prism(&sq, e[2] - drop, e[2] + c) });
+                    }
+                }
+            }
+            // Fine: brackets under the rail, out to what it is fixed to, evenly no further apart than the spacing
+            if detail == DetailLevel::Fine && h.bracket_spacing_mm > 1.0 {
+                let segs: Vec<f64> = l3.windows(2).map(|w| ((w[1][0] - w[0][0]).powi(2) + (w[1][1] - w[0][1]).powi(2)).sqrt()).collect();
+                let total: f64 = segs.iter().sum();
+                let inset = 150.0_f64.min(total / 4.0);
+                let span = total - 2.0 * inset;
+                let count = if span > 1.0 { (span / h.bracket_spacing_mm).ceil() as usize + 1 } else { 1 };
+                let sq = [[-6.0, -6.0], [6.0, -6.0], [6.0, 6.0], [-6.0, 6.0]];
+                for j in 0..count {
+                    let mut at = if count == 1 { total / 2.0 } else { inset + span * j as f64 / (count - 1) as f64 };
+                    let Some(i) = segs.iter().position(|l| { if at <= *l + 1e-9 { true } else { at -= l; false } }) else { continue };
+                    let (a, b) = (l3[i], l3[i + 1]);
+                    let f = if segs[i] > 1e-9 { at / segs[i] } else { 0.0 };
+                    let p = [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
+                    let Some(o) = away(a, b) else { continue };
+                    let q = [p[0], p[1], p[2] - c - 40.0];
+                    out.push(RailPiece { part, material: mat(&h.profile.material), solid: Convex::beam([p[0], p[1], p[2] - c], q, &sq) });
+                    out.push(RailPiece { part, material: mat(&h.profile.material), solid: Convex::beam(q, [q[0] + o.x * reach, q[1] + o.y * reach, q[2]], &sq) });
+                }
+            }
         }
         // balusters, up to the underside of the top rail
         if let (Some(b), Some(tops)) = (&t.balusters, &top_at) {
@@ -585,6 +704,10 @@ impl Document {
         let mut out = vec![];
         let Some(t) = self.railing_type(r.railing_type) else { return out };
         if r.host.is_some_and(|h| self.host_layout(h.stair).is_none()) { out.push("The railing's stair or ramp is gone.".into()); return out; }
+        if let Some((f, _)) = self.railing_floor(r) {
+            let regions = f.regions(0.5);
+            if r.path.iter().any(|p| !regions.iter().any(|g| crate::rooms::contains(g, *p))) { out.push("Part of the railing's path is off its floor.".into()); }
+        }
         let Some(b) = &t.balusters else { return out };
         let Some(line) = self.railing_host_line(r) else { return out };
         let tread = r.host.and_then(|h| self.stair(h.stair)).map(|s| s.tread_depth_mm);
@@ -615,6 +738,10 @@ impl Document {
         if self.railing_type(r.railing_type).is_none() { return Err("unknown railing type".into()); }
         if self.level(r.level).is_none() { return Err("unknown level".into()); }
         if !r.base_offset_mm.is_finite() { return Err("the offset must be a number".into()); }
+        if let Some(f) = r.floor_host {
+            if r.host.is_some() { return Err("A railing on a stair or ramp follows it, not a floor.".into()); }
+            if !matches!(self.get(f), Some(Element::Floor(_))) { return Err("The railing's host must be a floor.".into()); }
+        }
         match r.host {
             Some(h) => { if self.host_layout(h.stair).is_none() { return Err("unknown stair or ramp".into()); } }
             None => { if r.path.len() < 2 { return Err("A railing path needs at least one line.".into()); } }
@@ -623,13 +750,14 @@ impl Document {
     }
 
     fn new_railing(&self, railing_type: Id, level: Id) -> Railing {
-        Railing { railing_type, level, base_offset_mm: 0.0, path: vec![], host: None, placement: RailingPlacement::Treads, slope: RailingSlope::ByHost, flipped: false, pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
+        Railing { railing_type, level, base_offset_mm: 0.0, path: vec![], host: None, placement: RailingPlacement::Treads, slope: RailingSlope::ByHost, flipped: false, floor_host: None, curves: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
     }
 
     /// Sketch Path's Finish: a railing along the sketched lines, which must join end to end.
     pub fn add_railing(&mut self, railing_type: Id, level: Id, curves: &[Curve]) -> Result<Id, String> {
         let mut r = self.new_railing(railing_type, level);
         r.path = chain_path(curves).ok_or("The railing path must be one chain of lines joined end to end.")?;
+        r.curves = curves.to_vec();
         self.check_railing(&r)?;
         self.transact("Create railing", |tx| Ok(tx.add(Element::Railing(r))))
     }
@@ -640,6 +768,7 @@ impl Document {
         let mut r = self.railing(id).cloned().ok_or("not a railing")?;
         if r.host.is_some() { return Err("A railing on a stair follows the stair.".into()); }
         r.path = chain_path(curves).ok_or("The railing path must be one chain of lines joined end to end.")?;
+        r.curves = curves.to_vec();
         self.check_railing(&r)?;
         self.transact("Edit railing path", |tx| tx.update(id, Element::Railing(r)))
     }
@@ -698,8 +827,12 @@ impl Document {
 
     /// The 3D view's meshes: one per material.
     pub fn railing_meshes(&self, r: &Railing) -> Vec<(Option<String>, Vec<f32>)> {
+        self.railing_meshes_at(r, DetailLevel::Medium)
+    }
+
+    pub fn railing_meshes_at(&self, r: &Railing, detail: DetailLevel) -> Vec<(Option<String>, Vec<f32>)> {
         let mut by: Vec<(Option<String>, Vec<f32>)> = vec![];
-        for p in self.railing_pieces(r) {
+        for p in self.railing_pieces_at(r, detail) {
             let k = match by.iter().position(|(m, _)| *m == p.material) { Some(k) => k, None => { by.push((p.material.clone(), vec![])); by.len() - 1 } };
             p.solid.mesh(&mut by[k].1);
         }
@@ -707,20 +840,20 @@ impl Document {
     }
 
     #[allow(clippy::too_many_arguments)]
-    pub(crate) fn railing_view_items(&self, id: Id, r: &Railing, u: &dyn Fn(Point) -> f64, d: &dyn Fn(Point) -> f64, near: f64, far: f64, cut: Option<f64>) -> Vec<crate::site::ElevItem> {
-        let pieces: Vec<(Option<String>, Convex)> = self.railing_pieces(r).into_iter().map(|p| (p.material, p.solid)).collect();
+    pub(crate) fn railing_view_items(&self, id: Id, r: &Railing, u: &dyn Fn(Point) -> f64, d: &dyn Fn(Point) -> f64, near: f64, far: f64, cut: Option<f64>, detail: DetailLevel) -> Vec<crate::site::ElevItem> {
+        let pieces: Vec<(Option<String>, Convex)> = self.railing_pieces_at(r, detail).into_iter().map(|p| (p.material, p.solid)).collect();
         self.convex_view_items(id, "Railings", &pieces, u, d, near, far, cut)
     }
 }
 
 pub fn starter_railing_types() -> Vec<RailingType> {
     let round = |d: f64| RailProfile { shape: RailShape::Round, width_mm: d, height_mm: d, material: "Aluminium".into() };
-    let hand = |height: f64, offset: f64| Handrail { height_mm: height, offset_mm: offset, profile: round(40.0), extension_top_mm: 300.0, extension_bottom_mm: 300.0, termination: Termination::None };
+    let hand = |height: f64, offset: f64, termination: Termination| Handrail { height_mm: height, offset_mm: offset, profile: round(40.0), extension_top_mm: 300.0, extension_bottom_mm: 300.0, termination, clearance_mm: 60.0, bracket_spacing_mm: 900.0 };
     vec![
         RailingType {
             name: "Balustrade 1000".into(),
             top_rail: Some(TopRail { height_mm: 1000.0, flight_height_mm: 1000.0, profile: RailProfile { shape: RailShape::Rectangular, width_mm: 50.0, height_mm: 50.0, material: "Aluminium".into() } }),
-            handrail_1: Some(hand(900.0, 60.0)),
+            handrail_1: Some(hand(900.0, 60.0, Termination::Wall)),
             handrail_2: None,
             balusters: Some(Balusters { width_mm: 20.0, spacing_mm: 120.0, justification: PatternJustification::SpreadToFit, per_tread: Some(2), material: "Aluminium".into() }),
             posts: Some(Posts { width_mm: 50.0, corners: true, corner_angle_deg: 15.0, material: "Aluminium".into() }),
@@ -730,7 +863,7 @@ pub fn starter_railing_types() -> Vec<RailingType> {
         RailingType {
             name: "Handrail 900".into(),
             top_rail: None,
-            handrail_1: Some(hand(900.0, 0.0)),
+            handrail_1: Some(hand(900.0, 0.0, Termination::Wall)),
             handrail_2: None,
             balusters: None,
             posts: None,

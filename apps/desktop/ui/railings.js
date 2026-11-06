@@ -3,6 +3,8 @@
 // (crates/openarch-model/src/railing.rs). Private notes: stairs.md, step 2.
 const Railings = (() => {
   let placement = "treads";
+  // Pick New Host: the railing waiting for a floor to be clicked
+  let hostFor = null;
   const typeId = () => {
     const ts = app.info.railing_types || [];
     if (!ts.some((t) => t.id === app.railingTypeId)) app.railingTypeId = ts[0]?.id;
@@ -68,13 +70,50 @@ const Railings = (() => {
     ] };
   }
 
-  // a selected sketched railing: Edit Path
+  // Pick New Host: a click on a floor stands the railing on it; a click off every floor puts it back on its level
+  function pickHost(id) {
+    hostFor = id;
+    Plan.setTool("railinghost");
+    updateRibbonContext(true);
+    setPrompt("Click the floor the railing stands on, or somewhere off any floor to put it back on its level. Esc cancels.");
+  }
+  function inside(p, ring) {
+    let c = false;
+    for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+      const a = ring[i], b = ring[j];
+      if ((a[1] > p.y) !== (b[1] > p.y) && p.x < ((b[0] - a[0]) * (p.y - a[1])) / (b[1] - a[1]) + a[0]) c = !c;
+    }
+    return c;
+  }
+  async function hostClick(p) {
+    const id = hostFor;
+    if (id == null) return;
+    // the topmost floor under the click (a floor's rings: its outline and any openings)
+    const f = (Plan.viewData()?.floors || []).filter((x) => (x.rings && x.rings.length ? x.rings.filter((r) => inside(p, r)).length % 2 === 1 : inside(p, x.points))).pop();
+    const ok = await run("patch_railing", { id, patch: { floor_host: f ? f.id : null } });
+    hostFor = null;
+    Plan.setTool("select");
+    if (ok) await refresh();
+    app.selection = [id]; Plan.setSelection([id]);
+    updateRibbonContext(); renderProperties();
+    if (ok) setPrompt(f ? "The railing stands on the floor." : "The railing is back on its level.");
+  }
+  function hostContext() {
+    return { auto: true, key: "railinghost", title: "Pick New Host", groups: [{ label: "Mode", items: [{ label: "Cancel", ico: "✕", big: true, onclick: () => { hostFor = null; Plan.setTool("select"); updateRibbonContext(); setPrompt(""); } }] }] };
+  }
+
+  // a selected railing: Flip; a sketched one also Edit Path and Pick New Host
   function selectionContext() {
     if (app.view.kind !== "plan" || app.selection.length !== 1 || Plan.tool !== "select") return null;
     const r = (Plan.viewData()?.railings || []).find((x) => x.id === app.selection[0]);
     if (!r) return null;
-    const items = r.hosted ? [] : [{ label: "Edit Path", icon: "editBoundary", big: true, onclick: () => startSketch(r.id) }];
-    return items.length ? { auto: true, key: `railingsel:${r.id}`, title: "Railings", groups: [{ label: "Mode", items }] } : null;
+    const flip = { label: "Flip", ico: "⇄", onclick: async () => { if (await run("patch_railing", { id: r.id, patch: { flipped: !r.flipped } })) { await refresh(); renderProperties(); } } };
+    const items = r.hosted ? [flip] : [
+      { label: "Edit Path", icon: "editBoundary", big: true, onclick: () => startSketch(r.id) },
+      { label: "Pick New Host", ico: "Ho", big: true, onclick: () => pickHost(r.id) },
+      flip,
+    ];
+    return { auto: true, key: `railingsel:${r.id}:${r.flipped}`, title: "Railings", groups: [{ label: "Mode", items }] };
   }
 
   function elements(data) {
@@ -102,5 +141,5 @@ const Railings = (() => {
     ctx.restore();
   }
 
-  return { typeId, startSketch, finish, placeOnStair, placeClick, context, selectionContext, elements, draw, ensureTypes };
+  return { typeId, startSketch, finish, placeOnStair, placeClick, context, selectionContext, elements, draw, ensureTypes, pickHost, hostClick, hostContext };
 })();

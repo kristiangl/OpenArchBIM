@@ -2938,6 +2938,8 @@ impl Session {
         let settings = view.and_then(|v| d.effective_settings(v));
         let hidden = view.and_then(|v| d.view(v)).map(|v| v.hidden_elements.clone()).unwrap_or_default();
         let shown = |cat: &str| settings.as_ref().map_or(true, |s| s.overrides.model.get(cat).map_or(true, |o| o.visible));
+        // stairs and railings follow the view's detail level
+        let detail = settings.as_ref().map_or_else(Default::default, |s| s.detail_level);
         let mut meshes = vec![];
         let outlines = d.wall_outlines();
         let layered = d.wall_layer_geometry();
@@ -2968,7 +2970,7 @@ impl Session {
             // a stair: one mesh per material it is made of
             if let Element::Stair(s) = e {
                 if shown("Stairs") {
-                    for (mat, verts) in d.stair_meshes(s) {
+                    for (mat, verts) in d.stair_meshes_at(s, detail) {
                         let color = mat.as_deref().and_then(|m| d.material(m)).map_or([196, 190, 180], |m| m.graphics.shading_color);
                         meshes.push(json!({ "id": id, "kind": "Stair", "material": mat, "color": color, "verts": verts }));
                     }
@@ -2986,7 +2988,7 @@ impl Session {
             }
             if let Element::Railing(r) = e {
                 if shown("Railings") {
-                    for (mat, verts) in d.railing_meshes(r) {
+                    for (mat, verts) in d.railing_meshes_at(r, detail) {
                         let color = mat.as_deref().and_then(|m| d.material(m)).map_or([150, 150, 150], |m| m.graphics.shading_color);
                         meshes.push(json!({ "id": id, "kind": "Railing", "material": mat, "color": color, "verts": verts }));
                     }

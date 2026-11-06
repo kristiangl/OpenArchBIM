@@ -442,6 +442,7 @@ impl Document {
                     if r.host.is_some() && !opt.copy { continue; }
                     if r.host.is_some() { return Err("A railing on a stair is copied with its stair (copy and paste them together).".into()); }
                     r.path = r.path.iter().map(|p| x.apply(*p)).collect();
+                    r.curves = r.curves.iter().map(|c| c.transform(x)).collect();
                     if mirror { r.flipped = !r.flipped; }
                     if opt.copy { r.pinned = false; r.mark.clear(); r.ifc.guid = new_ifc_guid(); }
                     Element::Railing(r)
