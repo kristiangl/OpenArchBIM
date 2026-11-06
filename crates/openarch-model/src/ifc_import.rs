@@ -840,6 +840,25 @@ impl Document {
     /// A new project from an IFC file's text: its storeys, straight walls, flat floors, doors and windows on the
     /// project template's types (matched, or made from them).
     pub fn from_ifc(bytes: &[u8]) -> Result<(Document, IfcImport), String> {
+        let mut d = Document::new_project();
+        let out = read_ifc(&mut d, bytes, false)?;
+        d.clear_history();
+        Ok((d, out))
+    }
+
+    /// Insert > Import IFC: the file's elements added to this project as one undo step. Storeys go onto the levels
+    /// already standing at their heights, else onto new levels (with plans); types are matched by name and size as
+    /// for a new project. A GUID the project already has is not used twice.
+    pub fn import_ifc(&mut self, bytes: &[u8]) -> Result<IfcImport, String> {
+        self.grouped("Import IFC", |d| read_ifc(d, bytes, true))
+    }
+}
+
+/// Read an IFC file into `d`: a new project's template (`merge` false: its levels are taken over by the storeys) or
+/// an open project (`merge` true: nothing already in it changes).
+fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, String> {
+    let mut d = d;
+    {
         let file = step::parse(bytes)?;
         if !file.schema.starts_with("IFC") {
             let schema = if file.schema.is_empty() { "no schema" } else { &file.schema };
@@ -875,7 +894,16 @@ impl Document {
         let mut out = IfcImport { schema: file.schema.clone(), moved: (shift.x != 0.0 || shift.y != 0.0).then_some(shift), ..Default::default() };
         let project = ids.iter().filter_map(|id| e(*id)).find(|x| x.name == "IFCPROJECT");
         out.project = project.and_then(|p| text(p.args.get(2)).or_else(|| text(p.args.get(5)))).unwrap_or("Imported project").to_string();
-        let mut d = Document::new_project();
+        // GUIDs the project has already (importing the same file twice gives the copies new ones)
+        let had: BTreeSet<String> = d
+            .iter()
+            .filter_map(|(_, x)| match x {
+                Element::Wall(w) => Some(w.ifc.guid.clone()),
+                Element::FamilyInstance(i) => Some(i.ifc.guid.clone()),
+                _ => None,
+            })
+            .collect();
+        let fresh = |g: &str| valid_guid(g) && !had.contains(g);
 
         // storeys, lowest first, onto the template's levels where one stands at the same height, else new levels
         let mut storeys: Vec<(u64, String, f64)> = named(&["IFCBUILDINGSTOREY"])
@@ -890,14 +918,27 @@ impl Document {
             })
             .collect();
         storeys.sort_by(|a, b| a.2.total_cmp(&b.2));
-        let template: Vec<(Id, f64)> = d.levels().iter().map(|(i, lv)| (*i, lv.elevation_mm)).collect();
+        let template: Vec<(Id, f64)> = if merge { vec![] } else { d.levels().iter().map(|(i, lv)| (*i, lv.elevation_mm)).collect() };
         let mut level_of: HashMap<u64, Id> = HashMap::new();
         let mut used: BTreeSet<Id> = BTreeSet::new();
+        // into an open project: a level already at the storey's height takes it
+        if merge {
+            for (sid, _, z) in &storeys {
+                if let Some((lid, _)) = d.levels().into_iter().find(|(_, lv)| (lv.elevation_mm - z).abs() <= 1.0) {
+                    used.insert(lid);
+                    level_of.insert(*sid, lid);
+                }
+            }
+        }
+        let matched = used.len();
         // first give the template's levels names no storey uses, so storeys can take theirs
         for (i, (lid, _)) in template.iter().enumerate() {
             d.patch_level(*lid, &serde_json::json!({ "name": format!("\u{1}template {i}") }))?;
         }
         for (sid, name, z) in &storeys {
+            if level_of.contains_key(sid) {
+                continue;
+            }
             let mut name = name.clone();
             let mut k = 2;
             while d.levels().iter().any(|(_, lv)| lv.name == name) {
@@ -929,7 +970,7 @@ impl Document {
             }
         }
         // rename the template's views to their levels' new names
-        for (vid, v) in d.views().into_iter().map(|(i, v)| (i, v.clone())).collect::<Vec<_>>() {
+        for (vid, v) in if merge { vec![] } else { d.views().into_iter().map(|(i, v)| (i, v.clone())).collect::<Vec<_>>() } {
             if let Some(lv) = v.level.and_then(|l| d.level(l)).map(|l| l.name.clone()) {
                 if v.name.starts_with('\u{1}') || v.view_kind.is_plan() {
                     let _ = d.patch_view(vid, &serde_json::json!({ "name": lv }));
@@ -937,6 +978,9 @@ impl Document {
             }
         }
         out.counts.insert("levels", used.len());
+        if merge {
+            out.counts.insert("new_levels", used.len() - matched);
+        }
         let levels: Vec<(Id, f64)> = d.levels().iter().map(|(i, lv)| (*i, lv.elevation_mm)).collect();
         let elevation = |lid: Id| levels.iter().find(|(i, _)| *i == lid).map_or(0.0, |(_, z)| *z);
         // an element's level: its storey's, else the highest at or below `z`
@@ -1045,7 +1089,7 @@ impl Document {
                     nw.top_level = Some(*lid);
                     nw.top_offset_mm = 0.0;
                 }
-                if valid_guid(&w.guid) {
+                if fresh(&w.guid) {
                     nw.ifc.guid = w.guid.clone();
                 }
                 made.push((w.ifc, tx.add(Element::Wall(nw)), w.start, w.end, w.z.0));
@@ -1217,7 +1261,7 @@ impl Document {
             nw.base_offset_mm = mm(z0 - elevation(level));
             nw.curtain_lines = Some(crate::curtain::CurtainLines { u: u_lines, v: v_lines, ..Default::default() });
             let g = guid_of(id);
-            if valid_guid(&g) {
+            if fresh(&g) {
                 nw.ifc.guid = g;
             }
             d.transact("Import IFC", |tx| Ok(tx.add(Element::Wall(nw))))?;
@@ -1346,7 +1390,7 @@ impl Document {
             };
             if let Some(Element::FamilyInstance(mut i)) = d.get(iid).cloned() {
                 let g = guid_of(id);
-                if valid_guid(&g) {
+                if fresh(&g) {
                     i.ifc.guid = g;
                 }
                 let _ = d.transact("Import IFC", |tx| tx.update(iid, Element::FamilyInstance(i)));
@@ -1373,8 +1417,7 @@ impl Document {
         for (name, n) in others {
             out.skipped.push(format!("{n} {name}: not imported yet"));
         }
-        d.clear_history();
-        Ok((d, out))
+        Ok(out)
     }
 }
 
@@ -1484,6 +1527,51 @@ mod tests {
         // doors and windows land on the template's own types, not new ones
         let types = |doc: &Document| doc.family_types().len();
         assert_eq!(types(&n), types(&Document::new_project()));
+    }
+
+    #[test]
+    fn importing_into_an_open_project_adds_to_it_as_one_step() {
+        // a file with a room of walls on its ground level and a storey at 6 m
+        let mut src = Document::new_project();
+        let lvl = src.levels()[0].0;
+        let wt = src.wall_types()[0].0;
+        for (a, b) in [((0.0, 0.0), (6000.0, 0.0)), ((6000.0, 0.0), (6000.0, 4000.0)), ((6000.0, 4000.0), (0.0, 4000.0)), ((0.0, 4000.0), (0.0, 0.0))] {
+            src.add_wall(wt, lvl, Point::new(a.0, a.1), Point::new(b.0, b.1), 2700.0).unwrap();
+        }
+        src.add_level(Some("Roof"), 6000.0, true).unwrap();
+        let text = src.export_ifc("Neighbour");
+
+        // the open project: a wall of its own and its own levels
+        let mut d = Document::new_project();
+        let count = |d: &Document| d.iter().filter(|(_, e)| matches!(e, Element::Wall(_))).count();
+        let ground = d.levels()[0].0;
+        let own = d.add_wall(wt, ground, Point::new(0.0, 10000.0), Point::new(5000.0, 10000.0), 2700.0).unwrap();
+        let (levels, views, walls) = (d.levels().len(), d.views().len(), count(&d));
+        let level_names: Vec<String> = d.levels().iter().map(|(_, l)| l.name.clone()).collect();
+        let report = d.import_ifc(text.as_bytes()).unwrap();
+        assert_eq!(report.counts["walls"], 4, "{report:?}");
+        assert_eq!(report.counts["new_levels"], d.levels().len() - levels);
+        assert_eq!(count(&d), walls + 4);
+        assert!(d.get(own).is_some());
+        // storeys at heights the project has go onto its levels; the one at 6 m is a new level with a plan
+        let roof = d.levels().into_iter().filter(|(_, l)| (l.elevation_mm - 6000.0).abs() < 1.0).count();
+        assert_eq!(roof, 1);
+        assert!(d.levels().len() > levels || level_names.iter().any(|n| n == "Roof"));
+        assert!(d.views().len() >= views);
+        // the project's own levels keep their names
+        for n in &level_names {
+            assert!(d.levels().iter().any(|(_, l)| &l.name == n), "{n} renamed");
+        }
+        // one undo takes it all back out
+        d.undo().unwrap();
+        assert_eq!((count(&d), d.levels().len()), (walls, levels));
+        d.redo().unwrap();
+        // the same file again: its walls come in a second time, with GUIDs of their own
+        d.import_ifc(text.as_bytes()).unwrap();
+        let guids: Vec<String> = d.iter().filter_map(|(_, e)| if let Element::Wall(w) = e { Some(w.ifc.guid.clone()) } else { None }).collect();
+        let unique: BTreeSet<&String> = guids.iter().collect();
+        assert_eq!(unique.len(), guids.len());
+        assert_eq!(count(&d), walls + 8);
     }
 
     #[test]

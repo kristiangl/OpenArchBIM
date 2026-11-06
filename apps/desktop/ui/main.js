@@ -135,6 +135,8 @@ const COMMANDS = {
   ar: () => startEditTool("array"),
   gp: () => createGroup(),
   "export-ifc": () => exportIfc(),
+  "open-ifc": () => pickIfc(),
+  "import-ifc": () => importIfc(),
   "v-sheet": () => newSheetDialog(),
   "v-sched": () => Sched.newSchedule(),
   "v-sched-qty": () => Sched.newSchedule("schedule"),
@@ -2501,6 +2503,12 @@ async function openProject() {
   if (await run("open", { path })) { app.selection = []; app.tdimMemory = {}; Plan.setSelection([]); await refresh(true); setPrompt(`Opened ${path}`); }
 }
 
+// File > Open IFC: pick an .ifc file only
+async function pickIfc() {
+  const path = await Backend.pickOpenIfc();
+  if (path) await openIfc(path);
+}
+
 // Open IFC: the file becomes a new, unsaved project; a report says what came in and what was left out
 // ---- sheets ------------------------------------------------------------------------------------------------------------
 // The Project Browser's sheet commands, for the sheets in a collection (or in none)
@@ -2716,9 +2724,26 @@ async function openIfc(path) {
   if (!r) return;
   app.selection = []; app.tdimMemory = {}; Plan.setSelection([]);
   await refresh(true);
+  ifcReport(r, "Opened", " Save it as a project to keep it.");
+}
+
+// Insert > Import IFC: the file's elements added to the open project (one undo step)
+async function importIfc() {
+  const path = await Backend.pickOpenIfc();
+  if (!path) return;
+  setPrompt(`Reading ${path}...`);
+  const r = await run("import_ifc", { path });
+  if (!r) return;
+  app.selection = []; Plan.setSelection([]);
+  await refresh(true);
+  ifcReport(r, "Imported", " Undo takes it back out.");
+}
+
+// what an IFC open or import brought in and left out: on the prompt bar and in a report
+function ifcReport(r, verb, tail) {
   const c = r.counts, n = (k, one) => `${c[k] || 0} ${one}${c[k] === 1 ? "" : "s"}`;
-  const brought = `${n("levels", "level")}, ${n("walls", "wall")}, ${n("floors", "floor")}, ${n("doors", "door")}, ${n("windows", "window")}`;
-  setPrompt(`Opened ${r.project} (${r.schema}): ${brought}.${r.skipped.length ? ` ${r.skipped.length} left out.` : ""} Save it as a project to keep it.`);
+  const brought = `${n("levels", "level")}${c.new_levels != null ? ` (${c.new_levels} new)` : ""}, ${n("walls", "wall")}, ${c.curtain_walls ? `${n("curtain_walls", "curtain wall")}, ` : ""}${n("floors", "floor")}, ${n("doors", "door")}, ${n("windows", "window")}`;
+  setPrompt(`${verb} ${r.project} (${r.schema}): ${brought}.${r.skipped.length ? ` ${r.skipped.length} left out.` : ""}${tail}`);
   openModal("IFC Import", (body, foot, close) => {
     body.append(el("div", { id: "ifc-report", textContent: `${r.project}, ${r.schema}: ${brought} came in.${r.moved ? ` The model was moved ${Math.round(r.moved[0] / 1000)} m east and ${Math.round(r.moved[1] / 1000)} m north back to the origin.` : ""}` }));
     if (r.skipped.length) {
@@ -2806,6 +2831,7 @@ $("#file-btn").onclick = () => {
   showMenu(r.left, r.bottom + 2, [
     { label: "New...", run: newDocument },
     { label: "Open...", keys: "Ctrl+O", run: openProject },
+    { label: "Open IFC...", title: "An IFC file as a new, unsaved project", run: () => runCommand("open-ifc") },
     { label: "Save", keys: "Ctrl+S", run: () => save(false) },
     { label: "Save As...", keys: "Ctrl+Shift+S", run: () => save(true) },
     { sep: true },

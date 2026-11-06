@@ -67,6 +67,11 @@ const Backend = {
     return this.fileDialog("save", { defaultPath: current || "Shared Parameters.txt", filters: [{ name: "Shared parameter file", extensions: ["txt"] }] });
   },
 
+  // IFC import (.ifc): opens as a new project
+  async pickOpenIfc() {
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "IFC file", extensions: ["ifc"] }] });
+  },
+
   // IFC export (.ifc)
   async pickSaveIfc(current) {
     return this.fileDialog("save", { defaultPath: current || "Project.ifc", filters: [{ name: "IFC4 file", extensions: ["ifc"] }] });

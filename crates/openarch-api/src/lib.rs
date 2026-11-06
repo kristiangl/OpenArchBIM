@@ -2259,6 +2259,16 @@ impl Session {
                     "moved": report.moved.map(|m| [m.x, m.y]),
                 }))
             }
+            // Insert > Import IFC: the file's elements added to the open project, one undo step
+            "import_ifc" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                let report = self.doc.import_ifc(&bytes)?;
+                Ok(json!({
+                    "schema": report.schema, "project": report.project, "counts": report.counts, "skipped": report.skipped,
+                    "moved": report.moved.map(|m| [m.x, m.y]),
+                }))
+            }
             "open" => {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
                 let doc = Document::open(&path)?;

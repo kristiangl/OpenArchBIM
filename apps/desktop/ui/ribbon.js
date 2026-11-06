@@ -105,7 +105,7 @@ const RIBBON = {
       { id: "link-ifc", label: "Link IFC", big: true }, { id: "link-model", label: "Link Model", big: true },
       { id: "link-dxf", label: "Link DXF", big: true } ] },
     { label: "Import", items: [
-      { id: "import-dxf", label: "Import DXF", big: true }, { id: "import-image", label: "Image", big: true } ] },
+      { id: "import-ifc", label: "Import IFC", big: true }, { id: "import-dxf", label: "Import DXF", big: true }, { id: "import-image", label: "Image", big: true } ] },
     { label: "Load from Library", items: [
       { id: "load-family", label: "Load Family", big: true } ] },
     { label: "Export", items: [
