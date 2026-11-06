@@ -31,6 +31,32 @@ pub struct RunPath {
     pub right: Vec<(Point, f64)>,
 }
 
+impl RunPath {
+    /// How far along the walkline a point on the run lies, read off the nearer edge.
+    pub fn s_at(&self, p: Point) -> f64 {
+        if param_dist(&self.left, p) <= param_dist(&self.right, p) { param(&self.left, p) } else { param(&self.right, p) }
+    }
+}
+
+/// The point `s` along a line whose points carry their distances.
+pub fn point_at(pts: &[(Point, f64)], s: f64) -> Point {
+    for (i, w) in pts.windows(2).enumerate() {
+        if s <= w[1].1 || i + 2 == pts.len() {
+            let f = ((s - w[0].1) / (w[1].1 - w[0].1).max(1e-9)).clamp(0.0, 1.0);
+            return add(w[0].0, mul(sub(w[1].0, w[0].0), f));
+        }
+    }
+    pts.first().map_or(Point::new(0.0, 0.0), |p| p.0)
+}
+
+/// The stretch of a line (points with distances) from `a` to `b`, its ends where they fall.
+pub fn slice(pts: &[(Point, f64)], a: f64, b: f64) -> Vec<(Point, f64)> {
+    let mut out = vec![(point_at(pts, a), a)];
+    out.extend(pts.iter().filter(|(_, s)| *s > a + 1e-6 && *s < b - 1e-6).copied());
+    out.push((point_at(pts, b), b));
+    out
+}
+
 fn sub(a: Point, b: Point) -> Point { Point::new(a.x - b.x, a.y - b.y) }
 fn add(a: Point, b: Point) -> Point { Point::new(a.x + b.x, a.y + b.y) }
 fn mul(a: Point, k: f64) -> Point { Point::new(a.x * k, a.y * k) }

@@ -526,6 +526,32 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
                 for (poly, top) in &p.treads {
                     for i in 0..poly.len() { push(poly[i], poly[(i + 1) % poly.len()], "riser", None, *top); }
                 }
+                // stringers beside the run: their faces along its edges, closed off at both ends
+                for (side, sup) in [(1.0, &t.supports.left), (-1.0, &t.supports.right)] {
+                    let Some(sp) = sup.as_ref().filter(|x| x.kind == openarch_model::stairs::SupportKind::Stringer) else { continue };
+                    let edge = if side > 0.0 { &p.left } else { &p.right };
+                    let outer = openarch_model::railing::offset_line(edge, side * (sp.offset_mm + sp.width_mm));
+                    for e in [sp.offset_mm, sp.offset_mm + sp.width_mm] {
+                        if e.abs() < 1e-6 { continue; }
+                        let o = openarch_model::railing::offset_line(edge, side * e);
+                        for w in o.windows(2) { push(w[0].0, w[1].0, "outline", None, r.nosing_z(w[0].1)); }
+                    }
+                    if let (Some(a), Some(b), Some(c), Some(d)) = (edge.first(), outer.first(), edge.last(), outer.last()) {
+                        push(a.0, b.0, "outline", None, r.z0);
+                        push(c.0, d.0, "outline", None, r.z1);
+                    }
+                }
+                // Fine: each tread's front edge, past its riser
+                let nosing = (detail == openarch_model::view::DetailLevel::Fine && !t.run.monolithic && t.run.treads).then_some(t.run.nosing_mm).filter(|n| *n > 0.0);
+                if let Some(nz) = nosing {
+                    for (k, [a, b]) in p.riser_lines.iter().enumerate() {
+                        let (rs, top) = r.risers[k];
+                        if !r.treads.iter().any(|x| (x.0 - rs).abs() < 1e-6) { continue; }
+                        let len = a.dist(b).max(1e-9);
+                        let d = Point::new(-(a.y - b.y) / len * nz, (a.x - b.x) / len * nz);
+                        push(Point::new(a.x + d.x, a.y + d.y), Point::new(b.x + d.x, b.y + d.y), "nosing", None, top);
+                    }
+                }
                 continue;
             }
             let w = r.width / 2.0;

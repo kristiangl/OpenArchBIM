@@ -346,6 +346,66 @@ fn dot(a: Point, b: Point) -> f64 { a.x * b.x + a.y * b.y }
 fn cross(a: Point, b: Point) -> f64 { a.x * b.y - a.y * b.x }
 fn add_p(a: Point, b: Point) -> Point { add(a, b) }
 
+/// Down the run from a riser line drawn from its left end `a` to its right end `b`, `k` long.
+fn down_run(a: Point, b: Point, k: f64) -> Point {
+    let lv = sub(a, b);
+    let n = (lv.x * lv.x + lv.y * lv.y).sqrt().max(1e-9);
+    Point::new(-lv.y / n * k, lv.x / n * k)
+}
+
+/// A spiral's, winder's or sketched run's supports: stringers along its edges, carriages under each tread, in short
+/// straight stretches.
+fn path_supports(run: &RunLayout, path: &crate::runpath::RunPath, riser: f64, tread: f64, t: &StairType, floor: f64, out: &mut Vec<StairPiece>) {
+    use crate::railing::offset_line;
+    use crate::runpath::slice;
+    let (rc, sp) = (&t.run, &t.supports);
+    let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
+    let pitch = if tread > 0.0 { riser / tread } else { 0.0 };
+    let slope = (1.0 + pitch * pitch).sqrt();
+    let under = if rc.treads && !rc.monolithic { rc.tread_thickness_mm } else { 0.0 };
+    // a band between two lines that run side by side (point for point), from `bottom` to `top` by distance along the
+    // walkline: one solid a stretch
+    let band = |a: &[(Point, f64)], b: &[(Point, f64)], top: &dyn Fn(f64) -> f64, bottom: &dyn Fn(f64) -> f64, m: &Option<String>, out: &mut Vec<StairPiece>| {
+        for i in 0..a.len().min(b.len()).saturating_sub(1) {
+            let cloud: Vec<[f64; 3]> = [a[i], a[i + 1], b[i], b[i + 1]].iter().flat_map(|(p, s)| {
+                let hi = top(*s);
+                [[p.x, p.y, hi], [p.x, p.y, bottom(*s).min(hi)]]
+            }).collect();
+            if let Some(c) = Convex::hull_of(&cloud).and_then(|c| c.clip(&|p| p[2], floor, true)) {
+                out.push(StairPiece { part: StairPart::Support(run.index), material: m.clone(), solid: c });
+            }
+        }
+    };
+    let carriage = |s: &Support, a: &[(Point, f64)], b: &[(Point, f64)], out: &mut Vec<StairPiece>| {
+        let drop = s.total_depth_mm * slope;
+        for &(s0, s1, top) in &run.treads {
+            band(&slice(a, s0, s1), &slice(b, s0, s1), &|_| top - under, &|sv| run.nosing_z(sv) - under - drop, &mat(&s.material), out);
+        }
+    };
+    for (side, s) in [(1.0, &sp.left), (-1.0, &sp.right)] {
+        let Some(s) = s else { continue };
+        let edge = if side > 0.0 { &path.left } else { &path.right };
+        match s.kind {
+            SupportKind::Stringer => {
+                let (a, b) = (offset_line(edge, side * s.offset_mm), offset_line(edge, side * (s.offset_mm + s.width_mm)));
+                let drop = s.total_depth_mm * slope;
+                band(&a, &b, &|sv| run.nosing_z(sv) + s.above_nosing_mm, &|sv| run.nosing_z(sv) + s.above_nosing_mm - drop, &mat(&s.material), out);
+            }
+            SupportKind::Carriage => {
+                let (a, b) = (offset_line(edge, -side * s.offset_mm), offset_line(edge, -side * (s.offset_mm + s.width_mm)));
+                carriage(s, &a, &b, out);
+            }
+        }
+    }
+    if let Some(m) = &sp.middle {
+        let n = sp.middle_count.max(1);
+        for k in 0..n {
+            let c = -run.width / 2.0 + run.width * (k + 1) as f64 / (n + 1) as f64;
+            carriage(m, &offset_line(&path.walk, c - m.width_mm / 2.0), &offset_line(&path.walk, c + m.width_mm / 2.0), out);
+        }
+    }
+}
+
 /// A plan polygon as convex pieces: itself when it is convex, else triangles.
 fn convex_parts(poly: &[Point]) -> Vec<Vec<Point>> {
     let n = poly.len();
@@ -920,10 +980,13 @@ impl Document {
         let pitch = if l.tread_mm > 0.0 { l.riser_mm / l.tread_mm } else { 0.0 };
         let slope = (1.0 + pitch * pitch).sqrt();
         for run in &l.runs {
-            if run.path.is_some() { continue; }
             let w = run.width / 2.0;
             let on_landing = l.landings.iter().any(|x| x.after_run + 1 == run.index);
             let floor = run.z0 - if on_landing { t.landing.thickness_mm } else { 0.0 };
+            if let Some(path) = &run.path {
+                path_supports(run, path, l.riser_mm, l.tread_mm, t, floor, &mut out);
+                continue;
+            }
             let above_floor = |c: Convex| c.clip(&|p| p[2], floor, true);
             let under = if rc.treads && !rc.monolithic { rc.tread_thickness_mm } else { 0.0 };
             // a carriage between `t0` and `t1` across the run: a column under each tread down to its soffit
@@ -973,13 +1036,14 @@ impl Document {
         out
     }
 
-    /// A spiral's or winder's parts: a column under each tread (monolithic) stepping down a riser and the structural
-    /// depth, or each tread and riser.
+    /// A spiral's, winder's or sketched run's parts: a column under each tread (monolithic) down to a soffit the
+    /// structural depth under the nosing line, or each tread (with its nosing) and riser.
     fn path_pieces(&self, run: &RunLayout, path: &crate::runpath::RunPath, l: &StairLayout, t: &StairType, floor: f64, out: &mut Vec<StairPiece>) {
         let rc = &t.run;
         let mat = |m: &str| if m.is_empty() { None } else { Some(m.to_string()) };
         let pitch = if l.tread_mm > 0.0 { l.riser_mm / l.tread_mm } else { 0.0 };
         let drop = rc.structural_depth_mm * (1.0 + pitch * pitch).sqrt();
+        let mut hulls: Vec<StairPiece> = vec![];
         let mut add = |part: StairPart, m: Option<String>, poly: &[Point], z0: f64, z1: f64| {
             if z1 - z0 < 1e-3 { return; }
             for p in convex_parts(poly) {
@@ -988,9 +1052,27 @@ impl Document {
         };
         for (poly, top) in &path.treads {
             if rc.monolithic {
-                add(StairPart::Run(run.index), mat(&rc.material), poly, (top - l.riser_mm - drop).max(floor), *top);
+                // the soffit follows the walkline's pitch: each corner's height from where it lies along the run
+                for part in convex_parts(poly) {
+                    let cloud: Vec<[f64; 3]> = part.iter().flat_map(|p| {
+                        let lo = (run.nosing_z(path.s_at(*p)) - drop).max(floor).min(*top);
+                        [[p.x, p.y, *top], [p.x, p.y, lo]]
+                    }).collect();
+                    if let Some(c) = Convex::hull_of(&cloud) {
+                        hulls.push(StairPiece { part: StairPart::Run(run.index), material: mat(&rc.material), solid: c });
+                    }
+                }
             } else if rc.treads {
                 add(StairPart::Tread(run.index), mat(&rc.tread_material), poly, top - rc.tread_thickness_mm, *top);
+            }
+        }
+        // each tread's nosing past the riser below it
+        if !rc.monolithic && rc.treads && rc.nosing_mm > 0.0 {
+            for (k, [a, b]) in path.riser_lines.iter().enumerate() {
+                let rs = run.risers[k].0;
+                let Some(&(_, _, top)) = run.treads.iter().find(|x| (x.0 - rs).abs() < 1e-6) else { continue };
+                let d = down_run(*a, *b, rc.nosing_mm);
+                add(StairPart::Tread(run.index), mat(&rc.tread_material), &[*a, *b, add_p(*b, d), add_p(*a, d)], top - rc.tread_thickness_mm, top);
             }
         }
         if !rc.monolithic && rc.risers {
@@ -998,13 +1080,11 @@ impl Document {
                 let (_, top) = run.risers[k];
                 let below = if k == 0 { run.z0 } else { run.risers[k - 1].1 };
                 let hi = top - if rc.treads && run.risers[k].0 < run.length - 1e-6 { rc.tread_thickness_mm } else { 0.0 };
-                // up the run is square to the riser line, to its right-hand side
-                let lv = sub(*a, *b);
-                let n = (lv.x * lv.x + lv.y * lv.y).sqrt().max(1e-9);
-                let d = Point::new(lv.y / n * rc.riser_thickness_mm, -lv.x / n * rc.riser_thickness_mm);
+                let d = mul(down_run(*a, *b, rc.riser_thickness_mm), -1.0);
                 add(StairPart::Riser(run.index), mat(&rc.riser_material), &[*a, *b, add_p(*b, d), add_p(*a, d)], below, hi);
             }
         }
+        out.extend(hulls);
     }
 
     /// Change one run (its location line, width, risers, Begins and Ends with Riser), one undo step.
@@ -1188,6 +1268,54 @@ impl Convex {
             faces.push(vec![i, n + i, n + j, j]);
         }
         Convex { pts, faces }.oriented()
+    }
+
+    /// The convex hull of a cloud of points (mm). None when they are flat or too few.
+    pub fn hull_of(cloud: &[[f64; 3]]) -> Option<Convex> {
+        let mut pts: Vec<[f64; 3]> = vec![];
+        for q in cloud {
+            if !pts.iter().any(|p| v3dot(v3sub(*p, *q), v3sub(*p, *q)) < 0.01) { pts.push(*q); }
+        }
+        let n = pts.len();
+        if n < 4 { return None; }
+        let tol = 1e-3;
+        let mut planes: Vec<([f64; 3], f64)> = vec![];
+        let mut faces: Vec<Vec<usize>> = vec![];
+        for i in 0..n {
+            for j in i + 1..n {
+                for k in j + 1..n {
+                    let c = v3cross(v3sub(pts[j], pts[i]), v3sub(pts[k], pts[i]));
+                    let l = v3dot(c, c).sqrt();
+                    if l < 1.0 { continue; }
+                    let mut nrm = [c[0] / l, c[1] / l, c[2] / l];
+                    let mut d = v3dot(nrm, pts[i]);
+                    let (mut above, mut below) = (false, false);
+                    for q in &pts {
+                        let v = v3dot(nrm, *q) - d;
+                        if v > tol { above = true; } else if v < -tol { below = true; }
+                    }
+                    if above && below { continue; }
+                    // outward: every point on or below the plane
+                    if above { nrm = [-nrm[0], -nrm[1], -nrm[2]]; d = -d; }
+                    if planes.iter().any(|(m, e)| v3dot(*m, nrm) > 1.0 - 1e-9 && (e - d).abs() < tol) { continue; }
+                    planes.push((nrm, d));
+                    // the points on it, in order round their centre
+                    let on: Vec<usize> = (0..n).filter(|&q| (v3dot(nrm, pts[q]) - d).abs() <= tol).collect();
+                    let c = on.iter().fold([0.0; 3], |a, q| [a[0] + pts[*q][0], a[1] + pts[*q][1], a[2] + pts[*q][2]]);
+                    let c = [c[0] / on.len() as f64, c[1] / on.len() as f64, c[2] / on.len() as f64];
+                    let e1 = v3sub(pts[on[0]], c);
+                    let e2 = v3cross(nrm, e1);
+                    let mut ring = on;
+                    ring.sort_by(|a, b| {
+                        let ang = |q: usize| { let v = v3sub(pts[q], c); v3dot(v, e2).atan2(v3dot(v, e1)) };
+                        ang(*a).total_cmp(&ang(*b))
+                    });
+                    faces.push(ring);
+                }
+            }
+        }
+        if faces.len() < 4 { return None; }
+        Some(Convex { pts, faces }.oriented())
     }
 
     /// The solid seen from above: the hull of its corners in plan.
@@ -1462,6 +1590,64 @@ mod tests {
         let line = crate::railing::stair_side(&l, crate::railing::RailingSide::Right);
         assert!(line.pts.iter().all(|(q, _)| (q.dist(&Point::new(0.0, 0.0)) - 2000.0).abs() < 1.0));
         assert!((line.pts.last().unwrap().1 - l.reached_z()).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_spiral_has_a_smooth_soffit_stringers_round_its_edges_and_nosings() {
+        let (mut d, l1, l2) = doc();
+        let by_name = |d: &Document, n: &str| d.stair_types().iter().find(|(_, t)| t.name == n).unwrap().0;
+        let (concrete, timber) = (by_name(&d, "Concrete Stair"), by_name(&d, "Timber Stair"));
+        let spiral = |d: &mut Document, ty: Id| {
+            let mut s = d.new_stair(ty, l1, Some(l2)).unwrap();
+            s.runs = vec![StairRun { shape: RunShape::Spiral { centre: Point::new(0.0, 0.0), clockwise: false }, start: Point::new(1500.0, 0.0), end: Point::new(1500.0, 1.0), justification: RunJustification::Center, width_mm: 1000.0, risers: s.desired_risers, begins_with_riser: true, ends_with_riser: true }];
+            let id = d.add_stair(s).unwrap();
+            d.stair(id).cloned().unwrap()
+        };
+        // concrete: each column's underside is the structural depth under the nosing line, not a riser lower
+        let st = spiral(&mut d, concrete);
+        let l = d.stair_layout(&st).unwrap();
+        let t = d.stair_type(concrete).unwrap();
+        let pitch = l.riser_mm / l.tread_mm;
+        let drop = t.run.structural_depth_mm * (1.0 + pitch * pitch).sqrt();
+        let pieces = d.stair_pieces(&st);
+        let runs: Vec<&StairPiece> = pieces.iter().filter(|p| matches!(p.part, StairPart::Run(_))).collect();
+        assert!(!runs.is_empty() && runs.iter().all(|p| p.solid.volume() > 0.0));
+        for p in runs.iter().filter(|p| p.solid.z_range().0 > l.base_z + 1.0) {
+            let (lo, hi) = p.solid.z_range();
+            assert!(hi - lo < drop + 1.0, "{} against {}", hi - lo, drop);
+        }
+        assert!(runs.iter().any(|p| {
+            let mut zs: Vec<i64> = p.solid.pts.iter().map(|q| q[2].round() as i64).collect();
+            zs.sort();
+            zs.dedup();
+            zs.len() >= 3
+        }), "the underside slopes");
+        // timber: closed stringers round both edges, and a nosing on each tread
+        let st = spiral(&mut d, timber);
+        let pieces = d.stair_pieces(&st);
+        let sup: Vec<&StairPiece> = pieces.iter().filter(|p| matches!(p.part, StairPart::Support(_))).collect();
+        assert!(!sup.is_empty() && sup.iter().all(|p| p.material.as_deref() == Some("Timber Joist") && p.solid.volume() > 0.0));
+        for p in &sup {
+            for q in &p.solid.pts {
+                let r = q[0].hypot(q[1]);
+                assert!((954.0..=1001.0).contains(&r) || (1999.0..=2046.0).contains(&r), "{r}");
+            }
+        }
+        let l = d.stair_layout(&st).unwrap();
+        let treads = pieces.iter().filter(|p| matches!(p.part, StairPart::Tread(_))).count();
+        assert!(treads > l.runs[0].treads.len() * 3 / 2, "{treads}");
+    }
+
+    #[test]
+    fn a_hull_of_points_is_a_closed_solid() {
+        let cube: Vec<[f64; 3]> = (0..8).map(|i| [(i & 1) as f64 * 100.0, ((i >> 1) & 1) as f64 * 100.0, ((i >> 2) & 1) as f64 * 100.0]).collect();
+        let mut cloud = cube.clone();
+        cloud.push([50.0, 50.0, 50.0]);
+        cloud.push([50.0, 0.0, 100.0]);
+        let c = Convex::hull_of(&cloud).unwrap();
+        assert_eq!(c.faces.len(), 6);
+        assert!((c.volume() - 1e6).abs() < 1e-3);
+        assert!(Convex::hull_of(&[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0]]).is_none());
     }
 
     #[test]
