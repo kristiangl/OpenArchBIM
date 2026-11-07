@@ -133,3 +133,37 @@ fn shared_family_dimensions_drive_geometry_and_blank_keys_use_type_defaults() {
     let i=s.doc.instances().into_iter().find(|(id,_)|*id==ids[0]).unwrap().1;
     assert!((s.doc.instance_opening_size(i).0-original_opening).abs()<1e-6);
 }
+
+#[test]
+fn railings_ceilings_stairs_ramps_and_areas_take_project_parameters_and_keys() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let level = info["levels"][0]["id"].clone();
+    let rail = info["railing_types"][0]["id"].clone();
+    let curves = |y: i64| json!([{ "type": "line", "a": { "x": 0, "y": y }, "b": { "x": 3000, "y": y } }]);
+    let ids: Vec<u64> = [0, 2000].iter().map(|y| call(&mut s, "add_railing", json!({ "type_id": rail, "level_id": level, "curves": curves(*y) }))["id"].as_u64().unwrap()).collect();
+    // a project parameter shows in a railing's Properties and takes a value
+    let parameter = call(&mut s, "add_project_parameter", json!({ "category": "Railings", "name": "Balustrade Ref", "unit": "text" }))["id"].as_u64().unwrap();
+    assert!(prop(&mut s, ids[0], "Balustrade Ref")["kind"] != "ro");
+    // a key schedule of railings sets Comments and the project parameter on both
+    let k = call(&mut s, "add_schedule", json!({ "category": "Railings", "name": "Balustrades", "key": true, "key_name": "Balustrade Style" }))["id"].as_u64().unwrap();
+    let mut def = call(&mut s, "schedule_table", json!({ "id": k }))["def"].clone();
+    def["fields"] = json!([field("Key Name"), field("Comments"), field("Balustrade Ref")]);
+    call(&mut s, "set_schedule", json!({ "id": k, "def": def }));
+    let row = call(&mut s, "add_key_row", json!({ "id": k }))["row"].as_u64().unwrap();
+    call(&mut s, "patch_key_row", json!({ "id": k, "row": row, "patch": { "name": "Glass", "values": { "Comments": "Frameless glass", "Balustrade Ref": "B02" } } }));
+    assign(&mut s, k, &ids, Some(row));
+    for id in &ids {
+        assert_eq!(prop(&mut s, *id, "Comments")["value"], "Frameless glass");
+        assert_eq!(prop(&mut s, *id, "Comments")["kind"], "ro");
+        assert_eq!(s.doc.project_parameter(parameter).unwrap().values[id], "B02");
+    }
+    assert!(s.handle("patch_railing", &json!({ "id": ids[0], "patch": { "comments": "other" } })).is_err());
+    // the other new categories take parameters too, an area scheme as its own category
+    for c in ["Ceilings", "Stairs", "Ramps"] {
+        call(&mut s, "add_project_parameter", json!({ "category": c, "name": "Spec Ref", "unit": "text" }));
+    }
+    let scheme = s.doc.area_schemes()[0].1.name.clone();
+    call(&mut s, "add_project_parameter", json!({ "category": format!("Areas ({scheme})"), "name": "Lease Ref", "unit": "text" }));
+    assert!(s.handle("add_project_parameter", &json!({ "category": "Areas (No Such Scheme)", "name": "X", "unit": "text" })).is_err());
+}

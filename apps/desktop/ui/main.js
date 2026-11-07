@@ -56,6 +56,8 @@ const COMMANDS = {
   "det-revcloud": () => Revisions.start(),
   "tag-revision": () => Revisions.tag(),
   ceiling: () => Ceilings.start(),
+  "topo-sketch": () => Topo.startSketch(null),
+  "topo-import": () => Topo.importFile(),
   stair: () => Stairs.start(),
   ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),
@@ -246,6 +248,7 @@ const BOUNDARY_EDITORS = {
   Floors: { label: "Edit Floor Boundary", run: (id) => startFloorSketch(id) },
   Roofs: { label: "Edit Roof Footprint", run: (id) => startRoofSketch(id) },
   Ceilings: { label: "Edit Boundary", run: (id) => Ceilings.startSketch(id) },
+  Topography: { label: "Edit Boundary", run: (id) => Topo.startSketch(id) },
   "Detail Items": { label: "Edit Boundary", run: (id) => startRegionSketch(null, id) },
 };
 function editBoundaryTarget() {
@@ -375,6 +378,8 @@ function currentContext() {
   if (ms) return ms;
   const cs = Ceilings.selectionContext();
   if (cs) return cs;
+  const ts = Topo.selectionContext();
+  if (ts) return ts;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
   const tv = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
   if (tv && tv.tool === "tag") return Tags.context();
@@ -807,6 +812,7 @@ function renderTree() {
       if (app.info.annotation_families.length) byCat.set("Annotation Symbols", app.info.annotation_families.map((f) => ({ name: f.name, title: f.category, onopen: () => AnnModel.open(f.id), menu: annotationMenu(f) })));
       byCat.set("Floors", [{ name: "Floor", children: app.info.floor_types.map((t) => leaf(t.name)) }]);
       if ((app.info.ceiling_types || []).length) byCat.set("Ceilings", [{ name: "Compound Ceiling", children: app.info.ceiling_types.map((t) => leaf(t.name)) }]);
+      if ((app.info.toposolid_types || []).length) byCat.set("Topography", [{ name: "Toposolid", children: app.info.toposolid_types.map((t) => leaf(t.name)) }]);
       byCat.set("Roofs", [{ name: "Basic Roof", children: app.info.roof_types.map((t) => leaf(t.name)) }]);
       byCat.set("Walls", [{ name: "Basic Wall", children: app.info.wall_types.map((t) => leaf(t.name)) }]);
       return [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([cat, fams]) => ({ name: cat, children: fams.sort((a, b) => a.name.localeCompare(b.name)) }));
@@ -2997,7 +3003,7 @@ function sketchContext() {
       if (Sketch.selectedAttr()) Sketch.patchSelected({ style: s.value });
     };
     groups.push({ label: "Line Style", items: [{ big: true, node: el("div", { className: "rb-select" }, [s]) }] });
-  } else if (!Sketch.isRoof && !plain) {
+  } else if (!Sketch.isRoof && !plain && Sketch.kind !== "toposolid") {
     // a ceiling slopes like a floor; it has no span direction
     groups.push({ label: Sketch.kind === "ceiling" ? "Slope" : "Slope and Span", items: Sketch.ANNOTATE.filter((t) => Sketch.kind !== "ceiling" || !/span/i.test(t.id + t.label)).map((t) => ({ ...t, onclick: () => Sketch.setTool(t.id), on: cur === t.id })) });
   }
@@ -3121,6 +3127,7 @@ Sketch.callbacks.finish = async (o) => {
   if (o.kind === "revisioncloud") return Revisions.finish(o);
   if (o.kind === "roomseparation") return Spatial.finish(o);
   if (o.kind === "ceiling") return Ceilings.finish(o);
+  if (o.kind === "toposolid") return Topo.finish(o);
   if (o.kind === "railing") return Railings.finish(o);
   if (o.kind === "stairrun" || o.kind === "stairlanding") return Stairs.sketchFinished(o);
   if (o.kind === "areaboundary") return Areas.finish(o);

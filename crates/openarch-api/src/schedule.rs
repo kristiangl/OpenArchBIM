@@ -148,6 +148,7 @@ impl Session {
         match d.get(id)? {
             Element::Room(_) => Some("Rooms".into()),
             Element::Ceiling(_) => Some("Ceilings".into()),
+            Element::Toposolid(_) => Some("Topography".into()),
             Element::Stair(_) => Some("Stairs".into()),
             Element::Railing(_) => Some("Railings".into()),
             Element::Ramp(_) => Some("Ramps".into()),

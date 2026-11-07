@@ -157,6 +157,8 @@ pub fn builtin_fill_patterns() -> Vec<FillPattern> {
         // aggregate speckle for concrete: short dashes, each row shifted
         drafting("Concrete", vec![line(0.0, 1.6, 0.9, &[0.12, 1.8]), line(0.0, 1.6, 0.0, &[0.12, 3.9])]),
         drafting("Sand", vec![line(0.0, 1.0, 0.7, &[0.1, 1.1])]),
+        // ground in section: short dashes on a diagonal, staggered
+        drafting("Earth", vec![line(45.0, 3.0, 1.5, &[2.0, 1.5]), line(135.0, 3.0, 0.0, &[1.0, 2.5])]),
         drafting("Insulation", vec![line(45.0, 1.8, 0.0, &[3.0, 1.0]), line(135.0, 1.8, 0.0, &[3.0, 1.0])]),
         // courses of brick at 76 mm (model size), stretcher bond
         FillPattern {
@@ -310,6 +312,7 @@ pub fn starter_materials() -> Vec<Material> {
         mat("Steel Purlin", "Metal", [150, 156, 164], Some("Diagonal crosshatch"), None, 7850.0, 50.0),
         mat("Aluminium", "Metal", [176, 180, 186], None, None, 2700.0, 160.0),
         mat("Ceiling Tile", "Mineral Fibre", [238, 236, 230], None, None, 300.0, 0.06),
+        mat("Earth", "Earth", [150, 128, 100], Some("Earth"), None, 1600.0, 1.0),
     ]
 }
 
@@ -386,8 +389,8 @@ impl ObjectStyles {
         let mut model = BTreeMap::new();
         for &name in MODEL_CATEGORIES {
             let (p, c) = match name {
-                "Walls" | "Floors" | "Roofs" | "Columns" | "Structural Columns" | "Structural Foundations" | "Ramps" | "Stairs" | "Curtain Systems" => (1, Some(3)),
-                "Site" | "Topography" | "Planting" | "Parking" | "Rooms" | "Mass" | "Lighting Fixtures" | "Electrical Fixtures" | "Electrical Equipment" => (1, None),
+                "Walls" | "Floors" | "Roofs" | "Columns" | "Structural Columns" | "Structural Foundations" | "Ramps" | "Stairs" | "Curtain Systems" | "Topography" => (1, Some(3)),
+                "Site" | "Planting" | "Parking" | "Rooms" | "Mass" | "Lighting Fixtures" | "Electrical Fixtures" | "Electrical Equipment" => (1, None),
                 _ => (1, Some(2)),
             };
             let mut s = ObjectStyle::new(p, c);
@@ -421,6 +424,11 @@ impl ObjectStyles {
                     for n in ["<Above> Outlines", "<Above> Riser Lines"] {
                         s.subcategories.insert(n.into(), sub(1, None, "Hidden"));
                     }
+                }
+                "Topography" => {
+                    s.subcategories.insert("Primary Contours".into(), sub(2, None, SOLID));
+                    s.subcategories.insert("Secondary Contours".into(), sub(1, None, SOLID));
+                    s.subcategories.insert("Hidden Lines".into(), hidden());
                 }
                 "Roofs" | "Ceilings" | "Columns" | "Casework" | "Furniture" => {
                     s.subcategories.insert("Hidden Lines".into(), hidden());

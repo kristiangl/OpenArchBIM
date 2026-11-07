@@ -73,6 +73,7 @@ impl Document {
             Element::Floor(_) => "Floors",
             Element::Roof(_) => "Roofs",
             Element::Ceiling(_) => "Ceilings",
+            Element::Toposolid(_) => "Topography",
             Element::Stair(_) => "Stairs",
             Element::Railing(_) => "Railings",
             Element::Ramp(_) => "Ramps",

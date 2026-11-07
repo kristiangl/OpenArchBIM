@@ -327,6 +327,41 @@ pub fn ceiling_mesh(doc: &Document, c: &crate::ceiling::Ceiling) -> Option<Vec<f
     slab_mesh(doc, &c.as_slab(t), t)
 }
 
+/// A toposolid: its surface, the same surface lowered by the type's thickness underneath, and upright sides round
+/// the boundary. A type with no layers is drawn as the surface alone.
+pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<f32>> {
+    let tin = doc.toposolid_tin(t)?;
+    let th = doc.toposolid_thickness(t);
+    let mut out = Vec::new();
+    let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+        let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+        let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+        let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+        [n[0] / l, n[1] / l, n[2] / l]
+    };
+    let low = |p: [f64; 3]| [p[0], p[1], p[2] - th];
+    for k in &tin.tris {
+        let (a, b, c) = (tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]);
+        tri(&mut out, a, b, c, normal(a, b, c));
+        if th > 0.0 {
+            let (a, b, c) = (low(a), low(b), low(c));
+            tri(&mut out, a, c, b, normal(a, c, b));
+        }
+    }
+    if th > 0.0 {
+        for [i, j] in tin.boundary_edges() {
+            let (a, b) = (tin.verts[i], tin.verts[j]);
+            // the outside is on the right of a boundary edge
+            let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
+            let l = dx.hypot(dy).max(1e-12);
+            let n = [dy / l, -dx / l, 0.0];
+            tri(&mut out, a, low(a), low(b), n);
+            tri(&mut out, a, low(b), b, n);
+        }
+    }
+    Some(out)
+}
+
 /// A slab `t` thick under the top surface of `f`'s level, offset and slope, filling its loops.
 fn slab_mesh(doc: &Document, f: &Floor, t: f64) -> Option<Vec<f32>> {
     let surf = doc.floor_surface(f)?;

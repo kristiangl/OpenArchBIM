@@ -77,6 +77,11 @@ const Backend = {
     return this.fileDialog("save", { defaultPath: current || "Project.ifc", filters: [{ name: "IFC4 file", extensions: ["ifc"] }] });
   },
 
+  // Survey points for a toposolid (.csv, .txt, .xyz)
+  async pickOpenPoints() {
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "Points file", extensions: ["csv", "txt", "xyz", "pts"] }] });
+  },
+
   // Lookup table files (.csv)
   async pickOpenCsv() {
     return this.fileDialog("open", { multiple: false, filters: [{ name: "CSV lookup table", extensions: ["csv"] }] });

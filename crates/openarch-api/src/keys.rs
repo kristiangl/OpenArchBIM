@@ -177,7 +177,8 @@ impl Session {
 
     pub(crate) fn create_project_parameter(&mut self, p: &Value) -> Res {
         let category = p["category"].as_str().ok_or("Choose a category")?;
-        if !crate::schedule::model_categories().iter().any(|c| c == category) { return Err("Choose a model category.".into()); }
+        let area = category.strip_prefix("Areas (").and_then(|c| c.strip_suffix(')')).is_some_and(|scheme| self.doc.area_schemes().iter().any(|(_, s)| s.name == scheme));
+        if !area && !crate::schedule::model_categories().iter().any(|c| c == category) { return Err("Choose a model category.".into()); }
         let name = p["name"].as_str().ok_or("Enter a name")?.trim();
         if name == "Key Name" || self.key_fields(category, None).iter().any(|f| f["name"] == name) || self.doc.schedules().iter().any(|(_,v)| v.schedule.as_ref().is_some_and(|d| d.category == category && d.key.as_ref().is_some_and(|k| k.parameter_name == name || k.bindings.contains_key(name)))) { return Err("That parameter name is already in use.".into()); }
         let unit: Unit = serde_json::from_value(p.get("unit").cloned().unwrap_or(json!("text"))).map_err(|e| e.to_string())?;

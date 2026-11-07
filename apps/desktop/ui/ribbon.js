@@ -131,9 +131,9 @@ const RIBBON = {
       { id: "symbol", label: "Symbol", big: true }, { id: "north", label: "North Arrow", big: true }, { id: "scale-bar", label: "Scale Bar", big: true } ] },
   ],
   Site: [
-    { label: "Surface", items: [
-      { id: "topo-points", label: "Topo from Points", big: true }, { id: "topo-file", label: "Topo from 3D File", big: true },
-      { id: "site-surface", label: "Add Surface", big: true }, { id: "grading", label: "Auto Grade", big: true },
+    { label: "Model Site", items: [
+      { id: "topo-sketch", label: "Toposolid", big: true, menu: [{ id: "topo-sketch", label: "Create from Sketch" }, { id: "topo-import", label: "Create from Import" }] },
+      { id: "site-surface", label: "Sub-Divide", big: true }, { id: "grading", label: "Graded Region", big: true },
       { id: "cutfill", label: "Cut / Fill", big: true } ] },
     { label: "Traffic", items: [
       { id: "parking", label: "Parking Bay", big: true }, { id: "linemark", label: "Line Marking", big: true },

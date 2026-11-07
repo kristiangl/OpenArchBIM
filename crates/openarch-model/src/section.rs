@@ -490,15 +490,24 @@ impl Document {
         }
     }
 
-    /// The labels of a section marker with their text worked out. A view not yet on a sheet reads "-" for its number
-    /// and its sheet. A reference section names the view it points at and shows the family's Reference Label.
+    /// The labels of a section marker with their text worked out. View Number is the detail number of the viewport the
+    /// view is placed in and Sheet Number that sheet's number; a view not yet on a sheet reads "-" for both. A
+    /// reference section names the view it points at (and its sheet) and shows the family's Reference Label.
     pub fn section_labels(&self, s: &Section) -> Vec<crate::annotation::DrawnText> {
         let Some((_, f)) = self.section_marker_family(self.section_symbols(s).0) else { return vec![] };
-        let name = s.reference.or(s.view).and_then(|v| self.view(v)).map(|v| v.name.clone()).unwrap_or_default();
+        let shown = s.reference.or(s.view);
+        let name = shown.and_then(|v| self.view(v)).map(|v| v.name.clone()).unwrap_or_default();
         let reference = if s.reference.is_some() { f.reference_label.clone() } else { String::new() };
+        let placed = shown.and_then(|v| self.sheet_of_view(v));
+        let number = placed.and_then(|(_, vp)| match self.get(vp) {
+            Some(Element::Viewport(p)) if !p.detail_number.trim().is_empty() => Some(p.detail_number.trim().to_string()),
+            _ => None,
+        });
+        let sheet = placed.and_then(|(sh, _)| self.sheet(sh)).map(|s| s.number.clone()).filter(|n| !n.trim().is_empty());
         let value = |param: &str| match param {
             "View Name" => Some(name.clone()),
-            "View Number" | "Sheet Number" => Some("-".to_string()),
+            "View Number" => Some(number.clone().unwrap_or_else(|| "-".into())),
+            "Sheet Number" => Some(sheet.clone().unwrap_or_else(|| "-".into())),
             "Reference Label" => (!reference.is_empty()).then(|| reference.clone()),
             _ => None,
         };
@@ -1140,6 +1149,13 @@ impl Document {
                 self.far_outline(sl, &rings, id, "Ceilings", top - thick, top, far_lines);
             }
         }
+        // ---- toposolids: the ground's profile with its layers below
+        for (id, t) in self.toposolids() {
+            if hidden(id) {
+                continue;
+            }
+            out.extend(self.toposolid_cut_items(id, t, sl, sl.plane + PLANE_EPS));
+        }
         // ---- roofs
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };
@@ -1679,6 +1695,31 @@ mod tests {
         let text = |id: Id| -> Vec<String> { d.section_labels(d.section(id).unwrap()).iter().flat_map(|l| l.lines.concat()).collect() };
         assert!(text(r).contains(&"SIM".to_string()));
         assert!(!text(s).contains(&"SIM".to_string()));
+    }
+
+    #[test]
+    fn a_section_marker_shows_its_views_sheet_and_detail_number() {
+        use crate::annotation::{AnnLabel, HAlign, LabelParam, VAlign};
+        let (mut d, lvl, s, _) = house_with_stub();
+        // the bundled head has no labels of its own: give it the two numbers
+        let (fid, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
+        for (y, p) in [(2.0, "View Number"), (-2.0, "Sheet Number")] {
+            f.labels.push(AnnLabel::new(0.0, y, HAlign::Center, VAlign::Middle, "2.5mm", 10.0, vec![LabelParam::new(p, "", "", "1", false)]));
+        }
+        d.set_annotation_family(fid, f).unwrap();
+        let target = d.section(s).unwrap().view.unwrap();
+        let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();
+        let text = |d: &Document, id: Id| -> Vec<String> { d.section_labels(d.section(id).unwrap()).iter().flat_map(|l| l.lines.concat()).collect() };
+        // not on a sheet yet
+        assert_eq!(text(&d, s).iter().filter(|t| t.as_str() == "-").count(), 2, "{:?}", text(&d, s));
+        let sheet = d.add_sheet("A301", "Sections", None).unwrap();
+        let vp = d.place_view(sheet, target, [200.0, 150.0]).unwrap();
+        let Some(Element::Viewport(p)) = d.get(vp).cloned() else { panic!() };
+        d.set_viewport(vp, crate::sheet::Viewport { detail_number: "4".into(), ..p }).unwrap();
+        for id in [s, r] {
+            let t = text(&d, id);
+            assert!(t.contains(&"4".to_string()) && t.contains(&"A301".to_string()) && !t.contains(&"-".to_string()), "{t:?}");
+        }
     }
 
     #[test]

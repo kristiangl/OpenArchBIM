@@ -613,6 +613,7 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         Some(Element::FloorType(t)) => (&t.name, &t.coarse_fill, &t.info),
         Some(Element::RoofType(t)) => (&t.name, &t.coarse_fill, &t.info),
         Some(Element::CeilingType(t)) => (&t.name, &t.coarse_fill, &t.info),
+        Some(Element::ToposolidType(t)) => (&t.name, &t.coarse_fill, &t.info),
         _ => unreachable!(),
     };
     let v = assembly_values(d, layers);
@@ -627,6 +628,7 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
         SysKind::Floor => d.floor_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
         SysKind::Roof => d.roof_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
         SysKind::Ceiling => d.ceiling_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
+        SysKind::Toposolid => d.toposolid_types().iter().map(|(i, t)| json!({ "id": i, "name": t.name })).collect(),
     };
     let mut wall_extra = json!(null);
     match d.get(id) {
@@ -670,6 +672,13 @@ pub fn sys_type_props(d: &Document, id: Id) -> Res {
             let [across, along] = t.grid.unwrap_or([0.0, 0.0]);
             construction.push(num("Grid Spacing Across", "grid_across", across, true));
             construction.push(num("Grid Spacing Along", "grid_along", along, true));
+        }
+        // a toposolid type: its thickness, and Contour Display's usual two rows (0 for none)
+        Some(Element::ToposolidType(t)) => {
+            construction.push(ro("Default Thickness", format!("{}", v.thickness_mm)));
+            let interval = |primary: bool| t.contours.iter().find(|s| s.primary == primary && !s.single).filter(|s| s.visible).map_or(0.0, |s| s.interval);
+            construction.push(num("Primary Contour Interval", "primary_interval", interval(true), true));
+            construction.push(num("Secondary Contour Interval", "secondary_interval", interval(false), true));
         }
         _ => construction.push(ro("Default Thickness", format!("{}", v.thickness_mm))),
     }

@@ -707,6 +707,8 @@ pub enum Element {
     Railing(crate::railing::Railing),
     RampType(crate::ramp::RampType),
     Ramp(crate::ramp::Ramp),
+    ToposolidType(crate::topo::ToposolidType),
+    Toposolid(crate::topo::Toposolid),
 }
 
 impl Element {
@@ -780,6 +782,8 @@ impl Element {
             Element::Railing(_) => "Railing",
             Element::RampType(_) => "RampType",
             Element::Ramp(_) => "Ramp",
+            Element::ToposolidType(_) => "ToposolidType",
+            Element::Toposolid(_) => "Toposolid",
         }
     }
 }

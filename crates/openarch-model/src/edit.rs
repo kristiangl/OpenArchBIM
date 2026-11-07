@@ -333,7 +333,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -388,6 +388,18 @@ impl Document {
                 Some(Element::AreaTag(t)) => { let mut t = t.clone(); t.at = x.apply(t.at); t.pinned = t.pinned && !opt.copy; Element::AreaTag(t) }
                 Some(Element::ColorFillLegend(l)) => { let mut l = l.clone(); l.at = x.apply(l.at); l.pinned = l.pinned && !opt.copy; Element::ColorFillLegend(l) }
                 Some(Element::AreaBoundary(b)) => { let mut b = b.clone(); b.curve = self.area_boundary_curve(id).unwrap_or_else(|| b.curve.clone()).transform(x); b.pinned = b.pinned && !opt.copy; b.wall = None; Element::AreaBoundary(b) }
+                // a toposolid's boundary and points carry the change; the heights stay
+                Some(Element::Toposolid(t)) => {
+                    let mut t = t.clone();
+                    t.loops = t.loops.iter().map(|l| l.iter().map(|k| k.transform(x)).collect()).collect();
+                    for p in t.points.iter_mut() {
+                        let q = x.apply(Point::new(p.x, p.y));
+                        p.x = q.x;
+                        p.y = q.y;
+                    }
+                    if opt.copy { t.pinned = false; t.mark.clear(); t.ifc.guid = new_ifc_guid(); }
+                    Element::Toposolid(t)
+                }
                 // a ceiling's boundary, slope arrow and grid origin carry the change, as a floor's do
                 Some(Element::Ceiling(c)) => {
                     let mut c = c.clone();

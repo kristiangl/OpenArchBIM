@@ -78,6 +78,7 @@ impl Session {
                             Element::Floor(f) => d.set_floor_type(id, f.floor_type)?,
                             Element::Roof(r) => d.set_roof_type(id, r.roof_type)?,
                             Element::Ceiling(c) => d.patch_ceiling(id, &json!({ "ceiling_type": c.ceiling_type }))?,
+                            Element::Toposolid(t) => d.patch_toposolid(id, &json!({ "toposolid_type": t.toposolid_type }))?,
                             Element::FamilyInstance(i) => d.patch_instance(id, &json!({ "type_id": i.type_id }))?,
                             Element::Grid(g) => d.patch_grid(id, &json!({ "grid_type": g.grid_type }))?,
                             Element::TextNote(t) => d.patch_text_note(id, &json!({ "text_type": t.text_type }))?,

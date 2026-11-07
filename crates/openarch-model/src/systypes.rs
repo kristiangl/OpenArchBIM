@@ -17,6 +17,7 @@ pub enum SysKind {
     Floor,
     Roof,
     Ceiling,
+    Toposolid,
 }
 
 impl SysKind {
@@ -27,6 +28,7 @@ impl SysKind {
             SysKind::Floor => "Floor",
             SysKind::Roof => "Basic Roof",
             SysKind::Ceiling => "Compound Ceiling",
+            SysKind::Toposolid => "Toposolid",
         }
     }
 
@@ -44,6 +46,7 @@ impl SysKind {
             SysKind::Floor => "floor",
             SysKind::Roof => "roof",
             SysKind::Ceiling => "ceiling",
+            SysKind::Toposolid => "toposolid",
         }
     }
 }
@@ -193,6 +196,7 @@ impl Document {
             Element::FloorType(_) => Some(SysKind::Floor),
             Element::RoofType(_) => Some(SysKind::Roof),
             Element::CeilingType(_) => Some(SysKind::Ceiling),
+            Element::ToposolidType(_) => Some(SysKind::Toposolid),
             _ => None,
         }
     }
@@ -204,6 +208,7 @@ impl Document {
             Element::FloorType(t) => Some(&t.layers),
             Element::RoofType(t) => Some(&t.layers),
             Element::CeilingType(t) => Some(&t.layers),
+            Element::ToposolidType(t) => Some(&t.layers),
             _ => None,
         }
     }
@@ -216,6 +221,7 @@ impl Document {
                     (SysKind::Floor, Element::FloorType(t)) => t.name == name,
                     (SysKind::Roof, Element::RoofType(t)) => t.name == name,
                     (SysKind::Ceiling, Element::CeilingType(t)) => t.name == name,
+                    (SysKind::Toposolid, Element::ToposolidType(t)) => t.name == name,
                     _ => false,
                 }
         })
@@ -272,6 +278,35 @@ impl Document {
                 }
                 Element::CeilingType(n)
             }
+            Element::ToposolidType(t) => {
+                // Contour Display's two usual rows come as their own fields: the interval of the first primary and
+                // the first secondary set (zero hides that set)
+                let mut patch = patch.clone();
+                let mut sets = t.contours.clone();
+                if let Some(o) = patch.as_object_mut() {
+                    for (key, primary) in [("primary_interval", true), ("secondary_interval", false)] {
+                        let Some(v) = o.remove(key).and_then(|v| v.as_f64()) else { continue };
+                        if !v.is_finite() || (v > 0.0 && v < 10.0) {
+                            return Err("a contour interval must be at least 10 mm, or 0 for none".into());
+                        }
+                        let set = match sets.iter_mut().position(|s| s.primary == primary && !s.single) {
+                            Some(i) => &mut sets[i],
+                            None => {
+                                sets.push(crate::topo::ContourSet { start: 0.0, stop: 1_000_000.0, interval: 1000.0, single: false, primary, visible: false });
+                                sets.last_mut().unwrap()
+                            }
+                        };
+                        set.visible = v > 0.0;
+                        if v > 0.0 { set.interval = v; }
+                    }
+                    if !o.contains_key("contours") { o.insert("contours".into(), serde_json::to_value(&sets).map_err(|e| e.to_string())?); }
+                }
+                let n: crate::topo::ToposolidType = apply_patch(t, &patch)?;
+                if n.contours.iter().any(|s| !(s.start.is_finite() && s.stop.is_finite() && s.interval.is_finite()) || (!s.single && s.interval < 10.0)) {
+                    return Err("a contour set needs numbers, and an interval of at least 10 mm".into());
+                }
+                Element::ToposolidType(n)
+            }
             _ => unreachable!(),
         };
         if new == old {
@@ -282,6 +317,7 @@ impl Document {
             Element::FloorType(t) => (&t.name, &t.layers),
             Element::RoofType(t) => (&t.name, &t.layers),
             Element::CeilingType(t) => (&t.name, &t.layers),
+            Element::ToposolidType(t) => (&t.name, &t.layers),
             _ => unreachable!(),
         };
         if name.trim().is_empty() {
@@ -299,6 +335,7 @@ impl Document {
             SysKind::Floor => "Change floor type",
             SysKind::Roof => "Change roof type",
             SysKind::Ceiling => "Change ceiling type",
+            SysKind::Toposolid => "Change toposolid type",
         };
         self.transact(label, |tx| tx.update(id, new))
     }
@@ -330,6 +367,7 @@ impl Document {
                 ..t
             }),
             Element::CeilingType(t) => Element::CeilingType(crate::ceiling::CeilingType { name: name.into(), ..t }),
+            Element::ToposolidType(t) => Element::ToposolidType(crate::topo::ToposolidType { name: name.into(), ..t }),
             _ => unreachable!(),
         };
         self.transact("Duplicate type", |tx| Ok(tx.add(e)))
@@ -354,6 +392,7 @@ impl Document {
                 | Element::FloorType(_)
                 | Element::RoofType(_)
                 | Element::CeilingType(_)
+                | Element::ToposolidType(_)
                 | Element::FamilyType(_)
                 | Element::GridType(_)
                 | Element::LevelType(_)

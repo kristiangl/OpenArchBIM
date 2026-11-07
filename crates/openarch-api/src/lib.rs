@@ -2,6 +2,7 @@
 //!
 //! The desktop shell and the dev server both call `Session::handle`, so the UI
 //! behaves the same in the app and in a browser during development.
+#![recursion_limit = "256"]
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -25,6 +26,7 @@ mod rooms;
 mod revisions;
 mod tags;
 mod ceilings;
+mod topo;
 mod areas;
 mod clipboard;
 mod hide;
@@ -248,6 +250,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_ceilings(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_topo(method, p) {
             return r;
         }
         if let Some(r) = self.handle_areas(method, p) {
@@ -2415,6 +2420,7 @@ impl Session {
             "floor_types": d.floor_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "area_schemes": d.area_schemes().iter().map(|(id, s)| json!({ "id": id, "name": s.name, "description": s.description, "rules": s.rules, "built_in": s.built_in, "has_areas": d.areas().iter().any(|(_, a)| d.scheme_of_area(a) == Some(*id)) })).collect::<Vec<_>>(),
             "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
+            "toposolid_types": d.toposolid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "stair_types": d.stair_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "width_mm": t.rules.min_run_width_mm, "family": "Stair" })).collect::<Vec<_>>(),
             "railing_types": d.railing_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "family": "Railing" })).collect::<Vec<_>>(),
             "ramp_types": d.ramp_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "family": "Ramp", "max_slope_ratio": t.max_slope_ratio })).collect::<Vec<_>>(),
@@ -2925,6 +2931,7 @@ impl Session {
         if let Some(o) = out.as_object_mut() {
             if let Some(rooms)=rooms::drawing(d,vid).as_object(){o.extend(rooms.clone());}
             if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
+            if let Some(t) = topo::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(c) = stairs::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = railings::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = ramps::drawing(d, vid).as_object() { o.extend(c.clone()); }
@@ -3001,6 +3008,16 @@ impl Session {
                     for (mat, verts) in d.railing_meshes_at(r, detail) {
                         let color = mat.as_deref().and_then(|m| d.material(m)).map_or([150, 150, 150], |m| m.graphics.shading_color);
                         meshes.push(json!({ "id": id, "kind": "Railing", "material": mat, "color": color, "verts": verts }));
+                    }
+                }
+                continue;
+            }
+            if let Element::Toposolid(t) = e {
+                if shown("Topography") {
+                    if let Some(verts) = mesh::toposolid_mesh(d, t) {
+                        let mat = d.toposolid_type(t.toposolid_type).and_then(|ty| ty.layers.first()).map(|l| l.material.clone());
+                        let color = mat.as_deref().and_then(|m| d.material(m)).map_or([150, 128, 100], |m| m.graphics.shading_color);
+                        meshes.push(json!({ "id": id, "kind": "Toposolid", "material": mat, "color": color, "verts": verts }));
                     }
                 }
                 continue;
@@ -3100,6 +3117,7 @@ impl Session {
             Element::RoomTag(t) => Ok(self.room_tag_props(id,t)),
             Element::ElementTag(t) => Ok(self.tag_props(id, t)),
             Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
+            Element::Toposolid(t) => Ok(self.toposolid_props(id, t)),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),
             Element::Ramp(r) => Ok(self.ramp_props(id, r)),
@@ -3149,7 +3167,7 @@ impl Session {
                 v["family_id"] = json!(t.family);
                 v
             }
-            Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) => props::sys_type_props(d, id)?,
+            Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) | Element::ToposolidType(_) => props::sys_type_props(d, id)?,
             Element::RampType(t) => {
                 let mut v = ramps::ramp_type_props(d, id, t);
                 v["family"] = json!("Ramp");

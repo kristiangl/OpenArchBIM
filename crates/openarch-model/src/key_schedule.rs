@@ -86,6 +86,13 @@ impl Document {
             Element::Floor(_) => Some("Floors".into()),
             Element::Roof(_) => Some("Roofs".into()),
             Element::Room(_) => Some("Rooms".into()),
+            Element::Ceiling(_) => Some("Ceilings".into()),
+            Element::Toposolid(_) => Some("Topography".into()),
+            Element::Stair(_) => Some("Stairs".into()),
+            Element::Ramp(_) => Some("Ramps".into()),
+            Element::Railing(_) => Some("Railings".into()),
+            // areas schedule by their scheme, so each scheme is a category of its own
+            Element::Area(a) => Some(format!("Areas ({})", self.area_scheme(self.scheme_of_area(a)?)?.name)),
             Element::FamilyInstance(i) => self.instance_family(i).map(|(f, _)| f.category.label().into()),
             _ => None,
         }
@@ -262,6 +269,12 @@ impl Document {
                         Element::Floor(_) => d.patch_floor(element, &patch)?,
                         Element::Roof(_) => d.patch_roof(element, &patch)?,
                         Element::Room(_) => d.patch_room(element, &patch)?,
+                        Element::Ceiling(_) => d.patch_ceiling(element, &patch)?,
+                        Element::Toposolid(_) => d.patch_toposolid(element, &patch)?,
+                        Element::Stair(_) => d.patch_stair(element, &patch)?,
+                        Element::Ramp(_) => d.patch_ramp(element, &patch)?,
+                        Element::Railing(_) => d.patch_railing(element, &patch)?,
+                        Element::Area(_) => d.patch_area(element, &patch)?,
                         _ => return Err("That element cannot use a key.".into()),
                     }
                 }

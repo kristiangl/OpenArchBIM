@@ -144,6 +144,10 @@ async function renderProperties() {
     types = app.info.floor_types; current = d.type_id;
     onType = async (id) => { await run("set_floor_type", { id: d.id, type_id: id }); await refresh(); };
     title = d.title;
+  } else if (d && d.kind === "Toposolid") {
+    types = app.info.toposolid_types || []; current = d.type_id;
+    onType = async (id) => { await run("patch_toposolid", { id: d.id, patch: { toposolid_type: id } }); await refresh(); };
+    title = d.title;
   } else if (d && d.kind === "Ceiling") {
     types = app.info.ceiling_types; current = d.type_id;
     onType = async (id) => { await run("patch_ceiling", { id: d.id, patch: { ceiling_type: id } }); await refresh(); };
@@ -259,6 +263,14 @@ async function renderProperties() {
     onType = (id) => tp.setType(id);
     title = tp.title;
     groups.push(...tp.groups);
+  } else if (tool === "topopoint") {
+    const tp = Topo.pointProperties();
+    title = tp.title;
+    groups.push(...tp.groups);
+  } else if (tool === "sketch" && Sketch.kind === "toposolid" && !Sketch.editingId) {
+    const tp = Topo.placementProperties();
+    types = tp.types; current = tp.current; onType = tp.onType; title = tp.title;
+    groups.push(...tp.groups);
   } else if (tool === "ceiling" || (tool === "sketch" && Sketch.kind === "ceiling" && !Sketch.editingId)) {
     // placing a ceiling: its type and its height above the level
     types = app.info.ceiling_types || []; current = Ceilings.typeId();
@@ -354,7 +366,7 @@ async function renderProperties() {
 // ---- Type Selector ----------------------------------------------------------------
 // A button showing the family and type, and a drop-down that lists every type under its family, with a search box
 // and the most recently used types at the bottom. The native select stays (hidden) as the value holder.
-const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.ceiling_types || [], "Compound Ceiling"], [app.info.stair_types || [], "Stair"], [app.info.railing_types || [], "Railing"], [app.info.ramp_types || [], "Ramp"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
+const TYPE_GROUP = () => new Map([[app.info.wall_types, "Basic Wall"], [app.info.floor_types, "Floor"], [app.info.roof_types, "Basic Roof"], [app.info.ceiling_types || [], "Compound Ceiling"], [app.info.toposolid_types || [], "Toposolid"], [app.info.stair_types || [], "Stair"], [app.info.railing_types || [], "Railing"], [app.info.ramp_types || [], "Ramp"], [app.info.level_types, "Level"], [app.info.grid_types, "Grid"]]);
 function typeEntries(types) {
   const group = TYPE_GROUP().get(types) || "";
   return (types || []).map((t) => ({ id: t.id, family: t.family || group, name: t.name, category: t.category || "" }));

@@ -281,7 +281,7 @@ const ICON_ALIAS = {
   "det-line": "detailLine", "det-region": "region", "det-comp": "detailComp", "det-insulation": "insulation", "det-revcloud": "revCloud",
   keynote: "keynote", "tag-all": "tagAll", "tag-cat": "tag", "tag-mat": "tagMat", "scale-bar": "scaleBar",
   // site
-  "topo-points": "topoPoints", "topo-file": "topoFile", "site-surface": "surface", grading: "grading", cutfill: "cutFill",
+  "topo-points": "topoPoints", "topo-file": "topoFile", "topo-sketch": "topoPoints", "topo-import": "topoFile", "site-surface": "surface", grading: "grading", cutfill: "cutFill",
   parking: "parking", linemark: "lineMark", kerb: "kerb", "kerb-ramp": "kerbRamp",
   // view
   "v-plan": "planView", "v-floorplan": "planView", "v-ceilingplan": "ceilingPlan", "v-3d": "view3d", "v-section": "section", "v-elev": "elevation",

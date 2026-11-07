@@ -14,3 +14,4 @@ uuid = { version = "1", features = ["v4"] }
 i_overlay = "9.0.1"
 ttf-parser = "0.25"
 earcutr = "0.5.0"
+spade = "2"

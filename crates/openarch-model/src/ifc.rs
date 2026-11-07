@@ -665,6 +665,24 @@ impl Document {
             products.insert(id, ent);
         }
 
+        // toposolids: IfcGeographicElement TERRAIN, their 3D mesh
+        for (id, t) in self.toposolids() {
+            if skip(&t.ifc) {
+                continue;
+            }
+            let lv = storey_of(t.level);
+            let (_, storey_at, sz) = storeys[&lv];
+            let Some(set) = crate::mesh::toposolid_mesh(self, t).and_then(|v| w.faceset(&v, -sz)) else { continue };
+            let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+            let shape = w.tessellated(&[set]);
+            let name = self.toposolid_type(t.toposolid_type).map_or("Toposolid".to_string(), |ty| ty.name.clone());
+            let guid = if valid_guid(&t.ifc.guid) { t.ifc.guid.clone() } else { derived(ELEMENT, id) };
+            let tag = if t.mark.trim().is_empty() { "$".to_string() } else { s(&t.mark) };
+            let ent = w.add(format!("IFCGEOGRAPHICELEMENT({},$,{},$,{},#{at},#{shape},{tag},.TERRAIN.)", s(&guid), s(&name), s(&name)));
+            contained.entry(lv).or_default().push(ent);
+            products.insert(id, ent);
+        }
+
         // roofs: their 3D mesh
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };

@@ -1817,6 +1817,13 @@ impl Document {
                 items.push(ElevItem { id, category: "Ceilings", depth: dmin - 0.5, polys: vec![convex_hull_2d(pts)], lines: vec![], fill: [214, 212, 206], stroke: true, ..Default::default() });
             }
         }
+        // toposolids: the ground as seen
+        for (id, t) in self.toposolids() {
+            if hidden(id) {
+                continue;
+            }
+            items.extend(self.toposolid_view_items(id, t, look, &u_of, &d_of, &visible, sl));
+        }
         // roofs: every plane as a polygon, so hips, gables and eaves show as they are
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };
