@@ -103,3 +103,36 @@ fn a_points_file_makes_a_toposolid_in_shared_coordinates() {
     assert!(s.handle("import_toposolid", &json!({ "type_id": ty, "level_id": level, "path": bad })).is_err());
     std::fs::remove_file(&bad).unwrap();
 }
+
+#[test]
+fn points_are_edited_and_simplified_and_a_plan_cuts_high_ground() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let ty = info["toposolid_types"][0]["id"].as_u64().unwrap();
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let id = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "curves": square(0.0, 0.0, 10000.0, 10000.0) }))["id"].as_u64().unwrap();
+    // Modify Sub Elements sends the whole list, heights above the unmodified top
+    let mut pts = vec![];
+    for i in 0..=10 { for j in 0..=10 { pts.push(json!([i as f64 * 1000.0, j as f64 * 1000.0, 0.0])); } }
+    pts.push(json!([4500.0, 4500.0, 3000.0]));
+    call(&mut s, "set_toposolid_points", json!({ "id": id, "points": pts }));
+    assert_eq!(row(&mut s, id, "Points")["raw"], 122.0);
+    assert!(s.handle("set_toposolid_points", &json!({ "id": id, "points": [[-500.0, 0.0, 0.0]] })).is_err());
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let t = &plan["toposolids"][0];
+    assert_eq!(t["points"][121], json!([4500.0, 4500.0, 3000.0]));
+    // the mound rises through the plan's cut plane (1200 above the level): the ground there is cut, in its style
+    let cut = &t["cut"];
+    assert!(!cut["polys"].as_array().unwrap().is_empty() && !cut["lines"].as_array().unwrap().is_empty(), "{cut}");
+    assert!(cut["style"]["line"].is_object());
+    // Simplify keeps the peak
+    let r = call(&mut s, "simplify_toposolid", json!({ "id": id, "keep_percent": 20 }));
+    assert!(r["kept"].as_u64().unwrap() <= 25, "{r}");
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    assert!(plan["toposolids"][0]["points"].as_array().unwrap().iter().any(|p| p[2] == 3000.0));
+    assert!(s.handle("simplify_toposolid", &json!({ "id": id, "keep_percent": 0 })).is_err());
+    // flat ground under the plane is not cut
+    call(&mut s, "set_toposolid_points", json!({ "id": id, "points": [] }));
+    assert!(call(&mut s, "plan", json!({ "view_id": site }))["toposolids"][0]["cut"].is_null());
+}

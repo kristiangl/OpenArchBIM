@@ -263,6 +263,10 @@ async function renderProperties() {
     onType = (id) => tp.setType(id);
     title = tp.title;
     groups.push(...tp.groups);
+  } else if (tool === "topoedit") {
+    const tp = Topo.editProperties();
+    title = tp.title;
+    groups.push(...tp.groups);
   } else if (tool === "topopoint") {
     const tp = Topo.pointProperties();
     title = tp.title;

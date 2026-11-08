@@ -332,6 +332,7 @@ pub fn ceiling_mesh(doc: &Document, c: &crate::ceiling::Ceiling) -> Option<Vec<f
 pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<f32>> {
     let tin = doc.toposolid_tin(t)?;
     let th = doc.toposolid_thickness(t);
+    let bot = doc.toposolid_bottoms(t, &tin);
     let mut out = Vec::new();
     let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
         let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
@@ -339,24 +340,25 @@ pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<
         let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
         [n[0] / l, n[1] / l, n[2] / l]
     };
-    let low = |p: [f64; 3]| [p[0], p[1], p[2] - th];
+    let low = |i: usize| [tin.verts[i][0], tin.verts[i][1], bot[i]];
     for k in &tin.tris {
         let (a, b, c) = (tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]);
         tri(&mut out, a, b, c, normal(a, b, c));
         if th > 0.0 {
-            let (a, b, c) = (low(a), low(b), low(c));
+            let (a, b, c) = (low(k[0]), low(k[1]), low(k[2]));
             tri(&mut out, a, c, b, normal(a, c, b));
         }
     }
     if th > 0.0 {
         for [i, j] in tin.boundary_edges() {
             let (a, b) = (tin.verts[i], tin.verts[j]);
+            let (la, lb) = (low(i), low(j));
             // the outside is on the right of a boundary edge
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
             let l = dx.hypot(dy).max(1e-12);
             let n = [dy / l, -dx / l, 0.0];
-            tri(&mut out, a, low(a), low(b), n);
-            tri(&mut out, a, low(b), b, n);
+            tri(&mut out, a, la, lb, n);
+            tri(&mut out, a, lb, b, n);
         }
     }
     Some(out)

@@ -92,6 +92,7 @@ const Snap = (() => {
       for (let i = 0; i + 1 < q.length; i++) out.push([...q[i], ...q[i + 1], straight ? 4 : 2]);
     }
     for (const f of data.floors || []) ringSegs(f.points, out);
+    for (const t of data.toposolids || []) for (const r of t.rings) ringSegs(r, out);
     for (const r of data.roofs || []) {
       for (const ring of r.rings) ringSegs(ring, out);
       for (const [a, b] of r.ridges) out.push([a[0], a[1], b[0], b[1]]);

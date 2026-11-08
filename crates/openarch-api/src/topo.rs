@@ -3,10 +3,12 @@
 use serde_json::{json, Value};
 
 use openarch_model::curve::Curve;
+use openarch_model::site::P3;
 use openarch_model::topo::{TopoBase, Toposolid};
 use openarch_model::view::ViewKind;
 use openarch_model::{Document, Id};
 
+use crate::graphics::{style_for, Hint};
 use crate::{id_of, point_of, Res, Session};
 
 fn curves_of(p: &Value) -> Result<Vec<Curve>, String> {
@@ -78,6 +80,19 @@ impl Session {
                 Ok(json!({ "level_id": t.level, "type_id": t.toposolid_type, "curves": t.loops.concat().iter().map(crate::describe_curve).collect::<Vec<_>>() }))
             })(),
             "set_toposolid_sketch" => (|| { self.doc.set_toposolid_sketch(id_of(p, "id")?, curves_of(p)?)?; Ok(json!({})) })(),
+            // Modify Sub Elements: { id, points: [[x, y, height above the unmodified top], ...] }, the whole list
+            "set_toposolid_points" => (|| {
+                let pts: Vec<[f64; 3]> = serde_json::from_value(p["points"].clone()).map_err(|e| format!("bad points: {e}"))?;
+                self.doc.set_toposolid_points(id_of(p, "id")?, pts.into_iter().map(|q| P3 { x: q[0], y: q[1], z: q[2] }).collect())?;
+                Ok(json!({}))
+            })(),
+            // Simplify Toposolid: { id, keep_percent }
+            "simplify_toposolid" => (|| {
+                let id = id_of(p, "id")?;
+                let keep = p["keep_percent"].as_f64().ok_or("missing keep_percent")? / 100.0;
+                let removed = self.doc.simplify_toposolid(id, keep)?;
+                Ok(json!({ "removed": removed, "kept": self.doc.toposolid(id).map_or(0, |t| t.points.len()) }))
+            })(),
             "patch_toposolid" => (|| { self.doc.patch_toposolid(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             _ => return None,
         })
@@ -89,12 +104,15 @@ impl Session {
         let thick = d.toposolid_thickness(t);
         let (area, perimeter, _) = measures(t);
         let tin = d.toposolid_tin(t);
-        let plan_area = tin.as_ref().map_or(0.0, |s| s.plan_area()) / 1e6;
+        let volume = d.toposolid_volume(t) / 1e9;
+        let low = tin.as_ref().map(|s| d.toposolid_bottoms(t, s)).unwrap_or_default();
+        let (blo, bhi) = low.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &z| (a.min(z), b.max(z)));
         // shared elevations, as levels and spots read them from the survey point
         let zero = d.topo_base_z(TopoBase::SurveyPoint, t.level);
         let (lo, hi) = tin.as_ref().map_or((0.0, 0.0), |s| s.z_range());
         let varies = hi - lo > 0.5;
-        let elev = |z: f64| if varies { "Varies".to_string() } else { format!("{:.0}", z - zero) };
+        let elev = |z: f64, varies: bool| if varies { "Varies".to_string() } else { format!("{:.0}", z - zero) };
+        let bottom_varies = bhi - blo > 0.5;
         let free = !t.pinned;
         let num = |label: &str, path: &str, v: f64, on: bool| json!({ "label": label, "path": path, "kind": if on { "number" } else { "ro" }, "raw": v, "value": format!("{v}") });
         let boolean = |label: &str, path: &str, v: bool| json!({ "label": label, "path": path, "kind": "bool", "raw": v, "value": if v { "Yes" } else { "No" } });
@@ -113,9 +131,9 @@ impl Session {
                 { "name": "Dimensions", "rows": [
                     ro("Perimeter", format!("{perimeter:.0}"), Some(perimeter)),
                     ro("Area", format!("{area:.2} m\u{b2}"), Some(area)),
-                    ro("Volume", format!("{:.3} m\u{b3}", plan_area * thick / 1000.0), Some(plan_area * thick / 1000.0)),
-                    ro("Elevation at Top", elev(hi), (!varies).then_some(hi - zero)),
-                    ro("Elevation at Bottom", elev(lo - thick), (!varies).then_some(lo - thick - zero)),
+                    ro("Volume", format!("{volume:.3} m\u{b3}"), Some(volume)),
+                    ro("Elevation at Top", elev(hi, varies), (!varies).then_some(hi - zero)),
+                    ro("Elevation at Bottom", elev(blo, bottom_varies), (!bottom_varies && blo.is_finite()).then_some(blo - zero)),
                     ro("Thickness", format!("{thick:.0}"), Some(thick)),
                     ro("Points", format!("{}", t.points.len()), Some(t.points.len() as f64)),
                 ] },
@@ -131,14 +149,27 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     if v.view_kind != ViewKind::FloorPlan { return json!({ "toposolids": [] }); }
     let settings = d.effective_settings(view).unwrap_or_default();
     if settings.overrides.model.get("Topography").is_some_and(|o| !o.visible) { return json!({ "toposolids": [] }); }
+    let cut_z = d.resolve_view_range(v, &settings).map(|r| r.cut);
     let list: Vec<Value> = d.toposolids().into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, t)| {
         let (_, _, rings) = measures(t);
         let contours: Vec<Value> = d.toposolid_contours(t).into_iter().map(|(primary, segs)| {
             json!({ "primary": primary, "segs": segs.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>() })
         }).collect();
         let base = d.toposolid_base_z(t);
-        let points: Vec<[f64; 3]> = t.points.iter().map(|q| [q.x, q.y, base + q.z]).collect();
-        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points })
+        // points as plan positions and their heights above the unmodified top (what Modify Sub Elements edits)
+        let points: Vec<[f64; 3]> = t.points.iter().map(|q| [q.x, q.y, q.z]).collect();
+        // the ground the cut plane passes through, in the cut style of the top layer's material
+        let cut = cut_z.map(|z| d.toposolid_plan_cut(t, z)).filter(|(polys, _)| !polys.is_empty()).and_then(|(polys, lines)| {
+            let material = d.toposolid_type(t.toposolid_type).and_then(|ty| ty.layers.first()).and_then(|l| d.material(&l.material));
+            let hint = material.map(Hint::from_material).unwrap_or_default();
+            let style = style_for(d, &settings, "Topography", None, v.element_overrides.get(&id), "cut", &hint)?;
+            Some(json!({
+                "polys": polys.iter().map(|q| q.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "lines": lines.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>(),
+                "style": style,
+            }))
+        });
+        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "base": base, "cut": cut })
     }).collect();
     json!({ "toposolids": list })
 }

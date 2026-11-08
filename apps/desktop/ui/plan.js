@@ -189,7 +189,7 @@ const Plan = (() => {
     // the family editor borrows the snap index while it sketches; take it back
     if (Snap.owner !== "plan") Snap.build(Snap.fromPlan(data, heldBySketch));
     const w = toWorld(sx, sy);
-    if (o) return Snap.resolve(w, { zoom: cam.s, last: o.last || null, extra: [], cycle: snapCycle, shift, gridStep: gridStep(), hvDeg: o.hvDeg, track: o.track });
+    if (o) return Snap.resolve(w, { zoom: cam.s, last: o.last || null, extra: [], points: o.points, cycle: snapCycle, shift, gridStep: gridStep(), hvDeg: o.hvDeg, track: o.track });
     const last = draw && draw.pts.length ? draw.pts[draw.pts.length - 1] : null;
     if (Sketch.active) return Snap.resolve(w, { zoom: cam.s, last: Sketch.last(), extra: Sketch.segs(), points: Sketch.points(), cycle: snapCycle, shift, gridStep: gridStep(), track: trackPts() });
     return Snap.resolve(w, { zoom: cam.s, last, extra: sketchSegs(), cycle: snapCycle, shift, gridStep: gridStep(), track: trackPts() });
@@ -1089,7 +1089,7 @@ const Plan = (() => {
   // the rotation a marker placed here would get: turned to face the model unless Space has set it
   function markerRotAt(p) {
     if (markerRot !== null) return markerRot;
-    const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points)];
+    const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...(data.toposolids || []).flatMap((t) => t.rings.flat())];
     if (!pts.length) return 0;
     const xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]);
     const cx = (Math.min(...xs) + Math.max(...xs)) / 2, cy = (Math.min(...ys) + Math.max(...ys)) / 2;
@@ -1272,7 +1272,7 @@ const Plan = (() => {
     const order = { underlay: 0, beyond: 1, projection: 2, cut: 3 };
 
     // the ground under everything: toposolid boundaries and contours
-    Topo.draw(ctx, data, toScreen, cam.s, sel, tag);
+    Topo.draw(ctx, data, toScreen, cam.s, sel, tag, { fill: fillShapes, lw, colour, dash });
 
     // floors (below walls)
     for (const f of [...data.floors].sort((a, b) => order[a.display] - order[b.display])) {
@@ -1779,7 +1779,7 @@ const Plan = (() => {
     if (tool === "roomtag") return "Click inside a placed room to tag it. Esc finishes.";
     if (tool === "tag") return "Click a door or window to tag it. Esc finishes.";
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
-    if (tool === "topopoint") return Topo.promptText();
+    if (tool === "topopoint" || tool === "topoedit") return Topo.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
     if (tool === "spot") return Spots.prompt();
@@ -1855,6 +1855,7 @@ const Plan = (() => {
   function snapGlyphWanted() {
     // a dragged grip or element snaps, whatever the tool
     if ((wgrip && wgrip.moved) || (ggrip && ggrip.moved) || dragging || Det.dragging) return true;
+    if (tool === "topoedit") return Topo.dragging();
     if (tool === "sketch") return Sketch.wantsSnap();
     if (tool === "dimension" || tool === "spot") return false;
     if (["select", "door", "window", "hosted", "joins", "elevation"].includes(tool)) return false;
@@ -2361,6 +2362,7 @@ const Plan = (() => {
     canvas.setPointerCapture(e.pointerId);
     if (e.button === 1 || e.button === 2) { pan = { x: e.clientX, y: e.clientY, moved: false, button: e.button }; return; }
     down = { x: e.offsetX, y: e.offsetY };
+    if (tool === "topoedit" && e.button === 0 && Topo.editDown(e.offsetX, e.offsetY, e, toScreen, toWorld)) { down = null; render(); return; }
     if (e.button === 0 && Dims.lockDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Dims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Spots.down(e.offsetX, e.offsetY)) { down = null; return; }
@@ -2433,6 +2435,8 @@ const Plan = (() => {
       render();
       return;
     }
+    // dragged toposolid points snap like any drag; the marker shows while they move
+    if (tool === "topoedit" && Topo.editMove(e.offsetX, e.offsetY, (o) => (hover = snap(e.offsetX, e.offsetY, o)))) { render(); return; }
     if (cropDrag) {
       const w = toWorld(e.offsetX, e.offsetY), r = cropRects(), s = cropDrag.side, horiz = s[0] === "x";
       if (cropDrag.which === "crop") cropDrag.v = Math.round((horiz ? w.x : w.y) / 10) * 10;
@@ -2553,6 +2557,7 @@ const Plan = (() => {
     render();
   });
   canvas.addEventListener("pointerup", (e) => {
+    if (tool === "topoedit" && !pan && Topo.editUp(toScreen)) { down = null; hover = null; render(); return; }
     if (Dims.dragging) { down = null; Dims.up(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { down = null; Spots.up(e.offsetX, e.offsetY); return; }
     if (Det.dragging) { down = null; Det.gripUp(); return; }
@@ -2878,7 +2883,7 @@ const Plan = (() => {
     setComponent(c) { comp = c ? { parts: c.parts || [], footprint: c.footprint || [], rot: comp ? comp.rot : 0 } : null; cb.prompt(promptText()); render(); },
     rotateComponent() { if (comp) { comp.rot = (comp.rot + 90) % 360; render(); return true; } return false; },
     bounds() {
-      const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points)];
+      const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...(data.toposolids || []).flatMap((t) => t.rings.flat())];
       if (!pts.length) return null;
       const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
       return [[Math.min(...xs), Math.min(...ys)], [Math.max(...xs), Math.max(...ys)]];
@@ -2888,6 +2893,7 @@ const Plan = (() => {
       // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
+      if (tool === "topoedit" && Topo.editKey(e)) return true;
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }
@@ -2965,7 +2971,7 @@ const Plan = (() => {
     fit() {
       // the elevation markers and project points are part of what the view shows
       const extra = [...(data.markers || []).map((m) => [m.x, m.y]), ...(data.sections || []).flatMap((s) => [s.start, s.end]), ...(data.site_points && data.site_points.base ? [[data.site_points.base.x, data.site_points.base.y]] : [])];
-      const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...extra];
+      const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...(data.toposolids || []).flatMap((t) => t.rings.flat()), ...extra];
       if (!pts.length) { cam = { x: 3000, y: 2000, s: Math.min(size().w / 12000, size().h / 8000) || 0.1 }; render(); return; }
       const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
       const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];

@@ -4,7 +4,9 @@
 //! The top surface is a constrained Delaunay triangulation (TIN) of the boundary's corners and the points, with
 //! the boundary's edges kept as edges. Point heights are stored above the unmodified top (the level plus Height
 //! Offset From Level), so moving the level or the offset moves the whole surface. A boundary corner with no point
-//! on it sits at the unmodified top. The solid follows the top down by the type's thickness.
+//! on it sits at the unmodified top. The solid follows the top down by the type's thickness, unless a layer of the
+//! type is variable: then the underside stays flat at the unmodified top less the thickness, and the variable
+//! layer takes up the difference.
 //!
 //! Contour lines come from the type's contour sets, measured as shared elevations (from the shared site origin,
 //! which the Survey Point sets).
@@ -57,6 +59,31 @@ pub struct ToposolidType {
 impl ToposolidType {
     pub fn thickness_mm(&self) -> f64 {
         self.layers.iter().map(|l| l.thickness_mm).sum()
+    }
+
+    /// The variable layer's index, when the type has one.
+    pub fn variable_layer(&self) -> Option<usize> {
+        self.layers.iter().position(|l| l.variable)
+    }
+
+    /// Each layer's top and bottom height at a place where the surface is at `top` and the underside at `bottom`:
+    /// layers above the variable one hang from the top, those below it stand on the bottom, and the variable one
+    /// fills between. With no variable layer every layer hangs from the top.
+    pub fn layer_spans(&self, top: f64, bottom: f64) -> Vec<(f64, f64)> {
+        let v = self.variable_layer();
+        let mut out = vec![];
+        let mut off = 0.0;
+        for (i, l) in self.layers.iter().enumerate() {
+            let below: f64 = self.layers[i + 1..].iter().map(|l| l.thickness_mm).sum();
+            let span = match v {
+                Some(v) if i > v => (bottom + below + l.thickness_mm, bottom + below),
+                Some(v) if i == v => (top - off, (bottom + below).min(top - off)),
+                _ => (top - off, top - off - l.thickness_mm),
+            };
+            out.push(span);
+            off += l.thickness_mm;
+        }
+        out
     }
 }
 
@@ -279,6 +306,39 @@ fn on_ring(r: &[Point], p: Point) -> bool {
     })
 }
 
+/// For each point, how far its height is from what its neighbours (in a triangulation of the points alone) would
+/// give there, weighted by closeness, and those neighbours.
+fn point_errors(pts: &[P3]) -> Vec<(f64, Vec<usize>)> {
+    use spade::{DelaunayTriangulation, Point2, Triangulation};
+    let mut tri = DelaunayTriangulation::<Point2<f64>>::new();
+    let mut of_vertex: Vec<Vec<usize>> = vec![];
+    for (i, p) in pts.iter().enumerate() {
+        let Ok(h) = tri.insert(Point2::new(p.x, p.y)) else { continue };
+        if of_vertex.len() <= h.index() { of_vertex.resize(h.index() + 1, vec![]); }
+        of_vertex[h.index()].push(i);
+    }
+    let mut out = vec![(f64::INFINITY, vec![]); pts.len()];
+    for v in tri.vertices() {
+        let own = &of_vertex[v.fix().index()];
+        let near: Vec<usize> = v.out_edges().flat_map(|e| of_vertex[e.to().fix().index()].clone()).collect();
+        for (k, &i) in own.iter().enumerate() {
+            // a second point on the same spot adds nothing
+            if k > 0 { out[i] = (0.0, near.clone()); continue; }
+            let p = pts[i];
+            let (mut sw, mut sz) = (0.0, 0.0);
+            for &j in &near {
+                let d2 = (pts[j].x - p.x).powi(2) + (pts[j].y - p.y).powi(2);
+                let w = 1.0 / d2.max(1e-6);
+                sw += w;
+                sz += w * pts[j].z;
+            }
+            let err = if sw > 0.0 { (p.z - sz / sw).abs() } else { f64::INFINITY };
+            out[i] = (err, near.clone());
+        }
+    }
+    out
+}
+
 /// The convex hull of plan points, counter-clockwise.
 pub fn convex_hull(pts: &[Point]) -> Vec<Point> {
     let mut p: Vec<Point> = pts.to_vec();
@@ -367,6 +427,86 @@ impl Document {
         let base = self.toposolid_base_z(t);
         let pts: Vec<[f64; 3]> = t.points.iter().map(|p| [p.x, p.y, base + p.z]).collect();
         triangulate(&t.polygons(20.0), &pts, base)
+    }
+
+    /// The underside's height under each corner of the surface. With a variable layer it stays flat at the
+    /// unmodified top less the type's thickness, following the top down only where the ground dips so far that the
+    /// other layers would not fit; without one it is the top less the thickness.
+    pub fn toposolid_bottoms(&self, t: &Toposolid, tin: &Tin) -> Vec<f64> {
+        let ty = self.toposolid_type(t.toposolid_type);
+        let th = ty.map_or(0.0, |ty| ty.thickness_mm());
+        let fixed = ty.and_then(|ty| ty.variable_layer().map(|v| th - ty.layers[v].thickness_mm));
+        let flat = self.toposolid_base_z(t) - th;
+        tin.verts.iter().map(|v| match fixed { Some(f) => flat.min(v[2] - f), None => v[2] - th }).collect()
+    }
+
+    /// The solid's volume (mm³): over each triangle, its plan area by the mean depth at its corners.
+    pub fn toposolid_volume(&self, t: &Toposolid) -> f64 {
+        let Some(tin) = self.toposolid_tin(t) else { return 0.0 };
+        let bot = self.toposolid_bottoms(t, &tin);
+        tin.tris.iter().map(|k| {
+            let (a, b, c) = (tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]);
+            let area = ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0;
+            let depth = k.iter().map(|&i| (tin.verts[i][2] - bot[i]).max(0.0)).sum::<f64>() / 3.0;
+            area * depth
+        }).sum()
+    }
+
+    /// Where a floor plan's cut plane at height `z` passes through the ground: the pieces of plan where the surface
+    /// is above the plane and the underside below it (filled with the cut pattern), and the lines round them (where
+    /// the top or the underside meets the plane, and the boundary in between).
+    pub fn toposolid_plan_cut(&self, t: &Toposolid, z: f64) -> (Vec<Vec<Point>>, Vec<[Point; 2]>) {
+        let Some(tin) = self.toposolid_tin(t) else { return (vec![], vec![]) };
+        let bot = self.toposolid_bottoms(t, &tin);
+        let boundary: std::collections::HashSet<[usize; 2]> = tin.boundary_edges().into_iter().map(|[a, b]| [a.min(b), a.max(b)]).collect();
+        let (mut polys, mut lines) = (vec![], vec![]);
+        // a corner of a piece: plan position, surface and underside heights, and the triangle edge it lies on (if any)
+        type V = (f64, f64, f64, f64, Option<[usize; 2]>);
+        let clip = |poly: Vec<V>, g: &dyn Fn(&V) -> f64| -> Vec<V> {
+            let n = poly.len();
+            let mut out = vec![];
+            for i in 0..n {
+                let (a, b) = (poly[i], poly[(i + 1) % n]);
+                let (ga, gb) = (g(&a), g(&b));
+                if ga >= 0.0 { out.push(a); }
+                if (ga >= 0.0) != (gb >= 0.0) {
+                    let s = ga / (ga - gb);
+                    // the edge out of a corner where the piece comes back inside runs on along the old edge; out of
+                    // one where it leaves, along the plane
+                    let edge = if ga < 0.0 { a.4 } else { None };
+                    out.push((a.0 + (b.0 - a.0) * s, a.1 + (b.1 - a.1) * s, a.2 + (b.2 - a.2) * s, a.3 + (b.3 - a.3) * s, edge));
+                }
+            }
+            out
+        };
+        for k in &tin.tris {
+            let tops = k.map(|i| tin.verts[i][2]);
+            let bots = k.map(|i| bot[i]);
+            // ground that only touches the plane (a flat top at the cut height, say) is not cut
+            if tops.iter().all(|&h| h <= z + 0.01) || bots.iter().all(|&h| h >= z - 0.01) { continue; }
+            // each corner carries the triangle edge that runs out of it, so the boundary can be told among the edges
+            let tagged: Vec<V> = (0..3).map(|j| {
+                let (a, b) = (k[j], k[(j + 1) % 3]);
+                (tin.verts[a][0], tin.verts[a][1], tops[j], bots[j], Some([a.min(b), a.max(b)]))
+            }).collect();
+            let p1 = clip(tagged, &|v: &V| v.2 - z);
+            if p1.len() < 3 { continue; }
+            let p2 = clip(p1, &|v: &V| z - v.3);
+            let ring: Vec<Point> = p2.iter().map(|v| Point::new(v.0, v.1)).collect();
+            if p2.len() < 3 || crate::geom::signed_area(&ring).abs() < 1.0 { continue; }
+            let m = p2.len();
+            for i in 0..m {
+                let (a, b) = (p2[i], p2[(i + 1) % m]);
+                let on_top = (a.2 - z).abs() < 1e-6 && (b.2 - z).abs() < 1e-6;
+                let on_bottom = (a.3 - z).abs() < 1e-6 && (b.3 - z).abs() < 1e-6;
+                let on_boundary = a.4.is_some_and(|e| boundary.contains(&e));
+                if (on_top || on_bottom || on_boundary) && (a.0 - b.0).hypot(a.1 - b.1) > 0.01 {
+                    lines.push([Point::new(a.0, a.1), Point::new(b.0, b.1)]);
+                }
+            }
+            polys.push(ring);
+        }
+        (polys, lines)
     }
 
     /// The height a base stands at (absolute, mm).
@@ -506,6 +646,59 @@ impl Document {
         self.transact("Edit toposolid boundary", |tx| tx.update(id, Element::Toposolid(t)))
     }
 
+    /// Modify Sub Elements: the toposolid's points replaced (plan positions, heights above the unmodified top). A point
+    /// outside the boundary is refused; two on the same spot keep the later one.
+    pub fn set_toposolid_points(&mut self, id: Id, points: Vec<P3>) -> Result<(), String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        self.refuse_pinned(&[id], "edited")?;
+        let rings = t.polygons(20.0);
+        let mut kept: Vec<P3> = vec![];
+        for p in points.into_iter().rev() {
+            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) { return Err("a point must be numbers".into()); }
+            let q = Point::new(p.x, p.y);
+            if !inside(&rings, q) && !rings.iter().any(|r| on_ring(r, q)) { return Err("A point must stay inside the toposolid's boundary.".into()); }
+            if !kept.iter().any(|k| (k.x - p.x).hypot(k.y - p.y) <= 1.0) { kept.push(p); }
+        }
+        kept.reverse();
+        if kept == t.points { return Ok(()); }
+        t.points = kept;
+        self.transact("Modify toposolid points", |tx| tx.update(id, Element::Toposolid(t)))
+    }
+
+    /// Simplify Toposolid: keep about `keep` (a fraction, 0 to 1) of the points, dropping first those the surface
+    /// would miss least: a point whose height its neighbours already give goes before a peak or a hollow. Returns
+    /// how many were dropped.
+    pub fn simplify_toposolid(&mut self, id: Id, keep: f64) -> Result<usize, String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        self.refuse_pinned(&[id], "edited")?;
+        if !(keep.is_finite() && keep > 0.0 && keep <= 1.0) { return Err("Points to keep must be more than 0% and at most 100%.".into()); }
+        let before = t.points.len();
+        let target = ((before as f64 * keep).ceil() as usize).max(3.min(before));
+        let mut pts = t.points.clone();
+        while pts.len() > target {
+            let errs = point_errors(&pts);
+            let mut order: Vec<usize> = (0..pts.len()).collect();
+            order.sort_by(|&a, &b| errs[a].0.total_cmp(&errs[b].0));
+            // from the lowest errors a batch at a time, never two neighbours in one batch, so each judgement still
+            // holds when it is made
+            let batch = ((pts.len() - target) / 2).max(1).min(pts.len() - target);
+            let mut locked = vec![false; pts.len()];
+            let mut drop = vec![false; pts.len()];
+            for &i in order.iter().take(batch) {
+                if locked[i] { continue; }
+                drop[i] = true;
+                for &j in &errs[i].1 { locked[j] = true; }
+            }
+            let mut k = 0;
+            pts.retain(|_| { let keep = !drop[k]; k += 1; keep });
+        }
+        let removed = before - pts.len();
+        if removed == 0 { return Ok(0); }
+        t.points = pts;
+        self.transact("Simplify toposolid", |tx| tx.update(id, Element::Toposolid(t)))?;
+        Ok(removed)
+    }
+
     pub fn patch_toposolid(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
         let old = self.toposolid(id).cloned().ok_or("not a toposolid")?;
         let t: Toposolid = crate::doc::apply_patch(&old, patch)?;
@@ -535,7 +728,8 @@ impl Document {
         let Some(tin) = self.toposolid_tin(t) else { return vec![] };
         let th = self.toposolid_thickness(t);
         let n = tin.verts.len();
-        let corner = |i: usize| if i < n { tin.verts[i] } else { let v = tin.verts[i - n]; [v[0], v[1], v[2] - th] };
+        let bot = self.toposolid_bottoms(t, &tin);
+        let corner = |i: usize| if i < n { tin.verts[i] } else { let v = tin.verts[i - n]; [v[0], v[1], bot[i - n]] };
         let color = self.toposolid_type(t.toposolid_type).and_then(|ty| ty.layers.first()).and_then(|l| self.material(&l.material)).map_or([150, 128, 100], |m| m.graphics.shading_color);
         let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
             let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
@@ -630,9 +824,19 @@ impl Document {
         let Some(tin) = self.toposolid_tin(t) else { return vec![] };
         let polys = t.polygons(20.0);
         let rings: Vec<&[Point]> = polys.iter().map(|p| p.as_slice()).collect();
-        let bands: Vec<(Option<&str>, f64, bool)> = match self.toposolid_type(t.toposolid_type) {
-            Some(ty) if !ty.layers.is_empty() => ty.layers.iter().map(|l| (Some(l.material.as_str()), l.thickness_mm, l.is_void)).collect(),
-            _ => vec![(None, 2.0, false)],
+        let ty = self.toposolid_type(t.toposolid_type).filter(|ty| !ty.layers.is_empty());
+        let bands: Vec<(Option<&str>, f64, bool)> = match ty {
+            Some(ty) => ty.layers.iter().map(|l| (Some(l.material.as_str()), l.thickness_mm, l.is_void)).collect(),
+            None => vec![(None, 2.0, false)],
+        };
+        let th: f64 = bands.iter().map(|b| b.1).sum();
+        // the underside under a point of the profile: flat with a variable layer (as toposolid_bottoms), else the top
+        // less the thickness
+        let fixed = ty.and_then(|ty| ty.variable_layer().map(|v| th - ty.layers[v].thickness_mm));
+        let flat = self.toposolid_base_z(t) - th;
+        let bottom = |top: f64| match fixed { Some(f) => flat.min(top - f), None => top - th };
+        let spans = |top: f64| -> Vec<(f64, f64)> {
+            match ty { Some(ty) => ty.layer_spans(top, bottom(top)), None => vec![(top, top - 2.0)] }
         };
         let edges = tin.edges();
         let mut out = vec![];
@@ -656,13 +860,24 @@ impl Document {
             prof.sort_by(|a, b| a[0].total_cmp(&b[0]));
             prof.dedup_by(|a, b| (a[0] - b[0]).abs() < 1e-6);
             if prof.len() < 2 { continue; }
-            let mut off = 0.0;
-            for (mat, th, void) in &bands {
-                let (hi, lo) = (off, off + th);
-                off += th;
+            // where a flat underside starts to follow the top down
+            if let Some(f) = fixed {
+                let mut with = vec![prof[0]];
+                for w in prof.windows(2) {
+                    let (ga, gb) = (w[0][1] - f - flat, w[1][1] - f - flat);
+                    if (ga < 0.0) != (gb < 0.0) {
+                        let s = ga / (ga - gb);
+                        with.push([w[0][0] + (w[1][0] - w[0][0]) * s, w[0][1] + (w[1][1] - w[0][1]) * s]);
+                    }
+                    with.push(w[1]);
+                }
+                prof = with;
+            }
+            let at: Vec<Vec<(f64, f64)>> = prof.iter().map(|q| spans(q[1])).collect();
+            for (k, (mat, th, void)) in bands.iter().enumerate() {
                 if *void || *th <= 0.0 { continue; }
-                let mut poly: Vec<[f64; 2]> = prof.iter().map(|q| [q[0], q[1] - hi]).collect();
-                poly.extend(prof.iter().rev().map(|q| [q[0], q[1] - lo]));
+                let mut poly: Vec<[f64; 2]> = prof.iter().zip(&at).map(|(q, s)| [q[0], s[k].0]).collect();
+                poly.extend(prof.iter().zip(&at).rev().map(|(q, s)| [q[0], s[k].1]));
                 let fill = mat.and_then(|m| self.material(m)).map_or([150, 128, 100], |m| m.graphics.shading_color);
                 out.push(ElevItem { id, category: "Topography", depth: -1.0 + 0.003, polys: vec![poly], fill, cut: true, material: mat.map(str::to_string), ..Default::default() });
             }
@@ -756,5 +971,77 @@ mod tests {
         let tin = d.toposolid_tin(&t).unwrap();
         assert!(tin.z_at(Point::new(5000.0, 8000.0)).is_none());
         assert!((tin.plan_area() - (100e6 - 5000.0 * 7000.0)).abs() < 1.0);
+    }
+
+    #[test]
+    fn a_variable_layer_keeps_the_underside_flat() {
+        let (mut d, ty, level) = setup();
+        let lz = d.level(level).unwrap().elevation_mm;
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        d.add_toposolid_point(id, Point::new(5000.0, 5000.0), lz + 1800.0).unwrap();
+        let t = d.toposolid(id).unwrap().clone();
+        assert!((d.toposolid_volume(&t) - 1e11).abs() < 1e3, "constant thickness: {}", d.toposolid_volume(&t));
+        // 300 of fixed earth over 700 variable: the bottom stays at the unmodified top less 1000
+        let mut tt = d.toposolid_type(ty).unwrap().clone();
+        tt.layers = vec![Layer::new("Earth", 300.0, LayerFunction::Finish1, true), Layer::new("Earth", 700.0, LayerFunction::Structure, true)];
+        tt.layers[1].variable = true;
+        d.transact("variable", |tx| tx.update(ty, Element::ToposolidType(tt.clone()))).unwrap();
+        let tin = d.toposolid_tin(&t).unwrap();
+        assert!(d.toposolid_bottoms(&t, &tin).iter().all(|b| (b - (lz - 1000.0)).abs() < 1e-6));
+        assert!((d.toposolid_volume(&t) - 1.6e11).abs() < 1e3, "{}", d.toposolid_volume(&t));
+        let spans = tt.layer_spans(lz + 1800.0, lz - 1000.0);
+        assert_eq!(spans, vec![(lz + 1800.0, lz + 1500.0), (lz + 1500.0, lz - 1000.0)]);
+        // a hollow deeper than the fixed layers allow: the underside follows it there
+        d.add_toposolid_point(id, Point::new(5000.0, 5000.0), lz - 1500.0).unwrap();
+        let t = d.toposolid(id).unwrap().clone();
+        let tin = d.toposolid_tin(&t).unwrap();
+        let bot = d.toposolid_bottoms(&t, &tin);
+        let mid = tin.verts.iter().position(|v| (v[0] - 5000.0).abs() < 1e-6 && (v[1] - 5000.0).abs() < 1e-6).unwrap();
+        assert!((bot[mid] - (lz - 1800.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_plan_cuts_the_ground_above_its_cut_plane() {
+        let (mut d, ty, level) = setup();
+        let lz = d.level(level).unwrap().elevation_mm;
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        let t = d.toposolid(id).unwrap().clone();
+        assert!(d.toposolid_plan_cut(&t, lz + 1200.0).0.is_empty(), "flat ground below the plane is not cut");
+        d.add_toposolid_point(id, Point::new(5000.0, 5000.0), lz + 2700.0).unwrap();
+        let t = d.toposolid(id).unwrap().clone();
+        let (polys, lines) = d.toposolid_plan_cut(&t, lz + 1200.0);
+        // the ring where the top is above 1200 and the underside (1000 down) below it
+        let area: f64 = polys.iter().map(|p| crate::geom::signed_area(p).abs()).sum();
+        let (r1, r2) = (1.0 - 2200.0 / 2700.0, 1.0 - 1200.0 / 2700.0);
+        assert!((area - 100e6 * (r2 * r2 - r1 * r1)).abs() < 1e3, "{area}");
+        assert_eq!(lines.len(), 8, "the two contours at the plane, one piece per triangle each");
+        // cut lower, through the boundary: the sides show as lines too
+        let (_, lines) = d.toposolid_plan_cut(&t, lz - 500.0);
+        assert!(lines.len() > 4, "{lines:?}");
+    }
+
+    #[test]
+    fn points_move_and_simplify_keeps_the_peaks() {
+        let (mut d, ty, level) = setup();
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        let mut pts = vec![];
+        for i in 0..=10 {
+            for j in 0..=10 {
+                pts.push(P3 { x: i as f64 * 1000.0, y: j as f64 * 1000.0, z: i as f64 * 100.0 });
+            }
+        }
+        pts.push(P3 { x: 4500.0, y: 4500.0, z: 5000.0 });
+        d.set_toposolid_points(id, pts.clone()).unwrap();
+        assert_eq!(d.toposolid(id).unwrap().points.len(), 122);
+        let mut out = pts.clone();
+        out[0].x = -50.0;
+        assert!(d.set_toposolid_points(id, out).is_err(), "outside the boundary");
+        let removed = d.simplify_toposolid(id, 0.1).unwrap();
+        let left = &d.toposolid(id).unwrap().points;
+        assert_eq!(removed, 122 - left.len());
+        assert!(left.len() <= 13 && left.len() >= 3, "{}", left.len());
+        assert!(left.iter().any(|p| p.z == 5000.0), "the peak stays");
+        d.undo();
+        assert_eq!(d.toposolid(id).unwrap().points.len(), 122);
     }
 }
