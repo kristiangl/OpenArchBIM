@@ -416,8 +416,8 @@ impl Document {
         self.spots().into_iter().filter(|(_, s)| s.view == view).collect()
     }
 
-    /// The faces of floors, roofs and walls that lie under a point in a plan view, highest first.
-    /// Only elements on the view's level are looked at.
+    /// The faces of floors, roofs, walls and toposolids that lie under a point in a plan view, highest first.
+    /// Only elements on the view's level are looked at, except toposolids (drawn in every floor plan).
     pub fn surfaces_at(&self, view: Id, p: Point) -> Vec<SurfaceHit> {
         if self.is_elevation_like(view) {
             return self.elevation_spot_hits(view, p, 150.0);
@@ -480,6 +480,13 @@ impl Document {
                         push(SpotSurface::Core, best.1 - above_core / nz, "Roof core face", best.0);
                     }
                     push(SpotSurface::Bottom, best.1 - rt.thickness_mm() / nz, "Roof bottom", [-best.0[0], -best.0[1], -best.0[2]]);
+                }
+                // the ground shows in every floor plan, so a spot can stand on it from any of them
+                Element::Toposolid(t) => {
+                    let Some(((top, normal, fold), bottom)) = self.toposolid_sample(t, p) else { continue };
+                    let name = self.toposolid_type(t.toposolid_type).map_or("Toposolid".to_string(), |ty| ty.name.clone());
+                    out.push(SurfaceHit { host: id, surface: SpotSurface::Top, label: format!("Toposolid top ({name})"), z: top, normal, singular: fold });
+                    out.push(SurfaceHit { host: id, surface: SpotSurface::Bottom, label: format!("Toposolid bottom ({name})"), z: bottom, normal: [0.0, 0.0, -1.0], singular: false });
                 }
                 Element::Wall(w) if on_level(w.base_level) => {
                     let (hl, hr) = self.wall_extents(w);

@@ -4,7 +4,7 @@ use serde_json::{json, Value};
 
 use openarch_model::curve::Curve;
 use openarch_model::site::P3;
-use openarch_model::topo::{TopoBase, Toposolid};
+use openarch_model::topo::{ContourLabel, TopoBase, Toposolid};
 use openarch_model::view::ViewKind;
 use openarch_model::{Document, Id};
 
@@ -80,10 +80,20 @@ impl Session {
                 Ok(json!({ "level_id": t.level, "type_id": t.toposolid_type, "curves": t.loops.concat().iter().map(crate::describe_curve).collect::<Vec<_>>() }))
             })(),
             "set_toposolid_sketch" => (|| { self.doc.set_toposolid_sketch(id_of(p, "id")?, curves_of(p)?)?; Ok(json!({})) })(),
-            // Modify Sub Elements: { id, points: [[x, y, height above the unmodified top], ...] }, the whole list
+            // Modify Sub Elements: { id, points: [[x, y, height above the unmodified top], ...], lines?: [[i, j], ...] },
+            // the whole lists (no lines: they stay as they are)
             "set_toposolid_points" => (|| {
                 let pts: Vec<[f64; 3]> = serde_json::from_value(p["points"].clone()).map_err(|e| format!("bad points: {e}"))?;
-                self.doc.set_toposolid_points(id_of(p, "id")?, pts.into_iter().map(|q| P3 { x: q[0], y: q[1], z: q[2] }).collect())?;
+                let lines: Option<Vec<[usize; 2]>> = match p.get("lines").filter(|v| !v.is_null()) {
+                    Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad lines: {e}"))?),
+                    None => None,
+                };
+                self.doc.set_toposolid_points(id_of(p, "id")?, pts.into_iter().map(|q| P3 { x: q[0], y: q[1], z: q[2] }).collect(), lines)?;
+                Ok(json!({}))
+            })(),
+            // Add Split Line: { id, a, b } plan points
+            "add_toposolid_split_line" => (|| {
+                self.doc.add_toposolid_split_line(id_of(p, "id")?, point_of(&p["a"])?, point_of(&p["b"])?)?;
                 Ok(json!({}))
             })(),
             // Simplify Toposolid: { id, keep_percent }
@@ -93,9 +103,28 @@ impl Session {
                 let removed = self.doc.simplify_toposolid(id, keep)?;
                 Ok(json!({ "removed": removed, "kept": self.doc.toposolid(id).map_or(0, |t| t.points.len()) }))
             })(),
+            // Label Contours: { view_id, a, b }
+            "add_contour_label" => (|| Ok(json!({ "id": self.doc.add_contour_label(id_of(p, "view_id")?, point_of(&p["a"])?, point_of(&p["b"])?)? })))(),
+            "patch_contour_label" => (|| { self.doc.patch_contour_label(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "patch_toposolid" => (|| { self.doc.patch_toposolid(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             _ => return None,
         })
+    }
+
+    pub(crate) fn contour_label_props(&self, id: Id, l: &ContourLabel) -> Value {
+        let base = |b: TopoBase, label: &str| json!({ "label": label, "patch": { "base": b }, "selected": l.base == b });
+        json!({ "id": id, "kind": "ContourLabel", "category": "Topography", "title": "Contour Label", "type_label": "Contour Label", "target": { "method": "patch_contour_label", "id": id }, "groups": [
+            { "name": "Text", "rows": [
+                { "label": "Elevation Base", "kind": "select", "value": if l.base == TopoBase::ProjectBasePoint { "Project Base Point" } else { "Survey Point" },
+                  "options": [base(TopoBase::SurveyPoint, "Survey Point"), base(TopoBase::ProjectBasePoint, "Project Base Point")] },
+                { "label": "Decimal Places", "kind": "number", "path": "decimals", "raw": l.decimals, "value": l.decimals.to_string() },
+                { "label": "Text Size", "kind": "number", "path": "size_mm", "raw": l.size_mm, "value": format!("{}", l.size_mm) },
+                { "label": "Primary Contours Only", "kind": "bool", "path": "primary_only", "raw": l.primary_only, "value": if l.primary_only { "Yes" } else { "No" } },
+            ] },
+            { "name": "Constraints", "rows": [
+                { "label": "Pinned", "kind": "bool", "path": "pinned", "raw": l.pinned, "value": if l.pinned { "Yes" } else { "No" } },
+            ] },
+        ] })
     }
 
     pub(crate) fn toposolid_props(&self, id: Id, t: &Toposolid) -> Value {
@@ -146,9 +175,9 @@ impl Session {
 /// What a floor plan draws for toposolids: the boundary and the contour lines of each, and its points.
 pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let Some(v) = d.view(view) else { return json!({}) };
-    if v.view_kind != ViewKind::FloorPlan { return json!({ "toposolids": [] }); }
+    if v.view_kind != ViewKind::FloorPlan { return json!({ "toposolids": [], "contour_labels": [] }); }
     let settings = d.effective_settings(view).unwrap_or_default();
-    if settings.overrides.model.get("Topography").is_some_and(|o| !o.visible) { return json!({ "toposolids": [] }); }
+    if settings.overrides.model.get("Topography").is_some_and(|o| !o.visible) { return json!({ "toposolids": [], "contour_labels": [] }); }
     let cut_z = d.resolve_view_range(v, &settings).map(|r| r.cut);
     let list: Vec<Value> = d.toposolids().into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, t)| {
         let (_, _, rings) = measures(t);
@@ -169,7 +198,10 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
                 "style": style,
             }))
         });
-        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "base": base, "cut": cut })
+        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "base": base, "cut": cut })
     }).collect();
-    json!({ "toposolids": list })
+    let labels: Vec<Value> = d.contour_labels_in(view).into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, l)| json!({
+        "id": id, "a": [l.a.x, l.a.y], "b": [l.b.x, l.b.y], "pinned": l.pinned, "size": l.size_mm, "labels": d.contour_label_texts(l),
+    })).collect();
+    json!({ "toposolids": list, "contour_labels": labels })
 }

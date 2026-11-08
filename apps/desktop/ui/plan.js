@@ -255,7 +255,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Topo.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -394,7 +394,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1568,6 +1568,7 @@ const Plan = (() => {
     ctx.restore();
     annCrop(() => {
       ColorFill.drawLegends(ctx, data, toScreen, cam.s, sel);
+      Topo.drawLabels(ctx, data, toScreen, cam.s, sel, tag);
       Spatial.draw(ctx,data,toScreen,cam.s,sel,printing);
       Areas.draw(ctx, data, toScreen, cam.s, sel, printing);
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
@@ -1779,7 +1780,8 @@ const Plan = (() => {
     if (tool === "roomtag") return "Click inside a placed room to tag it. Esc finishes.";
     if (tool === "tag") return "Click a door or window to tag it. Esc finishes.";
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
-    if (tool === "topopoint" || tool === "topoedit") return Topo.promptText();
+    if (tool === "topopoint" || tool === "topolabel") return Topo.promptText();
+    if (tool === "shapeedit" || tool === "shapeline") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
     if (tool === "spot") return Spots.prompt();
@@ -1855,7 +1857,8 @@ const Plan = (() => {
   function snapGlyphWanted() {
     // a dragged grip or element snaps, whatever the tool
     if ((wgrip && wgrip.moved) || (ggrip && ggrip.moved) || dragging || Det.dragging) return true;
-    if (tool === "topoedit") return Topo.dragging();
+    if (tool === "shapeedit") return ShapeEdit.dragging();
+    if (tool === "shapeline" || tool === "topolabel") return true;
     if (tool === "sketch") return Sketch.wantsSnap();
     if (tool === "dimension" || tool === "spot") return false;
     if (["select", "door", "window", "hosted", "joins", "elevation"].includes(tool)) return false;
@@ -2268,6 +2271,8 @@ const Plan = (() => {
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
     if (tool === "topopoint") { Topo.click(toWorld(sx, sy)); return; }
+    if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
+    if (tool === "topolabel") { Topo.labelClick(snap(sx, sy, Topo.labelSnap())); return; }
     if (tool === "colorlegend") { ColorFill.place(toWorld(sx, sy)); return; }
     if (tool === "paste") { Clip.place(snap(sx, sy)); return; }
     if (tool === "matchtype") { Clip.matchClick(rawCandidates(sx, sy).flat()[0] ?? null); return; }
@@ -2362,7 +2367,7 @@ const Plan = (() => {
     canvas.setPointerCapture(e.pointerId);
     if (e.button === 1 || e.button === 2) { pan = { x: e.clientX, y: e.clientY, moved: false, button: e.button }; return; }
     down = { x: e.offsetX, y: e.offsetY };
-    if (tool === "topoedit" && e.button === 0 && Topo.editDown(e.offsetX, e.offsetY, e, toScreen, toWorld)) { down = null; render(); return; }
+    if (tool === "shapeedit" && e.button === 0 && ShapeEdit.down(e.offsetX, e.offsetY, e, toScreen, toWorld)) { down = null; render(); return; }
     if (e.button === 0 && Dims.lockDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Dims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Spots.down(e.offsetX, e.offsetY)) { down = null; return; }
@@ -2435,8 +2440,8 @@ const Plan = (() => {
       render();
       return;
     }
-    // dragged toposolid points snap like any drag; the marker shows while they move
-    if (tool === "topoedit" && Topo.editMove(e.offsetX, e.offsetY, (o) => (hover = snap(e.offsetX, e.offsetY, o)))) { render(); return; }
+    // dragged shape points and split lines snap like any drag; the marker shows while they move
+    if (tool === "shapeedit" && ShapeEdit.move(e.offsetX, e.offsetY, (o) => (hover = snap(e.offsetX, e.offsetY, o)))) { render(); return; }
     if (cropDrag) {
       const w = toWorld(e.offsetX, e.offsetY), r = cropRects(), s = cropDrag.side, horiz = s[0] === "x";
       if (cropDrag.which === "crop") cropDrag.v = Math.round((horiz ? w.x : w.y) / 10) * 10;
@@ -2549,7 +2554,10 @@ const Plan = (() => {
     if (tool === "stair") { const l = Stairs.last(); if (l) Stairs.hover(snap(e.offsetX, e.offsetY, { last: l })); }
     if (tool === "ramp") { const l = Ramps.last(); if (l) Ramps.hover(snap(e.offsetX, e.offsetY, { last: l })); }
     lastMouse = { x: e.offsetX, y: e.offsetY };
-    hover = tool === "grid" ? gridSnap(e.offsetX, e.offsetY) : tool === "text" || tool === "noteleader" ? Det.toolSnap(e.offsetX, e.offsetY) : snap(e.offsetX, e.offsetY);
+    hover = tool === "grid" ? gridSnap(e.offsetX, e.offsetY) : tool === "text" || tool === "noteleader" ? Det.toolSnap(e.offsetX, e.offsetY)
+      : tool === "shapeline" ? snap(e.offsetX, e.offsetY, ShapeEdit.lineSnap()) : tool === "topolabel" ? snap(e.offsetX, e.offsetY, Topo.labelSnap()) : snap(e.offsetX, e.offsetY);
+    if (tool === "shapeline") ShapeEdit.lineHover(hover);
+    if (tool === "topolabel") Topo.labelHover(hover);
     cb.cursor(hover);
     if (Sketch.active) Sketch.move(hover, e.offsetX, e.offsetY);
     if (tool === "wall" && draw && SHAPE_CURVE[wallShape]) refreshWallShape();
@@ -2557,7 +2565,7 @@ const Plan = (() => {
     render();
   });
   canvas.addEventListener("pointerup", (e) => {
-    if (tool === "topoedit" && !pan && Topo.editUp(toScreen)) { down = null; hover = null; render(); return; }
+    if (tool === "shapeedit" && !pan && ShapeEdit.up(toScreen)) { down = null; hover = null; render(); return; }
     if (Dims.dragging) { down = null; Dims.up(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { down = null; Spots.up(e.offsetX, e.offsetY); return; }
     if (Det.dragging) { down = null; Det.gripUp(); return; }
@@ -2802,7 +2810,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();
@@ -2893,7 +2901,8 @@ const Plan = (() => {
       // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
-      if (tool === "topoedit" && Topo.editKey(e)) return true;
+      if ((tool === "shapeedit" || tool === "shapeline") && ShapeEdit.key(e)) return true;
+      if (tool === "topolabel" && Topo.labelKey(e)) return true;
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }

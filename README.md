@@ -12,7 +12,7 @@ A free, open-source building information modelling (BIM) application for archite
 - Layered walls with wall types, mitred and butted joins and join cleanup, plus curved walls and curtain walls (grids, panels, mullions, doors)
 - Floors, roofs and ceilings drawn from sketch boundaries, with slopes and slope arrows
 - Stairs with runs and automatic landings, ramps, and railings
-- Toposolids for the site: sketched or imported from a survey points file, shaped with points (added, dragged, given heights, deleted, simplified), with contours by type, cut through their layers in sections and where a plan's cut plane passes through the ground, and a variable layer that keeps the underside flat
+- Toposolids for the site: sketched or imported from a survey points file, shaped with points and split lines (added, dragged with snapping, given heights, deleted, simplified), with contours by type and contour labels, spot elevations and slopes on the ground, cut through their layers in sections and where a plan's cut plane passes through the ground, and a variable layer that keeps the underside flat
 - Doors and windows from loadable families, with tags and mark numbering
 - A family editor: reference planes, parameters, types, lookup tables, nested families, and extrusions, blends, sweeps and voids
 - Plan, elevation, section and 3D views, with jogged sections, depth cueing, view ranges, templates, graphic display options, and hide and isolate
@@ -76,7 +76,7 @@ then open http://127.0.0.1:8765. Windows previews use the Explorer file picker; 
 
 Selecting a section line shows its view properties. Edit Type selects a Section Tag; Marker Type Properties edits or duplicates its head and tail symbol choices. Elevation view types similarly select an Elevation Mark. Section end grips lengthen or shorten along the current cut plane, with a perpendicular range box throughout the drag; Align and Rotate can change its angle. New projects include separate Section Head and Section Tail families, anchored where their reference planes cross. The editable source families are in `crates/openarch-model/families`. Existing project families keep their saved artwork and type choices.
 
-Projects saved with this build use file format 14, which adds toposolids (format 13 added project instance parameters, key schedules, rooms, revisions, door and window tags, ceilings, areas and colour fill schemes). Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
+Projects saved with this build use file format 15, which adds contour labels and split lines on toposolids (format 14 added toposolids, format 13 added project instance parameters, key schedules, rooms, revisions, door and window tags, ceilings, areas and colour fill schemes). Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
 
 For a key schedule, choose Schedule keys in New Schedule, select a category and name the key selector. Add instance fields or use Add Parameter for a project/shared parameter. Insert Data Row creates a key; edit its values, then assign it to elements in Properties or an ordinary schedule. Set the selector to (none) to unlock the values while keeping them.
 

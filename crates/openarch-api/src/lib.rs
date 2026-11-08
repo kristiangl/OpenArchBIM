@@ -3118,6 +3118,7 @@ impl Session {
             Element::ElementTag(t) => Ok(self.tag_props(id, t)),
             Element::Ceiling(c) => Ok(self.ceiling_props(id, c)),
             Element::Toposolid(t) => Ok(self.toposolid_props(id, t)),
+            Element::ContourLabel(l) => Ok(self.contour_label_props(id, l)),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),
             Element::Ramp(r) => Ok(self.ramp_props(id, r)),

@@ -709,6 +709,7 @@ pub enum Element {
     Ramp(crate::ramp::Ramp),
     ToposolidType(crate::topo::ToposolidType),
     Toposolid(crate::topo::Toposolid),
+    ContourLabel(crate::topo::ContourLabel),
 }
 
 impl Element {
@@ -784,6 +785,7 @@ impl Element {
             Element::Ramp(_) => "Ramp",
             Element::ToposolidType(_) => "ToposolidType",
             Element::Toposolid(_) => "Toposolid",
+            Element::ContourLabel(_) => "ContourLabel",
         }
     }
 }

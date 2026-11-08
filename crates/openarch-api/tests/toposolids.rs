@@ -136,3 +136,62 @@ fn points_are_edited_and_simplified_and_a_plan_cuts_high_ground() {
     call(&mut s, "set_toposolid_points", json!({ "id": id, "points": [] }));
     assert!(call(&mut s, "plan", json!({ "view_id": site }))["toposolids"][0]["cut"].is_null());
 }
+
+#[test]
+fn split_lines_fold_the_ground_spots_read_it_and_contours_are_labelled() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let ty = info["toposolid_types"][0]["id"].as_u64().unwrap();
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let lz = info["levels"][0]["elevation_mm"].as_f64().unwrap_or(0.0);
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let id = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "curves": square(0.0, 0.0, 10000.0, 10000.0) }))["id"].as_u64().unwrap();
+    // a split line across the middle, then its ends raised: a ridge
+    call(&mut s, "add_toposolid_split_line", json!({ "id": id, "a": [0, 5000], "b": [10000, 5000] }));
+    let t = call(&mut s, "plan", json!({ "view_id": site }))["toposolids"][0].clone();
+    assert_eq!(t["points"].as_array().unwrap().len(), 2);
+    assert_eq!(t["lines"], json!([[0, 1]]));
+    call(&mut s, "set_toposolid_points", json!({ "id": id, "points": [[0, 5000, 2000], [10000, 5000, 2000]], "lines": [[0, 1]] }));
+    // a second line across the first: both are broken where they cross, at a new point on the ridge
+    call(&mut s, "add_toposolid_split_line", json!({ "id": id, "a": [5000, 0], "b": [5000, 10000] }));
+    let t = call(&mut s, "plan", json!({ "view_id": site }))["toposolids"][0].clone();
+    assert_eq!(t["points"].as_array().unwrap().len(), 5, "{t}");
+    assert_eq!(t["lines"].as_array().unwrap().len(), 4);
+    assert!(s.handle("add_toposolid_split_line", &json!({ "id": id, "a": [-100, 0], "b": [5000, 5000] })).is_err());
+    // a spot on the ridge reads its height; one on the slope reads the slope (2000 over 5000)
+    let spot = call(&mut s, "add_spot", json!({ "view_id": site, "kind": "elevation", "target": [2000, 5000], "host": id, "surface": "top", "shoulder": [500, 400] }))["id"].as_u64().unwrap();
+    let slope = call(&mut s, "add_spot", json!({ "view_id": site, "kind": "slope", "target": [2000, 2500], "host": id, "surface": "top", "shoulder": [500, 400] }))["id"].as_u64().unwrap();
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let find = |sid: u64| plan["spots"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(sid)).unwrap().clone();
+    let e = find(spot);
+    assert!((e["value"].as_f64().unwrap() - (lz + 2000.0)).abs() < 0.5, "{e}");
+    assert!(find(slope)["value"].as_f64().map_or(false, |g| (g - 0.4).abs() < 1e-6), "{}", find(slope));
+    // undo (past the spots) takes the second line away again, with the point where they crossed
+    let lines = |s: &mut Session| call(s, "plan", json!({ "view_id": site }))["toposolids"][0]["lines"].as_array().unwrap().len();
+    for _ in 0..6 { if lines(&mut s) == 1 { break; } call(&mut s, "undo", json!({})); }
+    assert_eq!(lines(&mut s), 1);
+    assert_eq!(call(&mut s, "plan", json!({ "view_id": site }))["toposolids"][0]["points"].as_array().unwrap().len(), 2);
+    // Label Contours: a line up the slope labels the contours it crosses, in metres
+    let label = call(&mut s, "add_contour_label", json!({ "view_id": site, "a": [3000, 100], "b": [3000, 4900] }))["id"].as_u64().unwrap();
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let texts: Vec<String> = plan["contour_labels"][0]["labels"].as_array().unwrap().iter().map(|l| l["text"].as_str().unwrap().to_string()).collect();
+    assert_eq!(texts, vec!["0.5", "1.0", "1.5"], "{plan}");
+    assert_eq!(call(&mut s, "describe", json!({ "id": label }))["kind"], "ContourLabel");
+    call(&mut s, "patch_contour_label", json!({ "id": label, "patch": { "decimals": 2, "primary_only": false } }));
+    let first = call(&mut s, "plan", json!({ "view_id": site }))["contour_labels"][0]["labels"][0].clone();
+    assert_eq!(first["text"], "0.50");
+    // contours run east-west there, so the text does too
+    assert!(first["angle"].as_f64().unwrap().abs() < 1e-6, "{first}");
+    // it moves, and goes with its view's other annotations when the toposolid's category is hidden
+    call(&mut s, "transform", json!({ "ids": [label], "kind": "move", "dx": 1000, "dy": 0 }));
+    assert_eq!(call(&mut s, "plan", json!({ "view_id": site }))["contour_labels"][0]["a"], json!([4000.0, 100.0]));
+    // saving and reopening keeps the lines and the label
+    let file = std::env::temp_dir().join(format!("openarch-topo-lines-{}.oab", std::process::id()));
+    call(&mut s, "save", json!({ "path": file }));
+    let mut again = Session::new();
+    call(&mut again, "open", json!({ "path": file }));
+    std::fs::remove_file(&file).unwrap();
+    let plan = call(&mut again, "plan", json!({ "view_id": site }));
+    assert_eq!(plan["toposolids"][0]["lines"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["contour_labels"][0]["labels"].as_array().unwrap().len(), 3);
+}

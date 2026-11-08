@@ -58,6 +58,7 @@ const COMMANDS = {
   ceiling: () => Ceilings.start(),
   "topo-sketch": () => Topo.startSketch(null),
   "topo-import": () => Topo.importFile(),
+  "topo-label": () => Topo.startLabels(),
   stair: () => Stairs.start(),
   ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),

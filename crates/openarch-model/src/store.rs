@@ -13,7 +13,9 @@ use crate::element::{Element, Id};
 /// 11: door and window tags (a new element kind).
 /// 12: ceilings and ceiling types.
 /// 13: area schemes, area boundaries, areas and area tags.
-const FORMAT_VERSION: i64 = 14;
+/// 14: toposolids and toposolid types.
+/// 15: contour labels, and split lines on toposolids.
+const FORMAT_VERSION: i64 = 15;
 
 impl Document {
     /// Write the project. The file is written beside the target and renamed into

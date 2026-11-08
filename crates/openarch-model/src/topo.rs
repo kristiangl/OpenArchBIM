@@ -2,7 +2,7 @@
 //! inside it, and a type whose layers give the solid its thickness below the surface.
 //!
 //! The top surface is a constrained Delaunay triangulation (TIN) of the boundary's corners and the points, with
-//! the boundary's edges kept as edges. Point heights are stored above the unmodified top (the level plus Height
+//! the boundary's edges and the split lines kept as edges (shape.rs, which floors and roofs are to share). Point heights are stored above the unmodified top (the level plus Height
 //! Offset From Level), so moving the level or the offset moves the whole surface. A boundary corner with no point
 //! on it sits at the unmodified top. The solid follows the top down by the type's thickness, unless a layer of the
 //! type is variable: then the underside stays flat at the unmodified top less the thickness, and the variable
@@ -16,9 +16,49 @@ use serde::{Deserialize, Serialize};
 use crate::curve::Curve;
 use crate::element::{default_coarse_fill, IfcParams, Layer, LayerFunction, TypeInfo};
 use crate::geom::Region;
+pub use crate::shape::{triangulate, Tin};
+use crate::shape::within;
 use crate::site::P3;
 use crate::styles::PatternGraphics;
 use crate::{Document, Element, Id, Point};
+
+/// Label Contours: a line drawn across contours in one plan view; each contour it crosses is labelled there with
+/// its shared elevation, the text running along the contour. The line itself shows only when selected.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ContourLabel {
+    pub view: Id,
+    pub a: Point,
+    pub b: Point,
+    /// Elevation Base: measured from the survey point (shared elevations, as the contours are) or the project base
+    /// point.
+    #[serde(default = "survey")]
+    pub base: TopoBase,
+    /// Places after the decimal point, in metres.
+    #[serde(default = "one")]
+    pub decimals: u8,
+    /// Text height on paper, mm.
+    #[serde(default = "label_size")]
+    pub size_mm: f64,
+    /// Label only the primary contours.
+    #[serde(default)]
+    pub primary_only: bool,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+fn survey() -> TopoBase { TopoBase::SurveyPoint }
+fn one() -> u8 { 1 }
+fn label_size() -> f64 { 2.0 }
+
+/// One label: where it sits (model mm), its turn (radians, kept readable), its text, and whether its contour is
+/// primary.
+#[derive(Debug, Clone, Serialize)]
+pub struct ContourLabelText {
+    pub at: [f64; 2],
+    pub angle: f64,
+    pub text: String,
+    pub primary: bool,
+}
 
 /// The most points a toposolid takes, as from a survey file. Larger files are thinned to this.
 pub const MAX_POINTS: usize = 20_000;
@@ -107,6 +147,9 @@ pub struct Toposolid {
     /// Points on the surface: plan position, and height above the unmodified top.
     #[serde(default)]
     pub points: Vec<P3>,
+    /// Split lines: pairs of indices into `points`; the surface folds along each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub split_lines: Vec<[usize; 2]>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -119,7 +162,7 @@ pub struct Toposolid {
 
 impl Toposolid {
     pub fn new(toposolid_type: Id, level: Id, loops: Vec<Vec<Curve>>, offset_mm: f64) -> Toposolid {
-        Toposolid { toposolid_type, level, loops, offset_mm, points: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
+        Toposolid { toposolid_type, level, loops, offset_mm, points: vec![], split_lines: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
     }
 
     /// The boundary as polygons (arcs and splines broken into short chords).
@@ -130,213 +173,6 @@ impl Toposolid {
     pub fn regions(&self, tol: f64) -> Vec<Region> {
         crate::geom::regions(&self.polygons(tol))
     }
-}
-
-/// The top surface: corners with their heights (absolute, mm) and counter-clockwise triangles.
-#[derive(Debug, Clone, Default)]
-pub struct Tin {
-    pub verts: Vec<[f64; 3]>,
-    pub tris: Vec<[usize; 3]>,
-}
-
-impl Tin {
-    fn corner(&self, i: usize) -> Point {
-        Point::new(self.verts[i][0], self.verts[i][1])
-    }
-
-    /// The height of the surface at a plan point, None outside it.
-    pub fn z_at(&self, p: Point) -> Option<f64> {
-        for t in &self.tris {
-            let (a, b, c) = (self.verts[t[0]], self.verts[t[1]], self.verts[t[2]]);
-            let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
-            if det.abs() < 1e-12 { continue; }
-            let l1 = ((b[1] - c[1]) * (p.x - c[0]) + (c[0] - b[0]) * (p.y - c[1])) / det;
-            let l2 = ((c[1] - a[1]) * (p.x - c[0]) + (a[0] - c[0]) * (p.y - c[1])) / det;
-            let l3 = 1.0 - l1 - l2;
-            let e = -1e-9;
-            if l1 >= e && l2 >= e && l3 >= e {
-                return Some(l1 * a[2] + l2 * b[2] + l3 * c[2]);
-            }
-        }
-        None
-    }
-
-    /// Each edge once, with the triangles on either side (one for an edge on the boundary).
-    pub fn edges(&self) -> Vec<([usize; 2], Vec<usize>)> {
-        let mut map: std::collections::BTreeMap<[usize; 2], Vec<usize>> = Default::default();
-        for (k, t) in self.tris.iter().enumerate() {
-            for j in 0..3 {
-                let (a, b) = (t[j], t[(j + 1) % 3]);
-                map.entry([a.min(b), a.max(b)]).or_default().push(k);
-            }
-        }
-        map.into_iter().collect()
-    }
-
-    /// Boundary edges in the direction their triangle runs (so the outside is on the right).
-    pub fn boundary_edges(&self) -> Vec<[usize; 2]> {
-        let mut count: std::collections::HashMap<[usize; 2], usize> = Default::default();
-        for t in &self.tris {
-            for j in 0..3 {
-                let (a, b) = (t[j], t[(j + 1) % 3]);
-                *count.entry([a.min(b), a.max(b)]).or_default() += 1;
-            }
-        }
-        let mut out = vec![];
-        for t in &self.tris {
-            for j in 0..3 {
-                let (a, b) = (t[j], t[(j + 1) % 3]);
-                if count[&[a.min(b), a.max(b)]] == 1 { out.push([a, b]); }
-            }
-        }
-        out
-    }
-
-    pub fn z_range(&self) -> (f64, f64) {
-        self.verts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), v| (lo.min(v[2]), hi.max(v[2])))
-    }
-
-    /// Plan area of the surface (mm²).
-    pub fn plan_area(&self) -> f64 {
-        self.tris.iter().map(|t| {
-            let (a, b, c) = (self.corner(t[0]), self.corner(t[1]), self.corner(t[2]));
-            ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)).abs() / 2.0
-        }).sum()
-    }
-
-    /// Where the surface crosses height `z`: line pieces in plan.
-    pub fn contour(&self, z: f64) -> Vec<[Point; 2]> {
-        let mut out = vec![];
-        for t in &self.tris {
-            let v = [self.verts[t[0]], self.verts[t[1]], self.verts[t[2]]];
-            let mut hits = vec![];
-            for j in 0..3 {
-                let (a, b) = (v[j], v[(j + 1) % 3]);
-                // a corner exactly on the height counts as just above it, so each crossing is found once
-                let (da, db) = (a[2] - z, b[2] - z);
-                let (above_a, above_b) = (da >= 0.0, db >= 0.0);
-                if above_a == above_b { continue; }
-                let s = da / (da - db);
-                hits.push(Point::new(a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s));
-            }
-            if hits.len() == 2 && (hits[0].x - hits[1].x).hypot(hits[0].y - hits[1].y) > 1e-6 {
-                out.push([hits[0], hits[1]]);
-            }
-        }
-        out
-    }
-}
-
-/// Inside the region rings by the even-odd rule.
-fn inside(rings: &[Vec<Point>], p: Point) -> bool {
-    let mut odd = false;
-    for r in rings {
-        let n = r.len();
-        for i in 0..n {
-            let (a, b) = (r[i], r[(i + 1) % n]);
-            if (a.y > p.y) != (b.y > p.y) && p.x < a.x + (b.x - a.x) * (p.y - a.y) / (b.y - a.y) {
-                odd = !odd;
-            }
-        }
-    }
-    odd
-}
-
-/// The triangulated surface over `rings` (the boundary and its holes), through `points` (absolute heights). A
-/// corner of the boundary with no point within a millimetre takes `base_z`.
-pub fn triangulate(rings: &[Vec<Point>], points: &[[f64; 3]], base_z: f64) -> Option<Tin> {
-    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
-    let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
-    let mut zs: Vec<Option<f64>> = vec![];
-    let mut put = |cdt: &mut ConstrainedDelaunayTriangulation<Point2<f64>>, x: f64, y: f64, z: Option<f64>| -> Option<spade::handles::FixedVertexHandle> {
-        let h = cdt.insert(Point2::new(x, y)).ok()?;
-        if zs.len() <= h.index() { zs.resize(h.index() + 1, None); }
-        if z.is_some() { zs[h.index()] = z; }
-        Some(h)
-    };
-    // points first, so a boundary corner that coincides with one takes its height
-    for p in points {
-        if !(p[0].is_finite() && p[1].is_finite() && p[2].is_finite()) { continue; }
-        // a point on the boundary line counts; one outside is left out
-        if inside(rings, Point::new(p[0], p[1])) || rings.iter().any(|r| on_ring(r, Point::new(p[0], p[1]))) {
-            put(&mut cdt, p[0], p[1], Some(p[2]));
-        }
-    }
-    for r in rings {
-        let hs: Vec<_> = r.iter().filter_map(|q| put(&mut cdt, q.x, q.y, None)).collect();
-        for i in 0..hs.len() {
-            let (a, b) = (hs[i], hs[(i + 1) % hs.len()]);
-            if a != b && cdt.can_add_constraint(a, b) { cdt.add_constraint(a, b); }
-        }
-    }
-    if cdt.num_vertices() < 3 { return None; }
-    let verts: Vec<[f64; 3]> = cdt.vertices().map(|v| {
-        let p = v.position();
-        [p.x, p.y, zs.get(v.fix().index()).copied().flatten().unwrap_or(base_z)]
-    }).collect();
-    let mut tris = vec![];
-    for f in cdt.inner_faces() {
-        let vs = f.vertices();
-        let ids = [vs[0].fix().index(), vs[1].fix().index(), vs[2].fix().index()];
-        let c = Point::new((verts[ids[0]][0] + verts[ids[1]][0] + verts[ids[2]][0]) / 3.0, (verts[ids[0]][1] + verts[ids[1]][1] + verts[ids[2]][1]) / 3.0);
-        if inside(rings, c) { tris.push(ids); }
-    }
-    if tris.is_empty() { return None; }
-    // keep only the corners the triangles use
-    let mut remap = vec![usize::MAX; verts.len()];
-    let mut kept = vec![];
-    for t in tris.iter_mut() {
-        for i in t.iter_mut() {
-            if remap[*i] == usize::MAX { remap[*i] = kept.len(); kept.push(verts[*i]); }
-            *i = remap[*i];
-        }
-    }
-    Some(Tin { verts: kept, tris })
-}
-
-fn on_ring(r: &[Point], p: Point) -> bool {
-    let n = r.len();
-    (0..n).any(|i| {
-        let (a, b) = (r[i], r[(i + 1) % n]);
-        let (dx, dy) = (b.x - a.x, b.y - a.y);
-        let len2 = dx * dx + dy * dy;
-        if len2 < 1e-12 { return false; }
-        let t = (((p.x - a.x) * dx + (p.y - a.y) * dy) / len2).clamp(0.0, 1.0);
-        (a.x + dx * t - p.x).hypot(a.y + dy * t - p.y) < 0.5
-    })
-}
-
-/// For each point, how far its height is from what its neighbours (in a triangulation of the points alone) would
-/// give there, weighted by closeness, and those neighbours.
-fn point_errors(pts: &[P3]) -> Vec<(f64, Vec<usize>)> {
-    use spade::{DelaunayTriangulation, Point2, Triangulation};
-    let mut tri = DelaunayTriangulation::<Point2<f64>>::new();
-    let mut of_vertex: Vec<Vec<usize>> = vec![];
-    for (i, p) in pts.iter().enumerate() {
-        let Ok(h) = tri.insert(Point2::new(p.x, p.y)) else { continue };
-        if of_vertex.len() <= h.index() { of_vertex.resize(h.index() + 1, vec![]); }
-        of_vertex[h.index()].push(i);
-    }
-    let mut out = vec![(f64::INFINITY, vec![]); pts.len()];
-    for v in tri.vertices() {
-        let own = &of_vertex[v.fix().index()];
-        let near: Vec<usize> = v.out_edges().flat_map(|e| of_vertex[e.to().fix().index()].clone()).collect();
-        for (k, &i) in own.iter().enumerate() {
-            // a second point on the same spot adds nothing
-            if k > 0 { out[i] = (0.0, near.clone()); continue; }
-            let p = pts[i];
-            let (mut sw, mut sz) = (0.0, 0.0);
-            for &j in &near {
-                let d2 = (pts[j].x - p.x).powi(2) + (pts[j].y - p.y).powi(2);
-                let w = 1.0 / d2.max(1e-6);
-                sw += w;
-                sz += w * pts[j].z;
-            }
-            let err = if sw > 0.0 { (p.z - sz / sw).abs() } else { f64::INFINITY };
-            out[i] = (err, near.clone());
-        }
-    }
-    out
 }
 
 /// The convex hull of plan points, counter-clockwise.
@@ -426,7 +262,7 @@ impl Document {
     pub fn toposolid_tin(&self, t: &Toposolid) -> Option<Tin> {
         let base = self.toposolid_base_z(t);
         let pts: Vec<[f64; 3]> = t.points.iter().map(|p| [p.x, p.y, base + p.z]).collect();
-        triangulate(&t.polygons(20.0), &pts, base)
+        triangulate(&t.polygons(20.0), &pts, &t.split_lines, base)
     }
 
     /// The underside's height under each corner of the surface. With a variable layer it stays flat at the
@@ -438,6 +274,16 @@ impl Document {
         let fixed = ty.and_then(|ty| ty.variable_layer().map(|v| th - ty.layers[v].thickness_mm));
         let flat = self.toposolid_base_z(t) - th;
         tin.verts.iter().map(|v| match fixed { Some(f) => flat.min(v[2] - f), None => v[2] - th }).collect()
+    }
+
+    /// The top and the underside at a plan point: the top's height, upward normal and whether the point is on a fold,
+    /// and the underside's height. None off the toposolid.
+    pub fn toposolid_sample(&self, t: &Toposolid, p: Point) -> Option<((f64, [f64; 3], bool), f64)> {
+        let tin = self.toposolid_tin(t)?;
+        let top = tin.sample(p)?;
+        let bot = self.toposolid_bottoms(t, &tin);
+        let under = Tin { verts: tin.verts.iter().zip(&bot).map(|(v, &z)| [v[0], v[1], z]).collect(), tris: tin.tris.clone() };
+        Some((top, under.z_at(p)?))
     }
 
     /// The solid's volume (mm³): over each triangle, its plan area by the mean depth at its corners.
@@ -533,6 +379,11 @@ impl Document {
     /// Contour lines of a toposolid by its type: (primary, line pieces in plan). Where a primary and a secondary
     /// set give the same height, the primary line is drawn.
     pub fn toposolid_contours(&self, t: &Toposolid) -> Vec<(bool, Vec<[Point; 2]>)> {
+        self.toposolid_contour_lines(t).into_iter().map(|(_, primary, segs)| (primary, segs)).collect()
+    }
+
+    /// The contours with their heights (absolute, mm).
+    pub fn toposolid_contour_lines(&self, t: &Toposolid) -> Vec<(f64, bool, Vec<[Point; 2]>)> {
         let (Some(ty), Some(tin)) = (self.toposolid_type(t.toposolid_type), self.toposolid_tin(t)) else { return vec![] };
         let zero = self.topo_base_z(TopoBase::SurveyPoint, t.level);
         let (lo, hi) = tin.z_range();
@@ -560,7 +411,7 @@ impl Document {
                 }
             }
         }
-        heights.into_iter().map(|(k, primary)| (primary, tin.contour(k as f64 / 1000.0 + zero))).filter(|(_, l)| !l.is_empty()).collect()
+        heights.into_iter().map(|(k, primary)| { let z = k as f64 / 1000.0 + zero; (z, primary, tin.contour(z)) }).filter(|(_, _, l)| !l.is_empty()).collect()
     }
 
     /// The starter type, and the Earth material, added to a project that has none.
@@ -579,6 +430,7 @@ impl Document {
         if self.level(t.level).is_none() { return Err("unknown level".into()); }
         if !t.offset_mm.is_finite() { return Err("the height offset must be a number".into()); }
         if t.points.iter().any(|p| !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite())) { return Err("a point must be numbers".into()); }
+        if t.split_lines.iter().any(|l| l[0] >= t.points.len() || l[1] >= t.points.len() || l[0] == l[1]) { return Err("a split line must join two of the points".into()); }
         self.check_floor_sketch(&t.loops.concat())?;
         Ok(())
     }
@@ -627,11 +479,12 @@ impl Document {
         self.refuse_pinned(&[id], "edited")?;
         if !(at.x.is_finite() && at.y.is_finite() && z_abs.is_finite()) { return Err("the point must be numbers".into()); }
         let rings = t.polygons(20.0);
-        if !inside(&rings, at) && !rings.iter().any(|r| on_ring(r, at)) { return Err("Click inside the toposolid's boundary.".into()); }
+        if !within(&rings, at) { return Err("Click inside the toposolid's boundary.".into()); }
         let z = z_abs - self.toposolid_base_z(&t);
-        // a point on top of another replaces it
-        t.points.retain(|p| (p.x - at.x).hypot(p.y - at.y) > 1.0);
-        t.points.push(P3 { x: at.x, y: at.y, z });
+        // a point on top of another replaces it (and takes its split lines)
+        let mut pts = t.points.clone();
+        pts.push(P3 { x: at.x, y: at.y, z });
+        (t.points, t.split_lines) = crate::shape::tidy(&rings, pts, t.split_lines.clone(), "toposolid")?;
         self.transact("Add point", |tx| tx.update(id, Element::Toposolid(t)))
     }
 
@@ -641,68 +494,122 @@ impl Document {
         self.refuse_pinned(&[id], "edited")?;
         t.loops = self.check_floor_sketch(&curves)?;
         let rings = t.polygons(20.0);
-        t.points.retain(|p| { let q = Point::new(p.x, p.y); inside(&rings, q) || rings.iter().any(|r| on_ring(r, q)) });
+        (t.points, t.split_lines) = crate::shape::retain_within(&rings, &t.points, &t.split_lines);
         self.check_toposolid(&t)?;
         self.transact("Edit toposolid boundary", |tx| tx.update(id, Element::Toposolid(t)))
     }
 
-    /// Modify Sub Elements: the toposolid's points replaced (plan positions, heights above the unmodified top). A point
-    /// outside the boundary is refused; two on the same spot keep the later one.
-    pub fn set_toposolid_points(&mut self, id: Id, points: Vec<P3>) -> Result<(), String> {
+    /// Modify Sub Elements: the toposolid's points and split lines replaced (plan positions, heights above the
+    /// unmodified top; lines as pairs of indices). `lines` None keeps the lines as they are. See `shape::tidy`.
+    pub fn set_toposolid_points(&mut self, id: Id, points: Vec<P3>, lines: Option<Vec<[usize; 2]>>) -> Result<(), String> {
         let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
         self.refuse_pinned(&[id], "edited")?;
         let rings = t.polygons(20.0);
-        let mut kept: Vec<P3> = vec![];
-        for p in points.into_iter().rev() {
-            if !(p.x.is_finite() && p.y.is_finite() && p.z.is_finite()) { return Err("a point must be numbers".into()); }
-            let q = Point::new(p.x, p.y);
-            if !inside(&rings, q) && !rings.iter().any(|r| on_ring(r, q)) { return Err("A point must stay inside the toposolid's boundary.".into()); }
-            if !kept.iter().any(|k| (k.x - p.x).hypot(k.y - p.y) <= 1.0) { kept.push(p); }
-        }
-        kept.reverse();
-        if kept == t.points { return Ok(()); }
-        t.points = kept;
+        let lines = lines.unwrap_or_else(|| t.split_lines.iter().copied().filter(|l| l[0] < points.len() && l[1] < points.len()).collect());
+        let (pts, ls) = crate::shape::tidy(&rings, points, lines, "toposolid")?;
+        if pts == t.points && ls == t.split_lines { return Ok(()); }
+        (t.points, t.split_lines) = (pts, ls);
         self.transact("Modify toposolid points", |tx| tx.update(id, Element::Toposolid(t)))
     }
 
-    /// Simplify Toposolid: keep about `keep` (a fraction, 0 to 1) of the points, dropping first those the surface
-    /// would miss least: a point whose height its neighbours already give goes before a peak or a hollow. Returns
-    /// how many were dropped.
+    /// Add Split Line: a line across the surface from `a` to `b` (plan points). Each end that is not on a point
+    /// becomes one at the surface's height there; the surface then folds along the line, and moving or raising its
+    /// points (Modify Sub Elements) shapes it.
+    pub fn add_toposolid_split_line(&mut self, id: Id, a: Point, b: Point) -> Result<(), String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        self.refuse_pinned(&[id], "edited")?;
+        if a.dist(&b) < 1.0 { return Err("The split line needs two ends that are apart.".into()); }
+        let rings = t.polygons(20.0);
+        let tin = self.toposolid_tin(&t).ok_or("the toposolid has no surface")?;
+        let base = self.toposolid_base_z(&t);
+        let mut pts = t.points.clone();
+        let mut end = |q: Point| -> Result<usize, String> {
+            if !within(&rings, q) { return Err("Both ends of a split line go inside the toposolid's boundary.".into()); }
+            if let Some(i) = pts.iter().position(|p| (p.x - q.x).hypot(p.y - q.y) <= 1.0) { return Ok(i); }
+            let z = tin.z_at(q).ok_or("Both ends of a split line go inside the toposolid's boundary.")? - base;
+            pts.push(P3 { x: q.x, y: q.y, z });
+            Ok(pts.len() - 1)
+        };
+        let (i, j) = (end(a)?, end(b)?);
+        let mut ls = t.split_lines.clone();
+        ls.push([i, j]);
+        (t.points, t.split_lines) = crate::shape::tidy(&rings, pts, ls, "toposolid")?;
+        self.transact("Add split line", |tx| tx.update(id, Element::Toposolid(t)))
+    }
+
+    /// Simplify Toposolid: keep about `keep` (a fraction, 0 to 1) of the points (`shape::simplify`). Returns how many
+    /// were dropped.
     pub fn simplify_toposolid(&mut self, id: Id, keep: f64) -> Result<usize, String> {
         let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
         self.refuse_pinned(&[id], "edited")?;
-        if !(keep.is_finite() && keep > 0.0 && keep <= 1.0) { return Err("Points to keep must be more than 0% and at most 100%.".into()); }
-        let before = t.points.len();
-        let target = ((before as f64 * keep).ceil() as usize).max(3.min(before));
-        let mut pts = t.points.clone();
-        while pts.len() > target {
-            let errs = point_errors(&pts);
-            let mut order: Vec<usize> = (0..pts.len()).collect();
-            order.sort_by(|&a, &b| errs[a].0.total_cmp(&errs[b].0));
-            // from the lowest errors a batch at a time, never two neighbours in one batch, so each judgement still
-            // holds when it is made
-            let batch = ((pts.len() - target) / 2).max(1).min(pts.len() - target);
-            let mut locked = vec![false; pts.len()];
-            let mut drop = vec![false; pts.len()];
-            for &i in order.iter().take(batch) {
-                if locked[i] { continue; }
-                drop[i] = true;
-                for &j in &errs[i].1 { locked[j] = true; }
-            }
-            let mut k = 0;
-            pts.retain(|_| { let keep = !drop[k]; k += 1; keep });
-        }
-        let removed = before - pts.len();
+        let (pts, ls, removed) = crate::shape::simplify(&t.points, &t.split_lines, keep)?;
         if removed == 0 { return Ok(0); }
-        t.points = pts;
+        (t.points, t.split_lines) = (pts, ls);
         self.transact("Simplify toposolid", |tx| tx.update(id, Element::Toposolid(t)))?;
         Ok(removed)
+    }
+
+    pub fn contour_labels_in(&self, view: Id) -> Vec<(Id, &ContourLabel)> {
+        self.iter().filter_map(|(i, e)| match e { Element::ContourLabel(l) if l.view == view => Some((i, l)), _ => None }).collect()
+    }
+
+    /// The labels a contour label line gives: one where it crosses each contour of the toposolids the view shows.
+    pub fn contour_label_texts(&self, l: &ContourLabel) -> Vec<ContourLabelText> {
+        let hidden = self.view(l.view).map(|v| v.hidden_elements.clone()).unwrap_or_default();
+        let zero = self.topo_base_z(l.base, 0);
+        let (dx, dy) = (l.b.x - l.a.x, l.b.y - l.a.y);
+        let mut out: Vec<(f64, ContourLabelText)> = vec![];
+        for (id, t) in self.toposolids() {
+            if hidden.contains(&id) { continue; }
+            for (z, primary, segs) in self.toposolid_contour_lines(t) {
+                if l.primary_only && !primary { continue; }
+                for s in segs {
+                    let (sx, sy) = (s[1].x - s[0].x, s[1].y - s[0].y);
+                    let den = dx * sy - dy * sx;
+                    if den.abs() < 1e-9 { continue; }
+                    let u = ((s[0].x - l.a.x) * sy - (s[0].y - l.a.y) * sx) / den;
+                    let v = ((s[0].x - l.a.x) * dy - (s[0].y - l.a.y) * dx) / den;
+                    if !(0.0..=1.0).contains(&u) || !(0.0..1.0).contains(&v) { continue; }
+                    // along the contour, turned so it never reads upside down
+                    let mut angle = sy.atan2(sx);
+                    if angle > std::f64::consts::FRAC_PI_2 + 1e-9 { angle -= std::f64::consts::PI; }
+                    if angle <= -std::f64::consts::FRAC_PI_2 + 1e-9 { angle += std::f64::consts::PI; }
+                    let text = format!("{:.*}", l.decimals as usize, (z - zero) / 1000.0);
+                    out.push((u, ContourLabelText { at: [l.a.x + dx * u, l.a.y + dy * u], angle, text, primary }));
+                }
+            }
+        }
+        out.sort_by(|a, b| a.0.total_cmp(&b.0));
+        // a contour piece ending exactly on the line is met twice; one label is enough
+        out.dedup_by(|a, b| (a.1.at[0] - b.1.at[0]).hypot(a.1.at[1] - b.1.at[1]) < 1.0 && a.1.text == b.1.text);
+        out.into_iter().map(|(_, t)| t).collect()
+    }
+
+    /// Label Contours: a line across the contours of a floor plan.
+    pub fn add_contour_label(&mut self, view: Id, a: Point, b: Point) -> Result<Id, String> {
+        let v = self.view(view).ok_or("unknown view")?;
+        if v.view_kind != crate::view::ViewKind::FloorPlan { return Err("Contours are labelled in a floor plan.".into()); }
+        if !(a.x.is_finite() && a.y.is_finite() && b.x.is_finite() && b.y.is_finite()) || a.dist(&b) < 1.0 { return Err("The label line needs two ends that are apart.".into()); }
+        let l = ContourLabel { view, a, b, base: TopoBase::SurveyPoint, decimals: 1, size_mm: label_size(), primary_only: false, pinned: false };
+        self.transact("Label contours", |tx| Ok(tx.add(Element::ContourLabel(l))))
+    }
+
+    pub fn patch_contour_label(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let Some(Element::ContourLabel(old)) = self.get(id).cloned() else { return Err("not a contour label".into()) };
+        let l: ContourLabel = crate::doc::apply_patch(&old, patch)?;
+        if old.pinned && l.pinned && (l.a != old.a || l.b != old.b) { return Err("Unpin the contour label before moving it.".into()); }
+        if l.a.dist(&l.b) < 1.0 { return Err("The label line needs two ends that are apart.".into()); }
+        if l.decimals > 4 { return Err("At most 4 decimal places.".into()); }
+        if !(l.size_mm.is_finite() && l.size_mm > 0.0 && l.size_mm <= 20.0) { return Err("The text size must be more than 0 and at most 20 mm.".into()); }
+        if matches!(l.base, TopoBase::CurrentLevel | TopoBase::InternalOrigin) { return Err("Contour labels measure from the survey point or the project base point.".into()); }
+        let l = ContourLabel { view: old.view, ..l };
+        self.transact("Contour label", |tx| tx.update(id, Element::ContourLabel(l)))
     }
 
     pub fn patch_toposolid(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
         let old = self.toposolid(id).cloned().ok_or("not a toposolid")?;
         let t: Toposolid = crate::doc::apply_patch(&old, patch)?;
-        if old.pinned && t.pinned && (t.loops != old.loops || t.level != old.level || t.offset_mm != old.offset_mm || t.points != old.points) {
+        if old.pinned && t.pinned && (t.loops != old.loops || t.level != old.level || t.offset_mm != old.offset_mm || t.points != old.points || t.split_lines != old.split_lines) {
             return Err("Unpin the toposolid before moving it.".into());
         }
         self.check_toposolid(&t)?;
@@ -1031,11 +938,11 @@ mod tests {
             }
         }
         pts.push(P3 { x: 4500.0, y: 4500.0, z: 5000.0 });
-        d.set_toposolid_points(id, pts.clone()).unwrap();
+        d.set_toposolid_points(id, pts.clone(), None).unwrap();
         assert_eq!(d.toposolid(id).unwrap().points.len(), 122);
         let mut out = pts.clone();
         out[0].x = -50.0;
-        assert!(d.set_toposolid_points(id, out).is_err(), "outside the boundary");
+        assert!(d.set_toposolid_points(id, out, None).is_err(), "outside the boundary");
         let removed = d.simplify_toposolid(id, 0.1).unwrap();
         let left = &d.toposolid(id).unwrap().points;
         assert_eq!(removed, 122 - left.len());

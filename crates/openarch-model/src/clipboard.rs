@@ -80,14 +80,14 @@ impl Clipboard {
 
 /// Whether an element belongs to one view (and so pastes into views rather than onto levels).
 pub fn view_specific(e: &Element) -> bool {
-    matches!(e, Element::DetailLine(_) | Element::DetailRegion(_) | Element::TextNote(_) | Element::RoomTag(_) | Element::ElementTag(_) | Element::AreaTag(_) | Element::Area(_) | Element::AreaBoundary(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ColorFillLegend(_))
+    matches!(e, Element::DetailLine(_) | Element::DetailRegion(_) | Element::TextNote(_) | Element::RoomTag(_) | Element::ElementTag(_) | Element::AreaTag(_) | Element::Area(_) | Element::AreaBoundary(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ColorFillLegend(_) | Element::ContourLabel(_))
 }
 
 fn view_of(e: &Element) -> Option<Id> {
     match e {
         Element::DetailLine(l) => Some(l.view), Element::DetailRegion(r) => Some(r.view), Element::TextNote(t) => Some(t.view),
         Element::RoomTag(t) => Some(t.view), Element::ElementTag(t) => Some(t.view), Element::AreaTag(t) => Some(t.view), Element::Area(a) => Some(a.view),
-        Element::AreaBoundary(b) => Some(b.view), Element::RevisionCloud(c) => Some(c.view), Element::RevisionTag(t) => Some(t.view), Element::ColorFillLegend(l) => Some(l.view),
+        Element::AreaBoundary(b) => Some(b.view), Element::RevisionCloud(c) => Some(c.view), Element::RevisionTag(t) => Some(t.view), Element::ColorFillLegend(l) => Some(l.view), Element::ContourLabel(l) => Some(l.view),
         _ => None,
     }
 }
@@ -96,7 +96,7 @@ fn set_view(e: &mut Element, v: Id) {
     match e {
         Element::DetailLine(l) => l.view = v, Element::DetailRegion(r) => r.view = v, Element::TextNote(t) => t.view = v,
         Element::RoomTag(t) => t.view = v, Element::ElementTag(t) => t.view = v, Element::AreaTag(t) => t.view = v, Element::Area(a) => a.view = v,
-        Element::AreaBoundary(b) => b.view = v, Element::RevisionCloud(c) => c.view = v, Element::RevisionTag(t) => t.view = v, Element::ColorFillLegend(l) => l.view = v,
+        Element::AreaBoundary(b) => b.view = v, Element::RevisionCloud(c) => c.view = v, Element::RevisionTag(t) => t.view = v, Element::ColorFillLegend(l) => l.view = v, Element::ContourLabel(l) => l.view = v,
         _ => {}
     }
 }
@@ -105,7 +105,7 @@ fn set_view(e: &mut Element, v: Id) {
 fn point_of(e: &Element) -> Option<Point> {
     Some(match e {
         Element::Room(r) => r.at?, Element::RoomTag(t) => t.at, Element::AreaTag(t) => t.at, Element::Area(a) => a.at?, Element::TextNote(t) => t.at,
-        Element::RevisionTag(t) => t.at, Element::ColorFillLegend(l) => l.at, Element::FamilyInstance(i) => i.location,
+        Element::RevisionTag(t) => t.at, Element::ColorFillLegend(l) => l.at, Element::ContourLabel(l) => l.a, Element::FamilyInstance(i) => i.location,
         _ => return None,
     })
 }
@@ -308,6 +308,7 @@ impl Document {
                 Element::RevisionCloud(c) => { c.pinned = false; c.mark.clear(); }
                 Element::RevisionTag(t) => t.pinned = false,
                 Element::ColorFillLegend(l) => l.pinned = false,
+                Element::ContourLabel(l) => l.pinned = false,
                 _ => {}
             }
             // grids are the project's: they paste once, not onto each level
