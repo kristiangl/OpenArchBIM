@@ -132,6 +132,8 @@ const COMMANDS = {
   "split-segment": () => { const s = selectedSection(); if (s) Plan.startSplitSegment(s.id); },
   door: () => startPlacement("door"),
   component: () => startComponentTool(),
+  "site-component": () => startComponentTool(SITE_COMPONENT_CATEGORIES),
+  "parking-component": () => startComponentTool(["Parking"]),
   window: () => startPlacement("window"),
   wjoin: async () => { if (await ensurePlan("Wall Joins")) Plan.setTool("joins"); },
   del: () => deleteSelection(),
@@ -1561,21 +1563,27 @@ const placeTypeId = (tool) => (tool === "door" ? app.doorTypeId : tool === "host
 // ---- Component: place any loaded family that is not a door or window ----------------------
 // Free standing and work-plane-based families follow the cursor and drop on the view's level; wall-hosted ones are
 // placed by clicking a wall, as doors are. The type selector lists every such family and type, searchable.
+// Site Component and Parking Component keep to their categories (`app.componentFilter`); they stand on the ground
 const componentTypes = () => {
   const fams = new Map((app.info.families || []).map((f) => [f.id, f]));
-  return app.info.family_types.filter((t) => { const f = fams.get(t.family_id); return f && !["Doors", "Windows"].includes(f.category) && (f.has_body || f.host === "wall"); });
+  const only = app.componentFilter;
+  return app.info.family_types.filter((t) => { const f = fams.get(t.family_id); return f && !["Doors", "Windows"].includes(f.category) && (f.has_body || f.host === "wall") && (!only || only.includes(f.category)); });
 };
+const SITE_COMPONENT_CATEGORIES = ["Site", "Planting", "Entourage", "Hardscape"];
 const familyOfType = (tid) => { const t = (app.info.family_types || []).find((x) => x.id === tid); return t ? (app.info.families || []).find((f) => f.id === t.family_id) : null; };
 app.componentOffset = 0;
-async function startComponentTool() {
+async function startComponentTool(filter = null) {
+  app.componentFilter = filter;
   const types = componentTypes();
   if (!types.length) {
     openModal("No Component Families", (body, foot, close) => {
       const m = document.createElement("div"); m.className = "modal-msg";
-      m.textContent = "No component families are loaded in the project. Load one from a family file, or make a new family.";
+      m.textContent = filter
+        ? `No ${filter.join(", ").toLowerCase()} families are loaded in the project. Load one from a family file, or make a new family in one of those categories: placed over a toposolid or floor, it stands on the ground there.`
+        : "No component families are loaded in the project. Load one from a family file, or make a new family.";
       body.append(m);
       const b = (t, fn, primary) => { const x = document.createElement("button"); x.textContent = t; if (primary) x.className = "primary"; x.onclick = () => { close(); fn && fn(); }; return x; };
-      foot.append(b("Cancel"), b("New Family...", () => FamModel.newFamily()), b("Load Family...", () => FamModel.loadFile(async () => { await refresh(); startComponentTool(); }), true));
+      foot.append(b("Cancel"), b("New Family...", () => FamModel.newFamily()), b("Load Family...", () => FamModel.loadFile(async () => { await refresh(); startComponentTool(filter); }), true));
     });
     return;
   }

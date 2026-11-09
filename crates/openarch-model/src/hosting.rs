@@ -263,6 +263,8 @@ impl Document {
         // a ceiling-hosted instance hangs from the ceiling's underside where it stands, Offset from Host below it
         let z_ref = match i.face_host {
             Some(h) if h.kind == HostKind::Ceiling => self.ceiling(h.element).and_then(|c| self.ceiling_underside_z(c, i.location))? - i.offset_mm,
+            // a site component stands on the ground under it (a toposolid as built, or a floor), Offset above it
+            Some(h) if h.kind == HostKind::Floor => self.traffic_z(i.level, Some(h.element), i.location) + i.offset_mm,
             _ => level_z + i.offset_mm,
         };
         let a = i.rotation_deg.to_radians();
@@ -343,6 +345,11 @@ impl Document {
         inst.ifc.export_as = fam.category.ifc_class().to_string();
         inst.ifc.predefined_type = fam.category.ifc_predefined().to_string();
         inst.mark = self.auto_mark(fam.category);
+        // site, planting, parking, entourage and hardscape families stand on the toposolid or floor under them
+        use crate::family::FamilyCategory as C;
+        if matches!(fam.category, C::Planting | C::Entourage | C::Parking | C::Site | C::Hardscape) {
+            inst.face_host = self.traffic_host_at(level, point).map(|h| crate::family::FaceHost { element: h, kind: HostKind::Floor });
+        }
         self.transact("Place component", |tx| Ok(tx.add(Element::FamilyInstance(inst))))
     }
 

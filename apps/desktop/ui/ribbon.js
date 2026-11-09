@@ -134,6 +134,7 @@ const RIBBON = {
     { label: "Model Site", items: [
       { id: "topo-sketch", label: "Toposolid", big: true, menu: [{ id: "topo-sketch", label: "Create from Sketch" }, { id: "topo-import", label: "Create from Import" }] },
       { id: "site-surface", label: "Sub-Divide", big: true }, { id: "grading", label: "Graded Region", big: true },
+      { id: "site-component", label: "Site Component", big: true }, { id: "parking-component", label: "Parking Component", big: true },
       { id: "cutfill", label: "Cut / Fill", big: true } ] },
     { label: "Modify Site", items: [
       { id: "topo-label", label: "Label Contours", big: true }, { id: "property-line", label: "Property Line", big: true } ] },

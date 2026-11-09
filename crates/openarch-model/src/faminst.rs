@@ -492,6 +492,30 @@ mod tests {
     }
 
     #[test]
+    fn a_site_component_stands_on_the_toposolid_under_it_and_follows_it() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let lz = d.level(lvl).unwrap().elevation_mm;
+        d.ensure_toposolid_types().unwrap();
+        let ty = d.toposolid_types()[0].0;
+        let sq = [Point::new(0.0, 0.0), Point::new(10_000.0, 0.0), Point::new(10_000.0, 10_000.0), Point::new(0.0, 10_000.0)];
+        let t = d.add_toposolid_sketch(ty, lvl, (0..4).map(|i| crate::curve::Curve::line(sq[i], sq[(i + 1) % 4])).collect(), 400.0).unwrap();
+        let mut fam = desk_family();
+        fam.name = "Bench".into();
+        fam.category = FamilyCategory::Site;
+        let (_, types) = d.add_family(fam, vec![("Standard".into(), BTreeMap::new())]).unwrap();
+        let id = d.place_free(types[0], lvl, Point::new(5000.0, 5000.0), 0.0, 0.0).unwrap();
+        assert!((d.instance_frame(id).unwrap().z_ref - (lz + 400.0)).abs() < 1e-6, "on the ground");
+        // the ground raised there: the bench goes up with it
+        d.add_toposolid_point(t, Point::new(5000.0, 5000.0), lz + 1500.0).unwrap();
+        assert!((d.instance_frame(id).unwrap().z_ref - (lz + 1500.0)).abs() < 1e-6);
+        // a desk (furniture) stays on its level
+        let (_, desk) = d.add_family(desk_family(), vec![("Standard".into(), BTreeMap::new())]).unwrap();
+        let k = d.place_free(desk[0], lvl, Point::new(5000.0, 5000.0), 0.0, 0.0).unwrap();
+        assert!((d.instance_frame(k).unwrap().z_ref - lz).abs() < 1e-6);
+    }
+
+    #[test]
     fn a_free_standing_family_places_draws_turns_mirrors_and_moves_up() {
         let mut d = Document::new_project();
         let lvl = d.levels()[0].0;
