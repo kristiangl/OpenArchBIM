@@ -1,6 +1,7 @@
 // Toposolids: Create from Sketch, Create from Import (a points file), Add Point, Modify Sub Elements and Add Split Line
-// (shapeedit.js), Simplify, Edit Boundary, Excavate and Remove Excavation, Label Contours, and how a floor plan draws them (the boundary, the type's
-// contours and their labels, and the ground its cut plane passes through). Private notes: site.md.
+// (shapeedit.js), Simplify, Edit Boundary, Sub-Divide, Excavate and Remove Excavation, Split and Merge, Label Contours,
+// and how a floor plan draws them (the boundary, the type's contours and their labels, and the ground its cut plane
+// passes through). Private notes: site.md.
 const Topo = (() => {
   // Add Point's settings: the height, measured from a base or above the surface where the point goes
   const pt = { elevation: 0, mode: "absolute", base: "current_level", target: null };
@@ -10,6 +11,10 @@ const Topo = (() => {
     return app.topoTypeId;
   };
   const offset = () => (Number.isFinite(app.topoOffset) ? app.topoOffset : 0);
+  const subOffset = () => (Number.isFinite(app.topoSubOffset) ? app.topoSubOffset : 0);
+  // what a toposolid sketch makes: a toposolid (or its new boundary), a sub-division of `host`, or the line `host` is
+  // split along
+  const sk = { mode: null, host: null };
   const isFloorPlan = () => app.view.kind === "plan" && (app.info.views || []).find((v) => v.id === app.view.viewId)?.view_kind === "floor_plan";
   const data = () => Plan.viewData()?.toposolids || [];
 
@@ -33,6 +38,7 @@ const Topo = (() => {
   async function startSketch(id) {
     if (Sketch.active) return;
     if (!(await ensureTypes())) return;
+    sk.mode = null; sk.host = null;
     if (id != null) {
       const r = await run("toposolid_sketch", { id });
       if (!r) return;
@@ -47,7 +53,36 @@ const Topo = (() => {
     renderProperties();
   }
 
+  // Sub-Divide: a boundary sketched on the toposolid; Split: lines across it, or a closed loop inside it
+  async function startSubSketch(id, mode) {
+    if (Sketch.active) return;
+    const t = data().find((x) => x.id === id);
+    if (!t) return;
+    sk.mode = mode; sk.host = id;
+    typeId();
+    app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+    const r = await run("toposolid_sketch", { id });
+    if (!r) { sk.mode = null; return; }
+    Plan.startSketch({ kind: "toposolid", levelId: r.level_id, typeId: typeId(), curves: [], tool: "line", closed: mode !== "split", title: mode === "split" ? "Split Toposolid" : "Create Sub-division Boundary" });
+    renderSketchUI();
+    renderProperties();
+    setPrompt(mode === "split" ? "Split Toposolid: sketch lines from one edge of the toposolid to another, or a closed loop inside it, then Finish." : "Sub-Divide: sketch the sub-division's closed boundary on the toposolid, then Finish.");
+  }
+
   async function finish(o) {
+    if (sk.mode) {
+      const { mode, host } = sk;
+      const r = mode === "split"
+        ? await run("split_toposolid", { id: host, curves: o.curves })
+        : await run("add_toposolid_subdivision", { host_id: host, type_id: typeId(), offset_mm: subOffset(), curves: o.curves });
+      if (!r) return false;
+      sk.mode = null; sk.host = null;
+      Plan.endSketch(); endSketchUI();
+      await refresh();
+      select(mode === "split" ? host : r.id);
+      setPrompt(mode === "split" ? `Split into ${r.ids.length} toposolids.` : "Sub-division created. It follows the toposolid's shape; Sub-divide Height in Properties raises or lowers it.");
+      return true;
+    }
     const r = o.id
       ? await run("set_toposolid_sketch", { id: o.id, curves: o.curves })
       : await run("add_toposolid", { type_id: typeId(), level_id: o.levelId, offset_mm: offset(), curves: o.curves });
@@ -108,17 +143,24 @@ const Topo = (() => {
     if (ShapeEdit.editing() && host.get(ShapeEdit.id())) return ShapeEdit.context();
     const t = selected();
     if (!t || Plan.tool !== "select") return null;
-    return { auto: true, key: `toposel:${t.id}`, title: "Toposolid", groups: [
+    // a sub-division follows its toposolid's shape: no points of its own, and it isn't sub-divided or merged
+    const sub = t.host != null;
+    return { auto: true, key: `toposel:${t.id}:${sub}`, title: sub ? "Toposolid Sub-division" : "Toposolid", groups: [
       { label: "Mode", items: [{ label: "Edit Boundary", icon: "editBoundary", big: true, onclick: () => startSketch(t.id) }] },
-      { label: "Shape Editing", items: [
+      ...(sub ? [] : [{ label: "Shape Editing", items: [
         { label: "Modify Sub Elements", ico: "MS", big: true, onclick: () => startEdit(t.id) },
         { label: "Add Point", icon: "topoPoints", big: true, onclick: () => startPoints(t.id) },
         { label: "Add Split Line", ico: "SL", big: true, onclick: () => startEdit(t.id, "line") },
         { label: "Simplify Toposolid", ico: "Si", big: true, onclick: () => simplify(t.id) },
-      ] },
+      ] }]),
       { label: "Toposolid Shaping", items: [
+        ...(sub ? [] : [{ label: "Sub-Divide", ico: "SD", big: true, onclick: () => startSubSketch(t.id, "sub") }]),
         { label: "Excavate", ico: "Ex", big: true, onclick: () => startExcavate(t.id) },
         { label: "Remove Excavation", ico: "RE", big: true, onclick: () => startExcavate(t.id, true) },
+      ] },
+      { label: "Split and Merge", items: [
+        { label: "Split Toposolid", ico: "Sp", big: true, onclick: () => startSubSketch(t.id, "split") },
+        ...(sub ? [] : [{ label: "Merge Toposolids", ico: "Me", big: true, onclick: () => startExcavate(t.id, false, true) }]),
       ] },
     ] };
   }
@@ -178,20 +220,23 @@ const Topo = (() => {
   const startEdit = (id, mode = "edit") => ShapeEdit.start(host, id, mode);
 
   // ---- Excavate and Remove Excavation: click the floors, roofs or other toposolids that cut into it --------------
-  const exc = { id: null, remove: false };
+  // Merge Toposolids picks the same way: click the toposolid to make part of this one
+  const exc = { id: null, remove: false, merge: false };
   const excavators = () => data().find((t) => t.id === exc.id)?.excavated_by || [];
-  function startExcavate(id, remove = false) {
+  function startExcavate(id, remove = false, merge = false) {
     if (remove && !data().find((t) => t.id === id)?.excavated_by?.length) { setPrompt("Nothing excavates this toposolid yet. Excavate picks the floors, roofs or toposolids that cut into it.", true); return; }
-    exc.id = id; exc.remove = remove;
+    exc.id = id; exc.remove = remove; exc.merge = merge;
     Plan.setTool("topoexcavate");
     updateRibbonContext(true);
     setPrompt(excavatePrompt());
   }
-  const excavatePrompt = () => exc.remove
+  const excavatePrompt = () => exc.merge
+    ? "Merge Toposolids: click a toposolid that overlaps this one or shares an edge with it. This one keeps its type and properties. Esc cancels."
+    : exc.remove
     ? "Remove Excavation: click a floor, roof or toposolid outlined in orange to stop it excavating. Esc finishes."
     : "Excavate: click the floors, roofs or other toposolids that cut into the toposolid (outlined in orange once they do). Esc finishes.";
   function excavateContext() {
-    return { auto: true, key: `topoexcavate:${exc.remove}`, title: exc.remove ? "Remove Excavation" : "Excavate", groups: [{ label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopExcavate() }] }] };
+    return { auto: true, key: `topoexcavate:${exc.remove}:${exc.merge}`, title: exc.merge ? "Merge Toposolids" : exc.remove ? "Remove Excavation" : "Excavate", groups: [{ label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopExcavate() }] }] };
   }
   function stopExcavate() {
     const id = exc.id;
@@ -200,6 +245,17 @@ const Topo = (() => {
     if (id != null) select(id);
   }
   async function excavateClick(id) {
+    if (exc.merge) {
+      const o = data().find((t) => t.id === id);
+      if (!o) { setPrompt(`Click a toposolid. ${excavatePrompt()}`); return; }
+      if (o.host != null) { setPrompt(`That is a sub-division: click the toposolid it is on. ${excavatePrompt()}`); return; }
+      const r = await run("merge_toposolids", { id: exc.id, other: id });
+      if (!r) return;
+      await refresh();
+      stopExcavate();
+      setPrompt("Toposolids merged.");
+      return;
+    }
     if (id == null) { setPrompt(`Click a floor, roof or toposolid. ${excavatePrompt()}`); return; }
     if (exc.remove && !excavators().includes(id)) { setPrompt(`That doesn't excavate the toposolid. ${excavatePrompt()}`); return; }
     const r = await run(exc.remove ? "remove_excavation" : "excavate_toposolid", { id: exc.id, by: [id] });
@@ -215,7 +271,7 @@ const Topo = (() => {
   }
   // while picking, what already excavates the toposolid is outlined
   function drawExcavators(ctx, d, toScreen) {
-    if (Plan.tool !== "topoexcavate" || exc.id == null) return;
+    if (Plan.tool !== "topoexcavate" || exc.id == null || exc.merge) return;
     const all = [...(d?.floors || []), ...(d?.roofs || []), ...(d?.toposolids || [])];
     ctx.save();
     ctx.setLineDash([]); ctx.lineWidth = 3; ctx.strokeStyle = "#e07b00";
@@ -286,7 +342,10 @@ const Topo = (() => {
 
   // ---- plan drawing --------------------------------------------------------------------------------------------------
   function elements(d) {
-    return (d?.toposolids || []).filter((t) => t.id !== Sketch.editingId && t.rings.length).map((t) => ({ id: t.id, kind: "toposolid", category: "Topography", ring: t.rings[0], rings: t.rings, pinned: t.pinned, display: "normal" }));
+    const list = (d?.toposolids || []).filter((t) => t.id !== Sketch.editingId && t.rings.length);
+    // sub-divisions pick before the toposolid they are on
+    list.sort((a, b) => (b.host != null) - (a.host != null));
+    return list.map((t) => ({ id: t.id, kind: "toposolid", category: "Topography", ring: t.rings[0], rings: t.rings, pinned: t.pinned, display: "normal" }));
   }
 
   // the boundary, then secondary and primary contours; a selected one shows its points
@@ -368,8 +427,18 @@ const Topo = (() => {
     return (d?.contour_labels || []).map((l) => ({ id: l.id, kind: "contourlabel", category: "Topography", ring: [l.a, l.b, l.a], line: [l.a, l.b], pinned: l.pinned, display: "normal" }));
   }
 
-  // placing a new toposolid: its type and the height of its top above the level
+  // placing a new toposolid: its type and the height of its top above the level; a sub-division: its type and its
+  // height above the toposolid; a split: nothing to set
   function placementProperties() {
+    if (sk.mode === "split") return { types: [], title: "Split Toposolid", groups: [] };
+    if (sk.mode === "sub") return {
+      types: app.info.toposolid_types || [], current: typeId(),
+      onType: (id) => { app.topoTypeId = id; renderProperties(); },
+      title: "Create Sub-division Boundary",
+      groups: [{ name: "Constraints", target: { apply: (patch) => { if (Number.isFinite(patch.offset)) app.topoSubOffset = patch.offset; renderProperties(); } }, rows: [
+        { label: "Sub-divide Height", kind: "number", raw: subOffset(), value: String(subOffset()), path: "offset" },
+      ] }],
+    };
     return {
       types: app.info.toposolid_types || [], current: typeId(),
       onType: (id) => { app.topoTypeId = id; renderProperties(); },
@@ -382,5 +451,5 @@ const Topo = (() => {
   }
 
   return { startSketch, finish, importFile, selectionContext, click, startPoints, stopPoints, pointProperties, placementProperties, elements, draw, typeId, promptText, target: () => pt.target,
-    startEdit, simplify, startExcavate, excavateClick, excavateKey, excavateTarget: () => exc.id, drawExcavators, startLabels, labelClick, labelHover, labelKey, drawLabels, labelElements, labelSnap: () => ({ last: lab.start }) };
+    startEdit, simplify, startExcavate, startSubSketch, cancelSketch: () => { sk.mode = null; sk.host = null; }, excavateClick, excavateKey, excavateTarget: () => exc.id, drawExcavators, startLabels, labelClick, labelHover, labelKey, drawLabels, labelElements, labelSnap: () => ({ last: lab.start }) };
 })();

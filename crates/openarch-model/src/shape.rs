@@ -178,6 +178,10 @@ pub fn within(rings: &[Vec<Point>], p: Point) -> bool {
 /// along `lines` (pairs of indices into `points`). A point outside the boundary is left out, with any line to it; a
 /// line that would cross another is left out (`tidy` keeps that from happening).
 pub fn triangulate(rings: &[Vec<Point>], points: &[[f64; 3]], lines: &[[usize; 2]], base_z: f64) -> Option<Tin> {
+    guarded(|| triangulate_unguarded(rings, points, lines, base_z))
+}
+
+fn triangulate_unguarded(rings: &[Vec<Point>], points: &[[f64; 3]], lines: &[[usize; 2]], base_z: f64) -> Option<Tin> {
     use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
     let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
     let mut zs: Vec<Option<f64>> = vec![];
@@ -484,7 +488,6 @@ fn outset(rings: &[Vec<Point>], w: f64) -> Vec<[Point; 2]> {
 /// cutter's underside, and along where the ground passes through an underside, so it is exact; round each footprint
 /// the ground drops over EXCAVATION_EDGE.
 pub fn excavate(rings: &[Vec<Point>], top: &Tin, bottom: &Tin, cutters: &[Cutter]) -> Option<(Tin, Vec<f64>)> {
-    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
     let cut_at = |p: Point| -> Option<f64> { cutters.iter().filter(|c| within(&c.rings, p)).filter_map(|c| (c.under)(p)).reduce(f64::min) };
     let mut segs: Vec<[Point; 2]> = top.edges().into_iter().map(|([a, b], _)| [top.corner(a), top.corner(b)]).collect();
     for c in cutters {
@@ -496,26 +499,7 @@ pub fn excavate(rings: &[Vec<Point>], top: &Tin, bottom: &Tin, cutters: &[Cutter
         segs.extend(c.folds.iter().copied());
     }
     let corners: Vec<Point> = (0..top.verts.len()).map(|i| top.corner(i)).collect();
-    // the plan triangulation through the old corners and along every line, crossings split
-    let mesh = |segs: &[[Point; 2]]| -> Option<(Vec<Point>, Vec<[usize; 3]>)> {
-        let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
-        for p in &corners { cdt.insert(Point2::new(p.x, p.y)).ok()?; }
-        for s in segs {
-            if s[0].dist(&s[1]) < 1e-6 { continue; }
-            let a = cdt.insert(Point2::new(s[0].x, s[0].y)).ok()?;
-            let b = cdt.insert(Point2::new(s[1].x, s[1].y)).ok()?;
-            if a != b { cdt.add_constraint_and_split(a, b, |p| p); }
-        }
-        let mut ps = vec![Point::new(0.0, 0.0); cdt.num_vertices()];
-        for v in cdt.vertices() { let p = v.position(); ps[v.fix().index()] = Point::new(p.x, p.y); }
-        let tris = cdt.inner_faces().filter_map(|f| {
-            let vs = f.vertices();
-            let ids = [vs[0].fix().index(), vs[1].fix().index(), vs[2].fix().index()];
-            let c = Point::new((ps[ids[0]].x + ps[ids[1]].x + ps[ids[2]].x) / 3.0, (ps[ids[0]].y + ps[ids[1]].y + ps[ids[2]].y) / 3.0);
-            inside(rings, c).then_some(ids)
-        }).collect();
-        Some((ps, tris))
-    };
+    let mesh = |segs: &[[Point; 2]]| plan_mesh(&corners, segs, rings);
     // the old surface, the underside and the cutters' undersides at a corner
     let heights = |q: Point| -> Option<(f64, f64, Option<f64>)> { Some((top.z_near(q)?, bottom.z_near(q)?, cut_at(q))) };
     let (mut ps, mut tris) = mesh(&segs)?;
@@ -561,6 +545,215 @@ pub fn excavate(rings: &[Vec<Point>], top: &Tin, bottom: &Tin, cutters: &[Cutter
     }
     if tris.is_empty() { return None; }
     Some((Tin { verts, tris }, bots))
+}
+
+/// Runs a triangulation, giving None if it fails outright: the triangulation library can panic on lines that very
+/// nearly lie on each other, and a drawing should lose a surface rather than the program.
+fn guarded<T>(f: impl FnOnce() -> Option<T>) -> Option<T> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)).ok().flatten()
+}
+
+/// How close two corners have to be to be taken as one (mm).
+const SAME_CORNER: f64 = 0.05;
+
+/// Inserts corners into a constrained triangulation, a corner within SAME_CORNER of one already there taken as that
+/// one, so lines that nearly meet do meet.
+struct Corners {
+    cells: std::collections::HashMap<(i64, i64), Vec<(Point, spade::handles::FixedVertexHandle)>>,
+}
+
+impl Corners {
+    fn new() -> Self { Corners { cells: Default::default() } }
+
+    fn put(&mut self, cdt: &mut spade::ConstrainedDelaunayTriangulation<spade::Point2<f64>>, p: Point) -> Option<spade::handles::FixedVertexHandle> {
+        use spade::Triangulation;
+        let key = |x: f64, y: f64| ((x / 1.0).floor() as i64, (y / 1.0).floor() as i64);
+        let (kx, ky) = key(p.x, p.y);
+        for dx in -1..=1 {
+            for dy in -1..=1 {
+                if let Some(list) = self.cells.get(&(kx + dx, ky + dy)) {
+                    if let Some((_, h)) = list.iter().find(|(q, _)| q.dist(&p) < SAME_CORNER) { return Some(*h); }
+                }
+            }
+        }
+        let h = cdt.insert(spade::Point2::new(p.x, p.y)).ok()?;
+        self.cells.entry((kx, ky)).or_default().push((p, h));
+        Some(h)
+    }
+}
+
+/// The plan triangulation through `corners` and along every line of `segs` (crossings split), keeping the triangles
+/// inside `rings`: the corners' positions (by index) and the triangles.
+fn plan_mesh(corners: &[Point], segs: &[[Point; 2]], rings: &[Vec<Point>]) -> Option<(Vec<Point>, Vec<[usize; 3]>)> {
+    guarded(|| plan_mesh_unguarded(corners, segs, rings))
+}
+
+fn plan_mesh_unguarded(corners: &[Point], segs: &[[Point; 2]], rings: &[Vec<Point>]) -> Option<(Vec<Point>, Vec<[usize; 3]>)> {
+    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+    let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
+    let mut at = Corners::new();
+    for p in corners { at.put(&mut cdt, *p)?; }
+    for s in segs {
+        if s[0].dist(&s[1]) < SAME_CORNER { continue; }
+        let a = at.put(&mut cdt, s[0])?;
+        let b = at.put(&mut cdt, s[1])?;
+        if a != b { cdt.add_constraint_and_split(a, b, |p| p); }
+    }
+    let mut ps = vec![Point::new(0.0, 0.0); cdt.num_vertices()];
+    for v in cdt.vertices() { let p = v.position(); ps[v.fix().index()] = Point::new(p.x, p.y); }
+    let tris = cdt.inner_faces().filter_map(|f| {
+        let vs = f.vertices();
+        let ids = [vs[0].fix().index(), vs[1].fix().index(), vs[2].fix().index()];
+        let c = Point::new((ps[ids[0]].x + ps[ids[1]].x + ps[ids[2]].x) / 3.0, (ps[ids[0]].y + ps[ids[1]].y + ps[ids[2]].y) / 3.0);
+        inside(rings, c).then_some(ids)
+    }).collect();
+    Some((ps, tris))
+}
+
+/// The surface `top` over `rings` (which must lie on it), raised by `dz`: what a sub-division stands on. It has an
+/// edge along every edge of `top` and round the rings, so it is exact.
+pub fn drape(rings: &[Vec<Point>], top: &Tin, dz: f64) -> Option<Tin> {
+    let corners: Vec<Point> = (0..top.verts.len()).map(|i| top.corner(i)).collect();
+    let mut segs: Vec<[Point; 2]> = top.edges().into_iter().map(|([a, b], _)| [top.corner(a), top.corner(b)]).collect();
+    for r in rings { for i in 0..r.len() { segs.push([r[i], r[(i + 1) % r.len()]]); } }
+    let (ps, mut tris) = plan_mesh(&corners, &segs, rings)?;
+    let mut remap = vec![usize::MAX; ps.len()];
+    let mut verts = vec![];
+    for t in tris.iter_mut() {
+        for i in t.iter_mut() {
+            if remap[*i] == usize::MAX {
+                remap[*i] = verts.len();
+                verts.push([ps[*i].x, ps[*i].y, top.z_near(ps[*i])? + dz]);
+            }
+            *i = remap[*i];
+        }
+    }
+    if tris.is_empty() { return None; }
+    Some(Tin { verts, tris })
+}
+
+/// Rings (by the even-odd rule) combined by a boolean rule: each result is an outline and its holes.
+fn overlay(a: &[Vec<Point>], b: &[Vec<Point>], rule: i_overlay::core::overlay_rule::OverlayRule) -> Vec<Vec<Vec<Point>>> {
+    use i_overlay::core::fill_rule::FillRule;
+    use i_overlay::float::single::SingleFloatOverlay;
+    let rs = |v: &[Vec<Point>]| -> Vec<Vec<[f64; 2]>> { v.iter().filter(|r| r.len() >= 3).map(|r| r.iter().map(|p| [p.x, p.y]).collect()).collect() };
+    let (s, c) = (rs(a), rs(b));
+    if s.is_empty() { return vec![]; }
+    s.overlay(&c, rule, FillRule::EvenOdd).into_iter()
+        .map(|shape| shape.into_iter().map(|r| tidy_ring(r.into_iter().map(|p| Point::new(p[0], p[1])).collect())).filter(|r: &Vec<Point>| r.len() >= 3).collect::<Vec<_>>())
+        .filter(|s: &Vec<Vec<Point>>| !s.is_empty())
+        .collect()
+}
+
+/// Where two sets of rings overlap, as rings by the even-odd rule.
+pub fn overlap(a: &[Vec<Point>], b: &[Vec<Point>]) -> Vec<Vec<Point>> {
+    if b.is_empty() { return vec![]; }
+    overlay(a, b, i_overlay::core::overlay_rule::OverlayRule::Intersect).concat()
+}
+
+/// The union of two sets of rings: each piece an outline and its holes (one piece when they overlap or share an
+/// edge).
+pub fn union(a: &[Vec<Point>], b: &[Vec<Point>]) -> Vec<Vec<Vec<Point>>> {
+    overlay(a, b, i_overlay::core::overlay_rule::OverlayRule::Union)
+}
+
+/// A ring without repeated corners or corners in a straight run.
+fn tidy_ring(mut r: Vec<Point>) -> Vec<Point> {
+    r.dedup_by(|a, b| a.dist(b) < 1e-6);
+    while r.len() > 1 && r[0].dist(&r[r.len() - 1]) < 1e-6 { r.pop(); }
+    loop {
+        let n = r.len();
+        if n < 3 { return r; }
+        let flat = (0..n).find(|&i| {
+            let (a, b, c) = (r[(i + n - 1) % n], r[i], r[(i + 1) % n]);
+            let cross = (b.x - a.x) * (c.y - a.y) - (b.y - a.y) * (c.x - a.x);
+            // within a hundredth of a millimetre of the line through its neighbours
+            cross.abs() <= 0.01 * a.dist(&c).max(1e-9)
+        });
+        match flat { Some(i) => { r.remove(i); } None => return r }
+    }
+}
+
+/// Split: the region inside `rings` cut along `blade` (line pieces; a closed loop inside it, or a line from edge to
+/// edge). Each piece is its outline and holes, the largest first. A blade that cuts nothing leaves one piece.
+pub fn split_rings(rings: &[Vec<Point>], blade: &[[Point; 2]]) -> Vec<Vec<Vec<Point>>> {
+    guarded(|| Some(split_rings_unguarded(rings, blade))).unwrap_or_default()
+}
+
+fn split_rings_unguarded(rings: &[Vec<Point>], blade: &[[Point; 2]]) -> Vec<Vec<Vec<Point>>> {
+    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+    let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
+    let mut at = Corners::new();
+    let mut segs: Vec<[Point; 2]> = rings.iter().flat_map(|r| (0..r.len()).map(move |i| [r[i], r[(i + 1) % r.len()]])).collect();
+    segs.extend(blade.iter().copied());
+    for s in &segs {
+        if s[0].dist(&s[1]) < SAME_CORNER { continue; }
+        let (Some(a), Some(b)) = (at.put(&mut cdt, s[0]), at.put(&mut cdt, s[1])) else { continue };
+        if a != b { cdt.add_constraint_and_split(a, b, |p| p); }
+    }
+    let mut ps = vec![Point::new(0.0, 0.0); cdt.num_vertices()];
+    for v in cdt.vertices() { let p = v.position(); ps[v.fix().index()] = Point::new(p.x, p.y); }
+    let walls: std::collections::HashSet<[usize; 2]> = cdt.undirected_edges().filter(|e| e.is_constraint_edge()).map(|e| {
+        let [a, b] = e.vertices().map(|v| v.fix().index());
+        [a.min(b), a.max(b)]
+    }).collect();
+    let tris: Vec<[usize; 3]> = cdt.inner_faces().filter_map(|f| {
+        let ids = f.vertices().map(|v| v.fix().index());
+        let c = Point::new((ps[ids[0]].x + ps[ids[1]].x + ps[ids[2]].x) / 3.0, (ps[ids[0]].y + ps[ids[1]].y + ps[ids[2]].y) / 3.0);
+        inside(rings, c).then_some(ids)
+    }).collect();
+    // triangles joined across edges that are not lines are one piece
+    let mut by_edge: std::collections::HashMap<[usize; 2], Vec<usize>> = Default::default();
+    for (k, t) in tris.iter().enumerate() {
+        for j in 0..3 { let (a, b) = (t[j], t[(j + 1) % 3]); by_edge.entry([a.min(b), a.max(b)]).or_default().push(k); }
+    }
+    let mut piece = vec![usize::MAX; tris.len()];
+    let mut count = 0;
+    for start in 0..tris.len() {
+        if piece[start] != usize::MAX { continue; }
+        let mut stack = vec![start];
+        piece[start] = count;
+        while let Some(k) = stack.pop() {
+            let t = tris[k];
+            for j in 0..3 {
+                let (a, b) = (t[j], t[(j + 1) % 3]);
+                let e = [a.min(b), a.max(b)];
+                if walls.contains(&e) { continue; }
+                for &o in &by_edge[&e] { if piece[o] == usize::MAX { piece[o] = count; stack.push(o); } }
+            }
+        }
+        count += 1;
+    }
+    let mut out: Vec<(f64, Vec<Vec<Point>>)> = (0..count).map(|c| {
+        // the piece's outline: its triangles' edges that no other of its triangles has, chained
+        let own: Vec<[usize; 3]> = tris.iter().zip(&piece).filter(|(_, &p)| p == c).map(|(t, _)| *t).collect();
+        let mut dir: std::collections::HashSet<[usize; 2]> = Default::default();
+        for t in &own { for j in 0..3 { dir.insert([t[j], t[(j + 1) % 3]]); } }
+        let mut next: std::collections::HashMap<usize, Vec<usize>> = Default::default();
+        for &[a, b] in &dir { if !dir.contains(&[b, a]) { next.entry(a).or_default().push(b); } }
+        let mut rings_out = vec![];
+        while let Some(&a0) = next.keys().next() {
+            let mut ring = vec![a0];
+            let mut a = a0;
+            loop {
+                let Some(list) = next.get_mut(&a) else { break };
+                let b = list.pop().unwrap();
+                if list.is_empty() { next.remove(&a); }
+                if b == a0 { break; }
+                ring.push(b);
+                a = b;
+            }
+            let r = tidy_ring(ring.into_iter().map(|i| ps[i]).collect());
+            if r.len() >= 3 { rings_out.push(r); }
+        }
+        let area: f64 = own.iter().map(|t| {
+            let (a, b, c) = (ps[t[0]], ps[t[1]], ps[t[2]]);
+            ((b.x - a.x) * (c.y - a.y) - (c.x - a.x) * (b.y - a.y)).abs() / 2.0
+        }).sum();
+        (area, rings_out)
+    }).filter(|(a, r)| *a > 1.0 && !r.is_empty()).collect();
+    out.sort_by(|a, b| b.0.total_cmp(&a.0));
+    out.into_iter().map(|(_, r)| r).collect()
 }
 
 /// The plane through a planar polygon as z = a·x + b·y + c; None for an upright one.

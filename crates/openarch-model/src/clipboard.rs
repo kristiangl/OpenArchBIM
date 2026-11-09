@@ -123,6 +123,7 @@ fn level_of(e: &Element) -> Option<Id> {
 fn rank(e: &Element) -> u8 {
     match e {
         Element::Wall(_) => 0,
+        Element::Toposolid(t) if t.host.is_some() => 2,
         Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::Stair(_) | Element::Ramp(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_) => 1,
         Element::FamilyInstance(_) | Element::Railing(_) => 2,
         Element::RoomTag(_) | Element::ElementTag(_) | Element::AreaTag(_) | Element::RevisionTag(_) => 4,
@@ -141,6 +142,9 @@ impl Document {
         }
         for (id, r) in self.railings() {
             if r.host.is_some_and(|h| set.contains(&h.stair)) { set.insert(id); }
+        }
+        for (id, t) in self.toposolids() {
+            if t.host.is_some_and(|h| set.contains(&h)) { set.insert(id); }
         }
         let mut clip = Clipboard { elements: vec![], view, hosted_at: BTreeMap::new(), origin: Point::new(0.0, 0.0), skipped: BTreeMap::new() };
         for id in set {
@@ -344,6 +348,13 @@ impl Document {
                     Element::RevisionTag(t) => { if let Some(n) = map.get(&t.cloud) { t.cloud = *n; } else if tx.get(t.cloud).is_none() { continue; } }
                     Element::AreaBoundary(b) => { b.wall = b.wall.and_then(|w| map.get(&w).copied()); }
                     Element::Railing(r) => { if let Some(h) = r.host.as_mut() { match map.get(&h.stair) { Some(n) => h.stair = *n, None => continue } } }
+                    // a sub-division goes on the pasted toposolid, or stays on its own when that was not copied
+                    Element::Toposolid(t) => if let Some(h) = t.host {
+                        match map.get(&h) {
+                            Some(n) => t.host = Some(*n),
+                            None => match tx.doc_ref().toposolid(h) { Some(o) => t.level = o.level, None => continue },
+                        }
+                    },
                     _ => {}
                 }
                 let id = tx.add(e);

@@ -3153,6 +3153,7 @@ Sketch.callbacks.finish = async (o) => {
 Sketch.callbacks.cancel = () => {
   // a stair's sketched run or landing goes back to the stair being drawn
   if (Sketch.kind === "stairrun" || Sketch.kind === "stairlanding") { Stairs.sketchCancelled(); return; }
+  if (Sketch.kind === "toposolid") Topo.cancelSketch();
   sketchView().endSketch();
   endSketchUI();
   renderProperties();

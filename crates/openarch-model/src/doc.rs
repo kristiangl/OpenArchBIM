@@ -802,6 +802,12 @@ impl Document {
                     ids.push(i);
                 }
             }
+            // a toposolid's sub-divisions go with it
+            if let Element::Toposolid(t) = e {
+                if t.host.is_some_and(|h| ids.contains(&h)) && !ids.contains(&i) {
+                    ids.push(i);
+                }
+            }
         }
         for h in self.hosted_in(&ids.clone()) {
             if !ids.contains(&h) {

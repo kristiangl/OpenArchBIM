@@ -297,6 +297,19 @@ impl Document {
     /// Move, Rotate or Mirror elements, or copy them transformed. Returns the ids of
     /// the elements that now sit in the new place (the copies when `opt.copy`).
     pub fn transform_elements(&mut self, ids: &[Id], x: Xform, opt: EditOptions) -> Result<Vec<Id>, String> {
+        // a toposolid's sub-divisions go with it; one that goes on its own has to stay on its toposolid
+        let mut with: Vec<Id> = ids.to_vec();
+        for &i in ids {
+            for s in self.toposolid_subdivisions(i) { if !with.contains(&s) { with.push(s); } }
+        }
+        for &i in &with {
+            let Some(t) = self.toposolid(i) else { continue };
+            if t.host.is_none_or(|h| with.contains(&h)) { continue; }
+            let mut m = t.clone();
+            m.loops = m.loops.iter().map(|l| l.iter().map(|k| k.transform(x)).collect()).collect();
+            if self.toposolid_tin(&m).is_none_or(|s| s.plan_area() < 1.0) { return Err("A sub-division has to stay on the toposolid it's on.".into()); }
+        }
+        let ids = &with[..];
         if ids.iter().any(|i| self.group_instance(*i).is_some()) {
             return self.transform_with_groups(ids, x, opt);
         }
@@ -691,7 +704,7 @@ impl Document {
             }
             let mut detail_map=BTreeMap::new();let mut added_details=vec![];
             for (orig,e) in new_details {let id=tx.add(e.clone());tx.copy_parameter_data(orig,id)?;detail_map.insert(orig,id);added_details.push((id,e));result.push(id);}
-            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},Element::AreaTag(t)=>if let Some(a)=detail_map.get(&t.area){t.area=*a;true}else{false},_=>false};if changed{tx.update(id,e)?;}}
+            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},Element::AreaTag(t)=>if let Some(a)=detail_map.get(&t.area){t.area=*a;true}else{false},Element::Toposolid(t)=>if let Some(h)=t.host.and_then(|h|detail_map.get(&h)){t.host=Some(*h);true}else{false},_=>false};if changed{tx.update(id,e)?;}}
             for mut g in new_grids {
                 g.name = tx.doc_ref().next_grid_name();
                 result.push(tx.add(Element::Grid(g)));

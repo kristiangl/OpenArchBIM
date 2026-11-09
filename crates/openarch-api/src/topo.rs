@@ -1,5 +1,5 @@
-//! Toposolids: Create from Sketch, Create from Import (a points file), Add Point, Edit Boundary, Properties, and
-//! what a floor plan draws (the boundary and the type's contour lines).
+//! Toposolids: Create from Sketch, Create from Import (a points file), Add Point, Edit Boundary, Sub-Divide, Split,
+//! Merge, Properties, and what a floor plan draws (the boundary and the type's contour lines).
 use serde_json::{json, Value};
 
 use openarch_model::curve::Curve;
@@ -22,9 +22,9 @@ fn base_of(p: &Value, default: TopoBase) -> Result<TopoBase, String> {
     }
 }
 
-/// Plan area (m²), perimeter (mm) and the boundary's rings.
-fn measures(t: &Toposolid) -> (f64, f64, Vec<Vec<[f64; 2]>>) {
-    let regions = t.regions(20.0);
+/// Plan area (m²), perimeter (mm) and the boundary's rings (a sub-division's, where it is on its host).
+fn measures(d: &Document, t: &Toposolid) -> (f64, f64, Vec<Vec<[f64; 2]>>) {
+    let regions = openarch_model::geom::regions(&d.toposolid_rings(t));
     let area: f64 = regions.iter().map(|r| r.area()).sum::<f64>() / 1e6;
     let rings: Vec<Vec<[f64; 2]>> = regions.iter().flat_map(|r| std::iter::once(&r.outer).chain(r.holes.iter())).map(|ring| ring.iter().map(|p| [p.x, p.y]).collect()).collect();
     let perimeter = rings.iter().map(|ring| (0..ring.len()).map(|i| { let (a, b) = (ring[i], ring[(i + 1) % ring.len()]); (b[0] - a[0]).hypot(b[1] - a[1]) }).sum::<f64>()).sum();
@@ -40,6 +40,15 @@ impl Session {
                 let id = self.doc.add_toposolid_sketch(id_of(p, "type_id")?, id_of(p, "level_id")?, curves_of(p)?, p["offset_mm"].as_f64().unwrap_or(0.0))?;
                 Ok(json!({ "id": id }))
             })(),
+            // Sub-Divide: { host_id, type_id, offset_mm? (above the host's top), curves }
+            "add_toposolid_subdivision" => (|| {
+                let id = self.doc.add_toposolid_subdivision(id_of(p, "host_id")?, id_of(p, "type_id")?, curves_of(p)?, p["offset_mm"].as_f64().unwrap_or(0.0))?;
+                Ok(json!({ "id": id }))
+            })(),
+            // Split: { id, curves } (a closed loop inside it, or lines from edge to edge); the pieces, the original first
+            "split_toposolid" => (|| Ok(json!({ "ids": self.doc.split_toposolid(id_of(p, "id")?, &curves_of(p)?)? })))(),
+            // Merge: { id, other }: the other made part of it
+            "merge_toposolids" => (|| { self.doc.merge_toposolids(id_of(p, "id")?, id_of(p, "other")?)?; Ok(json!({})) })(),
             // Create from Import: { type_id, level_id, text, scale (mm per file unit), base }
             "import_toposolid" => (|| {
                 let scale = p["scale"].as_f64().filter(|s| s.is_finite() && *s > 0.0).unwrap_or(1000.0);
@@ -72,7 +81,7 @@ impl Session {
             // the toposolid under a plan point, for Add Point
             "toposolid_at" => (|| {
                 let at = point_of(&p["point"])?;
-                let hit = self.doc.toposolids().into_iter().find(|(_, t)| self.doc.toposolid_tin(t).and_then(|tin| tin.z_at(at)).is_some()).map(|(id, _)| id);
+                let hit = self.doc.toposolids().into_iter().filter(|(_, t)| t.host.is_none()).find(|(_, t)| self.doc.toposolid_tin(t).and_then(|tin| tin.z_at(at)).is_some()).map(|(id, _)| id);
                 Ok(json!({ "id": hit }))
             })(),
             "toposolid_sketch" => (|| {
@@ -134,7 +143,7 @@ impl Session {
         let d = &self.doc;
         let ty = d.toposolid_type(t.toposolid_type);
         let thick = d.toposolid_thickness(t);
-        let (area, perimeter, _) = measures(t);
+        let (area, perimeter, _) = measures(d, t);
         let surface = d.toposolid_surface(t);
         let tin = surface.as_ref().map(|s| &s.0);
         let volume = d.toposolid_volume(t) / 1e9;
@@ -147,29 +156,46 @@ impl Session {
         let elev = |z: f64, varies: bool| if varies { "Varies".to_string() } else { format!("{:.0}", z - zero) };
         let bottom_varies = bhi - blo > 0.5;
         let free = !t.pinned;
+        let host = t.host.and_then(|h| d.toposolid(h).map(|x| (h, x)));
         let num = |label: &str, path: &str, v: f64, on: bool| json!({ "label": label, "path": path, "kind": if on { "number" } else { "ro" }, "raw": v, "value": format!("{v}") });
         let boolean = |label: &str, path: &str, v: bool| json!({ "label": label, "path": path, "kind": "bool", "raw": v, "value": if v { "Yes" } else { "No" } });
         let text = |label: &str, path: &str, v: &str| json!({ "label": label, "path": path, "kind": "text", "value": v });
         let ro = |label: &str, value: String, raw: Option<f64>| json!({ "label": label, "kind": "ro", "value": value, "raw": raw });
+        // a sub-division: its host, its height above it, and what it takes out of it
+        let (constraints, mut dims) = match host {
+            Some((h, x)) => {
+                let name = d.toposolid_type(x.toposolid_type).map_or("Toposolid".to_string(), |ty| ty.name.clone());
+                let dug = d.subdivision_excavation(id) / 1e9;
+                (vec![
+                    ro("Level", d.level(t.level).map_or(String::new(), |l| l.name.clone()), None),
+                    ro("Host", if x.mark.is_empty() { format!("{name} ({h})") } else { format!("{name} ({})", x.mark) }, None),
+                    num("Sub-divide Height", "offset_mm", t.offset_mm, free),
+                    boolean("Pinned", "pinned", t.pinned),
+                ], vec![ro("Excavation Volume", format!("{dug:.3} m\u{b3}"), Some(dug))])
+            }
+            None => (vec![
+                ro("Level", d.level(t.level).map_or(String::new(), |l| l.name.clone()), None),
+                num("Height Offset From Level", "offset_mm", t.offset_mm, free),
+                boolean("Pinned", "pinned", t.pinned),
+            ], vec![ro("Points", format!("{}", t.points.len()), Some(t.points.len() as f64))]),
+        };
+        let mut rows = vec![
+            ro("Perimeter", format!("{perimeter:.0}"), Some(perimeter)),
+            ro("Area", format!("{area:.2} m\u{b2}"), Some(area)),
+            ro("Volume", format!("{volume:.3} m\u{b3}"), Some(volume)),
+            ro("Elevation at Top", elev(hi, varies), (!varies).then_some(hi - zero)),
+            ro("Elevation at Bottom", elev(blo, bottom_varies), (!bottom_varies && blo.is_finite()).then_some(blo - zero)),
+            ro("Thickness", format!("{thick:.0}"), Some(thick)),
+        ];
+        rows.append(&mut dims);
+        let noun = if host.is_some() { "Toposolid Sub-division" } else { "Toposolid" };
         json!({
             "id": id, "kind": "Toposolid", "category": "Topography", "type_id": t.toposolid_type,
-            "title": format!("Toposolid: {}", ty.map_or("?", |t| t.name.as_str())),
+            "title": format!("{noun}: {}", ty.map_or("?", |t| t.name.as_str())),
             "target": { "method": "patch_toposolid", "id": id },
             "groups": [
-                { "name": "Constraints", "rows": [
-                    ro("Level", d.level(t.level).map_or(String::new(), |l| l.name.clone()), None),
-                    num("Height Offset From Level", "offset_mm", t.offset_mm, free),
-                    boolean("Pinned", "pinned", t.pinned),
-                ] },
-                { "name": "Dimensions", "rows": [
-                    ro("Perimeter", format!("{perimeter:.0}"), Some(perimeter)),
-                    ro("Area", format!("{area:.2} m\u{b2}"), Some(area)),
-                    ro("Volume", format!("{volume:.3} m\u{b3}"), Some(volume)),
-                    ro("Elevation at Top", elev(hi, varies), (!varies).then_some(hi - zero)),
-                    ro("Elevation at Bottom", elev(blo, bottom_varies), (!bottom_varies && blo.is_finite()).then_some(blo - zero)),
-                    ro("Thickness", format!("{thick:.0}"), Some(thick)),
-                    ro("Points", format!("{}", t.points.len()), Some(t.points.len() as f64)),
-                ] },
+                { "name": "Constraints", "rows": constraints },
+                { "name": "Dimensions", "rows": rows },
                 { "name": "Identity Data", "rows": [text("Comments", "comments", &t.comments), text("Mark", "mark", &t.mark)] },
             ],
         })
@@ -183,8 +209,10 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let settings = d.effective_settings(view).unwrap_or_default();
     if settings.overrides.model.get("Topography").is_some_and(|o| !o.visible) { return json!({ "toposolids": [], "contour_labels": [] }); }
     let cut_z = d.resolve_view_range(v, &settings).map(|r| r.cut);
-    let list: Vec<Value> = d.toposolids().into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, t)| {
-        let (_, _, rings) = measures(t);
+    let mut all = d.toposolids();
+    all.sort_by_key(|(_, t)| t.host.is_some());
+    let list: Vec<Value> = all.into_iter().filter(|(id, t)| !v.hidden_elements.contains(id) && !t.host.is_some_and(|h| v.hidden_elements.contains(&h))).map(|(id, t)| {
+        let (_, _, rings) = measures(d, t);
         let contours: Vec<Value> = d.toposolid_contours(t).into_iter().map(|(primary, segs)| {
             json!({ "primary": primary, "segs": segs.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>() })
         }).collect();
@@ -202,7 +230,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
                 "style": style,
             }))
         });
-        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "excavated_by": d.toposolid_excavators(t), "base": base, "cut": cut })
+        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "excavated_by": d.toposolid_excavators(t), "base": base, "cut": cut, "host": t.host })
     }).collect();
     let labels: Vec<Value> = d.contour_labels_in(view).into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, l)| json!({
         "id": id, "a": [l.a.x, l.a.y], "b": [l.b.x, l.b.y], "pinned": l.pinned, "size": l.size_mm, "labels": d.contour_label_texts(l),

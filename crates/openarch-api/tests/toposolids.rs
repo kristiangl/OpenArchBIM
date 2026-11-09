@@ -257,3 +257,43 @@ fn floors_and_toposolids_excavate_the_ground_and_the_hole_follows_them() {
     call(&mut s, "undo", json!({}));
     assert!((volume(&mut s) - (400.0 - pit)).abs() < 0.01);
 }
+
+#[test]
+fn sub_divisions_split_and_merge_through_the_api() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let ty = info["toposolid_types"][0]["id"].as_u64().unwrap();
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let id = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "offset_mm": 0, "curves": square(0.0, 0.0, 20000.0, 10000.0) }))["id"].as_u64().unwrap();
+    call(&mut s, "add_toposolid_point", json!({ "id": id, "point": [5000, 5000], "elevation": 1500, "base": "current_level" }));
+    // a road 200 below the ground, running off the edge: cut off there, and it takes its depth out of the ground
+    let road = call(&mut s, "add_toposolid_subdivision", json!({ "host_id": id, "type_id": ty, "offset_mm": -200, "curves": square(-2000.0, 8000.0, 22000.0, 9000.0) }))["id"].as_u64().unwrap();
+    assert_eq!(row(&mut s, road, "Area")["raw"], 20.0);
+    assert_eq!(row(&mut s, road, "Sub-divide Height")["raw"], -200.0);
+    assert!((row(&mut s, road, "Excavation Volume")["raw"].as_f64().unwrap() - 20.0).abs() < 0.05);
+    assert!(s.handle("add_toposolid_point", &json!({ "id": road, "point": [3000, 8500], "elevation": 0 })).is_err());
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let list = plan["toposolids"].as_array().unwrap();
+    assert_eq!(list.last().unwrap()["id"], road, "sub-divisions draw over their toposolid");
+    assert_eq!(list.last().unwrap()["host"], id);
+    // split down the middle: two toposolids, the road split with them
+    let ids: Vec<u64> = call(&mut s, "split_toposolid", json!({ "id": id, "curves": [{ "type": "line", "a": { "x": 10000, "y": -500 }, "b": { "x": 10000, "y": 10500 } }] }))["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(ids.len(), 2);
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let hosts: Vec<Value> = plan["toposolids"].as_array().unwrap().iter().filter(|t| !t["host"].is_null()).map(|t| t["host"].clone()).collect();
+    assert_eq!(hosts.len(), 2);
+    assert!(hosts.contains(&json!(ids[0])) && hosts.contains(&json!(ids[1])));
+    // saved and opened again, then merged back into one
+    let file = std::env::temp_dir().join(format!("openarch-topo-split-{}.oab", std::process::id()));
+    call(&mut s, "save", json!({ "path": file }));
+    let mut again = Session::new();
+    call(&mut again, "open", json!({ "path": file }));
+    let _ = std::fs::remove_file(&file);
+    assert_eq!(row(&mut again, road, "Host")["value"].as_str().unwrap().is_empty(), false);
+    call(&mut again, "merge_toposolids", json!({ "id": ids[0], "other": ids[1] }));
+    assert_eq!(row(&mut again, ids[0], "Area")["raw"], 200.0);
+    let plan = call(&mut again, "plan", json!({ "view_id": site }));
+    assert_eq!(plan["toposolids"].as_array().unwrap().iter().filter(|t| t["host"] == json!(ids[0])).count(), 2);
+    assert!(again.handle("merge_toposolids", &json!({ "id": ids[0], "other": road })).is_err());
+}
