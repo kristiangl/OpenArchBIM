@@ -2847,10 +2847,10 @@ impl Session {
                 .filter(|(id, _)| !view.hidden_elements.contains(id))
                 .map(|(id, m)| json!({
                     "id": id, "x": m.position.x, "y": m.position.y, "rotation_deg": m.rotation_deg, "pinned": m.pinned, "level_id": m.level,
-                    "family": d.marker_family(d.elevation_symbol(m)).map(|(fid, f)| symbol_json(d, fid, f)),
+                    "family": d.marker_family(d.elevation_symbol(m)).map(|(fid, f)| symbol_json(d, fid, f)), "labels": d.marker_body_labels(m),
                     "slots": (0..4).map(|k| json!({
                         "slot": k, "view_id": m.slots[k], "name": m.slots[k].and_then(|v| d.view(v)).map(|v| v.name.clone()),
-                        "look": [m.look(k).x, m.look(k).y],
+                        "look": [m.look(k).x, m.look(k).y], "labels": d.marker_pointer_labels(m, k),
                     })).collect::<Vec<_>>(),
                 }))
                 .collect()

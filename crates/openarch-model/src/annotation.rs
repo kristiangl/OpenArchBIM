@@ -362,6 +362,10 @@ pub struct AnnLabel {
     pub keep_readable: bool,
     #[serde(default = "yes")]
     pub visible: bool,
+    /// An elevation or section mark's label drawn at each pointer (placed for a pointer along +x, its position
+    /// turning with the pointer, its text upright), with that pointer's view's values.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub pointer: bool,
     /// A label as saved before label types: its text height, weight and lines (read into a type and parameters).
     #[serde(default, rename = "size_mm", skip_serializing)]
     pub old_size_mm: Option<f64>,
@@ -378,7 +382,7 @@ impl AnnLabel {
 
     /// A label written with `label_type`, its parameters on lines of their own.
     pub fn new(x: f64, y: f64, halign: HAlign, valign: VAlign, label_type: &str, width_mm: f64, params: Vec<LabelParam>) -> AnnLabel {
-        AnnLabel { x, y, halign, valign, label_type: label_type.into(), width_mm, params, wrap_params_only: false, keep_readable: true, visible: true, old_size_mm: None, old_bold: None, old_lines: vec![] }
+        AnnLabel { x, y, halign, valign, label_type: label_type.into(), width_mm, params, wrap_params_only: false, keep_readable: true, visible: true, pointer: false, old_size_mm: None, old_bold: None, old_lines: vec![] }
     }
 }
 
@@ -626,6 +630,15 @@ impl AnnotationFamily {
     }
 
     /// Section artwork shipped with new projects. Family origins are their reference-plane intersection.
+    /// The elevation marker a new project starts with (families/Elevation Marker.oaf).
+    pub fn default_elevation_marker() -> AnnotationFamily {
+        #[derive(Deserialize)]
+        struct Bundled { family: AnnotationFamily }
+        let mut family = serde_json::from_str::<Bundled>(include_str!("../families/Elevation Marker.oaf")).expect("valid bundled elevation marker").family;
+        family.name = "Elevation Marker".into();
+        family
+    }
+
     pub fn default_section_markers() -> [AnnotationFamily; 2] {
         let read = |name: &str, data: &str| {
             #[derive(Deserialize)]
@@ -958,9 +971,57 @@ impl Document {
     /// line left empty goes), then its text. A project leaves out what is not visible; the family editor (`editing`)
     /// keeps it, marked hidden.
     pub fn symbol_texts(&self, f: &AnnotationFamily, value: &dyn Fn(&str) -> Option<String>, editing: bool) -> Vec<DrawnText> {
+        // the body's labels (the family editor shows the pointer's too, where they sit for a pointer along +x)
+        self.labels_of(f, value, editing, |lb| editing || !lb.pointer)
+    }
+
+    /// A mark's pointer labels, with one pointer's view's values.
+    pub fn pointer_texts(&self, f: &AnnotationFamily, value: &dyn Fn(&str) -> Option<String>) -> Vec<DrawnText> {
+        self.labels_of(f, value, false, |lb| lb.pointer)
+    }
+
+    /// An elevation marker's pointer labels for the view of its slot `k`: View Name, View Number (its detail number
+    /// on a sheet) and Sheet Number, "-" until the view is placed.
+    pub fn marker_pointer_labels(&self, m: &crate::site::ElevationMarker, k: usize) -> Vec<DrawnText> {
+        let (Some(view), Some((_, f))) = (m.slots.get(k).copied().flatten(), self.marker_family(self.elevation_symbol(m))) else { return vec![] };
+        if !f.labels.iter().any(|l| l.pointer) { return vec![]; }
+        let name = self.view(view).map(|v| v.name.clone()).unwrap_or_default();
+        let placed = self.sheet_of_view(view);
+        let number = placed.and_then(|(_, vp)| match self.get(vp) {
+            Some(Element::Viewport(p)) if !p.detail_number.trim().is_empty() => Some(p.detail_number.trim().to_string()),
+            _ => None,
+        });
+        let sheet = placed.and_then(|(sh, _)| self.sheet(sh)).map(|s| s.number.clone()).filter(|n| !n.trim().is_empty());
+        self.pointer_texts(f, &|p: &str| match p {
+            "View Name" => Some(name.clone()),
+            "View Number" => Some(number.clone().unwrap_or_else(|| "-".into())),
+            "Sheet Number" => Some(sheet.clone().unwrap_or_else(|| "-".into())),
+            _ => None,
+        })
+    }
+
+    /// An elevation marker's body labels: Sheet Number (and View Number) of the views its pointers make, the first one
+    /// placed on a sheet; "-" until one is.
+    pub fn marker_body_labels(&self, m: &crate::site::ElevationMarker) -> Vec<DrawnText> {
+        let Some((_, f)) = self.marker_family(self.elevation_symbol(m)) else { return vec![] };
+        if !f.labels.iter().any(|l| !l.pointer) { return vec![]; }
+        let placed = m.slots.iter().flatten().find_map(|v| self.sheet_of_view(*v));
+        let sheet = placed.and_then(|(sh, _)| self.sheet(sh)).map(|s| s.number.clone()).filter(|n| !n.trim().is_empty());
+        let number = placed.and_then(|(_, vp)| match self.get(vp) {
+            Some(Element::Viewport(p)) if !p.detail_number.trim().is_empty() => Some(p.detail_number.trim().to_string()),
+            _ => None,
+        });
+        self.symbol_texts(f, &|p: &str| match p {
+            "Sheet Number" => Some(sheet.clone().unwrap_or_else(|| "-".into())),
+            "View Number" => Some(number.clone().unwrap_or_else(|| "-".into())),
+            _ => None,
+        }, false)
+    }
+
+    fn labels_of(&self, f: &AnnotationFamily, value: &dyn Fn(&str) -> Option<String>, editing: bool, keep: impl Fn(&AnnLabel) -> bool) -> Vec<DrawnText> {
         let mut out = vec![];
         for (i, lb) in f.labels.iter().enumerate() {
-            if !lb.visible && !editing {
+            if (!lb.visible && !editing) || !keep(lb) {
                 continue;
             }
             let mut lines: Vec<Vec<String>> = vec![];
@@ -1170,7 +1231,7 @@ impl Document {
                 tx.add(Element::AnnotationFamily(AnnotationFamily::level_head("Level Head - AHD", "Survey Elevation", " AHD")));
             }
             if !have(tx, AnnotationKind::ElevationMarker) {
-                tx.add(Element::AnnotationFamily(AnnotationFamily::elevation_marker("Elevation Marker")));
+                tx.add(Element::AnnotationFamily(AnnotationFamily::default_elevation_marker()));
             }
             if !have(tx, AnnotationKind::SectionMarker) {
                 for family in AnnotationFamily::default_section_markers() { tx.add(Element::AnnotationFamily(family)); }
@@ -1513,6 +1574,26 @@ mod tests {
     }
 
     #[test]
+    fn an_elevation_marker_labels_each_pointer_with_its_views_number() {
+        let mut d = Document::new_project();
+        let (fid, mut f) = d.marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
+        let mut lb = AnnLabel::new(6.0, 0.0, HAlign::Center, VAlign::Middle, &f.label_types[0].name, 10.0, vec![LabelParam::new("View Number", "", "", "1", true), LabelParam::new("Sheet Number", "", "", "A101", false)]);
+        lb.pointer = true;
+        f.labels.push(lb);
+        d.set_annotation_family(fid, f).unwrap();
+        let (_, m) = d.elevation_markers().into_iter().find(|(_, m)| m.slots.iter().any(|s| s.is_some())).map(|(i, m)| (i, m.clone())).unwrap();
+        let k = m.slots.iter().position(|s| s.is_some()).unwrap();
+        let texts = d.marker_pointer_labels(&m, k);
+        assert_eq!(texts.len(), 1);
+        assert_eq!(texts[0].lines, vec![vec!["-".to_string()], vec!["-".to_string()]], "not on a sheet yet");
+        // the body's labels leave the pointer's out; the family editor shows both
+        let f = d.annotation_family(fid).unwrap();
+        assert!(d.symbol_texts(f, &|_| Some("x".into()), false).iter().all(|t| !f.labels[t.label.unwrap()].pointer));
+        assert!(d.symbol_texts(f, &|_| Some("x".into()), true).iter().any(|t| f.labels[t.label.unwrap()].pointer));
+        assert!(d.marker_pointer_labels(&m, (0..4).find(|&j| m.slots[j].is_none()).unwrap_or(9)).is_empty());
+    }
+
+    #[test]
     fn a_section_mark_a_section_draws_with_cannot_be_deleted() {
         let mut d = Document::new_project();
         let lvl = d.levels()[0].0;

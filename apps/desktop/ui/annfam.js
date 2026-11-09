@@ -468,7 +468,9 @@ const AnnModel = (() => {
       r.append(button("Edit Boundary", () => startRegion(it.masking, sel.i)));
     } else {
       const isLabel = sel.kind === "label", key = isLabel ? "label_types" : "text_types", tkey = isLabel ? "label_type" : "text_type";
-      r.append(el("div", "famed-h", isLabel ? "Label" : "Text"));
+      r.append(el("div", "famed-h", isLabel ? (it.pointer ? "Label (pointer)" : "Label") : "Text"));
+      // a mark's label can sit on its pointer: drawn at each pointer with that view's numbers
+      if (isLabel && hasPointer()) r.append(field("Draw on", selIn(it.pointer ? "pointer" : "body", [["body", "Body"], ["pointer", "Pointer"]], (v) => { it.pointer = v === "pointer"; })));
       r.append(field("Type", selIn(it[tkey], S.fam[key].map((t) => [t.name, t.name]), (v) => { it[tkey] = v; })));
       r.append(button("Edit Type...", () => textTypeDialog(key, it[tkey])));
       if (isLabel) {

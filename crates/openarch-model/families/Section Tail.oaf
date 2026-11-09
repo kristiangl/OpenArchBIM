@@ -63,7 +63,7 @@
     ],
     "labels": [],
     "lines": [],
-    "name": "Section Marker",
+    "name": "Section Tail",
     "reference_label": "SIM",
     "region_types": [
       {
@@ -91,7 +91,7 @@
             {
               "curve": {
                 "a": {
-                  "x": 6.0,
+                  "x": 4.0,
                   "y": 0.5
                 },
                 "b": {
@@ -123,7 +123,7 @@
                   "y": -0.5
                 },
                 "b": {
-                  "x": 6.0,
+                  "x": 4.0,
                   "y": -0.5
                 },
                 "type": "line"
@@ -133,11 +133,11 @@
             {
               "curve": {
                 "a": {
-                  "x": 6.0,
+                  "x": 4.0,
                   "y": -0.5
                 },
                 "b": {
-                  "x": 6.0,
+                  "x": 4.0,
                   "y": 0.5
                 },
                 "type": "line"

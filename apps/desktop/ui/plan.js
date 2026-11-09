@@ -1045,10 +1045,20 @@ const Plan = (() => {
       const fam = m.family, denom = (data.view && data.view.scale) || 100, kk = denom * cam.s, pats = data.fill_patterns;
       // the body and a pointer for each view come from the marker's annotation family, at paper size
       if (fam) Ann.paths(ctx, fam.body, { x: c.x, y: c.y, k: kk, rot: m.rotation_deg }, hot, bg, { pats, widen: selected ? 1.6 : 1 });
+      // the body's labels (the sheet its views are on), turned with the marker, the text upright
+      if (fam && (m.labels || []).length) {
+        const a = (m.rotation_deg * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+        Ann.labels(ctx, m.labels.map((t) => ({ ...t, x: t.x * cs - t.y * sn, y: t.x * sn + t.y * cs })), { x: c.x, y: c.y, k: kk }, hot, { bg });
+      }
       for (let k = 0; k < 4; k++) {
         const d = dir(m, k), n = { x: -d.y, y: d.x };
         if (m.slots[k].view_id !== null && m.slots[k].view_id !== undefined && fam) {
-          Ann.paths(ctx, fam.pointer, { x: c.x, y: c.y, k: kk, rot: (Math.atan2(-d.y, d.x) * 180) / Math.PI }, hot, bg, { pats });
+          const rot = (Math.atan2(-d.y, d.x) * 180) / Math.PI;
+          Ann.paths(ctx, fam.pointer, { x: c.x, y: c.y, k: kk, rot }, hot, bg, { pats });
+          // the pointer's labels: placed for a pointer along +x, their anchor turned with this one, the text upright
+          const a = (rot * Math.PI) / 180, cs = Math.cos(a), sn = Math.sin(a);
+          const turned = (m.slots[k].labels || []).map((t) => ({ ...t, x: t.x * cs - t.y * sn, y: t.x * sn + t.y * cs }));
+          if (turned.length) Ann.labels(ctx, turned, { x: c.x, y: c.y, k: kk }, hot, { bg });
         }
         if (selected && !ghost) {
           // check boxes to make or drop the view of each pointer

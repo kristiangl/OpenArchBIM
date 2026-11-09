@@ -1703,6 +1703,8 @@ mod tests {
         let (mut d, lvl, s, _) = house_with_stub();
         let (fid, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
         f.labels.push(AnnLabel::new(0.0, -5.0, HAlign::Center, VAlign::Top, "2.5mm", 10.0, vec![LabelParam::new("Reference Label", "", "", "SIM", false)]));
+        // the supplied head leaves its Reference Label empty
+        f.reference_label = "SIM".into();
         d.set_annotation_family(fid, f).unwrap();
         let target = d.section(s).unwrap().view.unwrap();
         let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();
@@ -1713,14 +1715,8 @@ mod tests {
 
     #[test]
     fn a_section_marker_shows_its_views_sheet_and_detail_number() {
-        use crate::annotation::{AnnLabel, HAlign, LabelParam, VAlign};
         let (mut d, lvl, s, _) = house_with_stub();
-        // the bundled head has no labels of its own: give it the two numbers
-        let (fid, mut f) = d.section_marker_family(None).map(|(i, f)| (i, f.clone())).unwrap();
-        for (y, p) in [(2.0, "View Number"), (-2.0, "Sheet Number")] {
-            f.labels.push(AnnLabel::new(0.0, y, HAlign::Center, VAlign::Middle, "2.5mm", 10.0, vec![LabelParam::new(p, "", "", "1", false)]));
-        }
-        d.set_annotation_family(fid, f).unwrap();
+        // the bundled head (Kristian's) labels the view number and the sheet number
         let target = d.section(s).unwrap().view.unwrap();
         let r = d.add_reference_section(lvl, Point::new(2000.0, -1000.0), Point::new(2000.0, 7000.0), false, target).unwrap();
         let text = |d: &Document, id: Id| -> Vec<String> { d.section_labels(d.section(id).unwrap()).iter().flat_map(|l| l.lines.concat()).collect() };

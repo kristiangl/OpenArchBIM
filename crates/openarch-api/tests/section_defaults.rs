@@ -8,19 +8,18 @@ fn supplied_section_artwork_is_the_new_project_default_and_custom_files_stay_cus
     let mut session = Session::new();
     let head = session.doc.annotation_families().into_iter().find(|(_, f)| f.name == "Section Head").unwrap().0;
     let tail = session.doc.annotation_families().into_iter().find(|(_, f)| f.name == "Section Tail").unwrap().0;
-    for (id, name, data, area) in [
-        (head, "Section Head", include_str!("../../openarch-model/families/Section Head.oaf"), 12.0),
-        (tail, "Section Tail", include_str!("../../openarch-model/families/Section Tail.oaf"), 6.0),
+    // the supplied artwork (Kristian's Section Head and Section Tail, 7 Nov) as it is in the files
+    for (id, name, data) in [
+        (head, "Section Head", include_str!("../../openarch-model/families/Section Head.oaf")),
+        (tail, "Section Tail", include_str!("../../openarch-model/families/Section Tail.oaf")),
     ] {
         let file: serde_json::Value = serde_json::from_str(data).unwrap();
         let mut expected: AnnotationFamily = serde_json::from_value(file["family"].clone()).unwrap();
         expected.name = name.into();
         let family = session.doc.annotation_family(id).unwrap();
         assert_eq!(family, &expected);
-        assert!(family.labels.is_empty() && family.lines.is_empty());
         let drawing = session.doc.symbol_drawing(family, false);
-        assert!(drawing.body.fills.is_empty());
-        assert!((drawing.pointer.fills[0].area_mm2 - area).abs() < 1e-6);
+        assert!(!drawing.pointer.fills.is_empty(), "{name} has its arrow");
         assert!(session.doc.delete_annotation_family(id).is_err(), "default marker type protects its symbols");
     }
     let view_type = session.doc.default_view_type(ViewKind::Section).unwrap();

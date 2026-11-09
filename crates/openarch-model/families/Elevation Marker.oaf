@@ -1,0 +1,206 @@
+{
+  "family": {
+    "broken_style": "gapped",
+    "family_kind": "elevation_marker",
+    "label_types": [
+      {
+        "bold": false,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2.5mm",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.5,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      },
+      {
+        "bold": false,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2mm",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.0,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      }
+    ],
+    "labels": [
+      {
+        "halign": "center",
+        "keep_readable": true,
+        "label_type": "2mm",
+        "params": [
+          {
+            "break": false,
+            "param": "Sheet Number",
+            "prefix": "",
+            "sample": "A1.01",
+            "spaces": 1,
+            "suffix": ""
+          }
+        ],
+        "valign": "middle",
+        "visible": true,
+        "width_mm": 8.0,
+        "wrap_params_only": false,
+        "x": 0.0,
+        "y": 0.0
+      }
+    ],
+    "lines": [],
+    "name": "Elevation Marker",
+    "reference_label": "SIM",
+    "region_types": [
+      {
+        "background": null,
+        "background_color": [
+          255,
+          255,
+          255
+        ],
+        "foreground": "Solid fill",
+        "foreground_color": [
+          0,
+          0,
+          0
+        ],
+        "line_weight": 1,
+        "masking": true,
+        "name": "Solid filled"
+      }
+    ],
+    "regions": [
+      {
+        "loops": [
+          [
+            {
+              "curve": {
+                "centre": {
+                  "x": 0.0,
+                  "y": 0.0
+                },
+                "radius": 4.0,
+                "type": "circle"
+              },
+              "subcategory": ""
+            }
+          ]
+        ],
+        "masking": true,
+        "pointer": false,
+        "region_type": "Solid filled",
+        "visible": true
+      },
+      {
+        "loops": [
+          [
+            {
+              "curve": {
+                "a": {
+                  "x": 2.87035,
+                  "y": 2.77186
+                },
+                "b": {
+                  "x": 5.64221,
+                  "y": 0.0
+                },
+                "type": "line"
+              },
+              "subcategory": ""
+            },
+            {
+              "curve": {
+                "a": {
+                  "x": 5.64221,
+                  "y": 0.0
+                },
+                "b": {
+                  "x": 2.87035,
+                  "y": -2.77186
+                },
+                "type": "line"
+              },
+              "subcategory": ""
+            },
+            {
+              "curve": {
+                "ccw": true,
+                "centre": {
+                  "x": 0.034468,
+                  "y": 2e-6
+                },
+                "end": {
+                  "x": 2.87049,
+                  "y": 2.77172
+                },
+                "start": {
+                  "x": 2.87035,
+                  "y": -2.77186
+                },
+                "type": "arc"
+              },
+              "subcategory": ""
+            }
+          ]
+        ],
+        "masking": false,
+        "pointer": true,
+        "region_type": "Solid filled",
+        "visible": true
+      }
+    ],
+    "text_types": [
+      {
+        "bold": false,
+        "border_offset_mm": 1.0,
+        "color": [
+          0,
+          0,
+          0
+        ],
+        "font": "Arial",
+        "italic": false,
+        "line_weight": 1,
+        "name": "2.5mm",
+        "opaque": false,
+        "show_border": false,
+        "size_mm": 2.5,
+        "tab_size_mm": 12.7,
+        "underline": false,
+        "width_factor": 1.0
+      }
+    ],
+    "texts": []
+  },
+  "fill_patterns": [
+    {
+      "built_in": true,
+      "lines": [],
+      "name": "Solid fill",
+      "pattern_type": "drafting",
+      "solid": true
+    }
+  ],
+  "format": "openarch-annotation",
+  "line_patterns": [],
+  "subcategories": {},
+  "version": 1
+}
