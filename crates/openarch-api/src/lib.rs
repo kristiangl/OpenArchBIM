@@ -2778,7 +2778,7 @@ impl Session {
                     };
                     let hint = d.floor_type(f.floor_type).map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
                     let Some(style) = style_for(d, &settings, "Floors", None, view.element_overrides.get(&id), display, &hint) else { continue };
-                    floors.push(json!({ "id": id, "points": f.outline().iter().map(pt).collect::<Vec<_>>(), "rings": f.polygons(1.0).iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "display": display, "style": style, "pinned": f.pinned }));
+                    floors.push(json!({ "id": id, "curves": f.loops().concat(), "points": f.outline().iter().map(pt).collect::<Vec<_>>(), "rings": f.polygons(1.0).iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "display": display, "style": style, "pinned": f.pinned }));
                 }
                 Element::Roof(r) => {
                     let Some(g) = d.roof_geometry(r) else { continue };

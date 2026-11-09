@@ -1954,6 +1954,42 @@ const Plan = (() => {
     }
     return out;
   }
+  // a curve as points (arcs and circles; anything else by its two ends)
+  function curvePoly(c) {
+    const P = (q) => [q.x, q.y];
+    if (c.type === "line") return [P(c.a), P(c.b)];
+    if (c.type === "circle") return Array.from({ length: 121 }, (_, i) => [c.centre.x + c.radius * Math.cos((i / 120) * 2 * Math.PI), c.centre.y + c.radius * Math.sin((i / 120) * 2 * Math.PI)]);
+    if (c.type === "arc") {
+      const r = Math.hypot(c.start.x - c.centre.x, c.start.y - c.centre.y);
+      const a0 = Math.atan2(c.start.y - c.centre.y, c.start.x - c.centre.x), a1 = Math.atan2(c.end.y - c.centre.y, c.end.x - c.centre.x);
+      const tau = 2 * Math.PI, sweep = c.ccw ? ((a1 - a0) % tau + tau) % tau || tau : -(((a0 - a1) % tau + tau) % tau || tau);
+      const n = Math.max(8, Math.ceil(Math.abs(sweep) / (Math.PI / 60)));
+      return Array.from({ length: n + 1 }, (_, i) => [c.centre.x + r * Math.cos(a0 + (sweep * i) / n), c.centre.y + r * Math.sin(a0 + (sweep * i) / n)]);
+    }
+    return null;
+  }
+  // the edges Pick Lines can take, with their own curves: walls (a curved wall's centreline and faces as arcs),
+  // floor boundaries as sketched, and detail lines; straight ones as in `edges`
+  function curveEdges() {
+    const out = [];
+    const add = (kind, owner, curve) => { const poly = curvePoly(curve); if (poly && poly.length > 1) out.push({ kind, owner, curve, poly, a: poly[0], b: poly[poly.length - 1] }); };
+    for (const w of data.walls) {
+      if (w.display === "underlay" && !selOpts.underlay) continue;
+      const c = w.curve;
+      if (!c || (c.type !== "arc" && c.type !== "circle")) continue;
+      // a face of an arc wall is the arc moved in or out: the left side of a counter-clockwise arc is its inside
+      const r = c.type === "circle" ? c.radius : Math.hypot(c.start.x - c.centre.x, c.start.y - c.centre.y);
+      for (const f of w.faces || [{ off: 0, kind: "centre" }]) {
+        const r2 = r + (c.type === "circle" || c.ccw ? -f.off : f.off);
+        if (r2 <= 1) continue;
+        const k = r2 / r, sc = (q) => ({ x: c.centre.x + (q.x - c.centre.x) * k, y: c.centre.y + (q.y - c.centre.y) * k });
+        add("wall", w.id, c.type === "circle" ? { ...c, radius: r2 } : { ...c, start: sc(c.start), end: sc(c.end) });
+      }
+    }
+    for (const f of data.floors) for (const c of f.curves || []) if (c.type !== "line") add("floor", f.id, c);
+    for (const l of data.detail_lines || []) { const c = l.entry && l.entry.curve; if (c) add("detail", l.id, c); }
+    return out;
+  }
   function edgeCands(sx, sy, filter) {
     const p = toWorld(sx, sy), tol = 8 / cam.s;
     const found = [];
@@ -2773,7 +2809,19 @@ const Plan = (() => {
     wallAt: (sx, sy) => wallAt(sx, sy),
     wallById: (id) => data.walls.find((w) => w.id === id),
     wallChain: (id) => wallChain(id),
-    edgeAt: (sx, sy, skipFloor) => { const c = edgeCands(sx, sy, "all").find((x) => !(x.kind === "floor" && x.owner === skipFloor)); return c ? { a: { x: c.a[0], y: c.a[1] }, b: { x: c.b[0], y: c.b[1] } } : null; },
+    // the edge under the cursor for Pick Lines and Mirror: a curved one carries its curve (and points to draw)
+    edgeAt: (sx, sy, skipFloor) => {
+      const p = toWorld(sx, sy), tol = 8 / cam.s;
+      let best = null, bd = tol;
+      for (const e of curveEdges()) {
+        if (e.kind === "floor" && e.owner === skipFloor) continue;
+        for (let i = 0; i + 1 < e.poly.length; i++) { const d = segDist(p, e.poly[i], e.poly[i + 1]); if (d <= bd) { bd = d; best = e; } }
+      }
+      const c = edgeCands(sx, sy, "all").find((x) => !(x.kind === "floor" && x.owner === skipFloor) && !(best && x.owner === best.owner && x.kind === best.kind));
+      const straight = c && segDist(p, c.a, c.b);
+      if (best && !(straight != null && straight < bd - 1e-9)) return { a: { x: best.a[0], y: best.a[1] }, b: { x: best.b[0], y: best.b[1] }, curve: best.curve, poly: best.poly };
+      return c ? { a: { x: c.a[0], y: c.a[1] }, b: { x: c.b[0], y: c.b[1] } } : null;
+    },
     edgesNear: (sx, sy, skipFloor) => {
       const p = toWorld(sx, sy), tol = 8 / cam.s;
       const out = edgeCands(sx, sy, "all").filter((x) => !(x.kind === "floor" && x.owner === skipFloor)).map((c) => ({ a: { x: c.a[0], y: c.a[1] }, b: { x: c.b[0], y: c.b[1] } }));

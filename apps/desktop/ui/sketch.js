@@ -886,7 +886,8 @@ function makeSketch() {
     if (t === "pick_lines") {
       const e = host.edgeAt(sx, sy, S.id);
       if (!e) { cb.prompt("Click on an edge.", true); return; }
-      const r = await call("sketch_make", { tool: "line", points: [P(e.a), P(e.b)] });
+      // a curved edge (an arc wall's face, a floor's arc, a circle) comes in as that curve
+      const r = e.curve && e.curve.type !== "line" ? await call("sketch_describe", { curves: [e.curve] }) : await call("sketch_make", { tool: "line", points: [P(e.a), P(e.b)] });
       if (r.curves.length) addCurves(r.curves);
       host.render();
       return;
@@ -1020,7 +1021,7 @@ function makeSketch() {
             // the axis: a straight sketch line, else a line outside the sketch the host offers (a family's reference
             // lines, the other layer's lines, an edge in the plan). A selected line picked as the axis stays put.
             let axis = c && c.curve.type === "line" ? [c.curve.a, c.curve.b] : null, own = axis ? c.uid : null;
-            if (!axis && host.edgeAt) { const e = host.edgeAt(S.sx, S.sy, S.id); if (e) axis = [e.a, e.b]; }
+            if (!axis && host.edgeAt) { const e = host.edgeAt(S.sx, S.sy, S.id); if (e && !(e.curve && e.curve.type !== "line")) axis = [e.a, e.b]; }
             if (!axis) { cb.prompt("Click a straight line, a reference line or an edge to mirror about.", true); return; }
             const keep = own != null && S.sel.has(own);
             if (keep) S.sel.delete(own);
@@ -1386,7 +1387,7 @@ function makeSketch() {
     ctx.strokeStyle = S.tool === "pick_walls" || S.tool === "pick_lines" ? ORANGE : accent;
     for (const c of S.preview) stroke(ctx, c.poly, c.closed);
     ctx.setLineDash([]);
-    if (S.tool === "pick_lines" && S.hoverEdge) { ctx.strokeStyle = ORANGE; ctx.lineWidth = 3; stroke(ctx, [[S.hoverEdge.a.x, S.hoverEdge.a.y], [S.hoverEdge.b.x, S.hoverEdge.b.y]], false); }
+    if (S.tool === "pick_lines" && S.hoverEdge) { ctx.strokeStyle = ORANGE; ctx.lineWidth = 3; stroke(ctx, S.hoverEdge.poly || [[S.hoverEdge.a.x, S.hoverEdge.a.y], [S.hoverEdge.b.x, S.hoverEdge.b.y]], false); }
     if (S.tool === "pick_walls" && S.hoverWall && S.wallIds) {
       ctx.strokeStyle = ORANGE; ctx.lineWidth = 1.5;
       for (const id of S.wallIds) { const wl = host.wallById(id); if (wl) for (const q of wl.pieces || [wl.corners]) { ctx.beginPath(); q.forEach((pt, i) => { const s = host.toScreen({ x: pt[0], y: pt[1] }); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); ctx.stroke(); } }
