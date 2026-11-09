@@ -1017,8 +1017,15 @@ function makeSketch() {
         }
         case "mirror": {
           if (S.opts.mirrorMode === "pick") {
-            if (!c || c.curve.type !== "line" || S.sel.has(c.uid)) { cb.prompt("Click a line that is not selected.", true); return; }
-            const out = await transformSel({ kind: "mirror", a: [c.curve.a.x, c.curve.a.y], b: [c.curve.b.x, c.curve.b.y] });
+            // the axis: a straight sketch line, else a line outside the sketch the host offers (a family's reference
+            // lines, the other layer's lines, an edge in the plan). A selected line picked as the axis stays put.
+            let axis = c && c.curve.type === "line" ? [c.curve.a, c.curve.b] : null, own = axis ? c.uid : null;
+            if (!axis && host.edgeAt) { const e = host.edgeAt(S.sx, S.sy, S.id); if (e) axis = [e.a, e.b]; }
+            if (!axis) { cb.prompt("Click a straight line, a reference line or an edge to mirror about.", true); return; }
+            const keep = own != null && S.sel.has(own);
+            if (keep) S.sel.delete(own);
+            if (!S.sel.size) { if (keep) S.sel.add(own); cb.prompt("Select what to mirror besides the axis line.", true); return; }
+            const out = await transformSel({ kind: "mirror", a: [axis[0].x, axis[0].y], b: [axis[1].x, axis[1].y] });
             await applyTransform(out, S.opts.mirrorCopy);
             setTool("select"); return;
           }
