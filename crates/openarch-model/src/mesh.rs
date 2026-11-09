@@ -334,6 +334,29 @@ pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<
     Some(tin_solid_mesh(&tin, &bot, doc.toposolid_thickness(t)))
 }
 
+/// A toposolid by its type's layers: each layer a solid of its own (its material's), between where it starts and
+/// ends under each corner of the surface as built (excavations taken out), as sections cut it.
+pub fn toposolid_layer_meshes(doc: &Document, t: &crate::topo::Toposolid) -> Vec<(Option<String>, Vec<f32>)> {
+    let (Some((tin, bot, _)), Some(ty)) = (doc.toposolid_surface(t), doc.toposolid_type(t.toposolid_type)) else { return vec![] };
+    if ty.layers.len() < 2 {
+        return toposolid_mesh(doc, t).map(|m| vec![(ty.layers.first().map(|l| l.material.clone()), m)]).unwrap_or_default();
+    }
+    let spans: Vec<Vec<(f64, f64)>> = tin.verts.iter().zip(&bot).map(|(v, &b)| ty.layer_spans(v[2], b)).collect();
+    let mut out = vec![];
+    for (k, l) in ty.layers.iter().enumerate() {
+        if l.thickness_mm <= 0.0 { continue; }
+        // a layer stays between the top as built and the underside: an excavation takes it out where it goes deep
+        let (top, low): (Vec<f64>, Vec<f64>) = tin.verts.iter().zip(&bot).zip(&spans).map(|((v, &b), s)| {
+            let lo = s[k].1.max(b).min(v[2]);
+            (s[k].0.min(v[2]).max(lo), lo)
+        }).unzip();
+        let lt = crate::shape::Tin { verts: tin.verts.iter().zip(&top).map(|(v, &z)| [v[0], v[1], z]).collect(), tris: tin.tris.clone() };
+        let m = tin_solid_mesh(&lt, &low, l.thickness_mm);
+        if !m.is_empty() { out.push((Some(l.material.clone()), m)); }
+    }
+    out
+}
+
 /// A solid between a triangulated top and an underside under each of its corners (`bot`): the top, the underside
 /// and the sides round its boundary. Where top and underside meet (an excavation right through) nothing is drawn.
 fn tin_solid_mesh(tin: &crate::shape::Tin, bot: &[f64], th: f64) -> Vec<f32> {

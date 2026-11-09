@@ -1922,12 +1922,42 @@ async function refreshGrips3D() {
   const ids = app.view.kind === "3d" ? app.selection : [];
   const r = ids.length ? await run("wall_ends", { ids }) : null;
   grips3 = r ? r.walls.flatMap((w) => [0, 1].map((end) => ({ id: w.id, end, x: (end ? w.end : w.start)[0], y: (end ? w.end : w.start)[1], z: w.z_mm }))) : [];
+  // one toposolid or floor selected: its points (and bare boundary corners) drag up and down
+  if (ids.length === 1) {
+    const s = await Backend.call("shape_points", { id: ids[0] }).catch(() => null);
+    if (s && s.kind) {
+      grips3.push(...s.points.map((q, i) => ({ id: ids[0], shape: s, i, x: q[0], y: q[1], z: s.base + q[2], rel: q[2] })));
+      grips3.push(...s.corners.map((q) => ({ id: ids[0], shape: s, i: null, x: q[0], y: q[1], z: s.base, rel: 0 })));
+    }
+  }
   draw3DEdit();
+}
+// a shape point dragged in 3D: how far up (mm) the cursor has gone, by how long a metre up looks there on screen
+function shapeLift(g, sy0, sy) {
+  const a = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000]), b = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000 + 1]);
+  if (!a || !b || Math.abs(a.y - b.y) < 2) return 0;
+  return Math.round(((sy0 - sy) / (a.y - b.y)) * 1000);
+}
+async function commitShapeLift(g, dz) {
+  const s = g.shape, pts = s.points.map((q) => q.slice());
+  if (g.i != null) pts[g.i][2] += dz; else pts.push([g.x, g.y, dz]);
+  const ok = await run(s.kind === "floor" ? "set_floor_points" : "set_toposolid_points", { id: g.id, points: pts, lines: null });
+  if (ok) { await refresh(); renderProperties(); setPrompt(`Point ${dz > 0 ? "raised" : "lowered"} ${Math.abs(dz)} mm.`); }
 }
 const grip3At = (sx, sy) => grips3.find((g) => { const s = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000]); return s && Math.abs(s.x - sx) <= 7 && Math.abs(s.y - sy) <= 7; });
 function drawGrips3D(c) {
   const acc = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim() || "#1d6fb8";
   for (const g of grips3) {
+    if (g.shape) {
+      // a shape point: a small square, lifted while dragged, with a dashed line from where it was
+      const dz = grip3 && grip3.g === g ? grip3.dz || 0 : 0;
+      const o = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000]), s = app.vp.project([g.x / 1000, g.y / 1000, (g.z + dz) / 1000]);
+      if (!o || !s) continue;
+      if (dz) { c.strokeStyle = acc; c.setLineDash([5, 4]); c.beginPath(); c.moveTo(o.x, o.y); c.lineTo(s.x, s.y); c.stroke(); c.setLineDash([]); c.fillStyle = acc; c.font = "11px system-ui"; c.fillText(`${dz > 0 ? "+" : ""}${dz}`, s.x + 8, s.y - 6); }
+      c.fillStyle = g.i == null ? "#fff" : acc; c.strokeStyle = acc; c.lineWidth = 1.5;
+      c.fillRect(s.x - 4, s.y - 4, 8, 8); c.strokeRect(s.x - 4, s.y - 4, 8, 8);
+      continue;
+    }
     const at = grip3 && grip3.g === g && grip3.at ? grip3.at : [g.x, g.y];
     const s = app.vp.project([at[0] / 1000, at[1] / 1000, g.z / 1000]);
     if (!s) continue;
@@ -1943,11 +1973,12 @@ $("#viewport").addEventListener("pointerdown", (e) => {
   // the grip takes the press: the view neither selects nor orbits
   e.stopImmediatePropagation();
   $("#viewport").setPointerCapture(e.pointerId);
-  grip3 = { g, at: null };
+  grip3 = g.shape ? { g, sy0: e.offsetY, dz: 0 } : { g, at: null };
 }, true);
 $("#viewport").addEventListener("pointermove", (e) => {
   if (!grip3) return;
   e.stopImmediatePropagation();
+  if (grip3.g.shape) { grip3.dz = shapeLift(grip3.g, grip3.sy0, e.offsetY); draw3DEdit(); return; }
   const p = app.vp.groundAt(e.offsetX, e.offsetY, grip3.g.z / 1000);
   if (p) grip3.at = [Math.round(p[0] * 1000), Math.round(p[1] * 1000)];
   draw3DEdit();
@@ -1955,7 +1986,8 @@ $("#viewport").addEventListener("pointermove", (e) => {
 $("#viewport").addEventListener("pointerup", async (e) => {
   if (!grip3) return;
   e.stopImmediatePropagation();
-  const { g, at } = grip3; grip3 = null;
+  const { g, at, dz } = grip3; grip3 = null;
+  if (g.shape) { if (dz) await commitShapeLift(g, dz); refreshGrips3D(); return; }
   if (at && Math.hypot(at[0] - g.x, at[1] - g.y) > 1) { if (await run("move_wall_end", { id: g.id, end: g.end, point: at })) { await refresh(); renderProperties(); } }
   refreshGrips3D();
 }, true);

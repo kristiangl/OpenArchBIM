@@ -651,6 +651,18 @@ impl Session {
                 })?;
                 Ok(json!({}))
             }
+            // a toposolid's or floor's shape points for the 3D view: { kind, base (absolute top they are measured from),
+            // points: [[x, y, height above base]], corners: [[x, y]] (boundary corners with no point) }
+            "shape_points" => {
+                let id = id_of(p, "id")?;
+                let (kind, base, pts, rings) = match self.doc.get(id) {
+                    Some(Element::Toposolid(t)) if t.host.is_none() => ("toposolid", self.doc.toposolid_base_z(t), t.points.clone(), t.polygons(20.0)),
+                    Some(Element::Floor(f)) if f.slope.is_none() => ("floor", self.doc.floor_base_z(f), f.points.clone(), f.polygons(20.0)),
+                    _ => return Ok(json!({ "kind": null })),
+                };
+                let corners: Vec<[f64; 2]> = rings.concat().into_iter().filter(|c| !pts.iter().any(|q| (q.x - c.x).hypot(q.y - c.y) <= 1.0)).map(|c| [c.x, c.y]).collect();
+                Ok(json!({ "kind": kind, "base": base, "points": pts.iter().map(|q| [q.x, q.y, q.z]).collect::<Vec<_>>(), "corners": corners }))
+            }
             // Select All Instances: every element of the same type as `id` (in the project; the view filters for itself)
             "same_type_ids" => {
                 let t = self.doc.get(id_of(p, "id")?).and_then(|e| e.type_id()).ok_or("This element has no type to match.")?;
@@ -3036,8 +3048,8 @@ impl Session {
             }
             if let Element::Toposolid(t) = e {
                 if shown("Topography") {
-                    if let Some(verts) = mesh::toposolid_mesh(d, t) {
-                        let mat = d.toposolid_type(t.toposolid_type).and_then(|ty| ty.layers.first()).map(|l| l.material.clone());
+                    // one mesh per layer of the type, in the layer's material
+                    for (mat, verts) in mesh::toposolid_layer_meshes(d, t) {
                         let color = mat.as_deref().and_then(|m| d.material(m)).map_or([150, 128, 100], |m| m.graphics.shading_color);
                         meshes.push(json!({ "id": id, "kind": "Toposolid", "material": mat, "color": color, "verts": verts }));
                     }

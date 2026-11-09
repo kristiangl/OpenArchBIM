@@ -1754,6 +1754,24 @@ mod tests {
     }
 
     #[test]
+    fn each_layer_is_its_own_solid_in_3d() {
+        let (mut d, ty, level) = setup();
+        let mut t2 = d.toposolid_type(ty).unwrap().clone();
+        t2.layers = vec![Layer::new("Earth", 300.0, LayerFunction::Finish1, false), Layer::new("Earth", 700.0, LayerFunction::Structure, true)];
+        d.transact("t", |tx| tx.update(ty, Element::ToposolidType(t2))).unwrap();
+        let lz = d.level(level).unwrap().elevation_mm;
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        let meshes = crate::mesh::toposolid_layer_meshes(&d, d.toposolid(id).unwrap());
+        assert_eq!(meshes.len(), 2);
+        // mesh coordinates are metres
+        let zs = |m: &Vec<f32>| m.chunks(6).map(|c| c[2] as f64 * 1000.0).fold((f64::MAX, f64::MIN), |(a, b), z| (a.min(z), b.max(z)));
+        let (lo0, hi0) = zs(&meshes[0].1);
+        let (lo1, hi1) = zs(&meshes[1].1);
+        assert!((hi0 - lz).abs() < 1.0 && (lo0 - (lz - 300.0)).abs() < 1.0, "{lo0} {hi0}");
+        assert!((hi1 - (lz - 300.0)).abs() < 1.0 && (lo1 - (lz - 1000.0)).abs() < 1.0, "{lo1} {hi1}");
+    }
+
+    #[test]
     fn the_positive_part_of_a_plane_over_a_triangle() {
         let f = crate::shape::cut_fill(&[vec![Point::new(0.0, 0.0), Point::new(1000.0, 0.0), Point::new(0.0, 1000.0)]],
             &Tin { verts: vec![[0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 1000.0, 0.0]], tris: vec![[0, 1, 2]] },
