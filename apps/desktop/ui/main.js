@@ -877,6 +877,65 @@ function renderTree() {
   build(nodes, tree);
 }
 
+// ---- right-click in a view: what can be done with the selection, and with the view -------------------------------
+// The ids drawn in the open plan or elevation (Select All Instances: Visible in View keeps to these)
+function idsInView() {
+  const d = app.view.kind === "elevation" ? Elev.viewData?.() : Plan.viewData();
+  const out = new Set();
+  const walk = (v, depth) => {
+    if (!v || depth > 2) return;
+    if (Array.isArray(v)) { for (const x of v) if (x && typeof x === "object") { if (typeof x.id === "number") out.add(x.id); walk(x.items, depth + 1); } }
+    else if (typeof v === "object") for (const k of Object.keys(v)) if (Array.isArray(v[k])) walk(v[k], depth + 1);
+  };
+  walk(d, 0);
+  return out;
+}
+async function selectIds(ids) {
+  app.selection = ids; Plan.setSelection(ids); Elev.setSelection?.(ids); app.vp?.setSelection(ids);
+  Plan.callbacks.select(ids);
+  setPrompt(`${ids.length} element${ids.length === 1 ? "" : "s"} selected.`);
+}
+async function selectAllInstances(inView) {
+  const r = await run("same_type_ids", { id: app.selection[0] });
+  if (!r) return;
+  const shown = inView ? idsInView() : null;
+  selectIds(inView ? r.ids.filter((i) => shown.has(i)) : r.ids);
+}
+async function viewContextMenu(x, y) {
+  const sel = app.selection, one = sel.length === 1;
+  let typeId = null;
+  if (one) { try { typeId = (await Backend.call("describe", { id: sel[0] })).type_id ?? null; } catch (e) { typeId = null; } }
+  const cmd = (id) => () => runCommand(id);
+  const fit = () => (app.view.kind === "elevation" ? Elev.fit() : Plan.fit());
+  const items = sel.length ? [
+    { label: "Cancel", run: () => selectIds([]) },
+    { sep: true },
+    { label: "Select All Instances: Visible in View", disabled: !one || typeId == null, title: one ? "" : "Select one element", run: () => selectAllInstances(true) },
+    { label: "Select All Instances: In Entire Project", disabled: !one || typeId == null, run: () => selectAllInstances(false) },
+    { sep: true },
+    { label: "Hide in View: Elements", keys: "EH", run: cmd("hide-el") },
+    { label: "Hide in View: Category", keys: "VH", run: cmd("hide-cat") },
+    { label: "Override Graphics in View: By Element", run: cmd("override-el") },
+    { label: "Temporary Isolate Element", keys: "HI", run: cmd("temp-iso-el") },
+    { label: "Temporary Hide Element", keys: "HH", run: cmd("temp-hide-el") },
+    { sep: true },
+    { label: "Edit Type", disabled: typeId == null, run: () => openTypeProperties(typeId) },
+    { label: "Delete", keys: "DE", run: cmd("del") },
+    { sep: true },
+    { label: "Zoom To Fit", keys: "ZF", run: fit },
+    { label: "Properties", run: cmd("props") },
+  ] : [
+    { label: "Zoom To Fit", keys: "ZF", run: fit },
+    { label: "Reset Temporary Hide/Isolate", keys: "HR", run: cmd("temp-reset") },
+    { label: "Reveal Hidden Elements", keys: "RH", run: cmd("reveal") },
+    { sep: true },
+    { label: "Properties", run: cmd("props") },
+  ];
+  showMenu(x, y, items);
+}
+Plan.callbacks.contextMenu = (x, y) => viewContextMenu(x, y);
+Elev.callbacks.contextMenu = (x, y) => viewContextMenu(x, y);
+
 // Right-click menus of the Project Browser's views
 function viewMenu(x) {
   return [

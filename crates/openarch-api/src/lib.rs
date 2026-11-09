@@ -651,6 +651,12 @@ impl Session {
                 })?;
                 Ok(json!({}))
             }
+            // Select All Instances: every element of the same type as `id` (in the project; the view filters for itself)
+            "same_type_ids" => {
+                let t = self.doc.get(id_of(p, "id")?).and_then(|e| e.type_id()).ok_or("This element has no type to match.")?;
+                let ids: Vec<Id> = self.doc.iter().filter(|(_, e)| e.type_id() == Some(t)).map(|(i, _)| i).collect();
+                Ok(json!({ "ids": ids, "type_id": t }))
+            }
             "set_type_multi" => {
                 // give every selected wall, floor or door/window the type
                 let (ids, type_id) = (ids_of(p, "ids")?, id_of(p, "type_id")?);

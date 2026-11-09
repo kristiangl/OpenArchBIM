@@ -1366,6 +1366,7 @@ const Elev = (() => {
       if (wasClick && tool === "dimension") { if (!EDims.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
       if (wasClick && tool === "spot") { if (!ESpots.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
       if (wasClick && tool !== "select") setTool("select");
+      else if (wasClick) cb.contextMenu?.(e.clientX, e.clientY);
       return;
     }
     if (cgDrag) {
@@ -1664,7 +1665,7 @@ const Elev = (() => {
   }
 
   return {
-    renderTo,
+    renderTo, viewData: () => data,
     callbacks: cb,
     get tool() { return tool; },
     setTool,

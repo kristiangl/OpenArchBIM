@@ -2670,7 +2670,7 @@ const Plan = (() => {
       if (wasClick && Sketch.active) { Sketch.rightClick(); return; }
       if (wasClick && tool === "spot") { if (!Spots.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
       if (wasClick && tool === "dimension") { if (!Dims.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
-      if (wasClick) { if (draw) { draw = null; cb.prompt(promptText()); render(); } else if (tool !== "select") setTool("select"); }
+      if (wasClick) { if (draw) { draw = null; cb.prompt(promptText()); render(); } else if (tool !== "select") setTool("select"); else cb.contextMenu?.(e.clientX, e.clientY); }
       return;
     }
     if (dragging) {

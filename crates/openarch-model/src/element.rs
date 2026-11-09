@@ -714,6 +714,27 @@ pub enum Element {
 }
 
 impl Element {
+    /// The type an element is an instance of (Select All Instances goes by it).
+    pub fn type_id(&self) -> Option<Id> {
+        Some(match self {
+            Element::Wall(w) => w.wall_type,
+            Element::Floor(f) => f.floor_type,
+            Element::Roof(r) => r.roof_type,
+            Element::Ceiling(c) => c.ceiling_type,
+            Element::FamilyInstance(i) => i.type_id,
+            Element::Toposolid(t) => t.toposolid_type,
+            Element::Stair(s) => s.stair_type,
+            Element::Railing(r) => r.railing_type,
+            Element::Ramp(r) => r.ramp_type,
+            Element::Grid(g) => g.grid_type,
+            Element::Level(l) => return l.level_type,
+            Element::TextNote(t) => t.text_type,
+            Element::Dimension(d) => d.dim_type,
+            Element::Spot(s) => s.spot_type,
+            _ => return None,
+        })
+    }
+
     pub fn kind(&self) -> &'static str {
         match self {
             Element::Level(_) => "Level",
