@@ -194,8 +194,16 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       }
       const loose = [];
       for (const e of map.values()) {
-        if (e.ns.length === 1) { loose.push(e); continue; }
-        if (e.ns.length !== 2 || dot(e.ns[0], e.ns[1]) < 0.866) out[e.mesh].push(...e.a, ...e.b);
+        // two faces back to back on the edge (where joined layers of two walls meet inside the solid) cancel: the edge
+        // is judged by what is left, so a flush join draws no line and a real corner still does
+        const ns = e.ns.slice();
+        for (let i = 0; i < ns.length; i++) {
+          const j = ns.findIndex((m, k) => k > i && dot(ns[i], m) < -0.999);
+          if (j > 0) { ns.splice(j, 1); ns.splice(i, 1); i--; }
+        }
+        if (!ns.length) continue;
+        if (ns.length === 1) { loose.push({ ...e, ns }); continue; }
+        if (ns.length !== 2 || dot(ns[0], ns[1]) < 0.866) out[e.mesh].push(...e.a, ...e.b);
       }
       // edges on one triangle only, by the line they lie on and the plane of their triangle: split at one another's
       // ends, a piece with a triangle either side is a seam inside a flat face
