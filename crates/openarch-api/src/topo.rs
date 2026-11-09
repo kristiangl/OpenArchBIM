@@ -236,15 +236,18 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let settings = d.effective_settings(view).unwrap_or_default();
     if settings.overrides.model.get("Topography").is_some_and(|o| !o.visible) { return json!({ "toposolids": [], "contour_labels": [] }); }
     let cut_z = d.resolve_view_range(v, &settings).map(|r| r.cut);
+    // contour subcategories turned off in Visibility/Graphics
+    let sub_off = |n: &str| settings.overrides.model.get("Topography").and_then(|c| c.subcategories.get(n)).is_some_and(|o| !o.visible);
+    let (prim_off, sec_off, old_off) = (sub_off("Primary Contours"), sub_off("Secondary Contours"), sub_off("Existing Contours"));
     let mut all = d.toposolids();
     all.sort_by_key(|(_, t)| t.host.is_some());
     let list: Vec<Value> = all.into_iter().filter(|(id, t)| !v.hidden_elements.contains(id) && !t.host.is_some_and(|h| v.hidden_elements.contains(&h))).map(|(id, t)| {
         let (_, _, rings) = measures(d, t);
-        let contours: Vec<Value> = d.toposolid_contours(t).into_iter().map(|(primary, segs)| {
+        let contours: Vec<Value> = d.toposolid_contours(t).into_iter().filter(|(primary, _)| if *primary { !prim_off } else { !sec_off }).map(|(primary, segs)| {
             json!({ "primary": primary, "segs": segs.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>() })
         }).collect();
         // a graded region's ground as it was
-        let existing: Vec<Value> = d.toposolid_existing_contours(t).into_iter().map(|(primary, segs)| {
+        let existing: Vec<Value> = d.toposolid_existing_contours(t).into_iter().filter(|_| !old_off).map(|(primary, segs)| {
             json!({ "primary": primary, "segs": segs.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>() })
         }).collect();
         let base = d.toposolid_base_z(t);

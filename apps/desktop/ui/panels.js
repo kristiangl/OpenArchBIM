@@ -673,7 +673,13 @@ async function openVG() {
     msg.className = "modal-msg";
     body.append(msg);
 
-    const ovOf = (cat) => (draft[tab][cat.name] ||= JSON.parse(JSON.stringify(cat.override)));
+    // the override being edited: a category's own, or a subcategory's inside its category's
+    const ovOf = (cat) => cat.parent
+      ? ((ovOf(cat.parent).subcategories ||= {})[cat.name] ||= JSON.parse(JSON.stringify(cat.override)))
+      : (draft[tab][cat.name] ||= JSON.parse(JSON.stringify(cat.override)));
+    // subcategories from Object Styles, shown under their category when it is opened
+    const subsOf = (name) => Object.keys(((std && std.object_styles && std.object_styles[tab]) || {})[name]?.subcategories || {}).sort();
+    const opened = new Set();
 
     const lineButton = (cat, key, label) => {
       const o = cat.override[key] || {};
@@ -759,14 +765,28 @@ async function openVG() {
       }
       const tb = table.createTBody();
       if (!data[tab].length) { const tr = tb.insertRow(); const td = tr.insertCell(); td.colSpan = 9; td.className = "empty"; td.textContent = "Nothing in this tab yet"; }
+      const rows = [];
       for (const raw of data[tab]) {
         const cat = { name: raw.name, override: draft[tab][raw.name] || raw.override };
+        const subs = subsOf(raw.name);
+        rows.push({ cat, subs });
+        if (opened.has(raw.name)) for (const s of subs) rows.push({ cat: { name: s, parent: cat, override: (cat.override.subcategories || {})[s] || { visible: true } } });
+      }
+      for (const { cat, subs } of rows) {
         const tr = tb.insertRow();
         const vis = document.createElement("label");
         const cb = document.createElement("input"); cb.type = "checkbox"; cb.checked = cat.override.visible !== false; cb.disabled = locked[tab];
         cb.onchange = () => { ovOf(cat).visible = cb.checked; };
+        const first = tr.insertCell();
+        if (cat.parent) { first.style.paddingLeft = "26px"; tr.className = "vg-sub"; }
+        else if (subs && subs.length) {
+          const t = document.createElement("button"); t.className = "twisty"; t.textContent = opened.has(cat.name) ? "\u25be" : "\u25b8";
+          t.title = opened.has(cat.name) ? "Hide its subcategories" : "Show its subcategories";
+          t.onclick = (e) => { e.preventDefault(); opened.has(cat.name) ? opened.delete(cat.name) : opened.add(cat.name); render(); };
+          first.append(t);
+        } else first.style.paddingLeft = "20px";
         vis.append(cb, " " + cat.name);
-        tr.insertCell().append(vis);
+        first.append(vis);
         tr.insertCell().append(lineButton(cat, "projection_lines", "Projection lines"));
         tr.insertCell().append(fillButton(cat, "surface_foreground"));
         const tr2 = document.createElement("input"); tr2.type = "number"; tr2.min = 0; tr2.max = 100; tr2.value = cat.override.transparency || 0; tr2.disabled = locked[tab];
@@ -779,7 +799,8 @@ async function openVG() {
         const ht = document.createElement("input"); ht.type = "checkbox"; ht.checked = !!cat.override.halftone; ht.disabled = locked[tab];
         ht.onchange = () => { ovOf(cat).halftone = ht.checked; };
         tr.insertCell().append(ht);
-        if (isModel) {
+        if (isModel && cat.parent) tr.insertCell();
+        else if (isModel) {
           const dl = document.createElement("select"); dl.disabled = locked[tab];
           for (const [v2, l] of [["", "By View"], ["coarse", "Coarse"], ["medium", "Medium"], ["fine", "Fine"]]) dl.add(new Option(l, v2, false, (cat.override.detail_level || "") === v2));
           dl.onchange = () => { ovOf(cat).detail_level = dl.value || null; };

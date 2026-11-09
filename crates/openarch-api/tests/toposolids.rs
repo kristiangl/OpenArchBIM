@@ -354,3 +354,20 @@ fn graded_regions_report_cut_and_fill_and_property_lines_come_from_bearings() {
     let plan = call(&mut again, "plan", json!({ "view_id": site }));
     assert!(plan["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == open).unwrap()["labels"].as_array().unwrap().is_empty());
 }
+
+#[test]
+fn a_contour_subcategory_turned_off_in_visibility_graphics_is_not_drawn() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let ty = info["toposolid_types"][0]["id"].as_u64().unwrap();
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let id = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "curves": square(0.0, 0.0, 10000.0, 10000.0) }))["id"].as_u64().unwrap();
+    call(&mut s, "add_toposolid_point", json!({ "id": id, "point": [5000, 5000], "elevation": 6000, "mode": "surface" }));
+    let kinds = |s: &mut Session| -> Vec<bool> { call(s, "plan", json!({ "view_id": site }))["toposolids"][0]["contours"].as_array().unwrap().iter().map(|c| c["primary"].as_bool().unwrap()).collect() };
+    let before = kinds(&mut s);
+    assert!(before.contains(&true) && before.contains(&false), "{before:?}");
+    call(&mut s, "patch_view", json!({ "id": site, "patch": { "settings": { "overrides": { "model": { "Topography": { "subcategories": { "Primary Contours": { "visible": false } } } } } } } }));
+    let after = kinds(&mut s);
+    assert!(!after.is_empty() && after.iter().all(|p| !p), "{after:?}");
+}
