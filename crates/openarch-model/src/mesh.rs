@@ -814,7 +814,14 @@ pub fn traffic_meshes(doc: &Document) -> Vec<(crate::Id, &'static str, [u8; 3], 
         let z = |p: Point| doc.traffic_z(r.level, r.host, p);
         let mut v = vec![];
         for l in r.lines() { ribbon(&mut v, &l, r.line_width_mm, &z); }
-        out.push((id, "ParkingRow", r.paint.rgb(), v));
+        out.push((id, "ParkingRow", r.line_paint().rgb(), v));
+        // the symbol of access's blue ground, painted on each accessible space
+        let mut b = vec![];
+        for c in r.access_symbols() {
+            let m = |p: Point, q: Point| Point::new((p.x + q.x) / 2.0, (p.y + q.y) / 2.0);
+            ribbon(&mut b, &[m(c[0], c[3]), m(c[1], c[2])], c[0].dist(&c[3]), &|p| z(p) + 1.0);
+        }
+        if !b.is_empty() { out.push((id, "AccessSymbol", [30, 90, 180], b)); }
         let mut s = vec![];
         for c in r.wheel_stops() {
             let mid = Point::new((c[0].x + c[2].x) / 2.0, (c[0].y + c[2].y) / 2.0);

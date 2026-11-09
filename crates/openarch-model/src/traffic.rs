@@ -84,6 +84,10 @@ pub struct ParkingRow {
     /// From the front of the bay to the wheel stop's face (900 front-in, 620 rear-in).
     #[serde(default = "stop_off")]
     pub wheel_stop_offset_mm: f64,
+    /// Accessible spaces (AS 2890.6): each space has a shared area as wide beside it, both marked in yellow, and
+    /// the symbol of access on a blue square in the space.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub accessible: bool,
     #[serde(default)]
     pub mark: String,
     #[serde(default)]
@@ -119,34 +123,71 @@ impl ParkingRow {
         Some((u, n, len))
     }
 
-    /// The bays, each as its four corners (front left, front right, back right, back left: front on the row's line).
-    pub fn bays(&self) -> Vec<[Point; 4]> {
+    /// What fills the row, in order: each a cell's four corners (front left, front right, back right, back left:
+    /// front on the row's line) and whether it is an accessible space's shared area. An accessible row goes space,
+    /// shared area, space, shared area, each as wide as a bay; a row ends with a space.
+    fn cells(&self) -> Vec<([Point; 4], bool)> {
         let Some((u, n, len)) = self.axes() else { return vec![] };
         let at = |s: f64, d: f64| Point::new(self.start.x + u.x * s + n.x * d, self.start.y + u.y * s + n.y * d);
-        if self.angle_deg < 1.0 {
+        let (pitch, lean, depth) = if self.angle_deg < 1.0 {
             // parallel: the bay's length runs along the row, its width out from it
-            let k = (len / self.bay_length_mm).floor() as usize;
-            return (0..k).map(|i| { let s = i as f64 * self.bay_length_mm; [at(s, 0.0), at(s + self.bay_length_mm, 0.0), at(s + self.bay_length_mm, self.bay_width_mm), at(s, self.bay_width_mm)] }).collect();
+            (self.bay_length_mm, 0.0, self.bay_width_mm)
+        } else {
+            // at an angle each bay takes its width over the sine along the row; its sides lean back by the cosine
+            let a = self.angle_deg.clamp(1.0, 90.0).to_radians();
+            (self.bay_width_mm / a.sin(), self.bay_length_mm * a.cos(), self.bay_length_mm * a.sin())
+        };
+        let mut out = vec![];
+        let mut s = 0.0;
+        loop {
+            let shared = self.accessible && out.len() % 2 == 1;
+            if s + pitch + lean.max(0.0) > len + 1e-6 { break; }
+            out.push(([at(s, 0.0), at(s + pitch, 0.0), at(s + pitch + lean, depth), at(s + lean, depth)], shared));
+            s += pitch;
         }
-        let a = self.angle_deg.clamp(1.0, 90.0).to_radians();
-        // along the row each bay takes its width over the sine; its sides lean back by the cosine of its length
-        let pitch = self.bay_width_mm / a.sin();
-        let (lean, depth) = (self.bay_length_mm * a.cos(), self.bay_length_mm * a.sin());
-        let k = ((len - lean.max(0.0)) / pitch).floor().max(0.0) as usize;
-        (0..k).map(|i| { let s = i as f64 * pitch; [at(s, 0.0), at(s + pitch, 0.0), at(s + pitch + lean, depth), at(s + lean, depth)] }).collect()
+        if out.last().is_some_and(|c| c.1) { out.pop(); }
+        out
     }
 
-    /// The painted lines: the sides of every bay (shared sides once).
+    /// The parking spaces, each as its four corners (front left, front right, back right, back left: front on the
+    /// row's line).
+    pub fn bays(&self) -> Vec<[Point; 4]> {
+        self.cells().into_iter().filter(|c| !c.1).map(|c| c.0).collect()
+    }
+
+    /// An accessible row's shared areas.
+    pub fn shared_areas(&self) -> Vec<[Point; 4]> {
+        self.cells().into_iter().filter(|c| c.1).map(|c| c.0).collect()
+    }
+
+    /// The painted lines: the sides of every space and shared area (shared sides once); parallel bays and shared
+    /// areas are closed at their outer edge too.
     pub fn lines(&self) -> Vec<[Point; 2]> {
-        let bays = self.bays();
+        let cells = self.cells();
         let mut out: Vec<[Point; 2]> = vec![];
-        for (i, b) in bays.iter().enumerate() {
+        for (i, (b, shared)) in cells.iter().enumerate() {
             if i == 0 { out.push([b[0], b[3]]); }
             out.push([b[1], b[2]]);
-            // parallel bays are marked at their outer edge too
-            if self.angle_deg < 1.0 { out.push([b[3], b[2]]); }
+            if self.angle_deg < 1.0 || *shared { out.push([b[3], b[2]]); }
         }
         out
+    }
+
+    /// The paint: yellow for an accessible row (AS 2890.6), else as set.
+    pub fn line_paint(&self) -> Paint {
+        if self.accessible { Paint::Yellow } else { self.paint }
+    }
+
+    /// An accessible row's symbols of access: a 1200 square (the blue ground) in the middle of each space.
+    pub fn access_symbols(&self) -> Vec<[Point; 4]> {
+        if !self.accessible { return vec![]; }
+        self.bays().iter().map(|b| {
+            let c = Point::new((b[0].x + b[1].x + b[2].x + b[3].x) / 4.0, (b[0].y + b[1].y + b[2].y + b[3].y) / 4.0);
+            let (u, n) = self.axes().map(|(u, n, _)| (u, n)).unwrap_or((Point::new(1.0, 0.0), Point::new(0.0, 1.0)));
+            let h = 600.0;
+            let p = |a: f64, b: f64| Point::new(c.x + u.x * a + n.x * b, c.y + u.y * a + n.y * b);
+            [p(-h, -h), p(h, -h), p(h, h), p(-h, h)]
+        }).collect()
     }
 
     /// The wheel stops: each as its plan corners, `wheel_stop_offset_mm` in from the front of its bay, centred.
@@ -311,7 +352,7 @@ mod tests {
 
     fn p(x: f64, y: f64) -> Point { Point::new(x, y) }
     fn row(angle: f64) -> ParkingRow {
-        ParkingRow { level: 0, host: None, start: p(0.0, 0.0), end: p(25_000.0, 0.0), left: true, angle_deg: angle, bay_width_mm: 2500.0, bay_length_mm: 5400.0, line_width_mm: 80.0, paint: Paint::White, wheel_stops: true, wheel_stop_offset_mm: 900.0, mark: String::new(), pinned: false }
+        ParkingRow { level: 0, host: None, start: p(0.0, 0.0), end: p(25_000.0, 0.0), left: true, angle_deg: angle, bay_width_mm: 2500.0, bay_length_mm: 5400.0, line_width_mm: 80.0, paint: Paint::White, wheel_stops: true, wheel_stop_offset_mm: 900.0, mark: String::new(), pinned: false, accessible: false }
     }
 
     #[test]
@@ -335,6 +376,22 @@ mod tests {
         let r = row(0.0);
         assert_eq!(r.bays().len(), 4);
         assert!(r.wheel_stops().is_empty());
+    }
+
+    #[test]
+    fn an_accessible_row_alternates_spaces_and_shared_areas_in_yellow() {
+        let mut r = row(90.0);
+        r.accessible = true;
+        r.bay_width_mm = 2700.0;
+        r.bay_length_mm = 5500.0;
+        // 25 m takes nine cells of 2.7: five spaces with four shared areas between, ending on a space
+        assert_eq!(r.bays().len(), 5);
+        assert_eq!(r.shared_areas().len(), 4);
+        assert_eq!(r.line_paint(), Paint::Yellow);
+        assert_eq!(r.access_symbols().len(), 5);
+        assert_eq!(r.wheel_stops().len(), 5);
+        // the shared areas are closed at the back
+        assert_eq!(r.lines().len(), 10 + 4);
     }
 
     #[test]

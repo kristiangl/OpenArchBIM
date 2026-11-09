@@ -4,7 +4,7 @@
 const Traffic = (() => {
   const items = () => Plan.viewData()?.traffic || [];
   const park = { start: null, at: null };
-  const opts = () => (app.parkOpts ||= { angle_deg: 90, bay_width_mm: 2500, bay_length_mm: 5400, left: true, wheel_stops: true });
+  const opts = () => (app.parkOpts ||= { angle_deg: 90, bay_width_mm: 2500, bay_length_mm: 5400, left: true, wheel_stops: true, accessible: false });
   const sk = { kind: null };
   function select(id) {
     app.selection = [id]; Plan.setSelection([id]); app.vp?.setSelection([id]);
@@ -86,6 +86,8 @@ const Traffic = (() => {
     return { title: "Parking Bay", groups: [{ name: "Layout", target: { apply: (patch) => {
       for (const k of ["angle_deg", "bay_width_mm", "bay_length_mm"]) if (Number.isFinite(patch[k])) o[k] = patch[k];
       for (const k of ["left", "wheel_stops"]) if (typeof patch[k] === "boolean") o[k] = patch[k];
+      // accessible spaces (AS 2890.6:2022): 2700 by 5500, each with a shared area as big beside it
+      if (typeof patch.accessible === "boolean") { o.accessible = patch.accessible; if (o.accessible) { o.bay_width_mm = Math.max(o.bay_width_mm, 2700); o.bay_length_mm = Math.max(o.bay_length_mm, 5500); } }
       renderProperties(); Plan.render();
     } }, rows: [
       num("Angle", "angle_deg", o.angle_deg),
@@ -93,6 +95,7 @@ const Traffic = (() => {
       num("Bay Length", "bay_length_mm", o.bay_length_mm),
       { label: "Bays on the Left", kind: "bool", raw: o.left, value: o.left ? "Yes" : "No", path: "left" },
       { label: "Wheel Stops", kind: "bool", raw: o.wheel_stops, value: o.wheel_stops ? "Yes" : "No", path: "wheel_stops" },
+      { label: "Accessible", kind: "bool", raw: o.accessible, value: o.accessible ? "Yes" : "No", path: "accessible" },
     ] }] };
   }
   // the row being placed: its line, and the depth the bays take on their side
@@ -144,6 +147,14 @@ const Traffic = (() => {
       ctx.beginPath();
       for (const l of t.lines) l.forEach((q, i) => { const p = toScreen({ x: q[0], y: q[1] }); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); });
       ctx.stroke();
+      // accessible spaces: the symbol of access, white on a blue square
+      for (const c of t.symbols || []) {
+        const sc = c.map((q) => toScreen({ x: q[0], y: q[1] }));
+        ctx.beginPath(); sc.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath();
+        ctx.fillStyle = on ? "#2e6f9e" : "#1e5ab4"; ctx.fill();
+        const side = Math.hypot(sc[1].x - sc[0].x, sc[1].y - sc[0].y), cx = (sc[0].x + sc[2].x) / 2, cy = (sc[0].y + sc[2].y) / 2;
+        if (side > 8) { ctx.fillStyle = "#fff"; ctx.font = `${Math.round(side * 0.75)}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("♿", cx, cy); }
+      }
       // wheel stops: small filled blocks
       if (t.stops) {
         ctx.fillStyle = on ? "#2e6f9e" : "#555";

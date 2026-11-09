@@ -26,7 +26,7 @@ impl Session {
             "add_parking_row" => (|| {
                 let mut row = ParkingRow { level: id_of(p, "level_id")?, host: None, start: point_of(&p["start"])?, end: point_of(&p["end"])?, left: p["left"].as_bool().unwrap_or(true),
                     angle_deg: p["angle_deg"].as_f64().unwrap_or(90.0), bay_width_mm: p["bay_width_mm"].as_f64().unwrap_or(2500.0), bay_length_mm: p["bay_length_mm"].as_f64().unwrap_or(5400.0),
-                    line_width_mm: 80.0, paint: Paint::White, wheel_stops: p["wheel_stops"].as_bool().unwrap_or(false), wheel_stop_offset_mm: p["wheel_stop_offset_mm"].as_f64().unwrap_or(900.0), mark: String::new(), pinned: false };
+                    line_width_mm: 80.0, paint: Paint::White, wheel_stops: p["wheel_stops"].as_bool().unwrap_or(false), wheel_stop_offset_mm: p["wheel_stop_offset_mm"].as_f64().unwrap_or(900.0), mark: String::new(), pinned: false, accessible: p["accessible"].as_bool().unwrap_or(false) };
                 if p["paint"].as_str() == Some("yellow") { row.paint = Paint::Yellow; }
                 Ok(json!({ "id": self.doc.add_parking_row(row)? }))
             })(),
@@ -64,7 +64,7 @@ impl Session {
                     { "name": "Constraints", "rows": [level(r.level), host(r.host), pinned(r.pinned)] },
                     { "name": "Layout", "rows": [
                         num("Angle", "angle_deg", r.angle_deg), num("Bay Width", "bay_width_mm", r.bay_width_mm), num("Bay Length", "bay_length_mm", r.bay_length_mm),
-                        boolean("Bays on the Left", "left", r.left), ro("Bays", bays.to_string()),
+                        boolean("Bays on the Left", "left", r.left), boolean("Accessible", "accessible", r.accessible), ro("Bays", bays.to_string()),
                     ] },
                     { "name": "Marking", "rows": [num("Line Width", "line_width_mm", r.line_width_mm), paint(r.paint)] },
                     { "name": "Wheel Stops", "rows": [boolean("Wheel Stops", "wheel_stops", r.wheel_stops), num("Wheel Stop Offset", "wheel_stop_offset_mm", r.wheel_stop_offset_mm)] },
@@ -99,7 +99,8 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     for (id, r) in d.parking_rows() {
         if !on_level(r.level) || v.hidden_elements.contains(&id) { continue; }
         let Some(st) = style("Parking", id) else { continue };
-        out.push(json!({ "id": id, "kind": "parkingrow", "lines": r.lines().iter().map(|l| pts(l)).collect::<Vec<_>>(), "width": r.line_width_mm, "paint": paint_name(r.paint),
+        out.push(json!({ "id": id, "kind": "parkingrow", "lines": r.lines().iter().map(|l| pts(l)).collect::<Vec<_>>(), "width": r.line_width_mm, "paint": paint_name(r.line_paint()),
+            "symbols": r.access_symbols().iter().map(|c| pts(c)).collect::<Vec<_>>(),
             "stops": r.wheel_stops().iter().map(|c| pts(c)).collect::<Vec<_>>(), "bays": r.bays().iter().map(|c| pts(c)).collect::<Vec<_>>(), "start": [r.start.x, r.start.y], "end": [r.end.x, r.end.y], "pinned": r.pinned, "style": st }));
     }
     for (id, k) in d.kerbs() {

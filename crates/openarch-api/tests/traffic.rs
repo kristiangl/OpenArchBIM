@@ -42,3 +42,20 @@ fn parking_bays_markings_and_kerbs_sit_on_the_ground_and_show_everywhere() {
     let _ = std::fs::remove_file(&file);
     assert_eq!(call(&mut again, "plan", json!({ "view_id": site }))["traffic"].as_array().unwrap().len(), 3);
 }
+
+#[test]
+fn an_accessible_row_has_shared_areas_yellow_lines_and_symbols() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let row = call(&mut s, "add_parking_row", json!({ "level_id": level, "start": [0, 0], "end": [14000, 0], "accessible": true, "bay_width_mm": 2700, "bay_length_mm": 5500 }))["id"].as_u64().unwrap();
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let t = plan["traffic"].as_array().unwrap().iter().find(|x| x["id"] == row).unwrap().clone();
+    // 14 m takes five cells of 2.7: three spaces, two shared areas
+    assert_eq!(t["bays"].as_array().unwrap().len(), 3);
+    assert_eq!(t["symbols"].as_array().unwrap().len(), 3);
+    assert_eq!(t["paint"], "Yellow");
+    let scene = call(&mut s, "scene", json!({}));
+    assert!(scene["meshes"].as_array().unwrap().iter().any(|m| m["kind"] == "AccessSymbol"));
+}
