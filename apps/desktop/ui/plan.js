@@ -434,6 +434,11 @@ const Plan = (() => {
     const c = candidates(sx, sy);
     return c.length ? c[0][0] : null;
   }
+  // the floor, roof or toposolid (not the one being excavated) under the cursor, for Excavate
+  function cutterAt(sx, sy) {
+    const kinds = new Map(elements().map((e) => [e.id, e.kind]));
+    return rawCandidates(sx, sy).flat().find((id) => id !== Topo.excavateTarget() && ["floor", "roof", "toposolid"].includes(kinds.get(id))) ?? null;
+  }
   // the door or window under the cursor, for the Tag tool
   function taggableAt(sx, sy) {
     const inserts = new Map(data.inserts.map((i) => [i.id, i]));
@@ -1569,6 +1574,7 @@ const Plan = (() => {
     annCrop(() => {
       ColorFill.drawLegends(ctx, data, toScreen, cam.s, sel);
       Topo.drawLabels(ctx, data, toScreen, cam.s, sel, tag);
+      Topo.drawExcavators(ctx, data, toScreen);
       Spatial.draw(ctx,data,toScreen,cam.s,sel,printing);
       Areas.draw(ctx, data, toScreen, cam.s, sel, printing);
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
@@ -1601,7 +1607,7 @@ const Plan = (() => {
 
     // Select tool: pre-highlight what a click would pick (Tab steps through the choices)
     // and the Tag tool the door or window a click would tag
-    if ((tool === "select" || tool === "tag") && selHover && !band) {
+    if ((tool === "select" || tool === "tag" || tool === "topoexcavate") && selHover && !band) {
       // a stair's run or landing reached with Tab is outlined on its own (below), not the whole stair
       const ids = new Set(selHover.part ? [] : selHover);
       ctx.strokeStyle = "#d4572f"; ctx.lineWidth = 2;
@@ -1780,7 +1786,7 @@ const Plan = (() => {
     if (tool === "roomtag") return "Click inside a placed room to tag it. Esc finishes.";
     if (tool === "tag") return "Click a door or window to tag it. Esc finishes.";
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
-    if (tool === "topopoint" || tool === "topolabel") return Topo.promptText();
+    if (tool === "topopoint" || tool === "topolabel" || tool === "topoexcavate") return Topo.promptText();
     if (tool === "shapeedit" || tool === "shapeline") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
@@ -2271,6 +2277,7 @@ const Plan = (() => {
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
     if (tool === "topopoint") { Topo.click(toWorld(sx, sy)); return; }
+    if (tool === "topoexcavate") { Topo.excavateClick(cutterAt(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
     if (tool === "topolabel") { Topo.labelClick(snap(sx, sy, Topo.labelSnap())); return; }
     if (tool === "colorlegend") { ColorFill.place(toWorld(sx, sy)); return; }
@@ -2550,6 +2557,7 @@ const Plan = (() => {
     editMove(e.offsetX, e.offsetY);
     if (tool === "select") { const c = candidates(e.offsetX, e.offsetY); selHover = c.length ? c[tabIdx % c.length] : null; }
     if (tool === "tag") { const id = taggableAt(e.offsetX, e.offsetY); selHover = id != null ? [id] : null; render(); }
+    if (tool === "topoexcavate") { const id = cutterAt(e.offsetX, e.offsetY); selHover = id != null ? [id] : null; }
     if (tool === "ceiling") Ceilings.hover(toWorld(e.offsetX, e.offsetY));
     if (tool === "stair") { const l = Stairs.last(); if (l) Stairs.hover(snap(e.offsetX, e.offsetY, { last: l })); }
     if (tool === "ramp") { const l = Ramps.last(); if (l) Ramps.hover(snap(e.offsetX, e.offsetY, { last: l })); }
@@ -2903,6 +2911,7 @@ const Plan = (() => {
       if (tool === "sketch") return Sketch.key(e);
       if ((tool === "shapeedit" || tool === "shapeline") && ShapeEdit.key(e)) return true;
       if (tool === "topolabel" && Topo.labelKey(e)) return true;
+      if (tool === "topoexcavate" && Topo.excavateKey(e)) return true;
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }

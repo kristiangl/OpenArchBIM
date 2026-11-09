@@ -9,7 +9,7 @@ use openarch_model::view::ViewKind;
 use openarch_model::{Document, Id};
 
 use crate::graphics::{style_for, Hint};
-use crate::{id_of, point_of, Res, Session};
+use crate::{id_of, ids_of, point_of, Res, Session};
 
 fn curves_of(p: &Value) -> Result<Vec<Curve>, String> {
     p["curves"].as_array().ok_or("missing curves")?.iter().map(|v| serde_json::from_value(v.clone()).map_err(|e| format!("bad curve: {e}"))).collect()
@@ -96,6 +96,9 @@ impl Session {
                 self.doc.add_toposolid_split_line(id_of(p, "id")?, point_of(&p["a"])?, point_of(&p["b"])?)?;
                 Ok(json!({}))
             })(),
+            // Excavate: { id, by: [floor, roof or toposolid ids] }; Remove Excavation the same
+            "excavate_toposolid" => (|| Ok(json!({ "added": self.doc.excavate_toposolid(id_of(p, "id")?, &ids_of(p, "by")?)? })))(),
+            "remove_excavation" => (|| Ok(json!({ "removed": self.doc.remove_excavation(id_of(p, "id")?, &ids_of(p, "by")?)? })))(),
             // Simplify Toposolid: { id, keep_percent }
             "simplify_toposolid" => (|| {
                 let id = id_of(p, "id")?;
@@ -132,13 +135,14 @@ impl Session {
         let ty = d.toposolid_type(t.toposolid_type);
         let thick = d.toposolid_thickness(t);
         let (area, perimeter, _) = measures(t);
-        let tin = d.toposolid_tin(t);
+        let surface = d.toposolid_surface(t);
+        let tin = surface.as_ref().map(|s| &s.0);
         let volume = d.toposolid_volume(t) / 1e9;
-        let low = tin.as_ref().map(|s| d.toposolid_bottoms(t, s)).unwrap_or_default();
+        let low = surface.as_ref().map(|s| s.1.clone()).unwrap_or_default();
         let (blo, bhi) = low.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), &z| (a.min(z), b.max(z)));
         // shared elevations, as levels and spots read them from the survey point
         let zero = d.topo_base_z(TopoBase::SurveyPoint, t.level);
-        let (lo, hi) = tin.as_ref().map_or((0.0, 0.0), |s| s.z_range());
+        let (lo, hi) = tin.map_or((0.0, 0.0), |s| s.z_range());
         let varies = hi - lo > 0.5;
         let elev = |z: f64, varies: bool| if varies { "Varies".to_string() } else { format!("{:.0}", z - zero) };
         let bottom_varies = bhi - blo > 0.5;
@@ -198,7 +202,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
                 "style": style,
             }))
         });
-        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "base": base, "cut": cut })
+        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "excavated_by": d.toposolid_excavators(t), "base": base, "cut": cut })
     }).collect();
     let labels: Vec<Value> = d.contour_labels_in(view).into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, l)| json!({
         "id": id, "a": [l.a.x, l.a.y], "b": [l.b.x, l.b.y], "pinned": l.pinned, "size": l.size_mm, "labels": d.contour_label_texts(l),

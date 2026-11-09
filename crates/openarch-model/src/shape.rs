@@ -416,6 +416,170 @@ fn point_errors(pts: &[P3]) -> Vec<(f64, Vec<usize>)> {
 }
 
 
+/// Something that cuts into a surface (Excavate): its footprint in plan (rings by the even-odd rule), the lines where
+/// its underside folds, and the underside's height at a plan point in the footprint.
+pub struct Cutter {
+    pub rings: Vec<Vec<Point>>,
+    pub folds: Vec<[Point; 2]>,
+    pub under: Box<dyn Fn(Point) -> Option<f64>>,
+}
+
+/// How far the ground takes to drop at the edge of an excavation (mm). The surface has one height over each plan
+/// point, so the side of the hole leans out over this much.
+pub const EXCAVATION_EDGE: f64 = 1.0;
+
+impl Tin {
+    /// The height at a plan point, or on the nearest triangle when the point is a hair outside it (a corner made where
+    /// a line crosses the boundary).
+    pub(crate) fn z_near(&self, p: Point) -> Option<f64> {
+        if let Some(z) = self.z_at(p) { return Some(z); }
+        let mut best: Option<(f64, f64)> = None;
+        for t in &self.tris {
+            let (a, b, c) = (self.verts[t[0]], self.verts[t[1]], self.verts[t[2]]);
+            let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+            if det.abs() < 1e-12 { continue; }
+            let l1 = ((b[1] - c[1]) * (p.x - c[0]) + (c[0] - b[0]) * (p.y - c[1])) / det;
+            let l2 = ((c[1] - a[1]) * (p.x - c[0]) + (a[0] - c[0]) * (p.y - c[1])) / det;
+            let l3 = 1.0 - l1 - l2;
+            let m = l1.min(l2).min(l3);
+            if best.is_none_or(|b| m > b.0) { best = Some((m, l1 * a[2] + l2 * b[2] + l3 * c[2])); }
+        }
+        best.filter(|b| b.0 > -1e-4).map(|b| b.1)
+    }
+}
+
+/// Lines `w` outside the edge of a footprint (rings by the even-odd rule): each edge with the footprint on one side
+/// only, moved out, and the gaps at the corners between them closed. An edge between two pieces of the footprint
+/// (two faces of a roof) has none.
+fn outset(rings: &[Vec<Point>], w: f64) -> Vec<[Point; 2]> {
+    let mut out = vec![];
+    for r in rings {
+        let n = r.len();
+        let moved: Vec<Option<[Point; 2]>> = (0..n).map(|i| {
+            let (a, b) = (r[i], r[(i + 1) % n]);
+            let len = a.dist(&b);
+            if len < 1e-9 { return None; }
+            let (nx, ny) = (-(b.y - a.y) / len * w, (b.x - a.x) / len * w);
+            let m = Point::new((a.x + b.x) / 2.0, (a.y + b.y) / 2.0);
+            let (left, right) = (within(rings, Point::new(m.x + nx, m.y + ny)), within(rings, Point::new(m.x - nx, m.y - ny)));
+            let s = match (left, right) { (false, true) => 1.0, (true, false) => -1.0, _ => return None };
+            Some([Point::new(a.x + nx * s, a.y + ny * s), Point::new(b.x + nx * s, b.y + ny * s)])
+        }).collect();
+        for i in 0..n {
+            let Some(e) = moved[i] else { continue };
+            out.push(e);
+            if let Some(f) = moved[(i + 1) % n] {
+                if e[1].dist(&f[0]) > 1e-9 { out.push([e[1], f[0]]); }
+            }
+        }
+    }
+    out
+}
+
+/// The surface over `rings` with what the cutters take out of it: within a cutter's footprint, whatever stands above
+/// its underside is gone, down to the solid's underside (`bottom`) at most. Returns the new top and the underside's
+/// height under each of its corners (as `bottom` has it: excavating leaves the underside where it was).
+///
+/// The new surface has an edge along every edge of the old one, round each footprint and along each fold of a
+/// cutter's underside, and along where the ground passes through an underside, so it is exact; round each footprint
+/// the ground drops over EXCAVATION_EDGE.
+pub fn excavate(rings: &[Vec<Point>], top: &Tin, bottom: &Tin, cutters: &[Cutter]) -> Option<(Tin, Vec<f64>)> {
+    use spade::{ConstrainedDelaunayTriangulation, Point2, Triangulation};
+    let cut_at = |p: Point| -> Option<f64> { cutters.iter().filter(|c| within(&c.rings, p)).filter_map(|c| (c.under)(p)).reduce(f64::min) };
+    let mut segs: Vec<[Point; 2]> = top.edges().into_iter().map(|([a, b], _)| [top.corner(a), top.corner(b)]).collect();
+    for c in cutters {
+        for r in &c.rings {
+            let n = r.len();
+            for i in 0..n { segs.push([r[i], r[(i + 1) % n]]); }
+        }
+        segs.extend(outset(&c.rings, EXCAVATION_EDGE));
+        segs.extend(c.folds.iter().copied());
+    }
+    let corners: Vec<Point> = (0..top.verts.len()).map(|i| top.corner(i)).collect();
+    // the plan triangulation through the old corners and along every line, crossings split
+    let mesh = |segs: &[[Point; 2]]| -> Option<(Vec<Point>, Vec<[usize; 3]>)> {
+        let mut cdt = ConstrainedDelaunayTriangulation::<Point2<f64>>::new();
+        for p in &corners { cdt.insert(Point2::new(p.x, p.y)).ok()?; }
+        for s in segs {
+            if s[0].dist(&s[1]) < 1e-6 { continue; }
+            let a = cdt.insert(Point2::new(s[0].x, s[0].y)).ok()?;
+            let b = cdt.insert(Point2::new(s[1].x, s[1].y)).ok()?;
+            if a != b { cdt.add_constraint_and_split(a, b, |p| p); }
+        }
+        let mut ps = vec![Point::new(0.0, 0.0); cdt.num_vertices()];
+        for v in cdt.vertices() { let p = v.position(); ps[v.fix().index()] = Point::new(p.x, p.y); }
+        let tris = cdt.inner_faces().filter_map(|f| {
+            let vs = f.vertices();
+            let ids = [vs[0].fix().index(), vs[1].fix().index(), vs[2].fix().index()];
+            let c = Point::new((ps[ids[0]].x + ps[ids[1]].x + ps[ids[2]].x) / 3.0, (ps[ids[0]].y + ps[ids[1]].y + ps[ids[2]].y) / 3.0);
+            inside(rings, c).then_some(ids)
+        }).collect();
+        Some((ps, tris))
+    };
+    // the old surface, the underside and the cutters' undersides at a corner
+    let heights = |q: Point| -> Option<(f64, f64, Option<f64>)> { Some((top.z_near(q)?, bottom.z_near(q)?, cut_at(q))) };
+    let (mut ps, mut tris) = mesh(&segs)?;
+    // where the ground passes through a cutter's underside, and where that goes below the solid's underside: in each
+    // triangle all three are planes, so each is a straight line
+    let h: Vec<_> = ps.iter().map(|&q| heights(q)).collect();
+    let mut creases = vec![];
+    let gap: [fn((f64, f64, f64)) -> f64; 2] = [|(g, _, u)| g - u, |(_, b, u)| u - b];
+    for t in &tris {
+        for f in gap {
+            let mut at: Vec<Point> = vec![];
+            for j in 0..3 {
+                let (i, k) = (t[j], t[(j + 1) % 3]);
+                let (Some((ga, ba, Some(ua))), Some((gb, bb, Some(ub)))) = (h[i], h[k]) else { continue };
+                let (da, db) = (f((ga, ba, ua)), f((gb, bb, ub)));
+                if da.abs() < 1e-6 { at.push(ps[i]); continue; }
+                if db.abs() >= 1e-6 && (da > 0.0) != (db > 0.0) {
+                    let s = da / (da - db);
+                    at.push(Point::new(ps[i].x + (ps[k].x - ps[i].x) * s, ps[i].y + (ps[k].y - ps[i].y) * s));
+                }
+            }
+            at.dedup_by(|a, b| a.dist(b) < 1e-6);
+            if at.len() == 2 && at[0].dist(&at[1]) > 1e-3 { creases.push([at[0], at[1]]); }
+        }
+    }
+    if !creases.is_empty() {
+        segs.extend(creases);
+        (ps, tris) = mesh(&segs)?;
+    }
+    // the corners the triangles use, at their new heights
+    let mut remap = vec![usize::MAX; ps.len()];
+    let (mut verts, mut bots) = (vec![], vec![]);
+    for t in tris.iter_mut() {
+        for i in t.iter_mut() {
+            if remap[*i] == usize::MAX {
+                let (g, b, u) = heights(ps[*i])?;
+                remap[*i] = verts.len();
+                verts.push([ps[*i].x, ps[*i].y, g.min(u.unwrap_or(f64::INFINITY)).max(b)]);
+                bots.push(b);
+            }
+            *i = remap[*i];
+        }
+    }
+    if tris.is_empty() { return None; }
+    Some((Tin { verts, tris }, bots))
+}
+
+/// The plane through a planar polygon as z = a·x + b·y + c; None for an upright one.
+pub fn plane_through(poly: &[[f64; 3]]) -> Option<[f64; 3]> {
+    let n = poly.len();
+    if n < 3 { return None; }
+    let mut m = [0.0; 3];
+    for i in 0..n {
+        let (p, q) = (poly[i], poly[(i + 1) % n]);
+        m[0] += (p[1] - q[1]) * (p[2] + q[2]);
+        m[1] += (p[2] - q[2]) * (p[0] + q[0]);
+        m[2] += (p[0] - q[0]) * (p[1] + q[1]);
+    }
+    let len = (m[0] * m[0] + m[1] * m[1] + m[2] * m[2]).sqrt();
+    if len < 1e-12 || (m[2] / len).abs() < 1e-6 { return None; }
+    let (a, b) = (-m[0] / m[2], -m[1] / m[2]);
+    Some([a, b, poly[0][2] - a * poly[0][0] - b * poly[0][1]])
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,5 +634,54 @@ mod tests {
         assert!(removed > 90);
         assert_eq!(kept[ls[0][0]], pts[12]);
         assert_eq!(kept[ls[0][1]], pts[13]);
+    }
+
+    fn box_cutter(x0: f64, y0: f64, x1: f64, y1: f64, under: impl Fn(Point) -> f64 + 'static) -> Cutter {
+        Cutter { rings: vec![vec![Point::new(x0, y0), Point::new(x1, y0), Point::new(x1, y1), Point::new(x0, y1)]], folds: vec![], under: Box::new(move |p| Some(under(p))) }
+    }
+    fn lowered(t: &Tin, by: f64) -> Tin {
+        Tin { verts: t.verts.iter().map(|v| [v[0], v[1], v[2] - by]).collect(), tris: t.tris.clone() }
+    }
+    fn volume(t: &Tin, bot: &[f64]) -> f64 {
+        t.tris.iter().map(|k| {
+            let (a, b, c) = (t.verts[k[0]], t.verts[k[1]], t.verts[k[2]]);
+            ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0 * k.iter().map(|&i| t.verts[i][2] - bot[i]).sum::<f64>() / 3.0
+        }).sum()
+    }
+
+    #[test]
+    fn a_cutter_takes_out_the_ground_above_its_underside() {
+        let rings = sq(10000.0);
+        let top = triangulate(&rings, &[], &[], 0.0).unwrap();
+        let bottom = lowered(&top, 1000.0);
+        let (t, bot) = excavate(&rings, &top, &bottom, &[box_cutter(3000.0, 3000.0, 7000.0, 7000.0, |_| -300.0)]).unwrap();
+        assert!((t.z_at(Point::new(5000.0, 5000.0)).unwrap() + 300.0).abs() < 1e-6);
+        assert!(t.z_at(Point::new(2000.0, 5000.0)).unwrap().abs() < 1e-6);
+        // the hole's side drops within a millimetre of the footprint
+        assert!(t.z_at(Point::new(2999.0, 5000.0)).unwrap().abs() < 1e-6);
+        assert!((t.z_at(Point::new(3000.0, 5000.0)).unwrap() + 300.0).abs() < 1e-6);
+        let removed = 1e11 - volume(&t, &bot);
+        assert!((removed - 4.8e9).abs() < 4.8e9 * 0.002, "{removed}");
+        // deeper than the solid: a hole right through, the underside left where it was
+        let (t, bot) = excavate(&rings, &top, &bottom, &[box_cutter(3000.0, 3000.0, 7000.0, 7000.0, |_| -3000.0)]).unwrap();
+        let c = Point::new(5000.0, 5000.0);
+        assert!((t.z_at(c).unwrap() + 1000.0).abs() < 1e-6);
+        assert!(bot.iter().all(|&b| (b + 1000.0).abs() < 1e-6));
+    }
+
+    #[test]
+    fn on_a_slope_only_the_ground_above_the_underside_goes() {
+        let rings = sq(10000.0);
+        // the ground rises 1 in 10 to the east; a flat underside at 500 crosses it halfway
+        let pts = [[0.0, 0.0, 0.0], [10000.0, 0.0, 1000.0], [10000.0, 10000.0, 1000.0], [0.0, 10000.0, 0.0]];
+        let top = triangulate(&rings, &pts, &[], 0.0).unwrap();
+        let bottom = lowered(&top, 1000.0);
+        let (t, _) = excavate(&rings, &top, &bottom, &[box_cutter(2000.0, 2000.0, 8000.0, 8000.0, |_| 500.0)]).unwrap();
+        for (x, z) in [(3000.0, 300.0), (4000.0, 400.0), (5000.0, 500.0), (6000.0, 500.0), (7900.0, 500.0), (9000.0, 900.0)] {
+            for y in [2500.0, 5000.0, 7500.0] {
+                let got = t.z_at(Point::new(x, y)).unwrap();
+                assert!((got - z).abs() < 1e-6, "at {x}, {y}: {got} not {z}");
+            }
+        }
     }
 }

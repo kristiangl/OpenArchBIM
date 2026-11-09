@@ -195,3 +195,65 @@ fn split_lines_fold_the_ground_spots_read_it_and_contours_are_labelled() {
     assert_eq!(plan["toposolids"][0]["lines"].as_array().unwrap().len(), 1);
     assert_eq!(plan["contour_labels"][0]["labels"].as_array().unwrap().len(), 3);
 }
+
+#[test]
+fn floors_and_toposolids_excavate_the_ground_and_the_hole_follows_them() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let ty = info["toposolid_types"][0]["id"].as_u64().unwrap();
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let lz = info["levels"][0]["elevation_mm"].as_f64().unwrap_or(0.0);
+    let id = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "offset_mm": 0, "curves": square(-10000.0, -10000.0, 10000.0, 10000.0) }))["id"].as_u64().unwrap();
+    let volume = |s: &mut Session| row(s, id, "Volume")["raw"].as_f64().unwrap();
+    assert!((volume(&mut s) - 400.0).abs() < 1e-6);
+    let ft = &info["floor_types"][0];
+    let th = ft["thickness_mm"].as_f64().unwrap();
+    let floor = call(&mut s, "add_floor", json!({ "type_id": ft["id"], "level_id": level, "points": [[-2000, -2000], [2000, -2000], [2000, 2000], [-2000, 2000]] }))["id"].as_u64().unwrap();
+    // standing on the ground it takes nothing out, so it is refused
+    call(&mut s, "patch_floor", json!({ "id": floor, "patch": { "offset_mm": th } }));
+    assert!(s.handle("excavate_toposolid", &json!({ "id": id, "by": [floor] })).is_err());
+    assert!(s.handle("excavate_toposolid", &json!({ "id": id, "by": [id] })).is_err());
+    // sunk 500: the ground over its footprint goes down to its underside
+    call(&mut s, "patch_floor", json!({ "id": floor, "patch": { "offset_mm": -500 } }));
+    assert_eq!(call(&mut s, "excavate_toposolid", json!({ "id": id, "by": [floor] }))["added"], 1);
+    let pit = 16.0 * (500.0 + th) / 1000.0;
+    assert!((volume(&mut s) - (400.0 - pit)).abs() < 0.01, "{}", volume(&mut s));
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    assert_eq!(call(&mut s, "plan", json!({ "view_id": site }))["toposolids"][0]["excavated_by"], json!([floor]));
+    // a section across shows the pit, the earth cut off by it
+    let view = call(&mut s, "add_section", json!({ "level_id": level, "start": [0, -15000], "end": [0, 15000] }))["view_id"].as_u64().unwrap();
+    let low = |s: &mut Session| {
+        let items = call(s, "elevation", json!({ "view_id": view }))["items"].as_array().unwrap().clone();
+        let cut = items.iter().find(|i| i["id"] == id && i["cut"] == true).unwrap().clone();
+        let n = cut["polys"][0].as_array().unwrap().len();
+        // the top of the band: its first half
+        cut["polys"][0].as_array().unwrap()[..n / 2].iter().map(|p| p[1].as_f64().unwrap()).fold(f64::INFINITY, f64::min)
+    };
+    assert!((low(&mut s) - (lz - 500.0 - th)).abs() < 1e-3, "{}", low(&mut s));
+    // the hole follows the floor: moved clear of the section, the earth there is whole again
+    call(&mut s, "transform", json!({ "ids": [floor], "kind": "move", "dx": 5000, "dy": 0 }));
+    assert!((low(&mut s) - lz).abs() < 1e-3);
+    assert!((volume(&mut s) - (400.0 - pit)).abs() < 0.01);
+    call(&mut s, "undo", json!({}));
+    // a parking lot: a toposolid sunk into the other takes out down to its own underside, here below the host's,
+    // so a hole goes right through
+    let lot = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "offset_mm": -200, "curves": square(5000.0, 5000.0, 9000.0, 9000.0) }))["id"].as_u64().unwrap();
+    call(&mut s, "excavate_toposolid", json!({ "id": id, "by": [lot] }));
+    assert!((volume(&mut s) - (400.0 - pit - 16.0)).abs() < 0.02, "{}", volume(&mut s));
+    let mesh = call(&mut s, "scene", json!({}))["meshes"].as_array().unwrap().iter().any(|m| m["id"] == id);
+    assert!(mesh);
+    // saved and opened again it is still excavated
+    let file = std::env::temp_dir().join(format!("openarch-topo-dig-{}.oab", std::process::id()));
+    call(&mut s, "save", json!({ "path": file }));
+    let mut again = Session::new();
+    call(&mut again, "open", json!({ "path": file }));
+    assert!((row(&mut again, id, "Volume")["raw"].as_f64().unwrap() - volume(&mut s)).abs() < 1e-6);
+    let _ = std::fs::remove_file(&file);
+    // Remove Excavation, and a deleted floor takes its hole with it
+    assert_eq!(call(&mut s, "remove_excavation", json!({ "id": id, "by": [lot] }))["removed"], 1);
+    assert!(s.handle("remove_excavation", &json!({ "id": id, "by": [lot] })).is_err());
+    call(&mut s, "delete", json!({ "ids": [floor] }));
+    assert!((volume(&mut s) - 400.0).abs() < 1e-6);
+    call(&mut s, "undo", json!({}));
+    assert!((volume(&mut s) - (400.0 - pit)).abs() < 0.01);
+}

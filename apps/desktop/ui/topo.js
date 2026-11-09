@@ -1,5 +1,5 @@
 // Toposolids: Create from Sketch, Create from Import (a points file), Add Point, Modify Sub Elements and Add Split Line
-// (shapeedit.js), Simplify, Edit Boundary, Label Contours, and how a floor plan draws them (the boundary, the type's
+// (shapeedit.js), Simplify, Edit Boundary, Excavate and Remove Excavation, Label Contours, and how a floor plan draws them (the boundary, the type's
 // contours and their labels, and the ground its cut plane passes through). Private notes: site.md.
 const Topo = (() => {
   // Add Point's settings: the height, measured from a base or above the surface where the point goes
@@ -104,6 +104,7 @@ const Topo = (() => {
     if (app.view.kind !== "plan") return null;
     if (Plan.tool === "topopoint") return pointContext();
     if (Plan.tool === "topolabel") return labelContext();
+    if (Plan.tool === "topoexcavate") return excavateContext();
     if (ShapeEdit.editing() && host.get(ShapeEdit.id())) return ShapeEdit.context();
     const t = selected();
     if (!t || Plan.tool !== "select") return null;
@@ -114,6 +115,10 @@ const Topo = (() => {
         { label: "Add Point", icon: "topoPoints", big: true, onclick: () => startPoints(t.id) },
         { label: "Add Split Line", ico: "SL", big: true, onclick: () => startEdit(t.id, "line") },
         { label: "Simplify Toposolid", ico: "Si", big: true, onclick: () => simplify(t.id) },
+      ] },
+      { label: "Toposolid Shaping", items: [
+        { label: "Excavate", ico: "Ex", big: true, onclick: () => startExcavate(t.id) },
+        { label: "Remove Excavation", ico: "RE", big: true, onclick: () => startExcavate(t.id, true) },
       ] },
     ] };
   }
@@ -127,7 +132,7 @@ const Topo = (() => {
     ] };
   }
   function refreshPointUI() { updateRibbonContext(); renderProperties(); setPrompt(promptText()); }
-  const promptText = () => Plan.tool === "topolabel" ? labelPrompt() : pt.mode === "surface"
+  const promptText = () => Plan.tool === "topolabel" ? labelPrompt() : Plan.tool === "topoexcavate" ? excavatePrompt() : pt.mode === "surface"
     ? `Add Point: click on the toposolid to add a point ${pt.elevation} mm above the surface there. Esc finishes.`
     : `Add Point: click on the toposolid to add a point at elevation ${pt.elevation} from the ${baseName(pt.base)}. Esc finishes.`;
   const baseName = (b) => ({ current_level: "current level", project_base_point: "project base point", survey_point: "survey point", internal_origin: "internal origin" })[b] || b;
@@ -171,6 +176,61 @@ const Topo = (() => {
     done: (id) => select(id),
   };
   const startEdit = (id, mode = "edit") => ShapeEdit.start(host, id, mode);
+
+  // ---- Excavate and Remove Excavation: click the floors, roofs or other toposolids that cut into it --------------
+  const exc = { id: null, remove: false };
+  const excavators = () => data().find((t) => t.id === exc.id)?.excavated_by || [];
+  function startExcavate(id, remove = false) {
+    if (remove && !data().find((t) => t.id === id)?.excavated_by?.length) { setPrompt("Nothing excavates this toposolid yet. Excavate picks the floors, roofs or toposolids that cut into it.", true); return; }
+    exc.id = id; exc.remove = remove;
+    Plan.setTool("topoexcavate");
+    updateRibbonContext(true);
+    setPrompt(excavatePrompt());
+  }
+  const excavatePrompt = () => exc.remove
+    ? "Remove Excavation: click a floor, roof or toposolid outlined in orange to stop it excavating. Esc finishes."
+    : "Excavate: click the floors, roofs or other toposolids that cut into the toposolid (outlined in orange once they do). Esc finishes.";
+  function excavateContext() {
+    return { auto: true, key: `topoexcavate:${exc.remove}`, title: exc.remove ? "Remove Excavation" : "Excavate", groups: [{ label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopExcavate() }] }] };
+  }
+  function stopExcavate() {
+    const id = exc.id;
+    exc.id = null;
+    Plan.setTool("select");
+    if (id != null) select(id);
+  }
+  async function excavateClick(id) {
+    if (id == null) { setPrompt(`Click a floor, roof or toposolid. ${excavatePrompt()}`); return; }
+    if (exc.remove && !excavators().includes(id)) { setPrompt(`That doesn't excavate the toposolid. ${excavatePrompt()}`); return; }
+    const r = await run(exc.remove ? "remove_excavation" : "excavate_toposolid", { id: exc.id, by: [id] });
+    if (!r) return;
+    await refresh();
+    if (exc.remove && !excavators().length) { stopExcavate(); setPrompt("Excavation removed. Nothing excavates the toposolid now."); return; }
+    setPrompt(`${exc.remove ? "Excavation removed." : r.added ? "Excavated." : "That already excavates the toposolid."} ${excavatePrompt()}`);
+  }
+  function excavateKey(e) {
+    if (e.key !== "Escape") return false;
+    stopExcavate();
+    return true;
+  }
+  // while picking, what already excavates the toposolid is outlined
+  function drawExcavators(ctx, d, toScreen) {
+    if (Plan.tool !== "topoexcavate" || exc.id == null) return;
+    const all = [...(d?.floors || []), ...(d?.roofs || []), ...(d?.toposolids || [])];
+    ctx.save();
+    ctx.setLineDash([]); ctx.lineWidth = 3; ctx.strokeStyle = "#e07b00";
+    for (const id of excavators()) {
+      const e = all.find((x) => x.id === id);
+      if (!e) continue;
+      ctx.beginPath();
+      for (const r of e.rings?.length ? e.rings : [e.points]) {
+        r.forEach((p, i) => { const q = toScreen({ x: p[0], y: p[1] }); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
+        ctx.closePath();
+      }
+      ctx.stroke();
+    }
+    ctx.restore();
+  }
 
   // ---- Label Contours: a line across the contours; each one it crosses is labelled there -------------------------
   const lab = { start: null, at: null };
@@ -322,5 +382,5 @@ const Topo = (() => {
   }
 
   return { startSketch, finish, importFile, selectionContext, click, startPoints, stopPoints, pointProperties, placementProperties, elements, draw, typeId, promptText, target: () => pt.target,
-    startEdit, simplify, startLabels, labelClick, labelHover, labelKey, drawLabels, labelElements, labelSnap: () => ({ last: lab.start }) };
+    startEdit, simplify, startExcavate, excavateClick, excavateKey, excavateTarget: () => exc.id, drawExcavators, startLabels, labelClick, labelHover, labelKey, drawLabels, labelElements, labelSnap: () => ({ last: lab.start }) };
 })();

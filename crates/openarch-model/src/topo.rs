@@ -10,6 +10,11 @@
 //!
 //! Contour lines come from the type's contour sets, measured as shared elevations (from the shared site origin,
 //! which the Survey Point sets).
+//!
+//! Excavate: floors, roofs and other toposolids a toposolid lists take out of it whatever stands above their
+//! undersides within their footprints (shape::excavate), worked out afresh from where they are, so the hole follows
+//! them as they move or change. Everything that draws or measures the solid uses `toposolid_surface`, the top as
+//! excavated; editing points and lines works on the unexcavated top (`toposolid_tin`).
 
 use serde::{Deserialize, Serialize};
 
@@ -17,7 +22,7 @@ use crate::curve::Curve;
 use crate::element::{default_coarse_fill, IfcParams, Layer, LayerFunction, TypeInfo};
 use crate::geom::Region;
 pub use crate::shape::{triangulate, Tin};
-use crate::shape::within;
+use crate::shape::{within, Cutter};
 use crate::site::P3;
 use crate::styles::PatternGraphics;
 use crate::{Document, Element, Id, Point};
@@ -150,6 +155,9 @@ pub struct Toposolid {
     /// Split lines: pairs of indices into `points`; the surface folds along each.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub split_lines: Vec<[usize; 2]>,
+    /// Excavate: the floors, roofs and other toposolids that cut into it. One no longer there is passed over.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub excavated_by: Vec<Id>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -162,7 +170,7 @@ pub struct Toposolid {
 
 impl Toposolid {
     pub fn new(toposolid_type: Id, level: Id, loops: Vec<Vec<Curve>>, offset_mm: f64) -> Toposolid {
-        Toposolid { toposolid_type, level, loops, offset_mm, points: vec![], split_lines: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
+        Toposolid { toposolid_type, level, loops, offset_mm, points: vec![], split_lines: vec![], excavated_by: vec![], pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
     }
 
     /// The boundary as polygons (arcs and splines broken into short chords).
@@ -276,20 +284,127 @@ impl Document {
         tin.verts.iter().map(|v| match fixed { Some(f) => flat.min(v[2] - f), None => v[2] - th }).collect()
     }
 
+    /// The toposolid as built: its top with the excavations taken out, the underside's height under each corner of
+    /// it, and the footprints of what excavates it.
+    pub fn toposolid_surface(&self, t: &Toposolid) -> Option<(Tin, Vec<f64>, Vec<Vec<Point>>)> {
+        let tin = self.toposolid_tin(t)?;
+        let bot = self.toposolid_bottoms(t, &tin);
+        let cutters: Vec<Cutter> = t.excavated_by.iter().filter_map(|&id| self.cutter(id)).collect();
+        if cutters.is_empty() { return Some((tin, bot, vec![])); }
+        let under = Tin { verts: tin.verts.iter().zip(&bot).map(|(v, &z)| [v[0], v[1], z]).collect(), tris: tin.tris.clone() };
+        match crate::shape::excavate(&t.polygons(20.0), &tin, &under, &cutters) {
+            Some((top, b)) => Some((top, b, cutters.into_iter().flat_map(|c| c.rings).collect())),
+            None => Some((tin, bot, vec![])),
+        }
+    }
+
+    /// An element as something that excavates a toposolid: a floor over its outline (an opening in it leaves no
+    /// ground standing), a roof over its faces, a toposolid over its boundary, each down to its underside. Toposolids
+    /// cut with their unexcavated shape, so two can excavate each other.
+    fn cutter(&self, id: Id) -> Option<Cutter> {
+        let ring_edges = |rings: &[Vec<Point>]| -> Vec<[Point; 2]> {
+            rings.iter().flat_map(|r| (0..r.len()).map(move |i| [r[i], r[(i + 1) % r.len()]])).collect()
+        };
+        match self.get(id)? {
+            Element::Floor(f) => {
+                let surf = self.floor_surface(f)?;
+                let th = self.floor_type(f.floor_type)?.thickness_mm();
+                let rings: Vec<Vec<Point>> = f.regions(20.0).into_iter().map(|r| r.outer).collect();
+                if rings.is_empty() { return None; }
+                Some(Cutter { rings, folds: vec![], under: Box::new(move |p| Some(surf.z(p) - th)) })
+            }
+            Element::Roof(r) => {
+                let g = self.roof_geometry(r)?;
+                let th = self.roof_type(r.roof_type)?.thickness_mm();
+                // each face, flat piece and cap with the plane of the underside under it (the top less the thickness
+                // square to the face)
+                let mut pieces: Vec<(Vec<Point>, [f64; 3])> = vec![];
+                let plan = |poly: &[[f64; 3]]| poly.iter().map(|q| Point::new(q[0], q[1])).collect::<Vec<_>>();
+                for f in g.faces.iter().filter(|f| !f.vertical) {
+                    if let Some(pl) = crate::shape::plane_through(&f.poly) {
+                        pieces.push((plan(&f.poly), [pl[0], pl[1], pl[2] - th * (1.0 + pl[0] * pl[0] + pl[1] * pl[1]).sqrt()]));
+                    }
+                }
+                for rg in &g.flat { pieces.push((rg.outer.clone(), [0.0, 0.0, g.base_z - th])); }
+                for c in &g.caps { if c.len() >= 3 { pieces.push((plan(c), [0.0, 0.0, c[0][2] - th])); } }
+                pieces.retain(|p| p.0.len() >= 3);
+                if pieces.is_empty() { return None; }
+                let rings: Vec<Vec<Point>> = pieces.iter().map(|p| p.0.clone()).collect();
+                let folds = ring_edges(&rings);
+                Some(Cutter { rings, folds, under: Box::new(move |p| {
+                    pieces.iter().filter(|(poly, _)| within(std::slice::from_ref(poly), p)).map(|(_, pl)| pl[0] * p.x + pl[1] * p.y + pl[2]).reduce(f64::max)
+                }) })
+            }
+            Element::Toposolid(o) => {
+                let tin = self.toposolid_tin(o)?;
+                let bot = self.toposolid_bottoms(o, &tin);
+                let folds = tin.edges().into_iter().map(|([a, b], _)| [Point::new(tin.verts[a][0], tin.verts[a][1]), Point::new(tin.verts[b][0], tin.verts[b][1])]).collect();
+                let under = Tin { verts: tin.verts.iter().zip(&bot).map(|(v, &z)| [v[0], v[1], z]).collect(), tris: tin.tris.clone() };
+                Some(Cutter { rings: o.polygons(20.0), folds, under: Box::new(move |p| under.z_near(p)) })
+            }
+            _ => None,
+        }
+    }
+
+    /// Excavate: each of `by` (a floor, roof or other toposolid) takes out of the toposolid whatever stands above its
+    /// underside within its footprint, from then on wherever it goes. Each must take something out. Returns how
+    /// many were added (one already excavating is passed over).
+    pub fn excavate_toposolid(&mut self, id: Id, by: &[Id]) -> Result<usize, String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        self.refuse_pinned(&[id], "edited")?;
+        let mut added = 0;
+        for &c in by {
+            if c == id { return Err("A toposolid can't excavate itself.".into()); }
+            let noun = match self.get(c) {
+                Some(Element::Floor(_)) => "floor",
+                Some(Element::Roof(_)) => "roof",
+                Some(Element::Toposolid(_)) => "toposolid",
+                _ => return Err("Floors, roofs and other toposolids excavate a toposolid.".into()),
+            };
+            if t.excavated_by.contains(&c) { continue; }
+            let mut with = t.clone();
+            with.excavated_by.push(c);
+            // a litre at least, so one that only touches the ground is refused
+            if self.toposolid_volume(&with) > self.toposolid_volume(&t) - 1e6 {
+                return Err(format!("The {noun} doesn't cut into the toposolid: its underside has to be below the ground somewhere inside the boundary."));
+            }
+            t = with;
+            added += 1;
+        }
+        if added == 0 { return Ok(0); }
+        self.transact("Excavate", |tx| tx.update(id, Element::Toposolid(t)))?;
+        Ok(added)
+    }
+
+    /// Remove Excavation: `by` no longer cut into the toposolid. Returns how many were removed.
+    pub fn remove_excavation(&mut self, id: Id, by: &[Id]) -> Result<usize, String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        self.refuse_pinned(&[id], "edited")?;
+        let before = t.excavated_by.len();
+        t.excavated_by.retain(|c| !by.contains(c));
+        let removed = before - t.excavated_by.len();
+        if removed == 0 { return Err("That doesn't excavate the toposolid.".into()); }
+        self.transact("Remove excavation", |tx| tx.update(id, Element::Toposolid(t)))?;
+        Ok(removed)
+    }
+
+    /// What excavates a toposolid, of what is still there.
+    pub fn toposolid_excavators(&self, t: &Toposolid) -> Vec<Id> {
+        t.excavated_by.iter().copied().filter(|&c| matches!(self.get(c), Some(Element::Floor(_) | Element::Roof(_) | Element::Toposolid(_)))).collect()
+    }
+
     /// The top and the underside at a plan point: the top's height, upward normal and whether the point is on a fold,
     /// and the underside's height. None off the toposolid.
     pub fn toposolid_sample(&self, t: &Toposolid, p: Point) -> Option<((f64, [f64; 3], bool), f64)> {
-        let tin = self.toposolid_tin(t)?;
+        let (tin, bot, _) = self.toposolid_surface(t)?;
         let top = tin.sample(p)?;
-        let bot = self.toposolid_bottoms(t, &tin);
         let under = Tin { verts: tin.verts.iter().zip(&bot).map(|(v, &z)| [v[0], v[1], z]).collect(), tris: tin.tris.clone() };
         Some((top, under.z_at(p)?))
     }
 
     /// The solid's volume (mm³): over each triangle, its plan area by the mean depth at its corners.
     pub fn toposolid_volume(&self, t: &Toposolid) -> f64 {
-        let Some(tin) = self.toposolid_tin(t) else { return 0.0 };
-        let bot = self.toposolid_bottoms(t, &tin);
+        let Some((tin, bot, _)) = self.toposolid_surface(t) else { return 0.0 };
         tin.tris.iter().map(|k| {
             let (a, b, c) = (tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]);
             let area = ((b[0] - a[0]) * (c[1] - a[1]) - (c[0] - a[0]) * (b[1] - a[1])).abs() / 2.0;
@@ -302,8 +417,7 @@ impl Document {
     /// is above the plane and the underside below it (filled with the cut pattern), and the lines round them (where
     /// the top or the underside meets the plane, and the boundary in between).
     pub fn toposolid_plan_cut(&self, t: &Toposolid, z: f64) -> (Vec<Vec<Point>>, Vec<[Point; 2]>) {
-        let Some(tin) = self.toposolid_tin(t) else { return (vec![], vec![]) };
-        let bot = self.toposolid_bottoms(t, &tin);
+        let Some((tin, bot, _)) = self.toposolid_surface(t) else { return (vec![], vec![]) };
         let boundary: std::collections::HashSet<[usize; 2]> = tin.boundary_edges().into_iter().map(|[a, b]| [a.min(b), a.max(b)]).collect();
         let (mut polys, mut lines) = (vec![], vec![]);
         // a corner of a piece: plan position, surface and underside heights, and the triangle edge it lies on (if any)
@@ -384,7 +498,11 @@ impl Document {
 
     /// The contours with their heights (absolute, mm).
     pub fn toposolid_contour_lines(&self, t: &Toposolid) -> Vec<(f64, bool, Vec<[Point; 2]>)> {
-        let (Some(ty), Some(tin)) = (self.toposolid_type(t.toposolid_type), self.toposolid_tin(t)) else { return vec![] };
+        let (Some(ty), Some((tin, _, edges))) = (self.toposolid_type(t.toposolid_type), self.toposolid_surface(t)) else { return vec![] };
+        let on_side = |s: &[Point; 2]| {
+            let m = Point::new((s[0].x + s[1].x) / 2.0, (s[0].y + s[1].y) / 2.0);
+            edges.iter().any(|r| (0..r.len()).any(|i| crate::geom::dist_to_segment(m, r[i], r[(i + 1) % r.len()]) < crate::shape::EXCAVATION_EDGE * 1.5))
+        };
         let zero = self.topo_base_z(TopoBase::SurveyPoint, t.level);
         let (lo, hi) = tin.z_range();
         let mut heights: std::collections::BTreeMap<i64, bool> = Default::default();
@@ -411,7 +529,7 @@ impl Document {
                 }
             }
         }
-        heights.into_iter().map(|(k, primary)| { let z = k as f64 / 1000.0 + zero; (z, primary, tin.contour(z)) }).filter(|(_, _, l)| !l.is_empty()).collect()
+        heights.into_iter().map(|(k, primary)| { let z = k as f64 / 1000.0 + zero; (z, primary, tin.contour(z).into_iter().filter(|s| edges.is_empty() || !on_side(s)).collect::<Vec<_>>()) }).filter(|(_, _, l)| !l.is_empty()).collect()
     }
 
     /// The starter type, and the Earth material, added to a project that has none.
@@ -632,10 +750,9 @@ impl Document {
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn toposolid_view_items(&self, id: Id, t: &Toposolid, look: Point, u_of: &dyn Fn(Point) -> f64, d_of: &dyn Fn(Point) -> f64, visible: &dyn Fn(f64, f64) -> bool, sl: Option<&crate::section::Slice>) -> Vec<crate::site::ElevItem> {
         use crate::site::ElevItem;
-        let Some(tin) = self.toposolid_tin(t) else { return vec![] };
+        let Some((tin, bot, _)) = self.toposolid_surface(t) else { return vec![] };
         let th = self.toposolid_thickness(t);
         let n = tin.verts.len();
-        let bot = self.toposolid_bottoms(t, &tin);
         let corner = |i: usize| if i < n { tin.verts[i] } else { let v = tin.verts[i - n]; [v[0], v[1], bot[i - n]] };
         let color = self.toposolid_type(t.toposolid_type).and_then(|ty| ty.layers.first()).and_then(|l| self.material(&l.material)).map_or([150, 128, 100], |m| m.graphics.shading_color);
         let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
@@ -646,6 +763,8 @@ impl Document {
         };
         let mut faces: Vec<Face> = vec![];
         for k in &tin.tris {
+            // nothing left where an excavation goes right through
+            if k.iter().all(|&i| tin.verts[i][2] - bot[i] < 0.5) && th > 0.0 { continue; }
             faces.push(Face { corners: k.to_vec(), normal: normal(corner(k[0]), corner(k[1]), corner(k[2])), part: 0 });
             if th > 0.0 {
                 let b = [k[0] + n, k[2] + n, k[1] + n];
@@ -725,10 +844,10 @@ impl Document {
     }
 
     /// Where a section's plane cuts a toposolid: each stretch inside the boundary, as the profile of the surface
-    /// with a band per layer below it.
+    /// with a band per layer below it. The layers lie as they would without excavations, cut off by the excavated top.
     pub(crate) fn toposolid_cut_items(&self, id: Id, t: &Toposolid, sl: &crate::section::Slice, plane: f64) -> Vec<crate::site::ElevItem> {
         use crate::site::ElevItem;
-        let Some(tin) = self.toposolid_tin(t) else { return vec![] };
+        let (Some(tin), Some((dug, _, _))) = (self.toposolid_tin(t), self.toposolid_surface(t)) else { return vec![] };
         let polys = t.polygons(20.0);
         let rings: Vec<&[Point]> = polys.iter().map(|p| p.as_slice()).collect();
         let ty = self.toposolid_type(t.toposolid_type).filter(|ty| !ty.layers.is_empty());
@@ -745,23 +864,26 @@ impl Document {
         let spans = |top: f64| -> Vec<(f64, f64)> {
             match ty { Some(ty) => ty.layer_spans(top, bottom(top)), None => vec![(top, top - 2.0)] }
         };
-        let edges = tin.edges();
+        // the excavated top has an edge along every edge of the unexcavated one, so its profile has every corner of
+        // both: each point of it is along the cut, the excavated top and the unexcavated one
+        let edges = dug.edges();
         let mut out = vec![];
         for cut in sl.cuts(&rings, plane) {
-            let mut prof: Vec<[f64; 2]> = vec![];
+            let mut prof: Vec<[f64; 3]> = vec![];
             for ([i, j], _) in &edges {
-                let (a, b) = (tin.verts[*i], tin.verts[*j]);
+                let (a, b) = (dug.verts[*i], dug.verts[*j]);
                 let (da, db) = (sl.d(Point::new(a[0], a[1])) - plane, sl.d(Point::new(b[0], b[1])) - plane);
                 if (da < 0.0) == (db < 0.0) { continue; }
                 let s = da / (da - db);
                 let p = Point::new(a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s);
                 let u = sl.u(p);
                 if u < cut.u0 - 1e-6 || u > cut.u1 + 1e-6 { continue; }
-                prof.push([u, a[2] + (b[2] - a[2]) * s]);
+                let z = a[2] + (b[2] - a[2]) * s;
+                prof.push([u, z, tin.z_near(p).unwrap_or(z)]);
             }
             for (u, p) in [(cut.u0, cut.p0), (cut.u1, cut.p1)] {
                 if !prof.iter().any(|q| (q[0] - u).abs() < 1e-3) {
-                    if let Some(z) = tin.z_at(p) { prof.push([u, z]); }
+                    if let (Some(z), Some(g)) = (dug.z_near(p), tin.z_near(p)) { prof.push([u, z, g]); }
                 }
             }
             prof.sort_by(|a, b| a[0].total_cmp(&b[0]));
@@ -771,16 +893,16 @@ impl Document {
             if let Some(f) = fixed {
                 let mut with = vec![prof[0]];
                 for w in prof.windows(2) {
-                    let (ga, gb) = (w[0][1] - f - flat, w[1][1] - f - flat);
+                    let (ga, gb) = (w[0][2] - f - flat, w[1][2] - f - flat);
                     if (ga < 0.0) != (gb < 0.0) {
                         let s = ga / (ga - gb);
-                        with.push([w[0][0] + (w[1][0] - w[0][0]) * s, w[0][1] + (w[1][1] - w[0][1]) * s]);
+                        with.push([0, 1, 2].map(|k| w[0][k] + (w[1][k] - w[0][k]) * s));
                     }
                     with.push(w[1]);
                 }
                 prof = with;
             }
-            let at: Vec<Vec<(f64, f64)>> = prof.iter().map(|q| spans(q[1])).collect();
+            let at: Vec<Vec<(f64, f64)>> = prof.iter().map(|q| spans(q[2]).into_iter().map(|(hi, lo)| (hi.min(q[1]), lo.min(q[1]))).collect()).collect();
             for (k, (mat, th, void)) in bands.iter().enumerate() {
                 if *void || *th <= 0.0 { continue; }
                 let mut poly: Vec<[f64; 2]> = prof.iter().zip(&at).map(|(q, s)| [q[0], s[k].0]).collect();
@@ -950,5 +1072,35 @@ mod tests {
         assert!(left.iter().any(|p| p.z == 5000.0), "the peak stays");
         d.undo();
         assert_eq!(d.toposolid(id).unwrap().points.len(), 122);
+    }
+
+    #[test]
+    fn a_roof_sunk_into_the_ground_excavates_it_to_its_underside() {
+        let (mut d, ty, level) = setup();
+        let lz = d.level(level).unwrap().elevation_mm;
+        // ground 1000 up, so its underside is at the level
+        let t = d.add_toposolid_sketch(ty, level, square(10000.0), 1000.0).unwrap();
+        let before = d.toposolid_volume(d.toposolid(t).unwrap());
+        let rt = d.roof_types()[0].0;
+        let c = [Point::new(0.0, 2000.0), Point::new(10000.0, 2000.0), Point::new(10000.0, 8000.0), Point::new(0.0, 8000.0)];
+        let edges = (0..4).map(|i| crate::roof::RoofEdge::new(Curve::line(c[i], c[(i + 1) % 4]))).collect();
+        let roof = d.add_roof_sketch(rt, level, edges).unwrap();
+        assert_eq!(d.excavate_toposolid(t, &[roof]).unwrap(), 1);
+        let topo = d.toposolid(t).unwrap().clone();
+        assert!(d.toposolid_volume(&topo) < before);
+        let ((z, _, _), bottom) = d.toposolid_sample(&topo, Point::new(100.0, 5000.0)).unwrap();
+        // near the eaves the roof's underside is below the ground's, so nothing is left
+        assert!((z - bottom).abs() < 1e-6 && (bottom - lz).abs() < 1e-6, "{z} {bottom}");
+        // under the ridge the ground stands at the roof's underside, or its own top where that is lower
+        let g = d.roof_geometry(d.roof(roof).unwrap()).unwrap();
+        let rth = d.roof_type(rt).unwrap().thickness_mm();
+        let under = g.top_z - rth / 22.5f64.to_radians().cos();
+        let ((z, _, _), _) = d.toposolid_sample(&topo, Point::new(5000.0, 5000.0)).unwrap();
+        assert!((z - under.min(lz + 1000.0)).abs() < 1e-3, "{z} {under}");
+        // outside the roof the ground is untouched
+        let ((z, _, _), _) = d.toposolid_sample(&topo, Point::new(8000.0, 9000.0)).unwrap();
+        assert!((z - (lz + 1000.0)).abs() < 1e-6);
+        assert_eq!(d.remove_excavation(t, &[roof]).unwrap(), 1);
+        assert!((d.toposolid_volume(d.toposolid(t).unwrap()) - before).abs() < 1e-3);
     }
 }

@@ -330,9 +330,8 @@ pub fn ceiling_mesh(doc: &Document, c: &crate::ceiling::Ceiling) -> Option<Vec<f
 /// A toposolid: its surface, the same surface lowered by the type's thickness underneath, and upright sides round
 /// the boundary. A type with no layers is drawn as the surface alone.
 pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<f32>> {
-    let tin = doc.toposolid_tin(t)?;
+    let (tin, bot, _) = doc.toposolid_surface(t)?;
     let th = doc.toposolid_thickness(t);
-    let bot = doc.toposolid_bottoms(t, &tin);
     let mut out = Vec::new();
     let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
         let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
@@ -342,6 +341,8 @@ pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<
     };
     let low = |i: usize| [tin.verts[i][0], tin.verts[i][1], bot[i]];
     for k in &tin.tris {
+        // nothing left where an excavation goes right through
+        if th > 0.0 && k.iter().all(|&i| tin.verts[i][2] - bot[i] < 0.5) { continue; }
         let (a, b, c) = (tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]);
         tri(&mut out, a, b, c, normal(a, b, c));
         if th > 0.0 {
@@ -353,6 +354,7 @@ pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<
         for [i, j] in tin.boundary_edges() {
             let (a, b) = (tin.verts[i], tin.verts[j]);
             let (la, lb) = (low(i), low(j));
+            if a[2] - la[2] < 0.5 && b[2] - lb[2] < 0.5 { continue; }
             // the outside is on the right of a boundary edge
             let (dx, dy) = (b[0] - a[0], b[1] - a[1]);
             let l = dx.hypot(dy).max(1e-12);

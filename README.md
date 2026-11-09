@@ -12,7 +12,7 @@ A free, open-source building information modelling (BIM) application for archite
 - Layered walls with wall types, mitred and butted joins and join cleanup, plus curved walls and curtain walls (grids, panels, mullions, doors)
 - Floors, roofs and ceilings drawn from sketch boundaries, with slopes and slope arrows
 - Stairs with runs and automatic landings, ramps, and railings
-- Toposolids for the site: sketched or imported from a survey points file, shaped with points and split lines (added, dragged with snapping, given heights, deleted, simplified), with contours by type and contour labels, spot elevations and slopes on the ground, cut through their layers in sections and where a plan's cut plane passes through the ground, and a variable layer that keeps the underside flat
+- Toposolids for the site: sketched or imported from a survey points file, shaped with points and split lines (added, dragged with snapping, given heights, deleted, simplified), excavated by floors, roofs and other toposolids (the hole follows them and the volume drops), with contours by type and contour labels, spot elevations and slopes on the ground, cut through their layers in sections and where a plan's cut plane passes through the ground, and a variable layer that keeps the underside flat
 - Doors and windows from loadable families, with tags and mark numbering
 - A family editor: reference planes, parameters, types, lookup tables, nested families, and extrusions, blends, sweeps and voids
 - Plan, elevation, section and 3D views, with jogged sections, depth cueing, view ranges, templates, graphic display options, and hide and isolate
