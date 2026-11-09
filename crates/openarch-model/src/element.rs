@@ -710,6 +710,7 @@ pub enum Element {
     ToposolidType(crate::topo::ToposolidType),
     Toposolid(crate::topo::Toposolid),
     ContourLabel(crate::topo::ContourLabel),
+    PropertyLine(crate::propline::PropertyLine),
 }
 
 impl Element {
@@ -786,6 +787,7 @@ impl Element {
             Element::ToposolidType(_) => "ToposolidType",
             Element::Toposolid(_) => "Toposolid",
             Element::ContourLabel(_) => "ContourLabel",
+            Element::PropertyLine(_) => "PropertyLine",
         }
     }
 }

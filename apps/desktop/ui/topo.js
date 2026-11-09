@@ -1,7 +1,7 @@
 // Toposolids: Create from Sketch, Create from Import (a points file), Add Point, Modify Sub Elements and Add Split Line
-// (shapeedit.js), Simplify, Edit Boundary, Sub-Divide, Excavate and Remove Excavation, Split and Merge, Label Contours,
-// and how a floor plan draws them (the boundary, the type's contours and their labels, and the ground its cut plane
-// passes through). Private notes: site.md.
+// (shapeedit.js), Simplify, Edit Boundary, Sub-Divide, Excavate and Remove Excavation, Split and Merge, Graded Region
+// and Cut / Fill, Label Contours, and how a floor plan draws them (the boundary, the type's contours and their labels,
+// a graded region's existing contours, and the ground its cut plane passes through). Private notes: site.md.
 const Topo = (() => {
   // Add Point's settings: the height, measured from a base or above the surface where the point goes
   const pt = { elevation: 0, mode: "absolute", base: "current_level", target: null };
@@ -143,24 +143,31 @@ const Topo = (() => {
     if (ShapeEdit.editing() && host.get(ShapeEdit.id())) return ShapeEdit.context();
     const t = selected();
     if (!t || Plan.tool !== "select") return null;
-    // a sub-division follows its toposolid's shape: no points of its own, and it isn't sub-divided or merged
+    // a sub-division follows its toposolid's shape: no points of its own, and it isn't sub-divided, graded or merged
     const sub = t.host != null;
-    return { auto: true, key: `toposel:${t.id}:${sub}`, title: sub ? "Toposolid Sub-division" : "Toposolid", groups: [
-      { label: "Mode", items: [{ label: "Edit Boundary", icon: "editBoundary", big: true, onclick: () => startSketch(t.id) }] },
-      ...(sub ? [] : [{ label: "Shape Editing", items: [
-        { label: "Modify Sub Elements", ico: "MS", big: true, onclick: () => startEdit(t.id) },
-        { label: "Add Point", icon: "topoPoints", big: true, onclick: () => startPoints(t.id) },
-        { label: "Add Split Line", ico: "SL", big: true, onclick: () => startEdit(t.id, "line") },
-        { label: "Simplify Toposolid", ico: "Si", big: true, onclick: () => simplify(t.id) },
+    const flat = !t.points.length && !(t.lines || []).length;
+    const excavate = { label: "Excavate", icon: "excavate", menu: [
+      { label: "Excavate", icon: "excavate", onclick: () => startExcavate(t.id) },
+      { label: "Remove Excavation", icon: "removeExcavation", disabled: !t.excavated_by?.length, title: t.excavated_by?.length ? "" : "Nothing excavates it", onclick: () => startExcavate(t.id, true) },
+    ] };
+    const split = { label: "Split Toposolid", icon: "splitTopo", onclick: () => startSubSketch(t.id, "split") };
+    return { auto: true, key: `toposel:${t.id}:${sub}:${t.graded}:${flat}:${t.excavated_by?.length || 0}`, title: sub ? "Toposolid Sub-division" : "Toposolid", groups: [
+      { label: "Mode", labelled: true, items: [{ label: "Edit Sketch", icon: "editBoundary", big: true, onclick: () => startSketch(t.id) }] },
+      ...(sub ? [] : [{ label: "Shape Editing", labelled: true, items: [
+        { label: "Modify Sub Elements", icon: "modifySub", big: true, onclick: () => startEdit(t.id) },
+        { label: "Add Point", icon: "topoPoints", onclick: () => startPoints(t.id) },
+        { label: "Add Split Line", icon: "splitLine", onclick: () => startEdit(t.id, "line") },
+        { label: "Reset Shape", icon: "resetShape", big: true, disabled: flat, title: flat ? "It has no points or split lines" : "Remove its points and split lines: flat at Height Offset From Level", onclick: () => resetShape(t.id) },
       ] }]),
-      { label: "Toposolid Shaping", items: [
-        ...(sub ? [] : [{ label: "Sub-Divide", ico: "SD", big: true, onclick: () => startSubSketch(t.id, "sub") }]),
-        { label: "Excavate", ico: "Ex", big: true, onclick: () => startExcavate(t.id) },
-        { label: "Remove Excavation", ico: "RE", big: true, onclick: () => startExcavate(t.id, true) },
-      ] },
-      { label: "Split and Merge", items: [
-        { label: "Split Toposolid", ico: "Sp", big: true, onclick: () => startSubSketch(t.id, "split") },
-        ...(sub ? [] : [{ label: "Merge Toposolids", ico: "Me", big: true, onclick: () => startExcavate(t.id, false, true) }]),
+      { label: "Toposolid Shaping", labelled: true, items: sub ? [excavate, split] : [
+        { label: "Sub-divide", icon: "subdivide", onclick: () => startSubSketch(t.id, "sub") },
+        { label: "Simplify Toposolid", icon: "simplify", onclick: () => simplify(t.id) },
+        excavate,
+        t.graded
+          ? { label: "Remove Graded Region", icon: "removeGraded", brk: true, onclick: () => removeGraded(t.id) }
+          : { label: "Graded Region", icon: "grading", brk: true, onclick: () => gradedRegion(t.id) },
+        split,
+        { label: "Merge Toposolids", icon: "mergeTopo", onclick: () => startExcavate(t.id, false, true) },
       ] },
     ] };
   }
@@ -168,8 +175,8 @@ const Topo = (() => {
     return { auto: true, key: `topopoint:${pt.mode}`, title: "Add Point", groups: [
       { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopPoints() }] },
       { label: "Add Point", items: [
-        { label: "Absolute", ico: "Ab", big: true, on: pt.mode === "absolute", onclick: () => { pt.mode = "absolute"; refreshPointUI(); } },
-        { label: "Along Surface", ico: "Su", big: true, on: pt.mode === "surface", onclick: () => { pt.mode = "surface"; refreshPointUI(); } },
+        { label: "Absolute", icon: "pointAbsolute", big: true, on: pt.mode === "absolute", onclick: () => { pt.mode = "absolute"; refreshPointUI(); } },
+        { label: "Along Surface", icon: "pointSurface", big: true, on: pt.mode === "surface", onclick: () => { pt.mode = "surface"; refreshPointUI(); } },
       ] },
     ] };
   }
@@ -220,31 +227,56 @@ const Topo = (() => {
   const startEdit = (id, mode = "edit") => ShapeEdit.start(host, id, mode);
 
   // ---- Excavate and Remove Excavation: click the floors, roofs or other toposolids that cut into it --------------
-  // Merge Toposolids picks the same way: click the toposolid to make part of this one
-  const exc = { id: null, remove: false, merge: false };
+  // Merge Toposolids picks the same way: click the toposolid to make part of this one. So do the Site tab's
+  // Sub-Divide and Graded Region with nothing selected (`pick`: what to do with the toposolid clicked)
+  const exc = { id: null, remove: false, merge: false, pick: null };
   const excavators = () => data().find((t) => t.id === exc.id)?.excavated_by || [];
   function startExcavate(id, remove = false, merge = false) {
     if (remove && !data().find((t) => t.id === id)?.excavated_by?.length) { setPrompt("Nothing excavates this toposolid yet. Excavate picks the floors, roofs or toposolids that cut into it.", true); return; }
-    exc.id = id; exc.remove = remove; exc.merge = merge;
+    exc.id = id; exc.remove = remove; exc.merge = merge; exc.pick = null;
     Plan.setTool("topoexcavate");
     updateRibbonContext(true);
     setPrompt(excavatePrompt());
   }
-  const excavatePrompt = () => exc.merge
+  // the Site tab's Sub-Divide and Graded Region: the selected toposolid, else the one clicked next
+  async function pickToposolid(title, then) {
+    const t = selected();
+    if (t && t.host == null) { then(t.id); return; }
+    if (!(await ensureFloorPlan())) return;
+    if (!data().some((x) => x.host == null)) { setPrompt(`${title}: there is no toposolid in this view to pick.`, true); return; }
+    exc.id = null; exc.remove = false; exc.merge = false; exc.pick = { title, then };
+    app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+    Plan.setTool("topoexcavate");
+    updateRibbonContext(true);
+    setPrompt(excavatePrompt());
+  }
+  const excavatePrompt = () => exc.pick
+    ? `${exc.pick.title}: click a toposolid. Esc cancels.`
+    : exc.merge
     ? "Merge Toposolids: click a toposolid that overlaps this one or shares an edge with it. This one keeps its type and properties. Esc cancels."
     : exc.remove
     ? "Remove Excavation: click a floor, roof or toposolid outlined in orange to stop it excavating. Esc finishes."
     : "Excavate: click the floors, roofs or other toposolids that cut into the toposolid (outlined in orange once they do). Esc finishes.";
   function excavateContext() {
-    return { auto: true, key: `topoexcavate:${exc.remove}:${exc.merge}`, title: exc.merge ? "Merge Toposolids" : exc.remove ? "Remove Excavation" : "Excavate", groups: [{ label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopExcavate() }] }] };
+    return { auto: true, key: `topoexcavate:${exc.remove}:${exc.merge}:${exc.pick?.title}`, title: exc.pick ? exc.pick.title : exc.merge ? "Merge Toposolids" : exc.remove ? "Remove Excavation" : "Excavate", groups: [{ label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopExcavate() }] }] };
   }
   function stopExcavate() {
     const id = exc.id;
-    exc.id = null;
+    exc.id = null; exc.pick = null;
     Plan.setTool("select");
     if (id != null) select(id);
   }
   async function excavateClick(id) {
+    if (exc.pick) {
+      const o = data().find((t) => t.id === id);
+      if (!o) { setPrompt(`Click a toposolid. ${excavatePrompt()}`); return; }
+      if (o.host != null) { setPrompt(`That is a sub-division: click the toposolid it is on. ${excavatePrompt()}`); return; }
+      const { then } = exc.pick;
+      stopExcavate();
+      select(id);
+      then(id);
+      return;
+    }
     if (exc.merge) {
       const o = data().find((t) => t.id === id);
       if (!o) { setPrompt(`Click a toposolid. ${excavatePrompt()}`); return; }
@@ -271,7 +303,7 @@ const Topo = (() => {
   }
   // while picking, what already excavates the toposolid is outlined
   function drawExcavators(ctx, d, toScreen) {
-    if (Plan.tool !== "topoexcavate" || exc.id == null || exc.merge) return;
+    if (Plan.tool !== "topoexcavate" || exc.id == null || exc.merge || exc.pick) return;
     const all = [...(d?.floors || []), ...(d?.roofs || []), ...(d?.toposolids || [])];
     ctx.save();
     ctx.setLineDash([]); ctx.lineWidth = 3; ctx.strokeStyle = "#e07b00";
@@ -340,6 +372,61 @@ const Topo = (() => {
     });
   }
 
+  // ---- Graded Region and Cut / Fill ------------------------------------------------------------------------------
+  // the toposolid keeps its ground as it is now as the existing ground; cut and fill are measured from it
+  function gradedRegion(id) {
+    const t = data().find((x) => x.id === id);
+    if (t?.graded) { setPrompt("This toposolid is already a graded region: its cut and fill are measured from the ground as it was when it was graded.", true); return; }
+    openModal("Edit Graded Region", (body, foot, close) => {
+      const choice = (value, text, on) => { const r = el("input", { type: "radio", name: "graded", value, checked: on }); return [r, el("label", { className: "new-row" }, [r, el("span", { textContent: text })])]; };
+      const [all, allRow] = choice("all", "Keep the toposolid as it is (all its points)", true);
+      const [, perRow] = choice("perimeter", "Keep only the points on its boundary (simple grading)", false);
+      const msg = el("div", { className: "modal-msg", textContent: "The ground as it is now is kept as the existing ground. Reshape the toposolid (Modify Sub Elements, Add Point, Simplify) and Properties shows Cut, Fill and Net Cut/Fill under Other. Plans show the existing contours dashed." });
+      body.append(allRow, perRow, msg);
+      const ok = button("OK", async () => {
+        const r = await Backend.call("grade_toposolid", { id, perimeter_only: !all.checked }).catch((e) => { msg.textContent = String(e.message || e); return null; });
+        if (!r) return;
+        close();
+        await refresh();
+        select(id);
+        setPrompt("Graded region: reshape the toposolid; Properties shows its cut and fill against the existing ground.");
+      }, true);
+      foot.append(button("Cancel", close), ok);
+    });
+  }
+  async function resetShape(id) {
+    if (!(await run("reset_toposolid_shape", { id }))) return;
+    await refresh();
+    select(id);
+    setPrompt("Shape reset: the toposolid is flat at its Height Offset From Level. Undo brings the points back.");
+  }
+  async function removeGraded(id) {
+    if (!(await run("remove_graded_region", { id }))) return;
+    await refresh();
+    select(id);
+    setPrompt("No longer a graded region: the existing ground is forgotten and the toposolid stays as it is.");
+  }
+  async function cutFillReport() {
+    const r = await run("cut_fill_report", {});
+    if (!r) return;
+    openModal("Cut / Fill", (body, foot, close) => {
+      if (!r.rows.length) {
+        body.append(el("div", { className: "modal-msg", textContent: "No toposolid is a graded region yet. Select one and click Graded Region, then reshape it: its cut and fill show here and in its Properties." }));
+      } else {
+        const f = (v) => v.toFixed(3);
+        const tot = r.rows.reduce((a, x) => ({ cut: a.cut + x.cut, fill: a.fill + x.fill }), { cut: 0, fill: 0 });
+        const tr = (cells) => el("tr", {}, cells.map((c, i) => { const td = el("td", { textContent: c }); if (i) td.style.textAlign = "right"; return td; }));
+        const th = (t, i) => { const h = el("th", { textContent: t }); if (i) h.style.textAlign = "right"; return h; };
+        body.append(el("table", { className: "el-table" }, [
+          el("tr", {}, ["Graded region", "Cut (m\u00b3)", "Fill (m\u00b3)", "Net Cut/Fill (m\u00b3)"].map(th)),
+          ...r.rows.map((x) => tr([x.name, f(x.cut), f(x.fill), f(x.fill - x.cut)])),
+          ...(r.rows.length > 1 ? [tr(["Total", f(tot.cut), f(tot.fill), f(tot.fill - tot.cut)])] : []),
+        ]), el("div", { className: "modal-msg", textContent: "Net Cut/Fill is fill less cut: negative when more is dug out than brought in. Cut includes what excavations and sunken sub-divisions take out." }));
+      }
+      foot.append(button("Close", close, true));
+    });
+  }
+
   // ---- plan drawing --------------------------------------------------------------------------------------------------
   function elements(d) {
     const list = (d?.toposolids || []).filter((t) => t.id !== Sketch.editingId && t.rings.length);
@@ -358,6 +445,14 @@ const Topo = (() => {
     const ring = (r) => r.forEach((p, i) => { const q = toScreen({ x: p[0], y: p[1] }); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); });
     for (const t of list) {
       const on = sel.has(t.id);
+      // a graded region's ground as it was: its contours dashed, under the new ones
+      if (t.existing?.length) {
+        if (tag) tag({ cat: "Topography", sub: "Existing Contours", kind: "projection" });
+        ctx.beginPath();
+        for (const c of t.existing) for (const s of c.segs) { const a = toScreen({ x: s[0], y: s[1] }), b = toScreen({ x: s[2], y: s[3] }); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); }
+        ctx.strokeStyle = on ? "#6f9ac0" : "#9a8f80"; ctx.lineWidth = 0.8; ctx.setLineDash([6, 4]);
+        ctx.stroke(); ctx.setLineDash([]);
+      }
       for (const primary of [false, true]) {
         if (tag) tag({ cat: "Topography", sub: primary ? "Primary Contours" : "Secondary Contours", kind: "projection" });
         ctx.beginPath();
@@ -451,5 +546,6 @@ const Topo = (() => {
   }
 
   return { startSketch, finish, importFile, selectionContext, click, startPoints, stopPoints, pointProperties, placementProperties, elements, draw, typeId, promptText, target: () => pt.target,
-    startEdit, simplify, startExcavate, startSubSketch, cancelSketch: () => { sk.mode = null; sk.host = null; }, excavateClick, excavateKey, excavateTarget: () => exc.id, drawExcavators, startLabels, labelClick, labelHover, labelKey, drawLabels, labelElements, labelSnap: () => ({ last: lab.start }) };
+    startEdit, simplify, startExcavate, startSubSketch, gradedRegion, cutFillReport,
+    subDivide: () => pickToposolid("Sub-Divide", (id) => startSubSketch(id, "sub")), grade: () => pickToposolid("Graded Region", gradedRegion), cancelSketch: () => { sk.mode = null; sk.host = null; }, excavateClick, excavateKey, excavateTarget: () => exc.id, drawExcavators, startLabels, labelClick, labelHover, labelKey, drawLabels, labelElements, labelSnap: () => ({ last: lab.start }) };
 })();

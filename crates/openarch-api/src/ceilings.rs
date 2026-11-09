@@ -81,7 +81,7 @@ impl Session {
             "target": { "method": "patch_ceiling", "id": id },
             "groups": [
                 { "name": "Constraints", "rows": [
-                    ro("Level", d.level(c.level).map_or(String::new(), |l| l.name.clone()), None),
+                    crate::props::level_select(d, "Level", "level", c.level, free),
                     num("Height Offset From Level", "offset_mm", c.offset_mm, free),
                     boolean("Room Bounding", "room_bounding", c.room_bounding),
                     boolean("Pinned", "pinned", c.pinned),

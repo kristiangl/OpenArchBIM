@@ -346,7 +346,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -401,6 +401,8 @@ impl Document {
                 Some(Element::AreaTag(t)) => { let mut t = t.clone(); t.at = x.apply(t.at); t.pinned = t.pinned && !opt.copy; Element::AreaTag(t) }
                 Some(Element::ColorFillLegend(l)) => { let mut l = l.clone(); l.at = x.apply(l.at); l.pinned = l.pinned && !opt.copy; Element::ColorFillLegend(l) }
                 Some(Element::ContourLabel(l)) => { let mut l = l.clone(); l.a = x.apply(l.a); l.b = x.apply(l.b); l.pinned = l.pinned && !opt.copy; Element::ContourLabel(l) }
+                // the bearings are read off the lines, so they follow a turn
+                Some(Element::PropertyLine(p)) => { let mut p = p.clone(); p.curves = p.curves.iter().map(|c| c.transform(x)).collect(); p.pinned = p.pinned && !opt.copy; Element::PropertyLine(p) }
                 Some(Element::AreaBoundary(b)) => { let mut b = b.clone(); b.curve = self.area_boundary_curve(id).unwrap_or_else(|| b.curve.clone()).transform(x); b.pinned = b.pinned && !opt.copy; b.wall = None; Element::AreaBoundary(b) }
                 // a toposolid's boundary and points carry the change; the heights stay
                 Some(Element::Toposolid(t)) => {
@@ -410,6 +412,12 @@ impl Document {
                         let q = x.apply(Point::new(p.x, p.y));
                         p.x = q.x;
                         p.y = q.y;
+                    }
+                    // a graded region's existing ground goes with it
+                    for v in t.existing.iter_mut().flat_map(|g| g.verts.iter_mut()) {
+                        let q = x.apply(Point::new(v[0], v[1]));
+                        v[0] = q.x;
+                        v[1] = q.y;
                     }
                     if opt.copy { t.pinned = false; t.mark.clear(); t.ifc.guid = new_ifc_guid(); }
                     Element::Toposolid(t)

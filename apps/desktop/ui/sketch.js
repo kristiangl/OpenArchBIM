@@ -646,7 +646,24 @@ function makeSketch() {
         if (x1 - x0 > 1e-6) out.push({ a: { x: x0, y: y1 }, b: { x: x1, y: y1 }, value: x1 - x0, offset: 22, side: { x: 0, y: 1 } });
         if (y1 - y0 > 1e-6) out.push({ a: { x: x1, y: y0 }, b: { x: x1, y: y1 }, value: y1 - y0, offset: 22, side: { x: 1, y: 0 } });
       }
-      if (["circle", "polygon_in", "polygon_out"].includes(t) && dist(a, b) > 1e-6) out.push({ a, b, value: dist(a, b), text: typed ? `R ${typed}` : null, prefix: "R ", offset: 0 });
+      if (["circle", "polygon_in", "polygon_out", "arc_centre"].includes(t) && dist(a, b) > 1e-6) out.push({ a, b, value: dist(a, b), text: typed ? `R ${typed}` : null, prefix: "R ", offset: 0 });
+    }
+    // an arc's radius while it is drawn: from its centre to the start, or to the point it passes through
+    if (S.pts.length === 2 && S.hover) {
+      if (t === "arc_centre" && dist(S.pts[0], S.pts[1]) > 1e-6) out.push({ a: S.pts[0], b: S.pts[1], value: dist(S.pts[0], S.pts[1]), prefix: "R ", offset: 0 });
+      if (t === "arc_3pt" && !S.opts.radiusOn) {
+        const c = circleThrough(S.pts[0], S.pts[1], S.hover);
+        if (c) out.push({ a: c.centre, b: S.hover, value: c.r, prefix: "R ", offset: 0 });
+      }
+    }
+    // a selected arc or circle: its radius, which can be typed
+    if (t === "select" && S.sel.size === 1 && !S.grip && !S.pts.length) {
+      const c = byUid([...S.sel][0]), k = c && c.curve;
+      if (k && (k.type === "arc" || k.type === "circle")) {
+        const r = k.type === "circle" ? k.radius : dist(k.centre, k.start);
+        const on = k.type === "circle" ? { x: k.centre.x + r * Math.SQRT1_2, y: k.centre.y + r * Math.SQRT1_2 } : (() => { const m = c.poly[Math.floor(c.poly.length / 2)]; return { x: m[0], y: m[1] }; })();
+        if (r > 1e-6) out.push({ a: k.centre, b: on, value: r, prefix: "R ", offset: 0, edit: "radius", uid: c.uid });
+      }
     }
     if (t === "select" && S.sel.size === 1 && !S.grip && !S.pts.length) {
       const c = byUid([...S.sel][0]);
@@ -764,10 +781,44 @@ function makeSketch() {
     inp.onblur = () => { if (tdInput === inp) closeTdInput(); };
     setTimeout(() => { inp.focus(); inp.select(); }, 0);
   }
+  // the circle through three points: its centre and radius, null when they are in line
+  function circleThrough(p, q, r) {
+    const d = 2 * (p.x * (q.y - r.y) + q.x * (r.y - p.y) + r.x * (p.y - q.y));
+    if (Math.abs(d) < 1e-9) return null;
+    const s2 = (o) => o.x * o.x + o.y * o.y;
+    const centre = { x: (s2(p) * (q.y - r.y) + s2(q) * (r.y - p.y) + s2(r) * (p.y - q.y)) / d, y: (s2(p) * (r.x - q.x) + s2(q) * (p.x - r.x) + s2(r) * (q.x - p.x)) / d };
+    return { centre, r: dist(centre, p) };
+  }
   async function applyTdEdit(d, v) {
     try {
       const c = byUid(d.uid);
       if (!c) return;
+      if (d.edit === "radius") {
+        // the centre stays; an arc keeps its angles, and the lines joined at its ends keep hold of them
+        const k = c.curve;
+        const scaled = (p) => ({ x: k.centre.x + (p.x - k.centre.x) * (v / d.value), y: k.centre.y + (p.y - k.centre.y) * (v / d.value) });
+        const nk = k.type === "circle" ? { ...k, radius: v } : { ...k, start: pt(scaled(k.start)), end: pt(scaled(k.end)) };
+        const lines = new Map();
+        if (k.type === "arc") {
+          for (const n of S.curves) {
+            if (n.uid === c.uid || !isLine(n)) continue;
+            for (const [e, old, now] of [["a", k.start, nk.start], ["a", k.end, nk.end], ["b", k.start, nk.start], ["b", k.end, nk.end]]) {
+              if (dist(n.curve[e], old) >= 0.5) continue;
+              const l = lines.get(n.uid) || { a: n.curve.a, b: n.curve.b };
+              l[e] = now;
+              if (dist(l.a, l.b) < 1) { cb.prompt("That would leave a joined line with no length.", true); return; }
+              lines.set(n.uid, l);
+            }
+          }
+        }
+        const made = await rebuildLines(lines);
+        made.set(c.uid, (await call("sketch_describe", { curves: [nk] })).curves[0]);
+        snapshot();
+        S.curves = S.curves.map((x) => (made.has(x.uid) ? { ...made.get(x.uid), uid: x.uid, attr: x.attr } : x));
+        cb.change(); cb.prompt(`Radius set to ${fmt(v)}.`);
+        host.render();
+        return;
+      }
       if (d.edit === "length") {
         const a = c.curve.a, b = c.curve.b, L = dist(a, b);
         const nb = pt({ x: a.x + ((b.x - a.x) / L) * v, y: a.y + ((b.y - a.y) / L) * v });

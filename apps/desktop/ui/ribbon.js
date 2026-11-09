@@ -136,7 +136,7 @@ const RIBBON = {
       { id: "site-surface", label: "Sub-Divide", big: true }, { id: "grading", label: "Graded Region", big: true },
       { id: "cutfill", label: "Cut / Fill", big: true } ] },
     { label: "Modify Site", items: [
-      { id: "topo-label", label: "Label Contours", big: true } ] },
+      { id: "topo-label", label: "Label Contours", big: true }, { id: "property-line", label: "Property Line", big: true } ] },
     { label: "Traffic", items: [
       { id: "parking", label: "Parking Bay", big: true }, { id: "linemark", label: "Line Marking", big: true },
       { id: "kerb", label: "Kerb", big: true }, { id: "kerb-ramp", label: "Kerb Ramp", big: true } ] },

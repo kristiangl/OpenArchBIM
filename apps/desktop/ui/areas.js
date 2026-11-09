@@ -43,14 +43,14 @@ const Areas = (() => {
     const mode = { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => Plan.setTool("select") }] };
     if (Plan.tool === "area") return { auto: true, key: `area:${tagOnPlacement}`, title: "Place Area", groups: [mode, { label: "Area", items: [
       { label: "Tag on Placement", icon: "tagRoom", on: tagOnPlacement, onclick: () => { tagOnPlacement = !tagOnPlacement; updateRibbonContext(); } },
-      { label: "Place Areas Automatically", ico: "Au", onclick: async () => { const r = await run("place_all_areas", { view_id: app.view.viewId, tag: tagOnPlacement }); if (r) { await refresh(); setPrompt(r.ids.length ? `Placed ${r.ids.length} area${r.ids.length === 1 ? "" : "s"}.` : "Every enclosed area already has an area."); } } },
+      { label: "Place Areas Automatically", icon: "areasAuto", onclick: async () => { const r = await run("place_all_areas", { view_id: app.view.viewId, tag: tagOnPlacement }); if (r) { await refresh(); setPrompt(r.ids.length ? `Placed ${r.ids.length} area${r.ids.length === 1 ? "" : "s"}.` : "Every enclosed area already has an area."); } } },
     ] }] };
     if (Plan.tool === "areatag") return { auto: true, key: "areatag", title: "Tag Area", groups: [mode] };
     return { auto: true, key: `areaboundary:${applyRules}`, title: "Place Area Boundary", groups: [mode, { label: "Draw", items: [
       { label: "Pick Walls", icon: "wall", on: Plan.tool === "areaboundary", onclick: () => Plan.setTool("areaboundary") },
       { label: "Line", icon: "line", onclick: () => drawLines() },
     ] }, { label: "Options", items: [
-      { label: "Apply Area Rules", ico: "Ru", on: applyRules, onclick: () => { applyRules = !applyRules; updateRibbonContext(); } },
+      { label: "Apply Area Rules", icon: "areaRules", on: applyRules, onclick: () => { applyRules = !applyRules; updateRibbonContext(); } },
     ] }] };
   }
   async function click(tool, p, wallId) {

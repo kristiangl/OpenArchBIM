@@ -59,6 +59,10 @@ const COMMANDS = {
   "topo-sketch": () => Topo.startSketch(null),
   "topo-import": () => Topo.importFile(),
   "topo-label": () => Topo.startLabels(),
+  "site-surface": () => Topo.subDivide(),
+  grading: () => Topo.grade(),
+  cutfill: () => Topo.cutFillReport(),
+  "property-line": () => PropLines.start(),
   stair: () => Stairs.start(),
   ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),
@@ -381,6 +385,8 @@ function currentContext() {
   if (cs) return cs;
   const ts = Topo.selectionContext();
   if (ts) return ts;
+  const pc = PropLines.selectionContext();
+  if (pc) return pc;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
   const tv = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
   if (tv && tv.tool === "tag") return Tags.context();
@@ -520,8 +526,11 @@ function groupNode(g, isContext, isModify) {
     const extra = [it.iconOnly ? "icon-only" : "", it.cls || ""].filter(Boolean).join(" ");
     if (isContext) {
       // a tool's buttons need no text: the icon and its tooltip carry the name. Big ones (Finish, Cancel, a mode) keep
-      // their large icon; the rest stack three to a column.
-      const node = sketchButton(it, !it.big, it.onclick, it.on, extra + " icon-only");
+      // their large icon; the rest stack three to a column. A selected element's panels (`labelled`) name their
+      // buttons, as the Modify tab of a selection does; `menu` makes a drop-down of its own buttons.
+      const cls = extra + (g.labelled || it.labelled ? "" : " icon-only");
+      const node = it.menu ? ctxMenuButton(it, !it.big, cls) : sketchButton(it, !it.big, it.onclick, it.on, cls);
+      if (it.disabled) node.disabled = true;
       if (it.big) { stack = null; items.append(node); continue; }
       if (!stack || stack.children.length >= 3 || it.brk) { stack = el("div", { className: "stack" }); items.append(stack); }
       stack.append(node);
@@ -2962,13 +2971,43 @@ async function startRoofSketch(existingId) {
 function sketchButton(item, small, onclick, on, extra = "") {
   const b = document.createElement("button");
   b.className = "cmd" + (small ? " small" : "") + (on ? " on" : "") + (extra ? " " + extra : "");
-  b.title = item.label;
+  b.title = item.title || item.label;
   const ico = document.createElement("span");
   ico.className = "ico"; setIcon(ico, item);
   const lab = document.createElement("span");
   lab.textContent = item.label;
   b.append(ico, lab);
   b.onclick = onclick;
+  return b;
+}
+
+// A drop-down among a tool's or a selection's buttons: the first of its items, and the list under the caret
+function ctxMenuButton(item, small, extra = "") {
+  const first = item.menu.find((m) => !m.disabled) || item.menu[0];
+  const b = sketchButton({ ...item, icon: item.icon || first.icon, ico: item.ico || first.ico }, small, null, item.on, extra);
+  b.querySelector("span:last-child").textContent = item.label + " \u25BE";
+  if (extra.includes("icon-only")) { const c = document.createElement("span"); c.className = "menu-caret"; c.textContent = "\u25BE"; b.append(c); }
+  b.onclick = (e) => {
+    e.stopPropagation();
+    const open = document.querySelector(".cmd-menu");
+    if (open) { const same = open.dataset.for === item.label; open.remove(); if (same) return; }
+    const m = el("div", { className: "cmd-menu" });
+    m.dataset.for = item.label;
+    for (const sub of item.menu) {
+      const it = el("button", { disabled: !!sub.disabled, title: sub.title || "" });
+      const ico = el("span", { className: "ico" });
+      setIcon(ico, sub);
+      it.append(ico, el("span", { textContent: sub.label }));
+      it.onclick = (ev) => { ev.stopPropagation(); m.remove(); sub.onclick?.(); };
+      m.append(it);
+    }
+    const r = b.getBoundingClientRect();
+    m.style.left = `${r.left}px`;
+    m.style.top = `${r.bottom}px`;
+    document.body.append(m);
+    const away = () => { m.remove(); document.removeEventListener("click", away, true); };
+    setTimeout(() => document.addEventListener("click", away, true), 0);
+  };
   return b;
 }
 
@@ -3129,6 +3168,7 @@ Sketch.callbacks.finish = async (o) => {
   if (o.kind === "roomseparation") return Spatial.finish(o);
   if (o.kind === "ceiling") return Ceilings.finish(o);
   if (o.kind === "toposolid") return Topo.finish(o);
+  if (o.kind === "propline") return PropLines.finish(o);
   if (o.kind === "railing") return Railings.finish(o);
   if (o.kind === "stairrun" || o.kind === "stairlanding") return Stairs.sketchFinished(o);
   if (o.kind === "areaboundary") return Areas.finish(o);
@@ -3348,7 +3388,8 @@ function noteEditor(at, sizeMm, value, onDone, o = {}) {
   ta.textContent = value || "";
   const wf = st.width_factor || 1, width = o.note?.text.width_mm || 0;
   Object.assign(ta.style, {
-    position: "fixed", zIndex: "60", margin: "0", padding: "0", border: "0", outline: "none",
+    // the text box shows while editing (dashed), so its width and the text's extent are visible
+    position: "fixed", zIndex: "60", margin: "0", padding: "0", border: "0", outline: "1px dashed #1d6fb8", outlineOffset: "3px",
     fontFamily: st.font || "Arial", fontSize: st.size_mm * paperPx + "px",
     fontWeight: st.bold ? "600" : "400", fontStyle: st.italic ? "italic" : "normal",
     textDecoration: st.underline ? "underline" : "none", lineHeight: "1.2",

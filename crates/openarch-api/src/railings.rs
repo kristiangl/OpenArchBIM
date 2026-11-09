@@ -54,7 +54,7 @@ impl Session {
         let mut rules: Vec<Value> = warnings.iter().map(|m| json!({ "label": "Warning", "value": m, "kind": "ro", "warning": true })).collect();
         if rules.is_empty() { rules.push(ro("Maximum Opening", "Met")); }
         let mut constraints = vec![
-            ro("Level", d.level(r.level).map_or(String::new(), |l| l.name.clone())),
+            crate::props::level_select(d, "Level", "level", r.level, !hosted && !r.pinned),
             ro("Host", if hosted { if r.host.is_some_and(|h| d.ramp(h.stair).is_some()) { "Ramp" } else { "Stair" } } else if r.floor_host.is_some() { "Floor" } else { "Level" }),
         ];
         if let Some(h) = r.host {

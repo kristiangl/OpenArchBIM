@@ -302,6 +302,8 @@ async function renderProperties() {
   } else if (tool === "sketch" && (Sketch.kind === "detail" || Sketch.kind === "region")) {
     title = Sketch.kind === "detail" ? "Detail Lines" : app.regionMasking ? "Masking Region" : "Filled Region";
     groups.push({ name: "Graphics", rows: [{ label: "Line Style", value: Sketch.kind === "detail" ? app.lineStyle : app.edgeStyle, kind: "ro" }] });
+  } else if (tool === "sketch" && Sketch.kind === "propline") {
+    title = Sketch.editingId ? "Edit Property Line" : "Create Property Line";
   } else if (tool === "sketch" && Sketch.kind === "roof" && !Sketch.editingId) {
     types = app.info.roof_types; current = app.roofTypeId;
     onType = (id) => { app.roofTypeId = id; renderProperties(); };
@@ -493,7 +495,40 @@ function openModal(title, build, { wide = false } = {}) {
   back.addEventListener("keydown", (e) => { if (e.key === "Escape") { e.stopPropagation(); if (back.onEscape) back.onEscape(); else close(); } });
   back.tabIndex = -1;
   back.focus();
+  // typing letters jumps to the first row of the dialog's list that starts with them ("pl" to Planting), when the
+  // keys aren't going into a field
+  let typed = "", typedAt = 0;
+  back.addEventListener("keydown", (e) => {
+    const t = e.target;
+    if (e.ctrlKey || e.metaKey || e.altKey || e.key.length !== 1 || !/[\p{L}\p{N}]/u.test(e.key)) return;
+    if (t.isContentEditable || t.tagName === "TEXTAREA" || t.tagName === "SELECT" || (t.tagName === "INPUT" && !["checkbox", "radio", "button"].includes(t.type))) return;
+    const now = Date.now();
+    typed = (now - typedAt > 900 ? "" : typed) + e.key.toLowerCase();
+    typedAt = now;
+    const rows = [...content.querySelectorAll("tr")].filter((r) => r.offsetParent && r.querySelector("td"));
+    const label = (r) => ([...r.querySelectorAll("td")].map((c) => c.innerText.trim()).find(Boolean) || "").replace(/^[^\p{L}\p{N}]+/u, "").toLowerCase();
+    const hit = rows.find((r) => label(r).startsWith(typed));
+    if (!hit) return;
+    e.preventDefault();
+    content.querySelectorAll("tr.jump-hit").forEach((r) => r.classList.remove("jump-hit"));
+    hit.classList.add("jump-hit");
+    hit.scrollIntoView({ block: "center" });
+  });
   build(content, foot, close);
+  // a dialog stays where it opened and never shrinks while open: switching its tabs or filtering its list leaves the
+  // tabs, the list and the buttons where they were. It grows down and right, back up if it would leave the screen.
+  requestAnimationFrame(() => {
+    if (!back.isConnected) return;
+    const r = box.getBoundingClientRect();
+    Object.assign(box.style, { position: "fixed", left: `${r.left}px`, top: `${r.top}px`, margin: "0" });
+    let minH = 0;
+    new ResizeObserver(() => {
+      const q = box.getBoundingClientRect();
+      if (q.height > minH + 0.5) { minH = q.height; box.style.minHeight = `${minH}px`; }
+      const over = q.bottom - (innerHeight - 8);
+      if (over > 0) box.style.top = `${Math.max(8, parseFloat(box.style.top) - over)}px`;
+    }).observe(box);
+  });
   return close;
 }
 

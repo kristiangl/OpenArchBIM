@@ -461,6 +461,8 @@ const AnnModel = (() => {
         r.append(button("Edit Type...", () => typeDialog(it.region_type)));
       }
       r.append(field("Visible", checkIn(it.visible !== false, (v) => { it.visible = v; })));
+      // a mark's region can move between its body and its pointer after it is drawn
+      if (hasPointer()) r.append(field("Draw on", selIn(it.pointer ? "pointer" : "body", [["body", "Body"], ["pointer", "Pointer"]], (v) => { it.pointer = v === "pointer"; })));
       const area = areaOf(sel.i);
       r.append(field("Area (mm²)", roIn(area == null ? "" : (Math.round(area * 100) / 100).toString())));
       r.append(button("Edit Boundary", () => startRegion(it.masking, sel.i)));

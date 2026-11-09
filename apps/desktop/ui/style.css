@@ -123,6 +123,10 @@ button, select { font: inherit; color: inherit; }
 table.props { width: 100%; border-collapse: collapse; }
 table.props td { padding: 2px 8px; border-bottom: 1px solid var(--line); }
 table.props td:first-child { color: var(--muted); width: 50%; }
+/* the revisions list: the current-revision dot is a narrow column, the rest share the width */
+table.props.rev-table td:first-child { width: 24px; text-align: center; }
+table.props.rev-table td:last-child > div { display: flex; gap: 2px; white-space: nowrap; }
+table.props.rev-table th { text-align: left; font-weight: 600; padding: 2px 8px; white-space: nowrap; }
 table.props tr.pgroup td { background: var(--panel-2); font-weight: 600; color: var(--text); }
 .panel-foot { display: flex; justify-content: space-between; align-items: center; padding: 4px 8px; border-top: 1px solid var(--line); }
 .panel-foot a { color: var(--accent); }
@@ -269,6 +273,7 @@ table.props select { width: 100%; padding: 1px 2px; background: var(--panel); bo
 .modal-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
 .modal-foot button, .popover button { padding: 3px 16px; background: var(--panel-2); border: 1px solid var(--line); border-radius: 3px; cursor: pointer; }
 .modal-foot button.primary, .popover button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+tr.jump-hit td { background: var(--accent-soft); }
 .modal-msg { min-height: 16px; margin-top: 6px; color: #a33; }
 .modal-note { color: var(--muted); font-size: 11px; margin-top: 6px; }
 .modal-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--line); margin-bottom: 8px; }
@@ -480,6 +485,9 @@ table.vg select { padding: 1px 4px; background: var(--panel); border: 1px solid 
 .cmd-menu button { text-align: left; padding: 5px 10px; border: 0; background: none; cursor: pointer; border-radius: 2px; }
 .cmd-menu button:hover:not(:disabled) { background: var(--accent-soft); }
 .cmd-menu button:disabled { opacity: .5; cursor: default; }
+.cmd-menu button { display: flex; align-items: center; gap: 7px; }
+.cmd-menu button .ico { width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; font-size: 8px; flex: none; }
+.cmd-menu button .ico svg { width: 15px; height: 15px; }
 
 .fe-lk { display: flex; gap: 12px; min-width: 620px; min-height: 220px; }
 .fe-lk-list { display: flex; flex-direction: column; gap: 4px; min-width: 140px; max-width: 200px; }

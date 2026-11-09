@@ -118,6 +118,21 @@ impl Session {
             // Label Contours: { view_id, a, b }
             "add_contour_label" => (|| Ok(json!({ "id": self.doc.add_contour_label(id_of(p, "view_id")?, point_of(&p["a"])?, point_of(&p["b"])?)? })))(),
             "patch_contour_label" => (|| { self.doc.patch_contour_label(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            // Graded Region: { id, perimeter_only? }; Remove Graded Region: { id }
+            "grade_toposolid" => (|| { self.doc.grade_toposolid(id_of(p, "id")?, p["perimeter_only"].as_bool().unwrap_or(false))?; Ok(json!({})) })(),
+            "remove_graded_region" => (|| { self.doc.remove_graded_region(id_of(p, "id")?)?; Ok(json!({})) })(),
+            // Reset Shape: { id }
+            "reset_toposolid_shape" => (|| { self.doc.reset_toposolid_shape(id_of(p, "id")?)?; Ok(json!({})) })(),
+            // Cut / Fill: each graded region's cut and fill (m³), and its name
+            "cut_fill_report" => (|| {
+                let d = &self.doc;
+                let rows: Vec<Value> = d.toposolids().into_iter().filter_map(|(id, t)| {
+                    let (cut, fill) = d.toposolid_cut_fill(t)?;
+                    let ty = d.toposolid_type(t.toposolid_type).map_or("Toposolid".to_string(), |ty| ty.name.clone());
+                    Some(json!({ "id": id, "name": if t.mark.is_empty() { ty } else { format!("{ty} ({})", t.mark) }, "cut": cut / 1e9, "fill": fill / 1e9 }))
+                }).collect();
+                Ok(json!({ "rows": rows }))
+            })(),
             "patch_toposolid" => (|| { self.doc.patch_toposolid(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             _ => return None,
         })
@@ -174,7 +189,7 @@ impl Session {
                 ], vec![ro("Excavation Volume", format!("{dug:.3} m\u{b3}"), Some(dug))])
             }
             None => (vec![
-                ro("Level", d.level(t.level).map_or(String::new(), |l| l.name.clone()), None),
+                crate::props::level_select(d, "Level", "level", t.level, free),
                 num("Height Offset From Level", "offset_mm", t.offset_mm, free),
                 boolean("Pinned", "pinned", t.pinned),
             ], vec![ro("Points", format!("{}", t.points.len()), Some(t.points.len() as f64))]),
@@ -189,15 +204,27 @@ impl Session {
         ];
         rows.append(&mut dims);
         let noun = if host.is_some() { "Toposolid Sub-division" } else { "Toposolid" };
+        // a graded region: cut, fill and the difference (fill less cut), from the ground as it was
+        let graded: Vec<Value> = d.toposolid_cut_fill(t).map(|(cut, fill)| {
+            let (cut, fill) = (cut / 1e9, fill / 1e9);
+            vec![
+                ro("Net Cut/Fill", format!("{:.3} m\u{b3}", fill - cut), Some(fill - cut)),
+                ro("Cut", format!("{cut:.3} m\u{b3}"), Some(cut)),
+                ro("Fill", format!("{fill:.3} m\u{b3}"), Some(fill)),
+            ]
+        }).unwrap_or_default();
+        let mut groups = vec![
+            json!({ "name": "Constraints", "rows": constraints }),
+            json!({ "name": "Dimensions", "rows": rows }),
+            json!({ "name": "Identity Data", "rows": [text("Comments", "comments", &t.comments), text("Mark", "mark", &t.mark)] }),
+        ];
+        if !graded.is_empty() { groups.push(json!({ "name": "Other", "rows": graded })); }
         json!({
             "id": id, "kind": "Toposolid", "category": "Topography", "type_id": t.toposolid_type,
             "title": format!("{noun}: {}", ty.map_or("?", |t| t.name.as_str())),
             "target": { "method": "patch_toposolid", "id": id },
-            "groups": [
-                { "name": "Constraints", "rows": constraints },
-                { "name": "Dimensions", "rows": rows },
-                { "name": "Identity Data", "rows": [text("Comments", "comments", &t.comments), text("Mark", "mark", &t.mark)] },
-            ],
+            "graded": t.existing.is_some(),
+            "groups": groups,
         })
     }
 }
@@ -216,6 +243,10 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         let contours: Vec<Value> = d.toposolid_contours(t).into_iter().map(|(primary, segs)| {
             json!({ "primary": primary, "segs": segs.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>() })
         }).collect();
+        // a graded region's ground as it was
+        let existing: Vec<Value> = d.toposolid_existing_contours(t).into_iter().map(|(primary, segs)| {
+            json!({ "primary": primary, "segs": segs.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>() })
+        }).collect();
         let base = d.toposolid_base_z(t);
         // points as plan positions and their heights above the unmodified top (what Modify Sub Elements edits)
         let points: Vec<[f64; 3]> = t.points.iter().map(|q| [q.x, q.y, q.z]).collect();
@@ -230,7 +261,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
                 "style": style,
             }))
         });
-        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "excavated_by": d.toposolid_excavators(t), "base": base, "cut": cut, "host": t.host })
+        json!({ "id": id, "rings": rings, "pinned": t.pinned, "contours": contours, "points": points, "lines": t.split_lines, "excavated_by": d.toposolid_excavators(t), "base": base, "cut": cut, "host": t.host, "existing": existing, "graded": t.existing.is_some() })
     }).collect();
     let labels: Vec<Value> = d.contour_labels_in(view).into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).map(|(id, l)| json!({
         "id": id, "a": [l.a.x, l.a.y], "b": [l.b.x, l.b.y], "pinned": l.pinned, "size": l.size_mm, "labels": d.contour_label_texts(l),

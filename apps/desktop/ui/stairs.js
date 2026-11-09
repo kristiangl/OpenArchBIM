@@ -208,8 +208,8 @@ const Stairs = (() => {
   function roleGroup() {
     const set = (r) => { sketchRole = r; if (Sketch.selectedAttr && Sketch.selectedAttr()) Sketch.patchSelected({ role: r }); updateRibbonContext(); };
     return { label: "Draw", items: [
-      { label: "Boundary", ico: "Bd", on: sketchRole === "boundary", onclick: () => set("boundary") },
-      { label: "Riser", ico: "Rs", on: sketchRole === "riser", onclick: () => set("riser") },
+      { label: "Boundary", icon: "stairBoundary", on: sketchRole === "boundary", onclick: () => set("boundary") },
+      { label: "Riser", icon: "stairRiser", on: sketchRole === "riser", onclick: () => set("riser") },
     ] };
   }
 
@@ -220,16 +220,16 @@ const Stairs = (() => {
         { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: cancel },
       ] },
       { label: "Run", items: [
-        ...[["straight", "Straight", "stair"], ["spiral_full", "Full-Step Spiral", null], ["spiral_ends", "Centre-Ends Spiral", null], ["winder_l", "L-Shape Winder", null], ["winder_u", "U-Shape Winder", null]].map(([v, l, icon]) => ({
+        ...[["straight", "Straight", "stair"], ["spiral_full", "Full-Step Spiral", "spiralFull"], ["spiral_ends", "Centre-Ends Spiral", "spiralEnds"], ["winder_l", "L-Shape Winder", "winderL"], ["winder_u", "U-Shape Winder", "winderU"]].map(([v, l, icon]) => ({
           label: l, ...(icon ? { icon } : { ico: l.split(" ").map((w) => w[0]).join("").slice(0, 2) }), big: v === "straight", on: shape === v,
           onclick: () => { shape = v; clicks = []; pendingEnd = null; updateRibbonContext(); ask().then(() => say()); },
         })),
-        { label: clockwise ? "Clockwise" : "Anticlockwise", ico: clockwise ? "↻" : "↺", disabled: !shape.startsWith("spiral"), onclick: () => { clockwise = !clockwise; updateRibbonContext(); ask(); } },
-        { label: winderStyle === "balanced" ? "Balanced Winders" : "Single Point Winders", ico: winderStyle === "balanced" ? "Bw" : "Sp", disabled: !shape.startsWith("winder"), onclick: () => { winderStyle = winderStyle === "balanced" ? "single_point" : "balanced"; updateRibbonContext(); ask(); } },
-        { label: "Sketch Run", ico: "Sk", onclick: () => sketch("stairrun") },
-        { label: "Sketch Landing", ico: "Ld", onclick: () => sketch("stairlanding") },
+        { label: clockwise ? "Clockwise" : "Anticlockwise", icon: clockwise ? "clockwise" : "anticlockwise", disabled: !shape.startsWith("spiral"), onclick: () => { clockwise = !clockwise; updateRibbonContext(); ask(); } },
+        { label: winderStyle === "balanced" ? "Balanced Winders" : "Single Point Winders", icon: winderStyle === "balanced" ? "windersBalanced" : "windersSingle", disabled: !shape.startsWith("winder"), onclick: () => { winderStyle = winderStyle === "balanced" ? "single_point" : "balanced"; updateRibbonContext(); ask(); } },
+        { label: "Sketch Run", icon: "sketchRun", onclick: () => sketch("stairrun") },
+        { label: "Sketch Landing", icon: "sketchLanding", onclick: () => sketch("stairlanding") },
         { label: "Edit Sketch", ico: "Es", disabled: !draft?.runs.some((r) => r.shape && r.shape.sketched), on: picking, onclick: () => { picking = !picking; clicks = []; pendingEnd = null; updateRibbonContext(); setPrompt(picking ? "Click the sketched run to change its lines." : ""); if (!picking) say(); } },
-        { label: "Delete Last Run", ico: "⌫", disabled: !draft?.runs.length, onclick: deleteLastRun },
+        { label: "Delete Last Run", icon: "deleteLast", disabled: !draft?.runs.length, onclick: deleteLastRun },
       ] },
     ];
     return { auto: true, key: `stair:${draft?.runs.length || 0}:${shape}:${clockwise}:${winderStyle}:${picking}`, title: draft?.id ? (draft.storey != null ? "Edit Stairs: Storey" : "Edit Stairs") : "Create Stair", groups };

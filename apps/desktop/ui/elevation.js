@@ -529,6 +529,8 @@ const Elev = (() => {
       hatchLines(it, st.fill, st.fill.color);
       ctx.restore();
     }
+    // a selected element shows through a light wash of the selection colour
+    if (selected && !printing) { cutPath(it); ctx.globalAlpha = 0.18; ctx.fillStyle = col; ctx.fill("evenodd"); }
     ctx.restore();
   }
 
@@ -943,6 +945,9 @@ const Elev = (() => {
     }
     if (!data) return;
     const text = css("--text"), accent = css("--accent");
+    // with Crop View on, the model is drawn only inside the crop region (annotations are not cropped)
+    const cropOn = !!(data.frame && (!data.crop || data.crop.enabled));
+    if (cropOn) { const { a, b } = cropBox(); ctx.save(); ctx.beginPath(); ctx.rect(a.x, a.y, b.x - a.x, b.y - a.y); ctx.clip(); }
     // ground
     const ground = toScreen(0, datum());
     const tag = (t) => { if (ctx.oaTag) ctx.oaTag(t); };
@@ -965,6 +970,8 @@ const Elev = (() => {
         for (const h of it.holes || []) { h.forEach(([u, z], i) => { const s = toScreen(u, z); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
         if (style === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill("evenodd"); }
         else if (style !== "wireframe") { ctx.fillStyle = f < 1 ? mix(fill, viewBg, f) : fill; ctx.fill("evenodd"); }
+        // a selected element shows through a light wash of the selection colour
+        if (selected && !printing) { ctx.save(); ctx.globalAlpha = 0.18; ctx.fillStyle = accent; ctx.fill("evenodd"); ctx.restore(); }
         ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : projW(it); if (it.stroke !== false || selected) ctx.stroke();
       }
       for (const [p, q] of it.lines) {
@@ -987,6 +994,7 @@ const Elev = (() => {
     if (groupEdit) drawGroupFade(text);
     drawCurtainGrids(accent, text, viewBg);
     drawJoinToggles(accent, viewBg);
+    if (cropOn) ctx.restore();
     const hov = new Set(tool === "select" && hoverIds ? [...hovD] : []);
     Det.drawItems(selD, hov, accent, tool === "select", sel);
     drawGroupOrigins(accent);
@@ -1133,6 +1141,27 @@ const Elev = (() => {
   }
 
   // ---- events ------------------------------------------------------------------------------
+  // window and crossing selection: elements whose extents lie inside the box (window), or reach into it (crossing);
+  // Ctrl adds them, Shift takes them out
+  function bandSelect(r, window, ev) {
+    const ids = new Set();
+    const test = (pts, id) => {
+      if (id == null || !pts.length) return;
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const [x, y] of pts) { x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y); }
+      const ok = window ? x0 >= r.x0 && x1 <= r.x1 && y0 >= r.y0 && y1 <= r.y1 : x1 >= r.x0 && x0 <= r.x1 && y1 >= r.y0 && y0 <= r.y1;
+      if (ok) ids.add(id);
+    };
+    for (const it of data.items || []) test([...it.polys.flat(), ...it.lines.flat()], it.id);
+    for (const l of data.levels || []) test([[l.u0, l.z], [l.u1, l.z]], l.id);
+    for (const g of data.grids || []) test([[g.u, g.z0], [g.u, g.z1]], g.id);
+    for (const d of [...Det.elements(), ...Revisions.elements(data, cam.s), ...Tags.elements(data)]) test((d.rings || [d.ring]).flat(), d.id);
+    if (ev.shiftKey) ids.forEach((i) => sel.delete(i));
+    else if (ev.ctrlKey) ids.forEach((i) => sel.add(i));
+    else sel = ids;
+    cropSel = false;
+    cb.select([...sel]);
+  }
   function pick(ev) {
     const hadSelection = sel.size > 0 || cropSel;
     // the nearest thing under the cursor, or the one Tab stepped to
@@ -1214,6 +1243,8 @@ const Elev = (() => {
       return;
     }
     if (moved && !band && tool === "sketch" && Sketch.canBand()) band = { x0: down.x, y0: down.y, x1: e.offsetX, y1: e.offsetY };
+    // dragging on empty space with Select: a window (left to right) or crossing (right to left) selection
+    if (moved && !band && tool === "select" && !down.drag && !groupEdit?.mode) band = { x0: down.x, y0: down.y, x1: e.offsetX, y1: e.offsetY, select: true };
     if (band) { band.x1 = e.offsetX; band.y1 = e.offsetY; render(); return; }
     if (!lastMove || Math.hypot(e.offsetX - lastMove.x, e.offsetY - lastMove.y) > 3) snapCycle = 0;
     if (tool === "sketch" || tool === "text" || tool === "noteleader" || tool === "groupplace") {
@@ -1283,6 +1314,13 @@ const Elev = (() => {
     if (detDrag) {
       const d = detDrag; detDrag = null; down = null; hover = null;
       if (Math.hypot(d.d.x, d.d.y) > 0.5) cb.moveBy(d.ids, Math.round(d.d.x * 1000) / 1000, Math.round(d.d.y * 1000) / 1000, !!e.ctrlKey);
+      render();
+      return;
+    }
+    if (band && band.select) {
+      const b = band; band = null; down = null;
+      const a = W(b.x0, b.y0), c = W(b.x1, b.y1);
+      bandSelect({ x0: Math.min(a.x, c.x), y0: Math.min(a.y, c.y), x1: Math.max(a.x, c.x), y1: Math.max(a.y, c.y) }, b.x1 >= b.x0, e);
       render();
       return;
     }

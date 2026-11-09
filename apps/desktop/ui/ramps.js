@@ -92,7 +92,7 @@ const Ramps = (() => {
   function context() {
     return { auto: true, key: `ramp:${draft?.runs.length || 0}`, title: draft?.id ? "Edit Ramp" : "Create Ramp", groups: [
       { label: "Mode", items: [{ label: "Finish Edit Mode", ico: "✓", big: true, onclick: finish }, { label: "Cancel Edit Mode", ico: "✕", big: true, onclick: cancel }] },
-      { label: "Components", items: [{ label: "Run", icon: "ramp", big: true, on: true, onclick: () => {} }, { label: "Delete Last Run", ico: "⌫", disabled: !draft?.runs.length, onclick: deleteLastRun }] },
+      { label: "Components", items: [{ label: "Run", icon: "ramp", big: true, on: true, onclick: () => {} }, { label: "Delete Last Run", icon: "deleteLast", disabled: !draft?.runs.length, onclick: deleteLastRun }] },
     ] };
   }
   function toolProps() {

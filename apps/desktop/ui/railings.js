@@ -110,7 +110,7 @@ const Railings = (() => {
     const flip = { label: "Flip", ico: "⇄", onclick: async () => { if (await run("patch_railing", { id: r.id, patch: { flipped: !r.flipped } })) { await refresh(); renderProperties(); } } };
     const items = r.hosted ? [flip] : [
       { label: "Edit Path", icon: "editBoundary", big: true, onclick: () => startSketch(r.id) },
-      { label: "Pick New Host", ico: "Ho", big: true, onclick: () => pickHost(r.id) },
+      { label: "Pick New Host", icon: "pickHost", big: true, onclick: () => pickHost(r.id) },
       flip,
     ];
     return { auto: true, key: `railingsel:${r.id}:${r.flipped}`, title: "Railings", groups: [{ label: "Mode", items }] };

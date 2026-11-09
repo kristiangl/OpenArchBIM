@@ -129,6 +129,7 @@ const ICONS = {
   topoFile: '<path d="M5 3h9l5 5v13H5z"/><path d="M14 3v5h5"/><path class="a2" d="M7.5 16.5c2-3 4 0 6-2s2.5-3 3.5-3M7.5 12.5c2-2 4 0 6-2"/>',
   surface: '<path d="M2 18l5-7 4 4 4-6 7 9z"/><path class="ff" d="M11 15l4-6 3.2 4.1L16 16.5z"/>',
   grading: '<path d="M3 20h18"/><path d="M3 15c5 0 8-6 18-6"/><path class="a2" d="M8 12.5V18M14 10.2V18M8 18l-1.6-1.6M8 18l1.6-1.6M14 18l-1.6-1.6M14 18l1.6-1.6"/>',
+  propLine: '<path d="M4 19 7 5l12 3-2 11z" stroke-dasharray="5 2 1 2"/>',
   cutFill: '<path d="M3 13h18"/><path d="M3 8c4 0 6 9 9 9s5-9 9-9"/><path class="ff" d="M3 8c1.8 0 3.2 2 4.4 5H3z"/><path class="ff" d="M21 8c-1.8 0-3.2 2-4.4 5H21z"/>',
   parking: '<path d="M3 4v16M10.5 4v16M18 4v16"/><path class="a2" d="M3 4h18"/><rect class="af" x="5" y="9" width="3.5" height="7" rx="1"/>',
   lineMark: '<path d="M5 3v18M19 3v18"/><path class="a2" d="M12 3v3.5M12 10.25v3.5M12 17.5V21"/>',
@@ -264,6 +265,54 @@ const ICONS = {
   furniture: '<path d="M3 9h18"/><path d="M5 9v11M19 9v11"/><path class="a2" d="M3 9l2-4h14l2 4"/>',
   lighting: '<path d="M9 18h6M10 21h4"/><path d="M12 3a6 6 0 0 0-3.5 10.9V16h7v-2.1A6 6 0 0 0 12 3z"/><path class="a2" d="M12 8v4"/>',
   plumbing: '<path d="M4 9h9a4 4 0 0 1 4 4v1"/><path d="M4 6v6M13 9V5h-3"/><path class="a2" d="M17 17v2M15.5 21h3"/>',
+  // ---- toposolids: shape editing and shaping ----
+  // a point on the ground lifted
+  modifySub: '<path d="M2 19c3-4 6-3 9-6.5s6-3 11-4"/><circle class="f" cx="5.5" cy="16.4" r="1.4"/><circle class="f" cx="18" cy="9.3" r="1.4"/><circle class="af" cx="11.3" cy="12.3" r="2"/><path class="a2" d="M11.3 9V3M9.3 5l2-2 2 2"/>',
+  // a surface folded along a line between two points
+  splitLine: '<path d="M2 15l7-8 13 4-7 9z"/><path class="a2" d="M9 7l6 13"/><circle class="f" cx="9" cy="7" r="1.5"/><circle class="f" cx="15" cy="20" r="1.5"/>',
+  // a ragged line made smooth
+  simplify: '<path d="M2 17l1.6-3 1.6 2 1.6-4 1.6 3 1.6-2.5" stroke-width="1.25"/><path d="M10 12.5h1.5" stroke-dasharray="1 1.5"/><path class="a2" d="M13 15c3-5 5.5-6 9-6.5"/>',
+  // back to flat: the shaped ground dashed, the turn-back arrow
+  resetShape: '<path d="M3 20h18"/><path d="M3 16c4-5 8 1 12-2.5s5-2.5 6-3" stroke-dasharray="2.5 2"/><path class="a2" d="M8 9.5a4.5 4.5 0 1 0 1.4-5.6M9.4 3.9L6.8 3.6M9.4 3.9l-.4 2.6"/>',
+  // a region drawn on the ground
+  subdivide: '<path d="M2 14l10-6 10 6-10 6z"/><path class="ff" d="M8 14l4-2.4 4 2.4-4 2.4z"/><path class="a" d="M8 14l4-2.4 4 2.4-4 2.4z"/>',
+  // a slab sunk into the ground, the hole cut round it
+  excavate: '<path d="M2 9h5v8h10V9h5v12H2z"/><rect class="af" x="7.5" y="11.5" width="9" height="3"/><path class="a" d="M7.5 11.5h9v3h-9z"/>',
+  removeExcavation: '<path d="M2 9h5v8h10V9h5v12H2z"/><path class="a2" d="M9.5 3.5l5 5M14.5 3.5l-5 5"/>',
+  // a piece of ground cut in two
+  splitTopo: '<path d="M2 13l10-6 10 6-10 6z"/><path class="a2" d="M14.5 4.5l-5 17"/>',
+  // two pieces of ground made one: the overlap filled
+  mergeTopo: '<path d="M2 12l6.5-4.2L15 12l-6.5 4.2z"/><path d="M9 12l6.5-4.2L22 12l-6.5 4.2z"/><path class="ff" d="M9 12l3-1.95L15 12l-3 1.95z"/><path class="a" d="M9 12l3-1.95L15 12l-3 1.95z"/>',
+  removeGraded: '<path d="M3 20h18"/><path d="M3 16c5 0 8-6 18-6"/><path class="a2" d="M4 3.5l5 5M9 3.5l-5 5"/>',
+  // Add Point: a height from a level, or above the ground
+  pointAbsolute: '<path d="M3 20h18"/><path d="M3 7h8" stroke-dasharray="2.5 2"/><circle class="af" cx="15" cy="7" r="2.2"/><path class="a2" d="M15 9.5V20M13.4 18.4l1.6 1.6 1.6-1.6"/>',
+  pointSurface: '<path d="M2 19c4-5 8 1 12-3s5-3 8-4"/><circle class="af" cx="12" cy="6" r="2.2"/><path class="a2" d="M12 8.5v7.5M10.4 14.4L12 16l1.6-1.6"/>',
+  // ---- property lines ----
+  editTable: '<rect x="3" y="4" width="14" height="15" rx="1"/><path d="M3 9h14M3 14h14M9 4v15"/><path class="a2" d="M14 21l1-3.5 4.5-4.5 2 2-4.5 4.5z"/>',
+  // ---- stairs, ramps and railings ----
+  stairBoundary: '<path d="M7 7h10M7 11h10M7 15h10" stroke-width="1"/><path class="a2" d="M7 3v18M17 3v18"/>',
+  stairRiser: '<path d="M7 3v18M17 3v18"/><path class="a2" d="M7 7h10M7 11h10M7 15h10M7 19h10"/>',
+  sketchRun: '<rect x="7" y="3" width="10" height="18" rx=".5" stroke-dasharray="3 2"/><path class="a2" d="M12 18V6M9.5 8.5L12 6l2.5 2.5"/>',
+  sketchLanding: '<rect x="4" y="4" width="16" height="16" rx=".5" stroke-dasharray="3 2"/><rect class="af" x="8.5" y="8.5" width="7" height="7"/>',
+  deleteLast: '<rect x="3" y="3" width="8" height="18" rx=".5"/><path d="M3 8h8M3 13h8"/><path class="a2" d="M14.5 9l6 6M20.5 9l-6 6"/>',
+  pickHost: '<path d="M2 8h11M4 8v11M11 8v11M2 19h11M4 13.5h7"/><path class="af" d="M13 10l8 6-3.4.8 2 4-1.8.9-2-4L13 20z"/>',
+  spiralFull: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2"/><path d="M12 3v7M21 12h-7M12 21v-7M3 12h7" stroke-width="1"/><path class="a2" d="M12 6.5a5.5 5.5 0 1 1-5.5 5.5"/>',
+  spiralEnds: '<path d="M3.5 18a8.5 8.5 0 0 1 17 0"/><path d="M8.5 18a3.5 3.5 0 0 1 7 0"/><path d="M5.6 12l3.8 3M12 9.5V14.5M18.4 12l-3.8 3" stroke-width="1"/><path class="a2" d="M4 21h4M16 21h4"/>',
+  winderL: '<path d="M4 3v17h17v-8H12V3z"/><path d="M12 12l-8 8M12 12l-3.5 8M12 12l-8-3.5" stroke-width="1"/><path class="a2" d="M8 4v12h12"/>',
+  winderU: '<path d="M3 21V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v16h-7V10h-4v11z"/><path class="a2" d="M6.5 20V7h11v13"/>',
+  clockwise: '<path class="a2" d="M19 12a7 7 0 1 1-2.05-4.95M17 3.5v3.6h-3.6"/>',
+  anticlockwise: '<path class="a2" d="M5 12a7 7 0 1 0 2.05-4.95M7 3.5v3.6h3.6"/>',
+  windersBalanced: '<rect x="4" y="4" width="16" height="16" rx=".5"/><path class="a2" d="M4 4l16 16M4 12l8 8M12 4l8 8"/>',
+  windersSingle: '<rect x="4" y="4" width="16" height="16" rx=".5"/><path class="a2" d="M4 20L20 4M4 20l16-8M4 20l8-16"/><circle class="f" cx="4" cy="20" r="1.5"/>',
+  // ---- areas and tags ----
+  areasAuto: '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M12 3v18M3 12h9"/><path class="af" d="M16.5 12.8l1.1 2.2 2.4.35-1.75 1.7.4 2.4-2.15-1.15-2.15 1.15.4-2.4-1.75-1.7 2.4-.35z"/>',
+  areaRules: '<rect x="3" y="3" width="18" height="18" rx="1"/><path d="M7 8h10M7 12h6"/><path class="a2" d="M11.5 16.5l2 2 4.5-5"/>',
+  leader: '<path d="M13 6h8M13 10h5"/><path class="a2" d="M11 8L4.5 18"/><path class="af" d="M3.6 20l.8-4.4 2.9 1.9z"/>',
+  // ---- ribbon ----
+  exportIfc: '<path d="M9 3l6 3.4v6.8L9 16.6 3 13.2V6.4z"/><path d="M3 6.4l6 3.4 6-3.4M9 9.8v6.8"/><path class="a2" d="M13 20h8M18 17l3 3-3 3"/>',
+  revisionTag: '<path class="af" d="M12 3.5l9 16H3z"/><path d="M12 3.5l9 16H3z"/><path d="M10.6 11.4l1.6-1.4v6.5"/>',
+  colorLegend: '<rect class="af" x="4" y="3.5" width="5" height="4"/><rect class="f" x="4" y="10" width="5" height="4" opacity=".35"/><rect x="4" y="16.5" width="5" height="4"/><path d="M12 5.5h8M12 12h8M12 18.5h8"/>',
+  zoomFit: '<path class="a2" d="M3 8V3h5M16 3h5v5M3 16v5h5M21 16v5h-5"/><circle cx="11" cy="11" r="3.5"/><path d="M13.6 13.6L17 17"/>',
 };
 
 // Ribbon ids, sketch tool ids and old two-letter monograms that use each icon
@@ -281,8 +330,9 @@ const ICON_ALIAS = {
   "det-line": "detailLine", "det-region": "region", "det-comp": "detailComp", "det-insulation": "insulation", "det-revcloud": "revCloud",
   keynote: "keynote", "tag-all": "tagAll", "tag-cat": "tag", "tag-mat": "tagMat", "scale-bar": "scaleBar",
   // site
-  "topo-points": "topoPoints", "topo-file": "topoFile", "topo-sketch": "topoPoints", "topo-import": "topoFile", "topo-label": "spotElev", "site-surface": "surface", grading: "grading", cutfill: "cutFill",
+  "topo-points": "topoPoints", "topo-file": "topoFile", "topo-sketch": "topoPoints", "topo-import": "topoFile", "topo-label": "spotElev", "property-line": "propLine", "site-surface": "surface", grading: "grading", cutfill: "cutFill",
   parking: "parking", linemark: "lineMark", kerb: "kerb", "kerb-ramp": "kerbRamp",
+  "export-ifc": "exportIfc", "tag-revision": "revisionTag", "color-legend": "colorLegend", "a-flip": "flip", "a-fit": "zoomFit",
   // view
   "v-plan": "planView", "v-floorplan": "planView", "v-ceilingplan": "ceilingPlan", "v-3d": "view3d", "v-section": "section", "v-elev": "elevation",
   "v-draft": "drafting", "v-legend": "legend", "v-sched": "schedule", "v-sched-qty": "schedule", "v-sched-mto": "schedule", "v-sched-sheets": "sheet", "v-sched-views": "schedule", "v-sheet": "sheet", "v-dup": "dupView", "v-vg": "visibility",

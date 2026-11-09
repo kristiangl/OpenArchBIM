@@ -63,8 +63,8 @@ const ShapeEdit = (() => {
     return { auto: true, key: `${Plan.tool}:${ed.id}`, title: Plan.tool === "shapeline" ? "Add Split Line" : "Modify Sub Elements", groups: [
       { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stop() }] },
       { label: "Shape Editing", items: [
-        { label: "Modify Sub Elements", ico: "MS", big: true, on: Plan.tool === "shapeedit", onclick: () => setMode("edit") },
-        { label: "Add Split Line", ico: "SL", big: true, on: Plan.tool === "shapeline", title: `Draw a line the ${noun} folds along`, onclick: () => setMode("line") },
+        { label: "Modify Sub Elements", icon: "modifySub", big: true, on: Plan.tool === "shapeedit", onclick: () => setMode("edit") },
+        { label: "Add Split Line", icon: "splitLine", big: true, on: Plan.tool === "shapeline", title: `Draw a line the ${noun} folds along`, onclick: () => setMode("line") },
       ] },
     ] };
   }

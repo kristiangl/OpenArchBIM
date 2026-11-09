@@ -428,7 +428,11 @@ impl ObjectStyles {
                 "Topography" => {
                     s.subcategories.insert("Primary Contours".into(), sub(2, None, SOLID));
                     s.subcategories.insert("Secondary Contours".into(), sub(1, None, SOLID));
+                    s.subcategories.insert("Existing Contours".into(), sub(1, None, "Dash"));
                     s.subcategories.insert("Hidden Lines".into(), hidden());
+                }
+                "Site" => {
+                    s.subcategories.insert("Property Lines".into(), sub(3, None, "Dash dot dot"));
                 }
                 "Roofs" | "Ceilings" | "Columns" | "Casework" | "Furniture" => {
                     s.subcategories.insert("Hidden Lines".into(), hidden());

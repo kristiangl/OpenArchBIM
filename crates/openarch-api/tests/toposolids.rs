@@ -297,3 +297,60 @@ fn sub_divisions_split_and_merge_through_the_api() {
     assert_eq!(plan["toposolids"].as_array().unwrap().iter().filter(|t| t["host"] == json!(ids[0])).count(), 2);
     assert!(again.handle("merge_toposolids", &json!({ "id": ids[0], "other": road })).is_err());
 }
+
+#[test]
+fn graded_regions_report_cut_and_fill_and_property_lines_come_from_bearings() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let ty = info["toposolid_types"][0]["id"].as_u64().unwrap();
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let id = call(&mut s, "add_toposolid", json!({ "type_id": ty, "level_id": level, "curves": square(0.0, 0.0, 10000.0, 10000.0) }))["id"].as_u64().unwrap();
+    call(&mut s, "add_toposolid_point", json!({ "id": id, "point": [5000, 5000], "elevation": 1000, "mode": "surface" }));
+    assert_eq!(call(&mut s, "describe", json!({ "id": id }))["graded"], false);
+    call(&mut s, "grade_toposolid", json!({ "id": id, "perimeter_only": true }));
+    let p = call(&mut s, "describe", json!({ "id": id }));
+    assert_eq!(p["graded"], true);
+    // the mound went with the inside points: a third of 100 m² by 1 m, all cut
+    let cut = row(&mut s, id, "Cut")["raw"].as_f64().unwrap();
+    assert!((cut - 100.0 / 3.0).abs() < 1e-3, "{cut}");
+    assert!((row(&mut s, id, "Net Cut/Fill")["raw"].as_f64().unwrap() + cut).abs() < 1e-6);
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    assert!(!plan["toposolids"][0]["existing"].as_array().unwrap().is_empty(), "existing contours");
+    assert!(s.handle("grade_toposolid", &json!({ "id": id })).is_err());
+
+    // a lot from its survey: 20 m east, 30 m north, back west, and south again, with bearings typed as surveys give them
+    let rows = json!([
+        { "distance_mm": 20000, "bearing": "90°00'00\"" },
+        { "distance_mm": 30000, "bearing": "N 0 E" },
+        { "distance_mm": 20000, "bearing": 270 },
+        { "distance_mm": 30000, "bearing": "180 00 00" },
+    ]);
+    let pl = call(&mut s, "add_property_line_table", json!({ "at": [0, 0], "rows": rows }))["id"].as_u64().unwrap();
+    assert_eq!(row(&mut s, pl, "Area")["raw"], 600.0);
+    let back = call(&mut s, "property_line", json!({ "id": pl }));
+    assert_eq!(back["table"], true);
+    assert_eq!(back["rows"][3]["bearing"], "180°00'00\"");
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let drawn = plan["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == pl).unwrap().clone();
+    assert_eq!(drawn["labels"][1]["text"], "0°00'00\"  30.000");
+    assert_eq!(drawn["style"]["line"]["pattern"], "Dash dot dot");
+    assert!(s.handle("add_property_line_table", &json!({ "at": [0, 0], "rows": [{ "distance_mm": 1000, "bearing": "N 95 E" }] })).is_err());
+    assert!(s.handle("set_property_line_sketch", &json!({ "id": pl, "curves": square(0.0, 0.0, 1000.0, 1000.0) })).is_err());
+    // a sketched one, open: no area until it closes
+    let open = call(&mut s, "add_property_line", json!({ "curves": square(0.0, 0.0, 5000.0, 5000.0).as_array().unwrap()[..3].to_vec() }))["id"].as_u64().unwrap();
+    assert_eq!(row(&mut s, open, "Area")["value"], "Not closed");
+    call(&mut s, "set_property_line_sketch", json!({ "id": open, "curves": square(0.0, 0.0, 5000.0, 5000.0) }));
+    assert_eq!(row(&mut s, open, "Area")["raw"], 25.0);
+    call(&mut s, "patch_property_line", json!({ "id": open, "patch": { "name": "Lot 7", "label_segments": false } }));
+    // saved and opened again
+    let file = std::env::temp_dir().join(format!("openarch-graded-{}.oab", std::process::id()));
+    call(&mut s, "save", json!({ "path": file }));
+    let mut again = Session::new();
+    call(&mut again, "open", json!({ "path": file }));
+    let _ = std::fs::remove_file(&file);
+    assert!((row(&mut again, id, "Cut")["raw"].as_f64().unwrap() - cut).abs() < 1e-6);
+    assert_eq!(row(&mut again, open, "Name")["value"], "Lot 7");
+    let plan = call(&mut again, "plan", json!({ "view_id": site }));
+    assert!(plan["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == open).unwrap()["labels"].as_array().unwrap().is_empty());
+}

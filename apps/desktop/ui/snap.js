@@ -286,6 +286,17 @@ const Snap = (() => {
       const p = hv.horizontal ? { x: last.x + sign * len, y: last.y } : { x: last.x, y: last.y + sign * len };
       return { ...p, kind: "hv", label: hv.horizontal ? "Horizontal" : "Vertical", cands: [], index: 0, horizontal: hv.horizontal };
     }
+    // favour 45 degrees the same way, a little more readily: within 4 degrees of a diagonal the point is held on it
+    if (!hv && last && !s.off && override !== "off" && s.hvOn !== false && !shift && !(cands.length && RANK[cands[0].kind] < RANK.extension)) {
+      const dx = w.x - last.x, dy = w.y - last.y, len0 = Math.hypot(dx, dy);
+      const ang = Math.atan2(dy, dx), diag = Math.PI / 4 + Math.round((ang - Math.PI / 4) / (Math.PI / 2)) * (Math.PI / 2);
+      const tolDeg = Math.max(4, (o.hvDeg > 0 ? o.hvDeg : s.hvDeg) * 2);
+      if (len0 > 1e-6 && Math.abs(ang - diag) <= (tolDeg * Math.PI) / 180) {
+        let len = len0 * Math.cos(ang - diag);
+        if (s.lengthOn) { const inc = increment(lengths, zoom); len = Math.max(inc, Math.round(len / inc) * inc); }
+        return { x: last.x + Math.cos(diag) * len, y: last.y + Math.sin(diag) * len, kind: "length", label: "45°", cands: [], index: 0 };
+      }
+    }
     if (cands.length) {
       const i = ((cycle % cands.length) + cands.length) % cands.length;
       const c = cands[i];

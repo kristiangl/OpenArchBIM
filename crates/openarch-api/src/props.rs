@@ -49,6 +49,13 @@ pub(crate) fn select(label: &str, opts: Vec<(String, Value, bool)>) -> Value {
     })
 }
 
+/// The level an element is on, as a drop-down of the project's levels (patching `key`); read-only when it can't be
+/// changed (pinned, or hosted by something that sets it).
+pub(crate) fn level_select(d: &Document, label: &str, key: &str, current: Id, editable: bool) -> Value {
+    if !editable { return ro(label, d.level(current).map_or("?", |l| l.name.as_str())); }
+    select(label, d.levels().iter().map(|(lid, l)| (l.name.clone(), json!({ key: lid }), *lid == current)).collect())
+}
+
 /// A fill pattern, chosen in the Fill Patterns window (opened on the `prefer` tab, drafting or model); the patch
 /// sets `path` to the name, or to null for no pattern.
 fn fill_pattern_row(label: &str, path: &str, current: Option<&str>, prefer: &str) -> Value {
@@ -189,7 +196,7 @@ pub fn floor_props(d: &Document, id: Id, f: &Floor) -> Value {
         "target": { "method": "patch_floor", "id": id },
         "groups": [
             group("Constraints", vec![
-                ro("Level", d.level(f.level).map_or("?", |l| l.name.as_str())),
+                level_select(d, "Level", "level", f.level, !f.pinned),
                 num("Height Offset From Level", "offset_mm", f.offset_mm, !f.pinned),
                 boolean("Pinned", "pinned", f.pinned, true),
                 boolean("Room Bounding", "room_bounding", f.room_bounding, true),
@@ -228,7 +235,7 @@ pub fn roof_props(d: &Document, id: Id, r: &openarch_model::roof::Roof) -> Value
         "target": { "method": "patch_roof", "id": id },
         "groups": [
             group("Constraints", vec![
-                ro("Base Level", d.level(r.level).map_or("?", |l| l.name.as_str())),
+                level_select(d, "Base Level", "level", r.level, !r.pinned),
                 boolean("Room Bounding", "room_bounding", r.room_bounding, true),
                 num("Base Offset From Level", "base_offset_mm", r.base_offset_mm, true),
                 select("Cutoff Level", level_opts),

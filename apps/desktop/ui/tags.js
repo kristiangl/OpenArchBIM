@@ -71,7 +71,7 @@ const Tags = (() => {
     len.disabled = !opts.leader;
     return [{ label: "Tag Options", items: [
       { big: true, node: el("div", { className: "rb-select" }, [orient]) },
-      { label: "Leader", ico: "Ld", on: opts.leader, onclick: () => { opts.leader = !opts.leader; updateRibbonContext(); } },
+      { label: "Leader", icon: "leader", on: opts.leader, onclick: () => { opts.leader = !opts.leader; updateRibbonContext(); } },
       { big: true, node: el("div", { className: "rb-select" }, [len, " mm"]) },
     ] }];
   }

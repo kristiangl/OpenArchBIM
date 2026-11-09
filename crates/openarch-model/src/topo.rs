@@ -23,6 +23,12 @@
 //!
 //! Split and Merge: a toposolid cut in pieces along a sketch, or two made one. The points the pieces keep, and the
 //! ones added where the cut crosses the surface's edges, keep the surface where it was.
+//!
+//! Graded Region: a toposolid keeps the ground as it was when it was graded (its top then, as a fixed surface in
+//! absolute heights), and its cut and fill are measured from that: within its boundary, the volume between that
+//! ground and its top as built (excavations included), cut where the top is lower and fill where it is higher.
+//! Plans draw the old ground's contours as existing contours. There are no phases yet, so this stands in for the
+//! demolished original and its graded copy.
 
 use serde::{Deserialize, Serialize};
 
@@ -169,6 +175,10 @@ pub struct Toposolid {
     /// A sub-division: the toposolid it stands on. Its `offset_mm` is then its height above the host's top.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub host: Option<Id>,
+    /// A graded region: the ground as it was when it was graded (absolute heights), which cut and fill are
+    /// measured from.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing: Option<Tin>,
     #[serde(default)]
     pub pinned: bool,
     #[serde(default)]
@@ -181,7 +191,7 @@ pub struct Toposolid {
 
 impl Toposolid {
     pub fn new(toposolid_type: Id, level: Id, loops: Vec<Vec<Curve>>, offset_mm: f64) -> Toposolid {
-        Toposolid { toposolid_type, level, loops, offset_mm, points: vec![], split_lines: vec![], excavated_by: vec![], host: None, pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
+        Toposolid { toposolid_type, level, loops, offset_mm, points: vec![], split_lines: vec![], excavated_by: vec![], host: None, existing: None, pinned: false, comments: String::new(), mark: String::new(), ifc: IfcParams { guid: crate::element::new_ifc_guid(), ..Default::default() } }
     }
 
     /// The boundary as polygons (arcs and splines broken into short chords).
@@ -558,33 +568,99 @@ impl Document {
         };
         let zero = self.topo_base_z(TopoBase::SurveyPoint, t.level);
         let (lo, hi) = tin.z_range();
-        let mut heights: std::collections::BTreeMap<i64, bool> = Default::default();
-        for s in ty.contours.iter().filter(|s| s.visible) {
-            let mut put = |h: f64| {
-                if h + zero >= lo - 1e-6 && h + zero <= hi + 1e-6 {
-                    let k = (h * 1000.0).round() as i64;
-                    let e = heights.entry(k).or_insert(false);
-                    *e |= s.primary;
-                }
-            };
-            if s.single {
-                put(s.start);
-            } else if s.interval >= 1.0 {
-                // from the first line inside the surface's range, to keep the count to what is drawn
-                let first = ((lo - zero - s.start) / s.interval).ceil().max(0.0);
-                let mut k = first;
-                loop {
-                    let h = s.start + k * s.interval;
-                    if h > s.stop + 1e-6 || h + zero > hi + 1e-6 { break; }
-                    put(h);
-                    k += 1.0;
-                    if k - first > 5000.0 { break; }
-                }
-            }
-        }
-        heights.into_iter().map(|(k, primary)| { let z = k as f64 / 1000.0 + zero; (z, primary, tin.contour(z).into_iter().filter(|s| (edges.is_empty() || !on_side(s)) && !under_sub(s)).collect::<Vec<_>>()) }).filter(|(_, _, l)| !l.is_empty()).collect()
+        let heights = contour_heights(ty, lo, hi, zero);
+        heights.into_iter().map(|(z, primary)| (z, primary, tin.contour(z).into_iter().filter(|s| (edges.is_empty() || !on_side(s)) && !under_sub(s)).collect::<Vec<_>>())).filter(|(_, _, l)| !l.is_empty()).collect()
     }
 
+    /// A graded region's existing contours: the type's contours of the ground as it was, within its boundary.
+    pub fn toposolid_existing_contours(&self, t: &Toposolid) -> Vec<(bool, Vec<[Point; 2]>)> {
+        let (Some(ty), Some(old)) = (self.toposolid_type(t.toposolid_type), t.existing.as_ref()) else { return vec![] };
+        let rings = t.polygons(20.0);
+        let zero = self.topo_base_z(TopoBase::SurveyPoint, t.level);
+        let (lo, hi) = old.z_range();
+        contour_heights(ty, lo, hi, zero).into_iter().map(|(z, primary)| {
+            (primary, old.contour(z).into_iter().filter(|s| crate::shape::inside(&rings, Point::new((s[0].x + s[1].x) / 2.0, (s[0].y + s[1].y) / 2.0))).collect::<Vec<_>>())
+        }).filter(|(_, l)| !l.is_empty()).collect()
+    }
+
+    /// A graded region's cut and fill (mm³): within its boundary, between the ground as it was and its top as built.
+    pub fn toposolid_cut_fill(&self, t: &Toposolid) -> Option<(f64, f64)> {
+        let old = t.existing.as_ref()?;
+        let (top, _, _) = self.toposolid_surface(t)?;
+        Some(crate::shape::cut_fill(&t.polygons(20.0), old, &top))
+    }
+
+    /// Graded Region: the toposolid keeps its ground as it is now as the existing ground, which cut and fill are
+    /// measured from as it is reshaped. With `perimeter_only` its inside points and split lines go, leaving the
+    /// boundary at the heights it has (the simple start for grading); otherwise it stays as it is.
+    pub fn grade_toposolid(&mut self, id: Id, perimeter_only: bool) -> Result<(), String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        if t.host.is_some() { return Err("A sub-division follows the toposolid it's on: make that toposolid a graded region.".into()); }
+        if t.existing.is_some() { return Err("This toposolid is already a graded region: its cut and fill are measured from the ground as it was when it was graded.".into()); }
+        self.refuse_pinned(&[id], "graded")?;
+        let tin = self.toposolid_tin(&t).ok_or("the toposolid has no surface")?;
+        if perimeter_only {
+            let base = self.toposolid_base_z(&t);
+            let rings = t.polygons(20.0);
+            let on_edge = |p: Point| rings.iter().any(|r| crate::shape::on_ring(r, p));
+            let mut pts: Vec<P3> = rings.concat().into_iter().filter_map(|q| tin.z_near(q).map(|z| P3 { x: q.x, y: q.y, z: z - base })).collect();
+            pts.extend(t.points.iter().filter(|p| on_edge(Point::new(p.x, p.y))).copied());
+            (t.points, t.split_lines) = crate::shape::tidy(&rings, pts, vec![], "toposolid")?;
+        }
+        t.existing = Some(tin);
+        self.transact("Graded region", |tx| tx.update(id, Element::Toposolid(t)))
+    }
+
+    /// Reset Shape: the points and split lines go, leaving the top flat at Height Offset From Level.
+    pub fn reset_toposolid_shape(&mut self, id: Id) -> Result<(), String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        Self::refuse_subdivision_shape(&t)?;
+        if t.points.is_empty() && t.split_lines.is_empty() { return Err("The toposolid is already flat: it has no points or split lines.".into()); }
+        self.refuse_pinned(&[id], "reshaped")?;
+        t.points.clear();
+        t.split_lines.clear();
+        self.transact("Reset shape", |tx| tx.update(id, Element::Toposolid(t)))
+    }
+
+    /// The toposolid stops being a graded region: it forgets the existing ground and keeps its ground as it is.
+    pub fn remove_graded_region(&mut self, id: Id) -> Result<(), String> {
+        let mut t = self.toposolid(id).cloned().ok_or("not a toposolid")?;
+        if t.existing.take().is_none() { return Err("This toposolid isn't a graded region.".into()); }
+        self.transact("Remove graded region", |tx| tx.update(id, Element::Toposolid(t)))
+    }
+}
+
+/// The contour heights (absolute, mm) a type gives over a surface from `lo` to `hi`, measured from `zero`, each
+/// with whether a primary set gives it.
+fn contour_heights(ty: &ToposolidType, lo: f64, hi: f64, zero: f64) -> Vec<(f64, bool)> {
+    let mut heights: std::collections::BTreeMap<i64, bool> = Default::default();
+    for s in ty.contours.iter().filter(|s| s.visible) {
+        let mut put = |h: f64| {
+            if h + zero >= lo - 1e-6 && h + zero <= hi + 1e-6 {
+                let k = (h * 1000.0).round() as i64;
+                let e = heights.entry(k).or_insert(false);
+                *e |= s.primary;
+            }
+        };
+        if s.single {
+            put(s.start);
+        } else if s.interval >= 1.0 {
+            // from the first line inside the surface's range, to keep the count to what is drawn
+            let first = ((lo - zero - s.start) / s.interval).ceil().max(0.0);
+            let mut k = first;
+            loop {
+                let h = s.start + k * s.interval;
+                if h > s.stop + 1e-6 || h + zero > hi + 1e-6 { break; }
+                put(h);
+                k += 1.0;
+                if k - first > 5000.0 { break; }
+            }
+        }
+    }
+    heights.into_iter().map(|(k, primary)| (k as f64 / 1000.0 + zero, primary)).collect()
+}
+
+impl Document {
     /// The starter type, and the Earth material, added to a project that has none.
     pub fn ensure_toposolid_types(&mut self) -> Result<(), String> {
         if !self.toposolid_types().is_empty() { return Ok(()); }
@@ -807,8 +883,9 @@ impl Document {
         if old.pinned && t.pinned && (t.loops != old.loops || t.level != old.level || t.offset_mm != old.offset_mm || t.points != old.points || t.split_lines != old.split_lines) {
             return Err("Unpin the toposolid before moving it.".into());
         }
-        // a sub-division stays on its toposolid, at its level
+        // a sub-division stays on its toposolid, at its level; the existing ground isn't a property
         t.host = old.host;
+        t.existing = old.existing.clone();
         if let Some(h) = t.host.and_then(|h| self.toposolid(h)) { t.level = h.level; }
         self.check_toposolid(&t)?;
         let subs: Vec<(Id, Toposolid)> = if t.level != old.level {
@@ -985,6 +1062,11 @@ impl Document {
         (a.points, a.split_lines) = crate::shape::tidy(&rings, ps, ls, "toposolid")?;
         for c in &b.excavated_by { if !a.excavated_by.contains(c) { a.excavated_by.push(*c); } }
         a.excavated_by.retain(|c| *c != id && *c != other);
+        // graded regions: the existing ground of both, this one's where they overlap
+        a.existing = match (a.existing.take(), &b.existing) {
+            (Some(x), Some(y)) => Some(crate::shape::join_tins(&x, y)),
+            (x, y) => x.or_else(|| y.clone()),
+        };
         self.check_toposolid(&a)?;
         let mut updates: Vec<(Id, Element)> = vec![];
         for (i, x) in self.toposolids() {
@@ -1582,5 +1664,101 @@ mod tests {
         let dug: f64 = subs.iter().map(|&s| d.subdivision_excavation(s)).sum();
         let held: f64 = subs.iter().map(|&s| vol(&d, s)).sum();
         assert!((held - 16e9).abs() < 1e6 && (dug - 16e9).abs() < 2e7, "{held} {dug}");
+    }
+
+    fn cf(d: &Document, id: Id) -> (f64, f64) { d.toposolid_cut_fill(d.toposolid(id).unwrap()).unwrap() }
+
+    #[test]
+    fn a_graded_region_measures_cut_and_fill_from_the_ground_as_it_was() {
+        let (mut d, ty, level) = setup();
+        let lz = d.level(level).unwrap().elevation_mm;
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        assert!(d.toposolid_cut_fill(d.toposolid(id).unwrap()).is_none());
+        d.grade_toposolid(id, false).unwrap();
+        assert_eq!(cf(&d, id), (0.0, 0.0));
+        assert!(d.grade_toposolid(id, false).is_err(), "graded once");
+        // a mound in the middle is fill: a pyramid, a third of its base by its height
+        d.add_toposolid_point(id, Point::new(5000.0, 5000.0), lz + 1000.0).unwrap();
+        let (cut, fill) = cf(&d, id);
+        assert!(cut.abs() < 1.0 && (fill - 100e6 * 1000.0 / 3.0).abs() < 1e3, "{cut} {fill}");
+        // a hollow is cut
+        let t = d.toposolid(id).unwrap().clone();
+        d.set_toposolid_points(id, vec![P3 { z: -1000.0, ..t.points[0] }], None).unwrap();
+        let (cut, fill) = cf(&d, id);
+        assert!(fill.abs() < 1.0 && (cut - 100e6 * 1000.0 / 3.0).abs() < 1e3, "{cut} {fill}");
+        // it moves with the toposolid
+        d.transform_elements(&[id], crate::edit::Xform::Move { dx: 3000.0, dy: -2000.0 }, Default::default()).unwrap();
+        let (c2, f2) = cf(&d, id);
+        assert!((c2 - cut).abs() < 1e3 && f2.abs() < 1.0, "{c2} {f2}");
+        d.transform_elements(&[id], crate::edit::Xform::Rotate { cx: 0.0, cy: 0.0, angle_deg: 30.0 }, Default::default()).unwrap();
+        let (c3, _) = cf(&d, id);
+        assert!((c3 - cut).abs() < 1e3, "{c3}");
+        // Reset Shape flattens it again: all of the hollow is filled back
+        d.reset_toposolid_shape(id).unwrap();
+        assert!(d.toposolid(id).unwrap().points.is_empty());
+        assert!(d.reset_toposolid_shape(id).is_err(), "already flat");
+        assert_eq!(cf(&d, id), (0.0, 0.0));
+        d.undo();
+        // removing the graded region forgets the old ground; undo brings it back
+        d.remove_graded_region(id).unwrap();
+        assert!(d.toposolid(id).unwrap().existing.is_none());
+        d.undo();
+        assert!(d.toposolid(id).unwrap().existing.is_some());
+    }
+
+    #[test]
+    fn cut_counts_what_excavations_take_out_and_perimeter_only_drops_the_inside() {
+        let (mut d, ty, level) = setup();
+        let lz = d.level(level).unwrap().elevation_mm;
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        d.add_toposolid_point(id, Point::new(5000.0, 5000.0), lz + 1000.0).unwrap();
+        d.add_toposolid_point(id, Point::new(10_000.0, 5000.0), lz + 600.0).unwrap();
+        // perimeter only: the mound goes, the point on the edge stays, and losing the mound is cut
+        let before = d.toposolid(id).unwrap().clone();
+        let old = d.toposolid_tin(&before).unwrap();
+        d.grade_toposolid(id, true).unwrap();
+        let t = d.toposolid(id).unwrap().clone();
+        assert!(t.points.iter().all(|p| p.x.min(p.y) < 1.0 || p.x.max(p.y) > 9999.0), "{:?}", t.points);
+        assert!((top(&d, id, 10_000.0, 5000.0) - (lz + 600.0)).abs() < 1e-6);
+        assert_eq!(t.existing.as_ref(), Some(&old));
+        // the mound's contours stay as existing contours
+        let ex = d.toposolid_existing_contours(&t);
+        assert!(!ex.is_empty() && ex != d.toposolid_contours(&t));
+        let (cut, fill) = cf(&d, id);
+        let lost = solid_volume(&old, &vec![lz; old.verts.len()]) - solid_volume(&d.toposolid_tin(&t).unwrap(), &vec![lz; d.toposolid_tin(&t).unwrap().verts.len()]);
+        assert!(fill.abs() < 1.0 && (cut - lost).abs() < 1e3, "{cut} {fill} {lost}");
+        // a sub-division sunk 200 into it excavates it by its type's thickness below that, down to its underside (1000
+        // below its top): all cut
+        let flat = d.add_toposolid_sketch(ty, level, rect(20_000.0, 0.0, 30_000.0, 10_000.0), 0.0).unwrap();
+        d.grade_toposolid(flat, false).unwrap();
+        d.add_toposolid_subdivision(flat, ty, rect(22_000.0, 2000.0, 24_000.0, 4000.0), -200.0).unwrap();
+        let (cut, fill) = cf(&d, flat);
+        assert!(fill.abs() < 1.0 && (cut - 4e6 * 1000.0).abs() < 2e7, "{cut} {fill}");
+    }
+
+    #[test]
+    fn split_and_merge_keep_the_existing_ground() {
+        let (mut d, ty, level) = setup();
+        let lz = d.level(level).unwrap().elevation_mm;
+        let id = d.add_toposolid_sketch(ty, level, square(10_000.0), 0.0).unwrap();
+        d.grade_toposolid(id, false).unwrap();
+        d.add_toposolid_point(id, Point::new(5000.0, 5000.0), lz + 1000.0).unwrap();
+        let (_, fill) = cf(&d, id);
+        let ids = d.split_toposolid(id, &[Curve::line(Point::new(5000.0, -100.0), Point::new(5000.0, 10_100.0))]).unwrap();
+        assert_eq!(ids.len(), 2);
+        let sum: f64 = ids.iter().map(|&i| cf(&d, i).1).sum();
+        assert!((sum - fill).abs() < 1e4, "{sum} {fill}");
+        d.merge_toposolids(ids[0], ids[1]).unwrap();
+        let (c, f) = cf(&d, ids[0]);
+        assert!(c.abs() < 1e3 && (f - fill).abs() < 1e4, "{c} {f} {fill}");
+    }
+
+    #[test]
+    fn the_positive_part_of_a_plane_over_a_triangle() {
+        let f = crate::shape::cut_fill(&[vec![Point::new(0.0, 0.0), Point::new(1000.0, 0.0), Point::new(0.0, 1000.0)]],
+            &Tin { verts: vec![[0.0, 0.0, 0.0], [1000.0, 0.0, 0.0], [0.0, 1000.0, 0.0]], tris: vec![[0, 1, 2]] },
+            &Tin { verts: vec![[0.0, 0.0, 1.0], [1000.0, 0.0, -1.0], [0.0, 1000.0, -1.0]], tris: vec![[0, 1, 2]] });
+        // fill over the small triangle at the raised corner, cut over the rest; fill less cut is the whole
+        assert!((f.1 - 5e5 / 12.0).abs() < 1e-3 && (f.0 - 5e5 * 5.0 / 12.0).abs() < 1e-3, "{f:?}");
     }
 }

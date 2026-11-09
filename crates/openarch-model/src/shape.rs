@@ -15,7 +15,7 @@ use crate::site::P3;
 use crate::Point;
 
 /// The top surface: corners with their heights (absolute, mm) and counter-clockwise triangles.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 pub struct Tin {
     pub verts: Vec<[f64; 3]>,
     pub tris: Vec<[usize; 3]>,
@@ -608,6 +608,115 @@ fn plan_mesh_unguarded(corners: &[Point], segs: &[[Point; 2]], rings: &[Vec<Poin
         inside(rings, c).then_some(ids)
     }).collect();
     Some((ps, tris))
+}
+
+/// Finds the triangle of a surface under a plan point quickly: the triangles bucketed by the grid cells their
+/// extents cover.
+struct Locate<'a> {
+    tin: &'a Tin,
+    x0: f64,
+    y0: f64,
+    cell: f64,
+    nx: usize,
+    ny: usize,
+    cells: Vec<Vec<usize>>,
+}
+
+impl<'a> Locate<'a> {
+    fn new(tin: &'a Tin) -> Self {
+        let (mut x0, mut y0, mut x1, mut y1) = (f64::MAX, f64::MAX, f64::MIN, f64::MIN);
+        for v in &tin.verts { x0 = x0.min(v[0]); y0 = y0.min(v[1]); x1 = x1.max(v[0]); y1 = y1.max(v[1]); }
+        let n = ((tin.tris.len() as f64).sqrt().ceil() as usize).clamp(1, 512);
+        let cell = ((x1 - x0).max(y1 - y0) / n as f64).max(1.0);
+        let (nx, ny) = ((((x1 - x0) / cell) as usize + 1).max(1), (((y1 - y0) / cell) as usize + 1).max(1));
+        let mut cells = vec![vec![]; if tin.verts.is_empty() { 0 } else { nx * ny }];
+        let mut me = Locate { tin, x0, y0, cell, nx, ny, cells: vec![] };
+        for (k, t) in tin.tris.iter().enumerate() {
+            let xs = t.map(|i| tin.verts[i][0]);
+            let ys = t.map(|i| tin.verts[i][1]);
+            let (i0, j0) = me.key(xs.iter().cloned().fold(f64::MAX, f64::min), ys.iter().cloned().fold(f64::MAX, f64::min));
+            let (i1, j1) = me.key(xs.iter().cloned().fold(f64::MIN, f64::max), ys.iter().cloned().fold(f64::MIN, f64::max));
+            for i in i0..=i1 { for j in j0..=j1 { cells[j * nx + i].push(k); } }
+        }
+        me.cells = cells;
+        me
+    }
+
+    fn key(&self, x: f64, y: f64) -> (usize, usize) {
+        ((((x - self.x0) / self.cell).floor().max(0.0) as usize).min(self.nx - 1), (((y - self.y0) / self.cell).floor().max(0.0) as usize).min(self.ny - 1))
+    }
+
+    /// The height at a plan point, None outside the surface.
+    fn z_at(&self, p: Point) -> Option<f64> {
+        if self.cells.is_empty() { return None; }
+        let (i, j) = self.key(p.x, p.y);
+        let mut best: Option<(f64, f64)> = None;
+        for &k in &self.cells[j * self.nx + i] {
+            let t = self.tin.tris[k];
+            let (a, b, c) = (self.tin.verts[t[0]], self.tin.verts[t[1]], self.tin.verts[t[2]]);
+            let det = (b[1] - c[1]) * (a[0] - c[0]) + (c[0] - b[0]) * (a[1] - c[1]);
+            if det.abs() < 1e-12 { continue; }
+            let l1 = ((b[1] - c[1]) * (p.x - c[0]) + (c[0] - b[0]) * (p.y - c[1])) / det;
+            let l2 = ((c[1] - a[1]) * (p.x - c[0]) + (a[0] - c[0]) * (p.y - c[1])) / det;
+            let l3 = 1.0 - l1 - l2;
+            let m = l1.min(l2).min(l3);
+            if best.is_none_or(|b| m > b.0) { best = Some((m, l1 * a[2] + l2 * b[2] + l3 * c[2])); }
+        }
+        // a point a hair outside (on a shared edge, or snapped) still counts
+        best.filter(|b| b.0 > -1e-6).map(|b| b.1)
+    }
+}
+
+/// Cut and fill (mm³) within `rings` between the ground as it was (`old`) and as it is (`new`): over each piece of
+/// plan, the volume where the new ground is below the old (cut) and above it (fill). Where the old ground doesn't
+/// reach, nothing is counted. Exact: the two surfaces are compared over a triangulation that has an edge along every
+/// edge of both, so both are flat within each of its triangles.
+pub fn cut_fill(rings: &[Vec<Point>], old: &Tin, new: &Tin) -> (f64, f64) {
+    let corners: Vec<Point> = (0..new.verts.len()).map(|i| new.corner(i)).chain((0..old.verts.len()).map(|i| old.corner(i))).filter(|p| inside(rings, *p)).collect();
+    let mut segs: Vec<[Point; 2]> = new.edges().into_iter().map(|([a, b], _)| [new.corner(a), new.corner(b)]).collect();
+    segs.extend(old.edges().into_iter().map(|([a, b], _)| [old.corner(a), old.corner(b)]));
+    for r in rings { for i in 0..r.len() { segs.push([r[i], r[(i + 1) % r.len()]]); } }
+    let Some((ps, tris)) = plan_mesh(&corners, &segs, rings) else { return (0.0, 0.0) };
+    let (lo, ln) = (Locate::new(old), Locate::new(new));
+    let d: Vec<Option<f64>> = ps.iter().map(|p| Some(ln.z_at(*p)? - lo.z_at(*p)?)).collect();
+    let (mut cut, mut fill) = (0.0, 0.0);
+    for t in &tris {
+        let (Some(a), Some(b), Some(c)) = (d[t[0]], d[t[1]], d[t[2]]) else { continue };
+        let (p, q, r) = (ps[t[0]], ps[t[1]], ps[t[2]]);
+        let area = ((q.x - p.x) * (r.y - p.y) - (r.x - p.x) * (q.y - p.y)).abs() / 2.0;
+        fill += positive_part(area, a, b, c);
+        cut += positive_part(area, -a, -b, -c);
+    }
+    (cut, fill)
+}
+
+/// Over a triangle of plan area `area`, the integral of the positive part of the plane through heights a, b, c at
+/// its corners.
+fn positive_part(area: f64, a: f64, b: f64, c: f64) -> f64 {
+    let mut v = [a, b, c];
+    v.sort_by(|x, y| y.total_cmp(x));
+    let [h, m, l] = v;
+    if l >= 0.0 { return area * (h + m + l) / 3.0; }
+    if h <= 0.0 { return 0.0; }
+    if m <= 0.0 {
+        // one corner above: the small triangle at it
+        return area * (h / (h - m)) * (h / (h - l)) * h / 3.0;
+    }
+    // one corner below: all of it less the small negative triangle at that corner
+    area * (h + m + l) / 3.0 - area * (l / (l - h)) * (l / (l - m)) * l / 3.0
+}
+
+/// One surface from two: all of `a`, and the triangles of `b` whose middles are off it.
+pub fn join_tins(a: &Tin, b: &Tin) -> Tin {
+    let la = Locate::new(a);
+    let mut out = a.clone();
+    let n = out.verts.len();
+    out.verts.extend(b.verts.iter().copied());
+    for t in &b.tris {
+        let m = Point::new(t.iter().map(|&i| b.verts[i][0]).sum::<f64>() / 3.0, t.iter().map(|&i| b.verts[i][1]).sum::<f64>() / 3.0);
+        if la.z_at(m).is_none() { out.tris.push(t.map(|i| i + n)); }
+    }
+    out
 }
 
 /// The surface `top` over `rings` (which must lie on it), raised by `dz`: what a sub-division stands on. It has an
