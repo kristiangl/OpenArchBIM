@@ -332,6 +332,12 @@ async function renderProperties() {
   } else if (tool === "sketch" && (Sketch.kind === "detail" || Sketch.kind === "region")) {
     title = Sketch.kind === "detail" ? "Detail Lines" : app.regionMasking ? "Masking Region" : "Filled Region";
     groups.push({ name: "Graphics", rows: [{ label: "Line Style", value: Sketch.kind === "detail" ? app.lineStyle : app.edgeStyle, kind: "ro" }] });
+  } else if (tool === "parkrow") {
+    const tp = Traffic.placementProperties();
+    title = tp.title;
+    groups.push(...tp.groups);
+  } else if (tool === "sketch" && (Sketch.kind === "linemark" || Sketch.kind === "kerb")) {
+    title = Sketch.kind === "kerb" ? "Kerb" : "Line Marking";
   } else if (tool === "sketch" && Sketch.kind === "propline") {
     title = Sketch.editingId ? "Edit Property Line" : "Create Property Line";
   } else if (tool === "sketch" && Sketch.kind === "roof" && !Sketch.editingId) {

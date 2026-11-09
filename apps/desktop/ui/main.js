@@ -63,6 +63,9 @@ const COMMANDS = {
   grading: () => Topo.grade(),
   cutfill: () => Topo.cutFillReport(),
   "property-line": () => PropLines.start(),
+  parking: () => Traffic.startParking(),
+  linemark: () => Traffic.startSketch("linemark"),
+  kerb: () => Traffic.startSketch("kerb"),
   stair: () => Stairs.start(),
   ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),
@@ -387,6 +390,8 @@ function currentContext() {
   if (ts) return ts;
   const pc = PropLines.selectionContext();
   if (pc) return pc;
+  const trc = Traffic.selectionContext();
+  if (trc) return trc;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation
   const tv = app.view.kind === "plan" ? Plan : app.view.kind === "elevation" ? Elev : null;
   if (tv && tv.tool === "tag") return Tags.context();
@@ -3304,6 +3309,7 @@ Sketch.callbacks.finish = async (o) => {
   if (o.kind === "ceiling") return Ceilings.finish(o);
   if (o.kind === "toposolid") return Topo.finish(o);
   if (o.kind === "propline") return PropLines.finish(o);
+  if (o.kind === "linemark" || o.kind === "kerb") return Traffic.finish(o);
   if (o.kind === "railing") return Railings.finish(o);
   if (o.kind === "stairrun" || o.kind === "stairlanding") return Stairs.sketchFinished(o);
   if (o.kind === "areaboundary") return Areas.finish(o);
