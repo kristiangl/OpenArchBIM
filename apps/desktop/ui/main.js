@@ -3031,6 +3031,23 @@ document.addEventListener("contextmenu", (e) => {
   e.preventDefault();
 });
 
+// A two-letter shortcut's command in the document showing: a project's own, or in a sketch only the Modify tools
+// (they act on the sketch's lines) and Delete; in a family or annotation family editor, the Modify tab's command
+// for that document (Move is f-mv there, and so on). Null when it has none.
+function shortcutCommand(projectId) {
+  if (!projectId) return null;
+  if (app.doc === "project") {
+    if (Sketch.active) return SKETCH_MODIFY[projectId] || projectId === "del" ? () => runCommand(projectId) : null;
+    return COMMANDS[projectId] ? () => COMMANDS[projectId]() : null;
+  }
+  const alias = { mi: "mi-pick" };
+  const want = [projectId, alias[projectId]].filter(Boolean);
+  let id = null;
+  const walk = (items) => { for (const it of items || []) { if (it.ids && want.includes(it.ids.project) && it.ids[app.doc]) { id = it.ids[app.doc]; return; } walk(it.menu); } };
+  for (const g of MODIFY_TAB) { walk(g.items); if (id) break; }
+  const f = id && commandInDoc(app.doc, id);
+  return f ? () => f() : null;
+}
 let keyBuf = "", keyTimer = null;
 document.addEventListener("keydown", (e) => {
   const typing = e.target && (e.target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName));
@@ -3065,8 +3082,9 @@ document.addEventListener("keydown", (e) => {
     keyBuf = (keyBuf + e.key.toUpperCase()).slice(-2);
     clearTimeout(keyTimer);
     keyTimer = setTimeout(() => (keyBuf = ""), 900);
-    const map = Sketch.active ? {} : { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
-    if (map[keyBuf] && COMMANDS[map[keyBuf]]) { COMMANDS[map[keyBuf]](); keyBuf = ""; }
+    const map = { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
+    const run = shortcutCommand(map[keyBuf]);
+    if (run) { run(); keyBuf = ""; }
     else if (app.view.kind === "plan" && Snap.isOverride(keyBuf) && (["wall", "sketch"].includes(Plan.tool) || Plan.isEditTool())) {
       Snap.setOverride(keyBuf);
       const name = keyBuf === "SS" ? "off" : keyBuf === "SO" ? "Snaps off for the next pick" : `${Snap.LABEL[Snap.override] || ""} only for the next pick`;

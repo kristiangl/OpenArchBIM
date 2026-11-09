@@ -325,6 +325,8 @@ const FamModel = (() => {
     if (!S || app.doc !== "family" || document.querySelector(".modal-back")) return;
     if (e.target && (e.target.tagName === "INPUT" || e.target.tagName === "SELECT" || e.target.tagName === "TEXTAREA")) return;
     onKey(e);
+    // letters go on to the app's two-letter shortcuts (MV, CO, RO, DE ...), which run this editor's own commands
+    if (/^[a-z]$/i.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) return;
     e.stopPropagation();
   }
 

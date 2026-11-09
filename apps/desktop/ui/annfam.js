@@ -1200,6 +1200,8 @@ const AnnModel = (() => {
     else if (e.key === "Delete" || e.key === "Backspace") removeSel();
     else used = false;
     if (used) e.preventDefault();
+    // unused letters go on to the app's two-letter shortcuts, which run this editor's own commands
+    if (!used && /^[a-z]$/i.test(e.key) && !mod && !e.altKey) return;
     e.stopPropagation();
   }
 
