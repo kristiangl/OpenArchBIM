@@ -1,14 +1,14 @@
 // Shape editing in a plan: Modify Sub Elements (pick points, boundary corners and split lines; drag them across with
-// snapping; set their height; delete) and Add Split Line, for any host with a boundary, points and split lines.
-// Toposolids use it now; floors and roofs are to (model side: shape.rs). A host is
+// snapping; set their height; delete), Add Split Line and Add Point, for any host with a boundary, points and split
+// lines. Toposolids and floors use it (model side: shape.rs); roofs are to. A host is
 //   { noun, get(id) -> { rings, points: [[x, y, z]], lines: [[i, j]] }, save(id, points, lines), addLine(id, a, b),
-//     done(id) }
+//     addPoint?(id, p, z), done(id) }
 // with heights above the host's unmodified top. Private notes: site.md.
 const ShapeEdit = (() => {
   // the host and element, the picked things (by key), a drag or window, and Add Split Line's first end and cursor
-  const ed = { host: null, id: null, sel: new Set(), drag: null, box: null, start: null, at: null };
+  const ed = { host: null, id: null, sel: new Set(), drag: null, box: null, start: null, at: null, pointZ: 0 };
   const shape = () => (ed.host && ed.id != null ? ed.host.get(ed.id) : null);
-  const editing = (id) => ed.id != null && (id == null || ed.id === id) && (Plan.tool === "shapeedit" || Plan.tool === "shapeline");
+  const editing = (id) => ed.id != null && (id == null || ed.id === id) && ["shapeedit", "shapeline", "shapepoint"].includes(Plan.tool);
 
   // what can be picked: the points (by index), the boundary's corners that have no point on them (height 0), and the
   // split lines (by index, with their ends)
@@ -37,16 +37,17 @@ const ShapeEdit = (() => {
     shapeedit: () => ed.sel.size
       ? `${ed.sel.size} picked. Drag to move, set Elevation in Properties, or press Delete. Esc clears the pick.`
       : "Modify Sub Elements: click a point, a boundary corner or a split line, or drag a window round several (Ctrl adds, Shift removes). Esc finishes.",
+    shapepoint: () => `Add Point: click on the ${ed.host?.noun || "surface"} to put a point at ${ed.pointZ} mm from its unmodified top (Elevation in Properties; minus is below). Esc finishes.`,
     shapeline: () => ed.start ? "Add Split Line: click the next end (on the surface or a point). Esc ends the line." : `Add Split Line: click where the line starts on the ${ed.host?.noun || "surface"}. Esc finishes.`,
   };
   const promptText = () => (prompts[Plan.tool] || (() => ""))();
   function refreshUI() { renderProperties(); setPrompt(promptText()); Plan.render(); }
 
-  // `mode` "edit" (Modify Sub Elements) or "line" (Add Split Line)
+  // `mode` "edit" (Modify Sub Elements), "line" (Add Split Line) or "point" (Add Point)
   function start(host, id, mode = "edit") {
     Object.assign(ed, { host, id, sel: new Set(), drag: null, box: null, start: null, at: null });
     app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
-    Plan.setTool(mode === "line" ? "shapeline" : "shapeedit");
+    Plan.setTool(mode === "line" ? "shapeline" : mode === "point" ? "shapepoint" : "shapeedit");
     refreshUI();
     updateRibbonContext();
   }
@@ -60,10 +61,11 @@ const ShapeEdit = (() => {
 
   function context() {
     const noun = ed.host?.noun || "surface";
-    return { auto: true, key: `${Plan.tool}:${ed.id}`, title: Plan.tool === "shapeline" ? "Add Split Line" : "Modify Sub Elements", groups: [
+    return { auto: true, key: `${Plan.tool}:${ed.id}`, title: Plan.tool === "shapeline" ? "Add Split Line" : Plan.tool === "shapepoint" ? "Add Point" : "Modify Sub Elements", groups: [
       { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stop() }] },
       { label: "Shape Editing", items: [
         { label: "Modify Sub Elements", icon: "modifySub", big: true, on: Plan.tool === "shapeedit", onclick: () => setMode("edit") },
+        ...(ed.host?.addPoint ? [{ label: "Add Point", icon: "topoPoints", big: true, on: Plan.tool === "shapepoint", onclick: () => setMode("point") }] : []),
         { label: "Add Split Line", icon: "splitLine", big: true, on: Plan.tool === "shapeline", title: `Draw a line the ${noun} folds along`, onclick: () => setMode("line") },
       ] },
     ] };
@@ -181,6 +183,13 @@ const ShapeEdit = (() => {
   // Add Split Line: each click after the first adds a line from the last end, and the chain goes on from there
   const lineSnap = () => ({ last: ed.start, points: snapPoints() });
   function lineHover(p) { ed.at = p ? { x: p.x, y: p.y } : null; }
+  // Add Point: a point where clicked, at the Elevation set in Properties
+  async function pointClick(p) {
+    if (Plan.tool !== "shapepoint" || ed.id == null || !p || !ed.host.addPoint) return;
+    if (!(await ed.host.addPoint(ed.id, p, ed.pointZ))) return;
+    await refresh();
+    refreshUI();
+  }
   async function lineClick(p) {
     if (Plan.tool !== "shapeline" || ed.id == null || !p) return;
     if (!ed.start) { ed.start = { x: p.x, y: p.y }; refreshUI(); return; }
@@ -210,6 +219,9 @@ const ShapeEdit = (() => {
 
   // the Properties pane while editing: the picked things' height above the unmodified top
   function properties() {
+    if (Plan.tool === "shapepoint") return { title: "Add Point", groups: [{ name: "Point", target: { apply: (patch) => { if (Number.isFinite(patch.elevation)) { ed.pointZ = patch.elevation; refreshUI(); } } }, rows: [
+      { label: "Elevation", kind: "number", raw: ed.pointZ, value: String(ed.pointZ), path: "elevation" },
+    ] }] };
     const title = Plan.tool === "shapeline" ? "Add Split Line" : "Modify Sub Elements";
     const picked = items().filter((it) => ed.sel.has(it.key));
     if (!picked.length) return { title, groups: [{ name: "Points", rows: [{ label: "Picked", kind: "ro", value: "None" }] }] };
@@ -281,5 +293,6 @@ const ShapeEdit = (() => {
   }
 
   return { start, stop, context, down, move, up, key, properties, draw, drawPlain, editing, promptText, lineSnap, lineHover, lineClick,
-    dragging: () => !!ed.drag?.to, id: () => ed.id };
+    dragging: () => !!ed.drag?.to, id: () => ed.id, pointClick,
+  };
 })();

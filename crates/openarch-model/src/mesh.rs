@@ -331,7 +331,12 @@ pub fn ceiling_mesh(doc: &Document, c: &crate::ceiling::Ceiling) -> Option<Vec<f
 /// the boundary. A type with no layers is drawn as the surface alone.
 pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<f32>> {
     let (tin, bot, _) = doc.toposolid_surface(t)?;
-    let th = doc.toposolid_thickness(t);
+    Some(tin_solid_mesh(&tin, &bot, doc.toposolid_thickness(t)))
+}
+
+/// A solid between a triangulated top and an underside under each of its corners (`bot`): the top, the underside
+/// and the sides round its boundary. Where top and underside meet (an excavation right through) nothing is drawn.
+fn tin_solid_mesh(tin: &crate::shape::Tin, bot: &[f64], th: f64) -> Vec<f32> {
     let mut out = Vec::new();
     let normal = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
         let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
@@ -363,11 +368,16 @@ pub fn toposolid_mesh(doc: &Document, t: &crate::topo::Toposolid) -> Option<Vec<
             tri(&mut out, a, lb, b, n);
         }
     }
-    Some(out)
+    out
 }
 
-/// A slab `t` thick under the top surface of `f`'s level, offset and slope, filling its loops.
+/// A slab `t` thick under the top surface of `f`'s level, offset and slope, filling its loops. A shape edited
+/// floor follows its points and split lines (floorshape.rs).
 fn slab_mesh(doc: &Document, f: &Floor, t: f64) -> Option<Vec<f32>> {
+    if let Some(tin) = doc.floor_shape(f) {
+        let bot = doc.floor_bottoms(f, &tin);
+        return Some(tin_solid_mesh(&tin, &bot, t));
+    }
     let surf = doc.floor_surface(f)?;
     let regions = f.regions(0.5);
     if regions.is_empty() {

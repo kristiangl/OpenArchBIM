@@ -681,6 +681,17 @@ impl Session {
             }
             "describe_type" => self.describe_type(id_of(p, "id")?),
             "describe_any_type" => self.describe_any_type(id_of(p, "id")?),
+            // floor shape editing: { id, points: [[x, y, height above the unmodified top]], lines?: [[i, j]] };
+            // Add Point { id, point: [x, y], z }; Add Split Line { id, a, b }; Reset Shape { id }
+            "set_floor_points" => {
+                let pts: Vec<[f64; 3]> = serde_json::from_value(p["points"].clone()).map_err(|e| format!("bad points: {e}"))?;
+                let lines: Option<Vec<[usize; 2]>> = match p.get("lines").filter(|v| !v.is_null()) { Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad lines: {e}"))?), None => None };
+                self.doc.set_floor_points(id_of(p, "id")?, pts.into_iter().map(|q| openarch_model::site::P3 { x: q[0], y: q[1], z: q[2] }).collect(), lines)?;
+                Ok(json!({}))
+            }
+            "add_floor_point" => { self.doc.add_floor_point(id_of(p, "id")?, point_of(&p["point"])?, p["z"].as_f64().unwrap_or(0.0))?; Ok(json!({})) }
+            "add_floor_split_line" => { self.doc.add_floor_split_line(id_of(p, "id")?, point_of(&p["a"])?, point_of(&p["b"])?)?; Ok(json!({})) }
+            "reset_floor_shape" => { self.doc.reset_floor_shape(id_of(p, "id")?)?; Ok(json!({})) }
             "patch_floor" => {
                 self.doc.patch_floor(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
@@ -2784,7 +2795,7 @@ impl Session {
                     };
                     let hint = d.floor_type(f.floor_type).map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
                     let Some(style) = style_for(d, &settings, "Floors", None, view.element_overrides.get(&id), display, &hint) else { continue };
-                    floors.push(json!({ "id": id, "curves": f.loops().concat(), "points": f.outline().iter().map(pt).collect::<Vec<_>>(), "rings": f.polygons(1.0).iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "display": display, "style": style, "pinned": f.pinned }));
+                    floors.push(json!({ "id": id, "shape_points": f.points.iter().map(|q| [q.x, q.y, q.z]).collect::<Vec<_>>(), "lines": f.split_lines, "sloped": f.slope.is_some(), "curves": f.loops().concat(), "points": f.outline().iter().map(pt).collect::<Vec<_>>(), "rings": f.polygons(1.0).iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "display": display, "style": style, "pinned": f.pinned }));
                 }
                 Element::Roof(r) => {
                     let Some(g) = d.roof_geometry(r) else { continue };

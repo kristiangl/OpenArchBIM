@@ -597,11 +597,17 @@ pub struct Floor {
     pub structural: bool,
     #[serde(default = "yes")]
     pub room_bounding: bool,
+    /// Shape editing: points on the top (plan position, height above the unmodified top), floorshape.rs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<crate::site::P3>,
+    /// Split lines: pairs of indices into `points`; the top folds along each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub split_lines: Vec<[usize; 2]>,
 }
 
 impl Floor {
     pub fn new(floor_type: Id, level: Id, loops: Vec<Vec<crate::curve::Curve>>) -> Floor {
-        Floor { floor_type, level, boundary: vec![], loops, slope: None, span: None, offset_mm: 0.0, pinned: false, structural: false, room_bounding: true }
+        Floor { floor_type, level, boundary: vec![], loops, slope: None, span: None, offset_mm: 0.0, pinned: false, structural: false, room_bounding: true, points: vec![], split_lines: vec![] }
     }
 
     /// The closed loops of the floor, whichever way it was stored.

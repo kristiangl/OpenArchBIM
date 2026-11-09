@@ -44,6 +44,7 @@ pub mod ceiling;
 pub mod shape;
 pub mod topo;
 pub mod propline;
+pub mod floorshape;
 pub mod areas;
 pub mod key_schedule;
 pub mod section;

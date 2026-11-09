@@ -1070,7 +1070,21 @@ impl Document {
                 Some(t) if !t.layers.is_empty() => t.layers.iter().map(|l| (Some(l.material.as_str()), l.thickness_mm, l.is_void)).collect(),
                 _ => vec![(None, 200.0, false)],
             };
+            // a shape edited floor: each layer follows the surface along the cut
+            let shaped = self.floor_shape(fl).map(|t| { let b = self.floor_bottoms(fl, &t); (t, b) });
             for cut in sl.cuts(&rings, sl.plane + PLANE_EPS) {
+                if let (Some((tin, bot)), Some(ty)) = (&shaped, ft) {
+                    let prof = self.floor_profile(tin, bot, cut.p0, cut.p1);
+                    let u = |t: f64| cut.u0 + (cut.u1 - cut.u0) * t;
+                    let spans: Vec<Vec<(f64, f64)>> = prof.iter().map(|(_, top, b)| crate::floorshape::floor_layer_spans(ty, *top, *b)).collect();
+                    for (k, l) in ty.layers.iter().enumerate() {
+                        if l.is_void || l.thickness_mm <= 0.0 || prof.len() < 2 { continue; }
+                        let mut poly: Vec<[f64; 2]> = prof.iter().zip(&spans).map(|((t, _, _), s)| [u(*t), s[k].0]).collect();
+                        poly.extend(prof.iter().zip(&spans).rev().map(|((t, _, _), s)| [u(*t), s[k].1]));
+                        out.push(ElevItem { id, category: "Floors", depth: -1.0 + 0.002, polys: vec![poly], fill: shade(&l.material), cut: true, material: Some(l.material.clone()), ..Default::default() });
+                    }
+                    continue;
+                }
                 let (t0, t1) = (surface.z(cut.p0), surface.z(cut.p1));
                 let mut off = 0.0;
                 for (mat, th, void) in &bands {

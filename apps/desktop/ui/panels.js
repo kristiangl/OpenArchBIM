@@ -293,7 +293,7 @@ async function renderProperties() {
     onType = (id) => tp.setType(id);
     title = tp.title;
     groups.push(...tp.groups);
-  } else if (tool === "shapeedit" || tool === "shapeline") {
+  } else if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") {
     const tp = ShapeEdit.properties();
     title = tp.title;
     groups.push(...tp.groups);

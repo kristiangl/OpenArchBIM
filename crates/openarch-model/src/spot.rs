@@ -434,9 +434,13 @@ impl Document {
                         continue;
                     }
                     let (Some(surf), Some(ft)) = (self.floor_surface(f), self.floor_type(f.floor_type)) else { continue };
-                    let top = surf.z(p);
                     let nl = (1.0 + surf.rise * surf.rise).sqrt();
-                    let normal = [-surf.rise * surf.dir.x / nl, -surf.rise * surf.dir.y / nl, 1.0 / nl];
+                    let mut normal = [-surf.rise * surf.dir.x / nl, -surf.rise * surf.dir.y / nl, 1.0 / nl];
+                    let mut top = surf.z(p);
+                    // a shape edited floor: its surface there, and the slope of the triangle under the point
+                    if let Some(tin) = self.floor_shape(f) {
+                        if let Some((z, n, _)) = tin.sample(p) { top = z; normal = n; }
+                    }
                     let above_core: f64 = ft.layers.iter().take_while(|l| !l.core).map(|l| l.thickness_mm).sum();
                     let has_core = ft.layers.iter().any(|l| l.core);
                     let mut push = |surface, z, label: &str, n: [f64; 3]| out.push(SurfaceHit { host: id, surface, label: format!("{label} ({})", ft.name), z, normal: n, singular: false });

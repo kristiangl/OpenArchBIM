@@ -1279,6 +1279,8 @@ const Plan = (() => {
 
     // the ground under everything: toposolid boundaries and contours
     Topo.draw(ctx, data, toScreen, cam.s, sel, tag, { fill: fillShapes, lw, colour, dash });
+    // a selected or shape edited floor's points and split lines
+    FloorShape.draw(ctx, data, toScreen, sel);
     // the site's boundary over the ground
     PropLines.draw(ctx, data, toScreen, cam.s, sel, tag, { lw, colour, dash });
 
@@ -1791,7 +1793,7 @@ const Plan = (() => {
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
     if (tool === "topopoint" || tool === "topolabel" || tool === "topoexcavate") return Topo.promptText();
     if (tool === "propplace") return PropLines.promptText();
-    if (tool === "shapeedit" || tool === "shapeline") return ShapeEdit.promptText();
+    if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
     if (tool === "spot") return Spots.prompt();
@@ -1868,7 +1870,7 @@ const Plan = (() => {
     // a dragged grip or element snaps, whatever the tool
     if ((wgrip && wgrip.moved) || (ggrip && ggrip.moved) || dragging || Det.dragging) return true;
     if (tool === "shapeedit") return ShapeEdit.dragging();
-    if (tool === "shapeline" || tool === "topolabel") return true;
+    if (tool === "shapeline" || tool === "shapepoint" || tool === "topolabel") return true;
     if (tool === "sketch") return Sketch.wantsSnap();
     if (tool === "dimension" || tool === "spot") return false;
     if (["select", "door", "window", "hosted", "joins", "elevation"].includes(tool)) return false;
@@ -2320,6 +2322,7 @@ const Plan = (() => {
     if (tool === "topoexcavate") { Topo.excavateClick(cutterAt(sx, sy)); return; }
     if (tool === "propplace") { PropLines.placeClick(snap(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
+    if (tool === "shapepoint") { ShapeEdit.pointClick(snap(sx, sy)); return; }
     if (tool === "topolabel") { Topo.labelClick(snap(sx, sy, Topo.labelSnap())); return; }
     if (tool === "colorlegend") { ColorFill.place(toWorld(sx, sy)); return; }
     if (tool === "paste") { Clip.place(snap(sx, sy)); return; }
@@ -2963,7 +2966,7 @@ const Plan = (() => {
       // Detail Line has no Finish: Esc in its select tool with nothing selected leaves it
       if (tool === "sketch" && e.key === "Escape" && Sketch.kind === "detail" && Sketch.idle) { cb.leaveDetail(); return true; }
       if (tool === "sketch") return Sketch.key(e);
-      if ((tool === "shapeedit" || tool === "shapeline") && ShapeEdit.key(e)) return true;
+      if ((tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") && ShapeEdit.key(e)) return true;
       if (tool === "topolabel" && Topo.labelKey(e)) return true;
       if (tool === "topoexcavate" && Topo.excavateKey(e)) return true;
       if (tool === "propplace" && PropLines.key(e)) return true;

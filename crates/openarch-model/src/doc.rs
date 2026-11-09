@@ -619,11 +619,14 @@ impl Document {
         self.refuse_pinned(&[id], "edited")?;
         let loops = self.check_floor_sketch(&curves)?;
         self.check_slope(slope.as_ref(), f.level)?;
+        if slope.is_some() && f.shaped() { return Err("A shape edited floor can't take a slope arrow: use Reset Shape first.".into()); }
         let mut nf = f;
         nf.boundary.clear();
         nf.loops = loops;
         nf.slope = slope;
         nf.span = span;
+        // points and split lines outside the new boundary go
+        Self::keep_floor_points_within(&mut nf);
         self.transact("Edit floor boundary", |tx| tx.update(id, Element::Floor(nf)))
     }
 

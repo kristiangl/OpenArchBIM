@@ -581,6 +581,12 @@ impl Document {
                 s.a = x.apply(s.a);
                 s.b = x.apply(s.b);
             }
+            // a shaped floor's points go with it; their heights stay
+            for p in nf.points.iter_mut() {
+                let q = x.apply(Point::new(p.x, p.y));
+                p.x = q.x;
+                p.y = q.y;
+            }
             if opt.copy {
                 nf.pinned = false;
                 new_floors.push((id, nf));

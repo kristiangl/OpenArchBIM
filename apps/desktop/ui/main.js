@@ -400,6 +400,8 @@ function currentContext() {
   if (gc) return gc;
   // a selection that can do something of its own adds one panel after the tab's own (a floor or roof boundary,
   // a section's split); the tab keeps the same groups before it
+  const fs = FloorShape.selectionContext();
+  if (fs) return fs;
   const b = editBoundaryTarget();
   if (b) return { auto: true, key: `boundary:${b.label}:${app.selection[0]}`, title: b.label.replace(/^Edit /, ""), groups: [
     { label: "Mode", items: [{ label: b.label, icon: "editBoundary", onclick: b.run }] } ] };

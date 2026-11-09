@@ -1723,7 +1723,13 @@ impl Document {
                 let (u0, u1) = (us.iter().cloned().fold(f64::INFINITY, f64::min), us.iter().cloned().fold(f64::NEG_INFINITY, f64::max));
                 // a sloped floor is seen as its sloped edge: the hull of the top and bottom of every corner
                 let sloped = self.floor_surface(fl).filter(|s| s.rise.abs() > 1e-9);
-                let polys = match sloped {
+                // a shape edited floor: the hull of its surface's corners, top and underside, as seen
+                let shaped = self.floor_shape(fl).map(|t| {
+                    let b = self.floor_bottoms(fl, &t);
+                    let pts: Vec<[f64; 2]> = t.verts.iter().zip(&b).flat_map(|(v, z)| { let u = u_of(Point::new(v[0], v[1])); [[u, v[2]], [u, *z]] }).filter(|q| q[0] >= u0 - 1.0 && q[0] <= u1 + 1.0).collect();
+                    convex_hull_2d(pts)
+                });
+                let polys = if let Some(h) = shaped { vec![h] } else { match sloped {
                     Some(s) => {
                         let mut pts: Vec<[f64; 2]> = Vec::new();
                         for (p, u) in poly.iter().zip(&us) {
@@ -1734,7 +1740,7 @@ impl Document {
                         vec![convex_hull_2d(pts)]
                     }
                     None => vec![rect(u0, u1, top - thick, top)],
-                };
+                } };
                 items.push(ElevItem { id, category: "Floors", depth: dmin - 0.5, polys, lines: vec![], fill: [170, 172, 176], stroke: true , ..Default::default() });
             }
         }
