@@ -17,7 +17,7 @@ const app = {
   height: 2700,
   tabs: [], // open views, in tab order: { kind, viewId }
   cams: {}, // camera of each view, by kind:viewId, kept while it is not showing
-  browserSel: null, // a view picked in the Project Browser (its Properties show without opening it)
+  browserSel: null, // a view, family, type, sheet or template picked in the Project Browser (its Properties show)
   wallTop: "auto", // "auto" (the next building storey up), "unconnected", or a level id
   secRef: { on: false, view: null }, // the Section tool's Reference Other View and the view it points at
   selection: [],
@@ -754,7 +754,9 @@ function renderTree() {
   const v = app.view;
   const leaf = (name, active, onopen, viewId) => ({ name, active, onopen, viewId });
   const ofKind = (k) => app.info.views.filter((x) => x.view_kind === k);
-  const viewLeaf = (x) => leaf(x.name, v.viewId === x.id, () => openView(viewerOf(x.view_kind), x.id), x.id);
+  const viewLeaf = (x) => ({ ...leaf(x.name, v.viewId === x.id, () => openView(viewerOf(x.view_kind), x.id), x.id), menu: viewMenu(x) });
+  // a type of a system family (walls, floors and so on) or a loadable one: picked to show it, Type Properties to edit it
+  const typeLeaf = (t) => ({ ...leaf(t.name), pick: t.id, menu: [{ label: "Type Properties...", run: () => openTypeProperties(t.id) }] });
   // a kind's views grouped by type: the default type's under the kind's own heading, every other type's under
   // "Floor Plans (Detail Plan)" and so on
   const byType = (k, heading) => {
@@ -787,7 +789,7 @@ function renderTree() {
       { name: "Sheets", menu: sheetsMenu(null), children: (() => {
         // the sheet collections with their sheets, then the sheets in none; a placeholder says so
         const sheetLeaf = (s) => ({
-          ...leaf(`${s.number} - ${s.name}${s.placeholder ? " (placeholder)" : ""}`, v.kind === "sheet" && v.viewId === s.id, () => openView("sheet", s.id)),
+          ...leaf(`${s.number} - ${s.name}${s.placeholder ? " (placeholder)" : ""}`, v.kind === "sheet" && v.viewId === s.id, () => openView("sheet", s.id)), pick: s.id,
           menu: [
             { label: "Open", run: () => openView("sheet", s.id) },
             { sep: true },
@@ -815,52 +817,92 @@ function renderTree() {
       const byCat = new Map();
       for (const f of app.info.families) {
         if (!byCat.has(f.category)) byCat.set(f.category, []);
-        const types = app.info.family_types.filter((t) => t.family_id === f.id).map((t) => ({ ...leaf(t.name, false, () => openTypeProperties(t.id)), menu: [{ label: "Type Properties...", run: () => openTypeProperties(t.id) }] }));
-        byCat.get(f.category).push({ name: f.name, children: types, menu: familyMenu(f) });
+        const types = app.info.family_types.filter((t) => t.family_id === f.id).map((t) => ({ ...typeLeaf(t), onopen: () => openTypeProperties(t.id) }));
+        byCat.get(f.category).push({ name: f.name, children: types, menu: familyMenu(f), pick: f.id });
       }
       // level heads, elevation marks and section marks are annotation families: Edit opens them as documents
-      if (app.info.annotation_families.length) byCat.set("Annotation Symbols", app.info.annotation_families.map((f) => ({ name: f.name, title: f.category, onopen: () => AnnModel.open(f.id), menu: annotationMenu(f) })));
-      byCat.set("Floors", [{ name: "Floor", children: app.info.floor_types.map((t) => leaf(t.name)) }]);
-      if ((app.info.ceiling_types || []).length) byCat.set("Ceilings", [{ name: "Compound Ceiling", children: app.info.ceiling_types.map((t) => leaf(t.name)) }]);
-      if ((app.info.toposolid_types || []).length) byCat.set("Topography", [{ name: "Toposolid", children: app.info.toposolid_types.map((t) => leaf(t.name)) }]);
-      byCat.set("Roofs", [{ name: "Basic Roof", children: app.info.roof_types.map((t) => leaf(t.name)) }]);
-      byCat.set("Walls", [{ name: "Basic Wall", children: app.info.wall_types.map((t) => leaf(t.name)) }]);
+      if (app.info.annotation_families.length) byCat.set("Annotation Symbols", app.info.annotation_families.map((f) => ({ name: f.name, title: f.category, onopen: () => AnnModel.open(f.id), menu: annotationMenu(f), pick: f.id })));
+      byCat.set("Floors", [{ name: "Floor", children: app.info.floor_types.map(typeLeaf) }]);
+      if ((app.info.ceiling_types || []).length) byCat.set("Ceilings", [{ name: "Compound Ceiling", children: app.info.ceiling_types.map(typeLeaf) }]);
+      if ((app.info.toposolid_types || []).length) byCat.set("Topography", [{ name: "Toposolid", children: app.info.toposolid_types.map(typeLeaf) }]);
+      byCat.set("Roofs", [{ name: "Basic Roof", children: app.info.roof_types.map(typeLeaf) }]);
+      byCat.set("Walls", [{ name: "Basic Wall", children: app.info.wall_types.map(typeLeaf) }]);
+      if ((app.info.stair_types || []).length) byCat.set("Stairs", [{ name: "Stair", children: app.info.stair_types.map(typeLeaf) }]);
+      if ((app.info.railing_types || []).length) byCat.set("Railings", [{ name: "Railing", children: app.info.railing_types.map(typeLeaf) }]);
+      if ((app.info.ramp_types || []).length) byCat.set("Ramps", [{ name: "Ramp", children: app.info.ramp_types.map(typeLeaf) }]);
       return [...byCat.entries()].sort((a, b) => a[0].localeCompare(b[0])).map(([cat, fams]) => ({ name: cat, children: fams.sort((a, b) => a.name.localeCompare(b.name)) }));
     })() },
-    { name: "View Templates", children: app.info.view_templates.map((t) => leaf(t.name)) },
+    { name: "View Templates", children: app.info.view_templates.map((t) => ({ ...leaf(t.name), pick: t.id })) },
     { name: "Groups", children: [] },
     { name: "Links", children: [] },
   ];
+  // one click picks a view, sheet, family or type and shows its Properties without opening it; right-click picks it
+  // too, then shows its menu
+  const pickOf = (n) => (n.pick != null ? n.pick : n.viewId != null ? n.viewId : null);
+  const pickIt = (id) => { app.browserSel = id; app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]); renderTree(); renderProperties(); updateRibbonContext(); };
   const build = (list, parent) => {
     for (const n of list) {
       const li = document.createElement("li");
       const span = document.createElement("span");
       span.textContent = n.name;
       if (n.title) span.title = n.title;
-      if (n.menu) span.oncontextmenu = (e) => { e.preventDefault(); showMenu(e.clientX, e.clientY, n.menu); };
+      const pk = pickOf(n);
+      if (pk != null && pk === app.browserSel) li.classList.add("picked");
+      span.oncontextmenu = (e) => {
+        e.preventDefault();
+        if (pk != null && pk !== app.browserSel) pickIt(pk);
+        if (n.menu) showMenu(e.clientX, e.clientY, n.menu);
+      };
       li.appendChild(span);
       if (n.children) {
         if (n.children.length) {
           li.classList.add("node");
           if (open.has(n.name)) li.classList.add("open");
-          span.onclick = () => li.classList.toggle("open");
+          span.onclick = () => { li.classList.toggle("open"); if (pk != null) pickIt(pk); };
           const ul = document.createElement("ul");
           build(n.children, ul);
           li.appendChild(ul);
         }
       } else {
         if (n.active) li.classList.add("sel");
-        if (n.viewId != null && n.viewId === app.browserSel) li.classList.add("picked");
         if (n.onopen) span.ondblclick = n.onopen;
         // a view can be dragged onto an open sheet
         if (n.viewId != null) { span.draggable = true; span.ondragstart = (e) => { e.dataTransfer.setData("text/x-openarch-view", String(n.viewId)); e.dataTransfer.effectAllowed = "copy"; }; }
         // one click picks the view and shows its Properties without opening it
-        if (n.viewId != null) span.onclick = () => { app.browserSel = n.viewId; app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]); renderTree(); renderProperties(); updateRibbonContext(); };
+        if (pk != null) span.onclick = () => pickIt(pk);
       }
       parent.appendChild(li);
     }
   };
   build(nodes, tree);
+}
+
+// Right-click menus of the Project Browser's views
+function viewMenu(x) {
+  return [
+    { label: "Open", run: () => openView(viewerOf(x.view_kind), x.id) },
+    { label: "Duplicate View", run: async () => { const r = await run("duplicate_view", { id: x.id }); if (r) { await refresh(); setPrompt("View duplicated."); } } },
+    { label: "Rename...", run: () => renameView(x) },
+    { sep: true },
+    { label: "Properties", run: () => { app.browserSel = x.id; app.selection = []; renderTree(); renderProperties(); } },
+    { label: "Delete", disabled: app.view.viewId === x.id, title: app.view.viewId === x.id ? "Open another view first" : "", run: async () => { if ((await askConfirm(`Delete the view ${x.name}?`)) && (await run("delete", { ids: [x.id] }))) { await refresh(); } } },
+  ];
+}
+function renameView(x) {
+  openModal("Rename View", (body, foot, close) => {
+    const inp = el("input", { type: "text", value: x.name });
+    inp.style.width = "100%";
+    const msg = el("div", { className: "modal-msg" });
+    body.append(inp, msg);
+    const ok = async () => {
+      try { await Backend.call("patch_view", { id: x.id, patch: { name: inp.value.trim() } }); } catch (e) { msg.textContent = String(e.message || e); return; }
+      close();
+      await refresh();
+    };
+    inp.onkeydown = (e) => { if (e.key === "Enter") ok(); };
+    foot.append(button("OK", ok, true), button("Cancel", close));
+    inp.focus(); inp.select();
+  });
 }
 
 // Right-click menus of the Project Browser's families

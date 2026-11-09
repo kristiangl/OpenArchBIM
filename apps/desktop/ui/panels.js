@@ -109,6 +109,33 @@ function groupTable(name, rows, target) {
   return t;
 }
 
+// What the Properties palette shows for a type or family picked in the Project Browser: a type's parameters (read
+// only; Edit Type changes them), a family's category and types. Anything else (a sheet, a template) describes itself.
+async function browserPickInfo(id) {
+  const lists = ["family_types", "wall_types", "floor_types", "roof_types", "ceiling_types", "toposolid_types", "stair_types", "railing_types", "ramp_types"];
+  const type = lists.map((k) => (app.info[k] || []).find((t) => t.id === id)).find(Boolean);
+  const readOnly = (g) => ({ ...g, rows: (g.rows || []).map((r) => ({ label: r.label, value: r.value == null ? "" : String(r.value), kind: "ro" })) });
+  if (type) {
+    let t = null;
+    try { t = await Backend.call("describe_any_type", { id }); } catch (e) { return null; }
+    const fam = type.family_id ? (app.info.families || []).find((f) => f.id === type.family_id) : null;
+    return { kind: "BrowserType", title: `${fam ? fam.name : t.family || "Type"}: ${type.name}`, typeList: [type], groups: (t.groups || []).map(readOnly) };
+  }
+  const fam = (app.info.families || []).find((f) => f.id === id);
+  if (fam) {
+    const types = (app.info.family_types || []).filter((t) => t.family_id === id);
+    return { kind: "BrowserFamily", title: `Family: ${fam.name}`, typeList: types, groups: [{ name: "Identity Data", rows: [
+      { label: "Category", value: fam.category, kind: "ro" }, { label: "Types", value: String(types.length), kind: "ro" },
+      { label: "Editable", value: fam.has_body ? "Yes (Edit Family)" : "No (drawn by code)", kind: "ro" },
+    ] }] };
+  }
+  const ann = (app.info.annotation_families || []).find((f) => f.id === id);
+  if (ann) return { kind: "BrowserFamily", title: `Family: ${ann.name}`, typeList: [], groups: [{ name: "Identity Data", rows: [
+    { label: "Category", value: ann.category, kind: "ro" }, { label: "In Use", value: ann.in_use ? "Yes" : "No", kind: "ro" },
+  ] }] };
+  try { return await run("describe", { id }); } catch (e) { return null; }
+}
+
 let propsRender = 0;
 async function renderProperties() {
   renderFilterCount();
@@ -121,7 +148,7 @@ async function renderProperties() {
   if (part) d = await run("stair_part", { id: part.id, part: { kind: part.kind, index: part.index, storey: part.storey } });
   else if (app.selection.length === 1) d = await run("describe", { id: app.selection[0] });
   else if (app.selection.length > 1) d = await run("describe_multi", { ids: app.selection });
-  else if (!app.selection.length && app.browserSel != null && viewById(app.browserSel)) d = await run("describe", { id: app.browserSel });
+  else if (!app.selection.length && app.browserSel != null) d = viewById(app.browserSel) ? await run("describe", { id: app.browserSel }) : await browserPickInfo(app.browserSel);
   // the view's own tool: a plan's, or an elevation's or section's
   const tool = app.view.kind === "elevation" ? Elev.tool : Plan.tool;
   if (!app.selection.length && !d && tool === "select" && !(app.view.kind === "schedule" && app.view.viewId == null) && app.view.kind !== "sheet" && curView()) d = await run("describe", { id: curView().id });
@@ -140,6 +167,9 @@ async function renderProperties() {
     else if (d.type_kind === "roof") { types = app.info.roof_types; current = d.type_id; onType = onMulti; }
     else if (d.type_kind === "instance") { types = familyTypes(d.category); current = d.type_id; onType = onMulti; }
     else if (d.type_kind === "grid") { types = app.info.grid_types; current = d.type_id; onType = onMulti; }
+  } else if (d && (d.kind === "BrowserType" || d.kind === "BrowserFamily")) {
+    // a type or family picked in the Project Browser: shown, with Edit Type (and Edit Family) to change it
+    types = d.typeList; current = d.typeList.length ? d.typeList[0].id : null; title = d.title;
   } else if (d && d.kind === "Floor") {
     types = app.info.floor_types; current = d.type_id;
     onType = async (id) => { await run("set_floor_type", { id: d.id, type_id: id }); await refresh(); };
