@@ -717,6 +717,9 @@ pub enum Element {
     Toposolid(crate::topo::Toposolid),
     ContourLabel(crate::topo::ContourLabel),
     PropertyLine(crate::propline::PropertyLine),
+    LineMarking(crate::traffic::LineMarking),
+    ParkingRow(crate::traffic::ParkingRow),
+    Kerb(crate::traffic::Kerb),
 }
 
 impl Element {
@@ -815,6 +818,9 @@ impl Element {
             Element::Toposolid(_) => "Toposolid",
             Element::ContourLabel(_) => "ContourLabel",
             Element::PropertyLine(_) => "PropertyLine",
+            Element::LineMarking(_) => "LineMarking",
+            Element::ParkingRow(_) => "ParkingRow",
+            Element::Kerb(_) => "Kerb",
         }
     }
 }

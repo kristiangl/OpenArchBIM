@@ -773,3 +773,77 @@ mod tests {
         }
     }
 }
+
+/// Line markings, parking rows (their lines and wheel stops) and kerbs, laid on the ground under them: each item's
+/// meshes with its kind, colour and id.
+pub fn traffic_meshes(doc: &Document) -> Vec<(crate::Id, &'static str, [u8; 3], Vec<f32>)> {
+    use crate::traffic::{Paint, WHEEL_STOP};
+    // a painted strip along a polyline, `w` wide, 3 mm above the ground, broken every half metre so it follows it
+    let ribbon = |out: &mut Vec<f32>, pts: &[Point], w: f64, z: &dyn Fn(Point) -> f64| {
+        for s in pts.windows(2) {
+            let (a, b) = (s[0], s[1]);
+            let l = a.dist(&b);
+            if l < 1e-6 { continue; }
+            let n = Point::new(-(b.y - a.y) / l * w / 2.0, (b.x - a.x) / l * w / 2.0);
+            let k = (l / 500.0).ceil().max(1.0) as usize;
+            for i in 0..k {
+                let (t0, t1) = (i as f64 / k as f64, (i + 1) as f64 / k as f64);
+                let p0 = Point::new(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0);
+                let p1 = Point::new(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1);
+                let v = |p: Point, sgn: f64| { let q = Point::new(p.x + n.x * sgn, p.y + n.y * sgn); [q.x, q.y, z(q) + 3.0] };
+                let up = [0.0, 0.0, 1.0];
+                tri(out, v(p0, -1.0), v(p1, -1.0), v(p1, 1.0), up);
+                tri(out, v(p0, -1.0), v(p1, 1.0), v(p0, 1.0), up);
+            }
+        }
+    };
+    // a box on the ground: plan corners (counter-clockwise or not), from the ground at its middle up `h`
+    let block = |out: &mut Vec<f32>, c: &[Point; 4], base: f64, h: f64| {
+        let mut ring = c.to_vec();
+        if crate::geom::signed_area(&ring) < 0.0 { ring.reverse(); }
+        prism(out, &ring, &[[0, 1, 2], [0, 2, 3]], base, base + h);
+    };
+    let mut out = vec![];
+    for (id, m) in doc.line_markings() {
+        let z = |p: Point| doc.traffic_z(m.level, m.host, p);
+        let mut v = vec![];
+        for piece in m.pieces() { ribbon(&mut v, &piece, m.width_mm, &z); }
+        out.push((id, "LineMarking", m.paint.rgb(), v));
+    }
+    for (id, r) in doc.parking_rows() {
+        let z = |p: Point| doc.traffic_z(r.level, r.host, p);
+        let mut v = vec![];
+        for l in r.lines() { ribbon(&mut v, &l, r.line_width_mm, &z); }
+        out.push((id, "ParkingRow", r.paint.rgb(), v));
+        let mut s = vec![];
+        for c in r.wheel_stops() {
+            let mid = Point::new((c[0].x + c[2].x) / 2.0, (c[0].y + c[2].y) / 2.0);
+            block(&mut s, &c, z(mid), WHEEL_STOP[2]);
+        }
+        if !s.is_empty() { out.push((id, "WheelStop", if r.paint == Paint::Yellow { [232, 180, 20] } else { [70, 70, 70] }, s)); }
+    }
+    for (id, k) in doc.kerbs() {
+        let z = |p: Point| doc.traffic_z(k.level, k.host, p);
+        let mut pts: Vec<Point> = vec![];
+        for c in &k.curves { let p = c.tessellate(20.0); pts.extend(p.into_iter().skip(if pts.is_empty() { 0 } else { 1 })); }
+        let mut v = vec![];
+        // in short pieces, each a block from the ground under its middle up the kerb's height
+        for s in pts.windows(2) {
+            let (a, b) = (s[0], s[1]);
+            let l = a.dist(&b);
+            if l < 1e-6 { continue; }
+            let kk = (l / 300.0).ceil().max(1.0) as usize;
+            let n = Point::new(-(b.y - a.y) / l * k.width_mm / 2.0, (b.x - a.x) / l * k.width_mm / 2.0);
+            for i in 0..kk {
+                let (t0, t1) = (i as f64 / kk as f64, (i + 1) as f64 / kk as f64);
+                let p0 = Point::new(a.x + (b.x - a.x) * t0, a.y + (b.y - a.y) * t0);
+                let p1 = Point::new(a.x + (b.x - a.x) * t1, a.y + (b.y - a.y) * t1);
+                let c = [Point::new(p0.x - n.x, p0.y - n.y), Point::new(p1.x - n.x, p1.y - n.y), Point::new(p1.x + n.x, p1.y + n.y), Point::new(p0.x + n.x, p0.y + n.y)];
+                let mid = Point::new((p0.x + p1.x) / 2.0, (p0.y + p1.y) / 2.0);
+                block(&mut v, &c, z(mid), k.height_mm);
+            }
+        }
+        out.push((id, "Kerb", [190, 188, 182], v));
+    }
+    out
+}

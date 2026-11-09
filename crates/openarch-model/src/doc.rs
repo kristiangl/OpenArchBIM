@@ -682,6 +682,9 @@ impl Document {
             Some(Element::Toposolid(t)) => t.pinned,
             Some(Element::ContourLabel(l)) => l.pinned,
             Some(Element::PropertyLine(p)) => p.pinned,
+            Some(Element::LineMarking(x)) => x.pinned,
+            Some(Element::ParkingRow(x)) => x.pinned,
+            Some(Element::Kerb(x)) => x.pinned,
             Some(Element::Stair(s)) => s.pinned,
             Some(Element::Railing(r)) => r.pinned,
             Some(Element::Ramp(r)) => r.pinned,
@@ -716,7 +719,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::ContourLabel(_) | Element::PropertyLine(_) | Element::Stair(_) | Element::Railing(_) | Element::Ramp(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_))) => e.clone(),
+                Some(e @ (Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::ContourLabel(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::Stair(_) | Element::Railing(_) | Element::Ramp(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -730,6 +733,9 @@ impl Document {
                 Element::Toposolid(t)=>t.pinned=pinned,
                 Element::ContourLabel(l)=>l.pinned=pinned,
                 Element::PropertyLine(p)=>p.pinned=pinned,
+                Element::LineMarking(x)=>x.pinned=pinned,
+                Element::ParkingRow(x)=>x.pinned=pinned,
+                Element::Kerb(x)=>x.pinned=pinned,
                 Element::Stair(s) => s.pinned = pinned,
                 Element::Railing(r) => r.pinned = pinned,
                 Element::Ramp(r) => r.pinned = pinned,
@@ -769,7 +775,7 @@ impl Document {
             match self.get(*id) {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
+                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
