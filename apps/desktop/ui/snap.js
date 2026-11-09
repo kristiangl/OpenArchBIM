@@ -98,6 +98,16 @@ const Snap = (() => {
       for (const [a, b] of r.ridges) out.push([a[0], a[1], b[0], b[1]]);
     }
     for (const i of data.inserts || []) if (i.quad) ringSegs(i.quad, out);
+    // stairs and ramps: their outlines, runs and landings, tread and riser lines and the walk line; railings, ceilings
+    // and property lines by their outlines and lines
+    for (const st of [...(data.stairs || []), ...(data.ramps || [])]) {
+      for (const r of st.rings || []) ringSegs(r, out);
+      for (const p of st.parts || []) if (p.ring) ringSegs(p.ring, out);
+      for (const l of [...(st.lines || []), ...(st.path || [])]) if (l.a && l.b) out.push([l.a[0], l.a[1], l.b[0], l.b[1]]);
+    }
+    for (const r of data.railings || []) for (const q of r.rings || []) ringSegs(q, out);
+    for (const c of data.ceilings || []) for (const q of c.rings || []) ringSegs(q, out);
+    for (const p of data.property_lines || []) for (const l of p.lines || []) for (let i = 0; i + 1 < l.length; i++) out.push([l[i][0], l[i][1], l[i + 1][0], l[i + 1][1], l.length === 2 ? 4 : 2]);
     return out;
   }
 
