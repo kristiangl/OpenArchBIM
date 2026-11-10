@@ -166,6 +166,24 @@ const Plan = (() => {
     return 100000;
   }
 
+  // Measure: the last distance measured ({ a, b } world points), shown as a temporary dimension until the next
+  // measurement replaces it, Esc clears it or the tool ends. Nothing is stored in the model.
+  let measured = null;
+  const measureLen = (m) => Math.hypot(m.b.x - m.a.x, m.b.y - m.a.y);
+  function measureText(m) {
+    const dx = m.b.x - m.a.x, dy = m.b.y - m.a.y;
+    let ang = Math.atan2(dy, dx) * 180 / Math.PI; if (ang < 0) ang += 360;
+    return `Distance ${fmtMM(measureLen(m))} mm (X ${fmtMM(Math.abs(dx))}, Y ${fmtMM(Math.abs(dy))}, angle ${(Math.round(ang * 100) / 100) % 360}°)`;
+  }
+  // the measured distance as a temporary dimension: witness lines from both points, the dimension line set out
+  // above the measured points (to the right of a vertical measurement)
+  function measureDim(m) {
+    const l = measureLen(m) || 1, ux = (m.b.x - m.a.x) / l, uy = (m.b.y - m.a.y) / l;
+    let n = [-uy, ux];
+    if (n[1] < -1e-9 || (Math.abs(n[1]) <= 1e-9 && n[0] < 0)) n = [uy, -ux]; // keep the dimension above or to the right
+    return { key: "measure", a: [m.a.x, m.a.y], b: [m.b.x, m.b.y], normal: n, value: measureLen(m) };
+  }
+
   // ---- snapping -------------------------------------------------------------
   let lastMouse = null;
   let snapCycle = 0; // Tab steps through the snap points in reach
@@ -183,6 +201,7 @@ const Plan = (() => {
     if (wgrip && wgrip.start) out.push(wgrip.start);
     if (ggrip && ggrip.g.path) out.push(...ggrip.g.path.map(([x, y]) => ({ x, y })));
     if (dragging) out.push(dragging.p0);
+    if (tool === "measure" && ed && ed.p0 && ed.stage === "b") out.push(ed.p0);
     return out;
   }
   function snap(sx, sy, o) {
@@ -190,7 +209,8 @@ const Plan = (() => {
     if (Snap.owner !== "plan") Snap.build(Snap.fromPlan(data, heldBySketch));
     const w = toWorld(sx, sy);
     if (o) return Snap.resolve(w, { zoom: cam.s, last: o.last || null, extra: [], points: o.points, cycle: snapCycle, shift, gridStep: gridStep(), hvDeg: o.hvDeg, track: o.track });
-    const last = draw && draw.pts.length ? draw.pts[draw.pts.length - 1] : null;
+    // Measure snaps its second point from its first, as drawing does from the last point
+    const last = draw && draw.pts.length ? draw.pts[draw.pts.length - 1] : tool === "measure" && ed && ed.stage === "b" ? ed.p0 : null;
     if (Sketch.active) return Snap.resolve(w, { zoom: cam.s, last: Sketch.last(), extra: Sketch.segs(), points: Sketch.points(), cycle: snapCycle, shift, gridStep: gridStep(), track: trackPts() });
     return Snap.resolve(w, { zoom: cam.s, last, extra: sketchSegs(), cycle: snapCycle, shift, gridStep: gridStep(), track: trackPts() });
   }
@@ -537,7 +557,7 @@ const Plan = (() => {
     return lines[(at + 1) % lines.length];
   }
 
-  function drawTempDims(list, live) {
+  function drawTempDims(list, live, readOnly) {
     const col = live ? "#1d6fb8" : "rgba(29,111,184,0.7)";
     ctx.save();
     ctx.lineWidth = 1;
@@ -581,7 +601,7 @@ const Plan = (() => {
       ctx.fillRect(cx - tw / 2, cy - 9, tw, 18); ctx.strokeRect(cx - tw / 2 + 0.5, cy - 8.5, tw, 18);
       ctx.fillStyle = col; ctx.textAlign = "center"; ctx.textBaseline = "middle";
       ctx.fillText(text, cx, cy + 0.5);
-      if (live) {
+      if (live && !readOnly) {
         if (d.edit) tdimUI.push({ type: "label", x: cx, y: cy, w: tw, h: 18, dim: d0 });
         // a small dimension glyph beside the figure makes the temporary dimension permanent
         const px = cx + tw / 2 + 11;
@@ -1787,6 +1807,7 @@ const Plan = (() => {
     markerRot = null; gridHover = null; ggrip = null;
     ed = isEditTool(t) ? newEdit(t) : null;
     edHover = null;
+    measured = null;
     placeHover = null;
     if (t !== "component") comp = null;
     placeDims = []; placeKey = ""; closeTdimInput();
@@ -1850,6 +1871,10 @@ const Plan = (() => {
     if (T === "offset") return st === "a" ? (eo.offsetMode === "numerical" ? "Move the cursor to the side to offset to, then click the wall. Tab picks the whole chain. Ctrl copies." : "Click the wall to offset. Tab picks the whole chain.") : "Move to set the distance and click, or type it and press Enter.";
     if (T === "trim") return eo.trimMode === "corner" ? (st === "a" ? "Click the first wall on the part to keep." : "Click the second wall on the part to keep.") : st === "a" ? "Click the wall to trim or extend to." : "Click the wall to trim or extend, on the part to keep.";
     if (T === "align") return st === "a" ? "Click the line to align to. Tab cycles overlapping lines." : "Click the line of the element to move. Ctrl keeps the same reference.";
+    if (T === "measure") {
+      if (st === "b") return "Click the second point. Shift keeps to 45 degrees. Esc cancels.";
+      return (measured ? measureText(measured) + ". " : "") + "Click the first point to measure from." + (measured ? " Esc clears the dimension." : " Esc to stop.");
+    }
     return "";
   }
 
@@ -1913,7 +1938,7 @@ const Plan = (() => {
   // ---- modify tools: Move, Copy, Rotate, Mirror, Offset, Trim/Extend, Align -------------
   // The model does the work (one command, one undo step). This part gathers the picks, shows a
   // preview and sends the command through cb.edit, cb.offset, cb.trim and cb.align.
-  const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align", "array"];
+  const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align", "array", "measure"];
   const NEEDS_SELECTION = new Set(["move", "copy", "rotate", "mirror", "array"]);
   let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "",
     arrayKind: "linear", arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false, arrayAssociate: true };
@@ -2147,6 +2172,13 @@ const Plan = (() => {
         else { cb.trim({ mode: "corner", a: ed.first.id, pick_a: ed.first.pick, b: w.id, pick_b: [pt.x, pt.y] }); ed.stage = "a"; ed.first = null; }
       } else if (ed.stage === "a") { ed.boundary = w.id; ed.stage = "b"; }
       else { cb.trim({ mode: "single", wall: w.id, pick: [pt.x, pt.y], boundary: ed.boundary }); if (eo.trimMode === "single") { ed.stage = "a"; ed.boundary = null; } }
+    } else if (tool === "measure") {
+      if (ed.stage === "a") { ed.p0 = p; ed.stage = "b"; }
+      else {
+        if (dist(ed.p0, p) < 0.5) return true;
+        measured = { a: { x: ed.p0.x, y: ed.p0.y }, b: { x: p.x, y: p.y } };
+        ed = newEdit(tool);
+      }
     } else if (tool === "align") {
       const c = edgeCands(sx, sy, eo.prefer)[tabIdx % Math.max(1, edgeCands(sx, sy, eo.prefer).length)];
       if (!c) { cb.prompt(ed.stage === "a" ? "Pick the line to align to." : "Pick the line of the element to move."); return true; }
@@ -2272,6 +2304,11 @@ const Plan = (() => {
       if (ed.first) mark(ed.first.id, accent);
       if (ed.boundary) mark(ed.boundary, "#3c965a");
       if (edHover) mark(edHover.id, "#d4572f");
+    } else if (tool === "measure") {
+      // a dashed line straight between the two points, with the temporary dimension beside it
+      const show = (m) => { if (measureLen(m) < 0.5) return; lineOnScreen([m.a.x, m.a.y], [m.b.x, m.b.y], "#1d6fb8", 1.5, true); drawTempDims([measureDim(m)], true, true); };
+      if (ed.stage === "b" && hover) show({ a: ed.p0, b: hover });
+      else if (measured) show(measured);
     } else if (tool === "align") {
       if (ed.ref) lineOnScreen(ed.ref.a, ed.ref.b, "#3c965a", 2.5, false);
       if (edHover) lineOnScreen(edHover.a, edHover.b, "#d4572f", 2.5, true);
@@ -2280,7 +2317,7 @@ const Plan = (() => {
 
   // typed values (the keyboard entry): digits then Enter
   function editKey(e) {
-    if (!ed || ed.stage === "pick") return false;
+    if (!ed || ed.stage === "pick" || tool === "measure") return false;
     if (/^[0-9.]$/.test(e.key) || (e.key === "-" && !ed.typed)) { ed.typed += e.key; cb.prompt(`Typed: ${ed.typed}. Press Enter to apply, Esc to clear.`); render(); return true; }
     if (e.key === "Backspace" && ed.typed) { ed.typed = ed.typed.slice(0, -1); render(); return true; }
     if (e.key === "Enter" && ed.typed !== "" && hover) {
@@ -3006,6 +3043,7 @@ const Plan = (() => {
       }
       if (ed && e.key === "Escape") {
         if (ed.typed) { ed.typed = ""; cb.prompt(promptText()); render(); return true; }
+        if (tool === "measure" && (ed.stage === "b" || measured)) { measured = null; ed = newEdit(tool); cb.prompt(promptText()); render(); return true; }
         if (ed.stage === "b" || (tool === "align" && ed.ref) || ed.first || ed.boundary) { ed = newEdit(tool); if (ed.stage === "pick" && sel.size) ed.stage = "a"; cb.prompt(promptText()); render(); return true; }
         setTool("select"); return true;
       }

@@ -144,6 +144,7 @@ const COMMANDS = {
   of: () => startEditTool("offset"),
   tr: () => startEditTool("trim"),
   al: () => startEditTool("align"),
+  me: () => startEditTool("measure"),
   ar: () => startEditTool("array"),
   gp: () => createGroup(),
   "export-ifc": () => exportIfc(),
@@ -328,7 +329,7 @@ function modifyEnabled(id) {
   if (app.view.kind !== "plan") return id === "del" && app.selection.length > 0;
   if (id === "del") return app.selection.length > 0;
   // a Modify tool picked while another tool runs takes over from it, as it always has
-  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "ar", "pin", "unpin", "wjoin"].includes(id);
+  return ["mv", "cp", "ro", "mi", "mi-pick", "mi-draw", "of", "tr", "al", "ar", "pin", "unpin", "wjoin", "me"].includes(id);
 }
 
 // Recompute the Modify tab's disabled buttons and the suffix on its tab name after a selection or tool changes.
@@ -2113,7 +2114,7 @@ async function startEditTool(name) {
   Plan.setTool(name);
 }
 
-const EDIT_PROMPT = { move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array" };
+const EDIT_PROMPT = { move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array", measure: "Measure" };
 
 function renderEditBar() {
   const box = $("#ob-edit");
@@ -2982,6 +2983,11 @@ $("#qa-save-as").onclick = () => save(true);
 $("#qa-undo").onclick = undo;
 $("#qa-redo").onclick = redo;
 $("#qa-export").onclick = () => runCommand("export");
+// Measure on the top bar: the same tool as Modify > Measure, in a project's plan views
+$("#qa-measure").onclick = () => {
+  if (app.doc !== "project") { setPrompt("Measure works in a project's plan views.", true); return; }
+  runCommand("me");
+};
 // Help is a drop-down on the top bar, not a ribbon tab
 $("#qa-help").onclick = (e) => {
   const r = e.currentTarget.getBoundingClientRect();
@@ -3090,7 +3096,7 @@ document.addEventListener("keydown", (e) => {
     keyBuf = (keyBuf + e.key.toUpperCase()).slice(-2);
     clearTimeout(keyTimer);
     keyTimer = setTimeout(() => (keyBuf = ""), 900);
-    const map = { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
+    const map = { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", ME: "me", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
     const run = shortcutCommand(map[keyBuf]);
     if (run) { run(); keyBuf = ""; }
     else if (app.view.kind === "plan" && Snap.isOverride(keyBuf) && (["wall", "sketch"].includes(Plan.tool) || Plan.isEditTool())) {
