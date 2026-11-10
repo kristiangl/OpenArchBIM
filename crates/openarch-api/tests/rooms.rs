@@ -14,3 +14,28 @@ let schedule=call(&mut s,"add_schedule",json!({"category":"Rooms","name":"IFC_Ro
 
 #[test]
 fn bounding_floor_clips_volume_and_room_tag_references_survive_undo(){let(mut s,l,v,_)=enclosure();let info=call(&mut s,"doc_info",json!({}));let id=call(&mut s,"add_room",json!({"level_id":l,"view_id":v,"point":[2000,2500]}))["id"].as_u64().unwrap();call(&mut s,"set_room_settings",json!({"settings":{"boundary":"centre","volumes":true}}));let floor=call(&mut s,"add_floor",json!({"type_id":info["floor_types"][0]["id"],"level_id":l,"points":[[-1000,-1000],[5000,-1000],[5000,6000],[-1000,6000]]}))["id"].as_u64().unwrap();call(&mut s,"patch_floor",json!({"id":floor,"patch":{"offset_mm":2500}}));let thickness=info["floor_types"][0]["thickness_mm"].as_f64().unwrap();let volume=value(&mut s,id,"Volume")["raw"].as_f64().unwrap();let area=value(&mut s,id,"Area")["raw"].as_f64().unwrap();assert!((volume-area*(2500.0-thickness)/1000.0).abs()<0.01,"{volume}");call(&mut s,"patch_floor",json!({"id":floor,"patch":{"room_bounding":false}}));assert!(value(&mut s,id,"Volume")["raw"].as_f64().unwrap()>volume);let tags=call(&mut s,"plan",json!({"view_id":v}))["room_tags"].as_array().unwrap().clone();assert_eq!(tags.len(),1);call(&mut s,"delete",json!({"ids":[id]}));assert!(call(&mut s,"plan",json!({"view_id":v}))["room_tags"].as_array().unwrap().is_empty());call(&mut s,"undo",json!({}));assert_eq!(call(&mut s,"plan",json!({"view_id":v}))["room_tags"][0]["id"],tags[0]["id"]);}
+
+/// Walls that are not square to the axes enclose a room just the same, at the same area.
+#[test]
+fn rooms_are_enclosed_by_walls_at_any_angle() {
+    let area = |deg: f64| -> f64 {
+        let mut s = Session::new();
+        let info = call(&mut s, "doc_info", json!({}));
+        let (level, view, wall) = (info["levels"][0]["id"].as_u64().unwrap(), info["views"][0]["id"].as_u64().unwrap(), info["wall_types"][1]["id"].as_u64().unwrap());
+        let a = deg.to_radians();
+        let rot = |x: f64, y: f64| [5000.0 + (x - 5000.0) * a.cos() - (y - 4000.0) * a.sin(), 4000.0 + (x - 5000.0) * a.sin() + (y - 4000.0) * a.cos()];
+        let c = [rot(0.0, 0.0), rot(10000.0, 0.0), rot(10000.0, 8000.0), rot(0.0, 8000.0)];
+        for k in 0..4 {
+            call(&mut s, "add_wall", json!({"type_id": wall, "level_id": level, "start": c[k], "end": c[(k + 1) % 4], "height_mm": 2700}));
+        }
+        // an internal wall across the middle, so there are two rooms and a T junction each end
+        call(&mut s, "add_wall", json!({"type_id": wall, "level_id": level, "start": rot(6000.0, 0.0), "end": rot(6000.0, 8000.0), "height_mm": 2700}));
+        let id = call(&mut s, "add_room", json!({"level_id": level, "view_id": view, "point": rot(3000.0, 4000.0)}))["id"].as_u64().unwrap();
+        let text = value(&mut s, id, "Area")["value"].as_str().unwrap().to_string();
+        text.split(' ').next().unwrap().parse::<f64>().unwrap_or_else(|_| panic!("at {deg} degrees the room is: {text}"))
+    };
+    let square = area(0.0);
+    for deg in [1.0, 10.0, 37.0, 45.0, 123.4] {
+        assert!((area(deg) - square).abs() < 0.011, "{deg} degrees: {} against {square}", area(deg));
+    }
+}

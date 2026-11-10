@@ -60,9 +60,22 @@ pub(crate) fn faces_of_clips(clips:&[Vec<Point>])->(Vec<Region>,Vec<Vec<Point>>)
     let pts:Vec<_>=clips.iter().flatten().copied().collect();if pts.is_empty(){return (vec![],vec![]);}
     let minx=pts.iter().map(|p|p.x).fold(f64::INFINITY,f64::min);let maxx=pts.iter().map(|p|p.x).fold(f64::NEG_INFINITY,f64::max);let miny=pts.iter().map(|p|p.y).fold(f64::INFINITY,f64::min);let maxy=pts.iter().map(|p|p.y).fold(f64::NEG_INFINITY,f64::max);let pad=(maxx-minx).max(maxy-miny).max(1000.0);
     let frame=vec![Point::new(minx-pad,miny-pad),Point::new(maxx+pad,miny-pad),Point::new(maxx+pad,maxy+pad),Point::new(minx-pad,maxy+pad)];
+    // Each clip is grown by a hair first. Walls that butt at an angle share an edge only to within rounding, and
+    // without the overlap a crack too thin to see joins the room to the outside, so nothing is enclosed.
+    let clips:Vec<Vec<Point>>=clips.iter().map(|c|grown(c,CLIP_OVERLAP)).collect();
     let (mut inside,mut outlines)=(vec![],vec![]);
     for mut s in crate::layers::subtract(&frame,clips.iter()){if s.is_empty(){continue;}let outer=s.remove(0);if outer.iter().any(|p|p.x<=minx-pad+0.1||p.x>=maxx+pad-0.1||p.y<=miny-pad+0.1||p.y>=maxy+pad-0.1){outlines.extend(s);continue;}let r=Region{outer,holes:s};if r.area()>100.0{inside.push(r);}}
     (inside,outlines)
+}
+
+/// How far each bounding shape is grown before rooms are found (mm): far below anything drawn or measured.
+const CLIP_OVERLAP:f64=0.02;
+
+/// A ring with each corner moved `by` away from the ring's middle.
+fn grown(ring:&[Point],by:f64)->Vec<Point>{
+    if ring.len()<3{return ring.to_vec();}
+    let n=ring.len() as f64;let (cx,cy)=(ring.iter().map(|p|p.x).sum::<f64>()/n,ring.iter().map(|p|p.y).sum::<f64>()/n);
+    ring.iter().map(|p|{let (dx,dy)=(p.x-cx,p.y-cy);let l=(dx*dx+dy*dy).sqrt();if l<1e-9{*p}else{Point::new(p.x+dx/l*by,p.y+dy/l*by)}}).collect()
 }
 
 /// A thin band along a line (a separation or boundary line), as a clip.
@@ -160,3 +173,4 @@ fn z_at(p:Point,t:&[[f64;3];3])->Option<f64>{let (a,b,c)=(t[0],t[1],t[2]);let de
 fn integrate(t:[Point;3],f:&impl Fn(Point)->f64,depth:u8)->f64{let mid=|a:Point,b:Point|Point::new((a.x+b.x)/2.0,(a.y+b.y)/2.0);let [a,b,c]=t;let (ab,bc,ca)=(mid(a,b),mid(b,c),mid(c,a));let centre=Point::new((a.x+b.x+c.x)/3.0,(a.y+b.y+c.y)/3.0);let area=crate::geom::polygon_area_abs(&t);let coarse=area*(f(a)+f(b)+f(c))/3.0;let fine=area*(f(ab)+f(bc)+f(ca))/3.0;if depth>=7||((fine-coarse).abs()<area*0.02&&(f(centre)-(f(a)+f(b)+f(c))/3.0).abs()<0.05){fine}else{[[a,ab,ca],[ab,b,bc],[ca,bc,c],[ab,bc,ca]].into_iter().map(|t|integrate(t,f,depth+1)).sum()}}
 
 fn horizontal_rings(mesh:&[f32],z:f64)->Vec<Vec<Point>>{let mut segments=vec![];for t in mesh.chunks_exact(18){let p=[[t[0]as f64*1000.0,t[1]as f64*1000.0,t[2]as f64*1000.0],[t[6]as f64*1000.0,t[7]as f64*1000.0,t[8]as f64*1000.0],[t[12]as f64*1000.0,t[13]as f64*1000.0,t[14]as f64*1000.0]];let mut hits=vec![];for k in 0..3{let(a,b)=(p[k],p[(k+1)%3]);if(a[2]<=z&&b[2]>z)||(b[2]<=z&&a[2]>z){let f=(z-a[2])/(b[2]-a[2]);hits.push(Point::new(a[0]+f*(b[0]-a[0]),a[1]+f*(b[1]-a[1])));}}if hits.len()==2{segments.push((hits[0],hits[1]));}}let mut rings=vec![];while let Some((a,b))=segments.pop(){let mut ring=vec![a,b];while ring.last().unwrap().dist(&a)>0.02{let end=*ring.last().unwrap();let Some(i)=segments.iter().position(|(a,b)|a.dist(&end)<0.02||b.dist(&end)<0.02)else{break};let(x,y)=segments.swap_remove(i);ring.push(if x.dist(&end)<0.02{y}else{x});}if ring.len()>3&&ring.last().unwrap().dist(&a)<0.02{ring.pop();if crate::geom::signed_area(&ring)<0.0{ring.reverse();}rings.push(ring);}}rings}
+
