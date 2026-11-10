@@ -26,6 +26,9 @@ pub struct Document {
     pub(crate) next_id: Id,
     undo: Vec<Entry>,
     redo: Vec<Entry>,
+    /// How many of the oldest undo steps have been dropped (`trim_undo`). An edit mark counts from the first step
+    /// ever made, so a mark handed out before a trim still names the same step after it.
+    undo_base: usize,
     revision: u64,
     /// Counts every write through a transaction, rollback, undo and redo; keys the solved-family cache.
     pub(crate) edit_count: u64,
@@ -45,6 +48,17 @@ pub struct Document {
 pub struct Tx<'a> {
     doc: &'a mut Document,
     changes: Vec<Change>,
+}
+
+/// A transaction that ends without `transact` taking its changes was cut short by a panic: put back what it
+/// changed, so the model is never left half edited with nothing in the undo history to say so.
+impl Drop for Tx<'_> {
+    fn drop(&mut self) {
+        if !self.changes.is_empty() {
+            Document::apply(&mut self.doc.elements, &self.changes, true);
+            self.doc.edit_count += 1;
+        }
+    }
 }
 
 impl Tx<'_> {
@@ -128,7 +142,7 @@ impl Tx<'_> {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), display: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), display: Default::default() }
     }
 }
 
@@ -247,6 +261,7 @@ impl Document {
         let mut tx = Tx { doc: self, changes: Vec::new() };
         let out = f(&mut tx);
         let changes = std::mem::take(&mut tx.changes);
+        drop(tx);
         match out {
             Ok(v) => {
                 if !changes.is_empty() {
@@ -354,12 +369,34 @@ impl Document {
     /// Where the undo history stands, for a dialog that edits live but may still be cancelled
     /// (Type Properties): `fold_since` keeps its edits as one step, `roll_back_to` drops them.
     pub fn edit_mark(&self) -> usize {
-        self.undo.len()
+        self.undo_base + self.undo.len()
+    }
+
+    /// Keep only the newest `max` undo steps. Called between requests, never inside one, because the code that
+    /// folds and rolls back steps holds positions in the history while it runs.
+    pub fn trim_undo(&mut self, max: usize) {
+        if self.undo.len() > max && self.defer_settle == 0 && !self.settling {
+            let gone = self.undo.len() - max;
+            self.undo.drain(..gone);
+            self.undo_base += gone;
+        }
+    }
+
+    /// Put the document right after a request panicked part-way: undo the steps it had finished since `mark`
+    /// (the open transaction has already put its own changes back) and clear what it was in the middle of.
+    pub fn recover_after_panic(&mut self, mark: usize) {
+        self.defer_settle = 0;
+        self.settling = false;
+        self.key_writing = false;
+        self.solve_cache = Default::default();
+        self.room_cache = Default::default();
+        self.roll_back_to(mark);
+        self.edit_count += 1;
     }
 
     /// Fold the undo steps made since `mark` into one step called `name` (OK or Apply).
     pub fn fold_since(&mut self, mark: usize, name: &str) {
-        let n = mark.min(self.undo.len());
+        let n = mark.saturating_sub(self.undo_base).min(self.undo.len());
         if self.undo.len() > n + 1 {
             let merged: Vec<Change> = self.undo.drain(n..).flat_map(|e| e.changes).collect();
             self.undo.push(Entry {
@@ -373,6 +410,7 @@ impl Document {
 
     /// Undo every step made since `mark` without leaving them to redo (Cancel).
     pub fn roll_back_to(&mut self, mark: usize) {
+        let mark = mark.saturating_sub(self.undo_base);
         let mut changed = false;
         while self.undo.len() > mark {
             let en = self.undo.pop().unwrap();
@@ -1631,6 +1669,63 @@ mod tests {
         d.undo();
         d.add_wall(wt, lvl, p(0., 0.), p(1000., 0.), 2700.).unwrap();
         assert_eq!(d.redo_name(), None);
+    }
+
+    #[test]
+    fn a_panic_inside_a_transaction_puts_its_changes_back() {
+        let (mut d, _, _) = setup();
+        let (before, mark) = (d.iter().count(), d.edit_mark());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = d.transact("bad", |tx| -> Result<(), String> {
+                tx.add(Element::Level(Level::new("x", 1.0)));
+                panic!("boom")
+            });
+        }));
+        assert!(r.is_err());
+        assert_eq!(d.iter().count(), before);
+        assert_eq!(d.edit_mark(), mark);
+    }
+
+    #[test]
+    fn recovering_after_a_panic_undoes_the_finished_steps_of_a_group() {
+        let (mut d, lvl, wt) = setup();
+        d.add_wall(wt, lvl, p(0., 0.), p(5000., 0.), 2700.).unwrap();
+        let (before, mark) = (d.iter().count(), d.edit_mark());
+        let r = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = d.grouped("two walls", |d| -> Result<(), String> {
+                d.add_wall(wt, lvl, p(0., 1000.), p(5000., 1000.), 2700.)?;
+                panic!("boom")
+            });
+        }));
+        assert!(r.is_err());
+        assert_eq!(d.iter().count(), before + 1);
+        d.recover_after_panic(mark);
+        assert_eq!(d.iter().count(), before);
+        assert_eq!(d.undo_name(), Some("Create wall"));
+        // the document works again afterwards
+        d.add_wall(wt, lvl, p(0., 2000.), p(5000., 2000.), 2700.).unwrap();
+        assert_eq!(d.iter().count(), before + 1);
+    }
+
+    #[test]
+    fn trimming_the_undo_history_keeps_edit_marks_true() {
+        let (mut d, lvl, wt) = setup();
+        for i in 0..5 {
+            d.add_wall(wt, lvl, p(0., i as f64 * 1000.), p(5000., i as f64 * 1000.), 2700.).unwrap();
+        }
+        let mark = d.edit_mark();
+        let count = d.iter().count();
+        d.add_wall(wt, lvl, p(0., 9000.), p(5000., 9000.), 2700.).unwrap();
+        d.add_wall(wt, lvl, p(0., 10000.), p(5000., 10000.), 2700.).unwrap();
+        d.trim_undo(3);
+        assert_eq!(d.edit_mark(), mark + 2);
+        // Cancel in a dialog opened before the trim still drops just its own two steps
+        d.roll_back_to(mark);
+        assert_eq!(d.iter().count(), count);
+        assert_eq!(d.edit_mark(), mark);
+        // only the newest steps are left to undo
+        assert!(d.undo().is_some());
+        assert!(d.undo().is_none());
     }
 
     #[test]

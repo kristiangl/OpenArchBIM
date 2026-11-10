@@ -22,6 +22,24 @@ fn content_type(p: &Path) -> &'static str {
     }
 }
 
+/// The page's content security policy, the same as the desktop app's (`security.csp` in tauri.conf.json, which
+/// also lets the app's own channel to the core through). Only the page's own scripts run, so text that came in
+/// with a file (a name in an IFC file, say) can never run as script. Keep the two in step.
+const CSP: &str = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; font-src 'self' data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'";
+
+/// Whether a request to the core comes from the dev server's own page. A browser names the page that made a
+/// request in `Origin`, so this stops any other web page open in the same browser from driving the project
+/// (which can read and write files). Tools that send no `Origin` (curl, test scripts) are let through.
+fn own_page(req: &tiny_http::Request, port: &str) -> bool {
+    match req.headers().iter().find(|h| h.field.equiv("Origin")) {
+        None => true,
+        Some(h) => {
+            let origin = h.value.as_str();
+            origin == format!("http://127.0.0.1:{port}") || origin == format!("http://localhost:{port}")
+        }
+    }
+}
+
 fn main() {
     let args: Vec<String> = std::env::args().collect();
     let arg = |name: &str, default: &str| {
@@ -35,6 +53,10 @@ fn main() {
 
     for mut req in server.incoming_requests() {
         let url = req.url().split('?').next().unwrap_or("/").to_string();
+        if req.method() == &Method::Post && !own_page(&req, &port) {
+            let _ = req.respond(Response::from_string("forbidden").with_status_code(403));
+            continue;
+        }
         if req.method() == &Method::Post && url == "/dialog" {
             let mut body = String::new();
             let _ = req.as_reader().read_to_string(&mut body);
@@ -72,7 +94,8 @@ fn main() {
         match (ok, std::fs::read(&path)) {
             (true, Ok(bytes)) => {
                 let h = Header::from_bytes("Content-Type", content_type(&path)).unwrap();
-                let _ = req.respond(Response::from_data(bytes).with_header(h));
+                let csp = Header::from_bytes("Content-Security-Policy", CSP).unwrap();
+                let _ = req.respond(Response::from_data(bytes).with_header(h).with_header(csp));
             }
             _ => {
                 let _ = req.respond(Response::from_string("not found").with_status_code(404));

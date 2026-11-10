@@ -36,6 +36,7 @@ mod stairs;
 mod railings;
 mod ramps;
 mod colorfill;
+mod guard;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -50,6 +51,8 @@ pub struct Session {
     clipboard: Option<(u64, openarch_model::clipboard::Clipboard)>,
     /// Counts the projects this session has opened, so a paste knows whether the clipboard is from this one.
     doc_serial: u64,
+    /// The revision last written to a recovery copy, so a request that keeps failing writes it once.
+    recovered_revision: Option<u64>,
 }
 
 impl Default for Session {
@@ -224,10 +227,27 @@ const LOCATION_LINES: [(&str, LocationLine, &str); 6] = [
 impl Session {
     pub fn new() -> Self {
         let doc = Document::new_project();
-        Session { saved_revision: doc.revision(), doc, path: None, group_editing: None, clipboard: None, doc_serial: 0 }
+        Session { saved_revision: doc.revision(), doc, path: None, group_editing: None, clipboard: None, doc_serial: 0, recovered_revision: None }
     }
 
+    /// Answers one request. A panic anywhere inside it is caught here: the project is put back as it was before
+    /// the request and the caller gets an error, so one fault does not end the session and lose the work in it.
     pub fn handle(&mut self, method: &str, p: &Value) -> Res {
+        self.guarded(method, |s| s.handle_unguarded(method, p))
+    }
+
+    fn handle_unguarded(&mut self, method: &str, p: &Value) -> Res {
+        #[cfg(test)]
+        if method == "test_panic" {
+            // half a step, then a fault: what a bug in a command looks like
+            let levels = p.get("levels").and_then(|v| v.as_u64()).unwrap_or(0);
+            return self.doc.grouped("Test", |d| {
+                for i in 0..levels {
+                    d.add_level(Some(&format!("Panic {i}")), 9000.0 + i as f64, false)?;
+                }
+                panic!("test fault")
+            });
+        }
         // a view's drawing shows its Temporary Hide/Isolate, or Reveal Hidden Elements
         if matches!(method, "plan" | "scene" | "elevation") {
             return self.drawn(method, p, |s| s.handle_inner(method, p));
@@ -3719,6 +3739,44 @@ mod tests {
 
     fn call(s: &mut Session, m: &str, p: Value) -> Value {
         s.handle(m, &p).unwrap_or_else(|e| panic!("{m} failed: {e}"))
+    }
+
+    #[test]
+    fn a_panic_in_a_request_is_an_error_and_the_project_carries_on() {
+        let dir = std::env::temp_dir().join(format!("openarch-guard-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("Guard.oab");
+        let (mut s, lvl, wt, _) = setup();
+        call(&mut s, "save", json!({"path": path.to_string_lossy()}));
+        let wall = |s: &mut Session, y: f64| call(s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0.0, y], "end": [4000.0, y], "height_mm": 2700}));
+        let count = |s: &Session| s.doc.iter().filter(|(_, e)| matches!(e, Element::Wall(_))).count();
+        wall(&mut s, 0.0);
+        let levels = |s: &mut Session| call(s, "doc_info", json!({}))["levels"].as_array().unwrap().len();
+        let (before, walls) = (levels(&mut s), count(&s));
+
+        let err = s.handle("test_panic", &json!({"levels": 2})).unwrap_err();
+        assert!(err.contains("test_panic") && err.contains("test fault"), "{err}");
+        // the two levels the request had made are gone, the wall drawn before it is not
+        assert_eq!(levels(&mut s), before);
+        assert_eq!(count(&s), walls);
+        assert_eq!(s.doc.undo_name(), Some("Create wall"));
+        // unsaved work went to a copy beside the project, which opens
+        let copy = dir.join("Guard.recovered.oab");
+        assert!(err.contains(&copy.to_string_lossy().to_string()), "{err}");
+        assert_eq!(Document::open(&copy).unwrap().iter().filter(|(_, e)| matches!(e, Element::Wall(_))).count(), walls);
+        // and the session still works
+        wall(&mut s, 1000.0);
+        assert_eq!(count(&s), walls + 1);
+        assert!(call(&mut s, "undo", json!({}))["done"].is_string());
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn a_panic_with_nothing_unsaved_writes_no_copy() {
+        let mut s = Session::new();
+        let err = s.handle("test_panic", &json!({})).unwrap_err();
+        assert!(err.contains("test fault") && !err.contains("recovered"), "{err}");
+        assert_eq!(call(&mut s, "doc_info", json!({}))["dirty"], false);
     }
 
     /// Volume of a triangle-list mesh of (pos, normal) vertices, in cubic metres.
