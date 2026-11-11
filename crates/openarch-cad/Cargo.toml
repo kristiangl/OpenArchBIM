@@ -1,0 +1,11 @@
+[package]
+name = "openarch-cad"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "CAD drawings (DXF and DWG) read into flat shapes the model can place in a view"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+# MPL-2.0, used unmodified as a separate library. Reads ASCII and binary DXF and DWG.
+acadrust = { version = "=0.6.8", default-features = false }

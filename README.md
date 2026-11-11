@@ -19,7 +19,7 @@ A free, open-source building information modelling (BIM) application for archite
 - Plan, elevation, section and 3D views, with jogged sections, depth cueing, view ranges, templates, graphic display options, and hide and isolate
 - Permanent and temporary dimensions, spot elevations, coordinates and slopes, text notes, detail lines and filled regions
 - Rooms and areas (with colour fills), and schedules with calculated columns, key schedules, material takeoffs and cross-schedule totals
-- Sheets with schedules on them, and export of sheets and views to PDF and DXF
+- Sheets with schedules on them, and export of sheets and views to PDF and DXF, and DXF and DWG drawings imported or linked into plans
 - IFC4 export and IFC import
 - Groups, arrays, copy and paste, Match Type, and Move, Copy, Rotate and Mirror in the 3D view
 - Undo and redo, and a single-file project format (`.oab`) with loadable family files (`.oaf`)

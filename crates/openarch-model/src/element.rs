@@ -721,6 +721,7 @@ pub enum Element {
     ParkingRow(crate::traffic::ParkingRow),
     Kerb(crate::traffic::Kerb),
     KerbRamp(crate::traffic::KerbRamp),
+    CadImport(crate::cad::CadImport),
 }
 
 impl Element {
@@ -823,6 +824,7 @@ impl Element {
             Element::ParkingRow(_) => "ParkingRow",
             Element::Kerb(_) => "Kerb",
             Element::KerbRamp(_) => "KerbRamp",
+            Element::CadImport(_) => "CadImport",
         }
     }
 }

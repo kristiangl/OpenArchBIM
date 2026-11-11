@@ -1,6 +1,6 @@
 [workspace]
 resolver = "2"
-members = ["crates/openarch-params", "crates/openarch-links", "crates/openarch-model", "crates/openarch-api", "crates/openarch-dev"]
+members = ["crates/openarch-params", "crates/openarch-links", "crates/openarch-cad", "crates/openarch-model", "crates/openarch-api", "crates/openarch-dev"]
 exclude = ["apps/desktop/src-tauri"]
 # apps/desktop/src-tauri is built separately (needs platform GUI libraries)
 

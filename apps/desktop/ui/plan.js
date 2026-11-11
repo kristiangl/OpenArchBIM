@@ -290,7 +290,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -429,10 +429,12 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
+      // an imported drawing picks by its lines, not by the box round it
+      if (e.hit) { const hd = e.hit(p, tol); if (hd !== Infinity) found.push({ e, d: hd }); continue; }
       const all = e.rings && e.rings.length ? e.rings : [e.ring];
       const edge = Math.min(...all.map((r) => polyEdgeDist(p, r)));
       // a floor with an opening is inside only where the rings cover it an odd number of times
@@ -495,6 +497,8 @@ const Plan = (() => {
     const rc = [[r.x0, r.y0], [r.x1, r.y0], [r.x1, r.y1], [r.x0, r.y1]];
     const picked = elements().filter((e) => {
       if (!selectable(e)) return false;
+      // an imported drawing lies under everything: only a window right round it takes it
+      if (e.kind === "cadimport" && !window) return false;
       // a door counts its open leaves and swing arcs as part of itself
       const extra = e.parts ? [...e.parts.polys, ...e.parts.arcs.map((x) => x.pts)] : [];
       if (window) return e.ring.every(inR) && extra.every((q) => q.every(inR));
@@ -1334,6 +1338,8 @@ const Plan = (() => {
     };
     const order = { underlay: 0, beyond: 1, projection: 2, cut: 3 };
 
+    // imported CAD drawings set to Background, under the model
+    Cad.draw(ctx, data, toScreen, cam.s, sel, tag, false);
     // the ground under everything: toposolid boundaries and contours
     Topo.draw(ctx, data, toScreen, cam.s, sel, tag, { fill: fillShapes, lw, colour, dash });
     // a selected or shape edited floor's points and split lines
@@ -1669,6 +1675,8 @@ const Plan = (() => {
       for (const j of joinSel) box(j, accent, 2.5);
     }
 
+    // imported CAD drawings set to Foreground, over the model
+    Cad.draw(ctx, data, toScreen, cam.s, sel, tag, true);
     // Select tool: pre-highlight what a click would pick (Tab steps through the choices)
     // and the Tag tool the door or window a click would tag
     if ((tool === "select" || tool === "tag" || tool === "topoexcavate") && selHover && !band) {
@@ -2955,7 +2963,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();
@@ -2965,6 +2973,8 @@ const Plan = (() => {
     },
     groupOf: (id) => memberOf.get(id),
     viewData: () => data,
+    // the middle of what the view shows (mm)
+    center: () => ({ x: cam.x, y: cam.y }),
     placeGroupType(t) { groupPlace = t; setTool("groupplace"); },
     setSelection(ids) { sel = new Set(ids); render(); },
     gridOptions: () => ({ shape: gridShape, offset: gridOffset }),
@@ -3129,7 +3139,7 @@ const Plan = (() => {
     fit() {
       // the elevation markers and project points are part of what the view shows
       const extra = [...(data.markers || []).map((m) => [m.x, m.y]), ...(data.sections || []).flatMap((s) => [s.start, s.end]), ...(data.site_points && data.site_points.base ? [[data.site_points.base.x, data.site_points.base.y]] : [])];
-      const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...(data.toposolids || []).flatMap((t) => t.rings.flat()), ...extra];
+      const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...(data.toposolids || []).flatMap((t) => t.rings.flat()), ...(data.cad_imports || []).flatMap((c) => c.ring || []), ...extra];
       if (!pts.length) { cam = { x: 3000, y: 2000, s: Math.min(size().w / 12000, size().h / 8000) || 0.1 }; render(); return; }
       const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
       const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];

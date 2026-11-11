@@ -151,6 +151,8 @@ const COMMANDS = {
   "export-ifc": () => exportIfc(),
   "open-ifc": () => pickIfc(),
   "import-ifc": () => importIfc(),
+  "import-cad": () => Cad.start(false),
+  "link-cad": () => Cad.start(true),
   "v-sheet": () => newSheetDialog(),
   "v-sched": () => Sched.newSchedule(),
   "v-sched-qty": () => Sched.newSchedule("schedule"),
@@ -394,6 +396,8 @@ function currentContext() {
   if (ts) return ts;
   const pc = PropLines.selectionContext();
   if (pc) return pc;
+  const cadc = Cad.selectionContext();
+  if (cadc) return cadc;
   const trc = Traffic.selectionContext();
   if (trc) return trc;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation

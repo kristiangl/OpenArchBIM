@@ -7,7 +7,8 @@ description = "Building model: elements, transactions, undo/redo, geometry, proj
 
 [dependencies]
 openarch-params = { path = "../openarch-params" }
-serde = { version = "1", features = ["derive"] }
+openarch-cad = { path = "../openarch-cad" }
+serde = { version = "1", features = ["derive", "rc"] }
 serde_json = "1"
 rusqlite = { version = "0.32", features = ["bundled"] }
 uuid = { version = "1", features = ["v4"] }

@@ -44,6 +44,7 @@ pub mod ceiling;
 pub mod shape;
 pub mod topo;
 pub mod propline;
+pub mod cad;
 pub mod floorshape;
 pub mod traffic;
 pub mod areas;

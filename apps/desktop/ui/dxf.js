@@ -137,6 +137,8 @@ const Dxf = (() => {
       if (tag && tag.cat) {
         const r = rows.get(`${tag.cat}|${tag.sub || ""}`) || rows.get(`${tag.cat}|`);
         const kind = tag.kind || "projection";
+        // an imported drawing's lines go back out on the layers they came in on
+        if (tag.cat === "Imported Drawings" && tag.sub) name = safeName(tag.sub);
         if (r && r.layer) {
           name = safeName(`${r.layer}-${(r.sub && tag.sub && r.status) || status[kind] || "OTLN"}`);
           colour = kind === "pattern" ? r.pattern : r.colour;

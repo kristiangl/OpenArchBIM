@@ -28,6 +28,7 @@ mod tags;
 mod ceilings;
 mod topo;
 mod propline;
+mod cad;
 mod traffic;
 mod areas;
 mod clipboard;
@@ -278,6 +279,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_propline(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_cad(method, p) {
             return r;
         }
         if let Some(r) = self.handle_topo(method, p) {
@@ -2993,6 +2997,7 @@ impl Session {
             if let Some(c) = ceilings::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(t) = topo::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(t) = propline::drawing(d, vid).as_object() { o.extend(t.clone()); }
+            if let Some(t) = cad::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(t) = traffic::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(c) = stairs::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = railings::drawing(d, vid).as_object() { o.extend(c.clone()); }
@@ -3184,6 +3189,7 @@ impl Session {
             Element::Toposolid(t) => Ok(self.toposolid_props(id, t)),
             Element::ContourLabel(l) => Ok(self.contour_label_props(id, l)),
             Element::PropertyLine(pl) => Ok(self.property_line_props(id, pl)),
+            Element::CadImport(c) => Ok(self.cad_props(id, c)),
             e @ (Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_)) => self.traffic_props(id, e).ok_or_else(|| "no properties".to_string()),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),

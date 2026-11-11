@@ -323,7 +323,7 @@ const ICON_ALIAS = {
   // structure
   "s-beam": "beam", "s-brace": "brace", "s-column": "sColumn", "s-truss": "truss", "s-isolated": "footing", "s-strip": "stripFooting", "s-slab": "slabEdge",
   // insert
-  "link-ifc": "linkIfc", "open-ifc": "linkIfc", "import-ifc": "linkIfc", "link-model": "link", "link-dxf": "linkDxf", "import-dxf": "importDxf", "import-image": "image", "load-family": "loadFamily",
+  "link-ifc": "linkIfc", "open-ifc": "linkIfc", "import-ifc": "linkIfc", "link-model": "link", "link-cad": "linkDxf", "import-cad": "importDxf", "import-image": "image", "load-family": "loadFamily",
   // annotate
   "dim-aligned": "dimAligned", "dim-linear": "dimLinear", "dim-angular": "dimAngular", "dim-radial": "dimRadial", "dim-diameter": "dimDiameter",
   "dim-arc": "dimArc", "dim-elev": "spotElev", "dim-coord": "spotCoord", "dim-slope": "spotSlope", "edit-witness": "editWitness",

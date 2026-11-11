@@ -107,6 +107,8 @@ const Snap = (() => {
     }
     for (const r of data.railings || []) for (const q of r.rings || []) ringSegs(q, out);
     for (const c of data.ceilings || []) for (const q of c.rings || []) ringSegs(q, out);
+    // imported CAD drawings: their shown lines
+    for (const s of Cad.snapSegs(data)) out.push(s);
     for (const p of data.property_lines || []) for (const l of p.lines || []) for (let i = 0; i + 1 < l.length; i++) out.push([l[i][0], l[i][1], l[i + 1][0], l[i + 1][1], l.length === 2 ? 4 : 2]);
     return out;
   }
