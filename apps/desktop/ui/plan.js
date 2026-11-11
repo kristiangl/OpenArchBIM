@@ -146,6 +146,21 @@ const Plan = (() => {
   const toScreen = (p) => { const { w, h } = size(); return { x: (p.x - cam.x) * cam.s + w / 2, y: h / 2 - (p.y - cam.y) * cam.s }; };
   const toWorld = (sx, sy) => { const { w, h } = size(); return { x: (sx - w / 2) / cam.s + cam.x, y: (h / 2 - sy) / cam.s + cam.y }; };
   const dist = (a, b) => Math.hypot(a.x - b.x, a.y - b.y);
+  // True North: a plan set to it is drawn turned by the angle to true north (clockwise on screen, so true north points
+  // up). The canvas turns about its centre; everything inside works on the unturned screen, so the pointer is turned
+  // back where it comes in and boxes laid over the canvas are turned forward.
+  const turnRad = () => (data && data.north_turn_deg ? data.north_turn_deg * Math.PI / 180 : 0);
+  let turned = false;
+  const turnBy = (x, y, a) => { const { w, h } = size(), c = Math.cos(a), s = Math.sin(a), dx = x - w / 2, dy = y - h / 2; return { x: w / 2 + dx * c - dy * s, y: h / 2 + dx * s + dy * c }; };
+  const turnPt = (x, y) => (turnRad() ? turnBy(x, y, turnRad()) : { x, y });
+  function unturn(e) {
+    const a = turnRad();
+    if (!a) return e;
+    const r = canvas.getBoundingClientRect();
+    const o = turnBy(e.offsetX, e.offsetY, -a), c = turnBy(e.clientX - r.left, e.clientY - r.top, -a);
+    const own = { offsetX: o.x, offsetY: o.y, clientX: c.x + r.left, clientY: c.y + r.top };
+    return new Proxy(e, { get(t, k) { if (k in own) return own[k]; const v = t[k]; return typeof v === "function" ? v.bind(t) : v; } });
+  }
 
   function resize() {
     const dpr = window.devicePixelRatio || 1;
@@ -645,7 +660,8 @@ const Plan = (() => {
     const inp = document.createElement("input");
     inp.type = "text"; inp.value = fmtMM(box.dim.value); inp.setAttribute("aria-label", "Dimension value");
     inp.id = "tdim-input";
-    inp.style.cssText = `position:fixed;left:${r.left + box.x - 38}px;top:${r.top + box.y - 12}px;width:76px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid #1d6fb8;border-radius:3px;background:#fff;color:#111;`;
+    const at = turnPt(box.x, box.y);
+    inp.style.cssText = `position:fixed;left:${r.left + at.x - 38}px;top:${r.top + at.y - 12}px;width:76px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid #1d6fb8;border-radius:3px;background:#fff;color:#111;`;
     document.body.appendChild(inp);
     inp.focus(); inp.select();
     inp.onkeydown = (e) => {
@@ -665,7 +681,8 @@ const Plan = (() => {
     const r = canvas.getBoundingClientRect();
     const inp = document.createElement("input");
     inp.type = "text"; inp.value = g.name; inp.setAttribute("aria-label", "Grid name"); inp.id = "grid-name-input";
-    inp.style.cssText = `position:fixed;left:${r.left + b.x - 36}px;top:${r.top + b.y - 12}px;width:72px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid #1d6fb8;border-radius:3px;background:#fff;color:#111;`;
+    const at = turnPt(b.x, b.y);
+    inp.style.cssText = `position:fixed;left:${r.left + at.x - 36}px;top:${r.top + at.y - 12}px;width:72px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid #1d6fb8;border-radius:3px;background:#fff;color:#111;`;
     document.body.appendChild(inp);
     inp.focus(); inp.select();
     inp.onkeydown = (e) => {
@@ -1177,14 +1194,24 @@ const Plan = (() => {
   }
 
   function render() {
+    const a = turnRad();
+    if (!a) return renderView();
     if (!printing) resize();
+    const { w, h } = size();
+    ctx.save(); ctx.translate(w / 2, h / 2); ctx.rotate(a); ctx.translate(-w / 2, -h / 2);
+    turned = true;
+    try { renderView(); } finally { turned = false; ctx.restore(); }
+  }
+
+  function renderView() {
+    if (!printing && !turned) resize();
     tdimUI = [];
     wgrips = [];
     const { w, h } = size();
     const text = css("--text"), accent = css("--accent"), line = css("--line");
     if (!printing) {
       ctx.fillStyle = css("--view-bg");
-      ctx.fillRect(0, 0, w, h);
+      if (turned) ctx.fillRect(-w - h, -w - h, 3 * w + 2 * h, 3 * h + 2 * w); else ctx.fillRect(0, 0, w, h);
     }
 
     // work plane grid (Work Plane > Show). Off by default.
@@ -2465,7 +2492,7 @@ const Plan = (() => {
   }
 
   canvas.addEventListener("contextmenu", (e) => e.preventDefault());
-  canvas.addEventListener("pointerdown", (e) => {
+  canvas.addEventListener("pointerdown", (ev) => { const e = unturn(ev);
     canvas.setPointerCapture(e.pointerId);
     if (e.button === 1 || e.button === 2) { pan = { x: e.clientX, y: e.clientY, moved: false, button: e.button }; return; }
     down = { x: e.offsetX, y: e.offsetY };
@@ -2532,7 +2559,7 @@ const Plan = (() => {
       if (c.length) down.drag = { ids: c[0], p0: snap(e.offsetX, e.offsetY) };
     }
   });
-  canvas.addEventListener("pointermove", (e) => {
+  canvas.addEventListener("pointermove", (ev) => { const e = unturn(ev);
     shift = e.shiftKey;
     if (pan) {
       const dx = e.clientX - pan.x, dy = e.clientY - pan.y;
@@ -2669,7 +2696,7 @@ const Plan = (() => {
     if (tool === "grid" && draw && GRID_ARC.has(gridShape)) refreshGridShape();
     render();
   });
-  canvas.addEventListener("pointerup", (e) => {
+  canvas.addEventListener("pointerup", (ev) => { const e = unturn(ev);
     if (tool === "shapeedit" && !pan && ShapeEdit.up(toScreen)) { down = null; hover = null; render(); return; }
     if (Dims.dragging) { down = null; Dims.up(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { down = null; Spots.up(e.offsetX, e.offsetY); return; }
@@ -2763,7 +2790,7 @@ const Plan = (() => {
     if (down && (tool !== "select" && tool !== "joins" || Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5)) click(e.offsetX, e.offsetY, e);
     down = null;
   });
-  canvas.addEventListener("dblclick", (e) => {
+  canvas.addEventListener("dblclick", (ev) => { const e = unturn(ev);
     if (tool === "sketch") Sketch.dblclick();
     else if (tool === "select" && Dims.dblclick(e.offsetX, e.offsetY)) { /* the text dialog opened */ }
     else if (tool === "select" && Spots.dblclick(e.offsetX, e.offsetY)) { /* a bend came out of the leader */ }
@@ -2781,7 +2808,7 @@ const Plan = (() => {
       else if (id && (data.detail_lines || []).some((x) => x.id === id)) cb.editDetail(id);
       else if (id && (data.regions || []).some((x) => x.id === id)) cb.editRegion(id); }
   });
-  canvas.addEventListener("wheel", (e) => {
+  canvas.addEventListener("wheel", (ev) => { const e = unturn(ev);
     e.preventDefault();
     const before = toWorld(e.offsetX, e.offsetY);
     cam.s = Math.min(2, Math.max(0.005, cam.s * Math.exp(-e.deltaY * 0.0015)));
@@ -2806,6 +2833,7 @@ const Plan = (() => {
     refresh: () => cb.dimRefresh(),
     openText: (d, s) => cb.dimText(d, s),
     setTool: (t) => setTool(t),
+    toPage: (x, y) => turnPt(x, y),
     canvasRect: () => canvas.getBoundingClientRect(),
   });
 
@@ -3120,7 +3148,9 @@ const Plan = (() => {
       return true;
     },
     // test hooks: where a model point appears on screen (relative to the canvas), and the snap under the cursor
-    screenOf(x, y) { return toScreen({ x, y }); },
+    // where a plan point is on the page (turned in a True North plan), and how far the plan is turned (degrees, clockwise)
+    screenOf(x, y) { const p = toScreen({ x, y }); return turnPt(p.x, p.y); },
+    turnDeg: () => turnRad() * 180 / Math.PI,
     hoverSnap: () => hover,
     setCamera(x, y, s2) { cam = { x, y, s: s2 }; render(); },
     getCamera() { return { ...cam }; },

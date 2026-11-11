@@ -3583,7 +3583,7 @@ function noteEditor(at, sizeMm, value, onDone, o = {}) {
     const n = { ...(o.note || {}), text }, L = Ann.layout(text), tl = NoteGeom.corners(n, L)[0];
     const q = V.screenOf(tl[0] * ds, tl[1] * ds);
     ta.style.left = c.left + q.x + "px"; ta.style.top = c.top + q.y + st.size_mm * 0.1 * paperPx + "px";
-    ta.style.transform = "rotate(" + -(n.rotation_deg || 0) + "deg) scaleX(" + wf + ")";
+    ta.style.transform = "rotate(" + (-(n.rotation_deg || 0) + (V.turnDeg ? V.turnDeg() : 0)) + "deg) scaleX(" + wf + ")";
   };
   document.body.append(ta); position(); ta.oninput = position;
   let done = false;

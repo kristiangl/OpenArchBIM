@@ -725,7 +725,8 @@ function makeDims() {
     const inp = document.createElement("input");
     inp.type = "text"; inp.id = "dim-input"; inp.setAttribute("aria-label", "Dimension value");
     inp.value = String(Math.round(s.value_mm * 10) / 10);
-    inp.style.cssText = `position:fixed;left:${r.left + b.cx - 40}px;top:${r.top + b.cy - 12}px;width:80px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid #1d6fb8;border-radius:3px;background:#fff;color:#111;`;
+    const at = H.toPage ? H.toPage(b.cx, b.cy) : { x: b.cx, y: b.cy };
+    inp.style.cssText = `position:fixed;left:${r.left + at.x - 40}px;top:${r.top + at.y - 12}px;width:80px;height:24px;z-index:60;text-align:center;font:12px system-ui,sans-serif;border:1.5px solid #1d6fb8;border-radius:3px;background:#fff;color:#111;`;
     document.body.appendChild(inp);
     inp.focus(); inp.select();
     inp.onkeydown = async (e) => {

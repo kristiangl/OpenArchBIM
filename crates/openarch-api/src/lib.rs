@@ -2965,6 +2965,8 @@ impl Session {
             }),
             _ => Value::Null,
         };
+        // a plan set to True North turns by the angle to true north, so true north points up the screen
+        let north_turn = match d.project_location() { Some((_, loc)) if settings.orientation == Orientation::TrueNorth => loc.angle_true_north_deg, _ => 0.0 };
         let section_tag = d.default_view_type(openarch_model::view::ViewKind::Section).and_then(|id| d.view_type(id))
             .and_then(|t| t.marker_type).and_then(|id| d.view_marker_type(id));
         let mut out = json!({
@@ -2973,6 +2975,7 @@ impl Session {
                 "detail_level": settings.detail_level, "wall_join_display": settings.wall_join_display,
                 "display_model": settings.display_model,
             },
+            "north_turn_deg": north_turn,
             "range": { "top": finite(range.top), "cut": range.cut, "bottom": finite(range.bottom), "depth": finite(range.depth) },
             "crop": {
                 "enabled": view.crop.enabled, "visible": view.crop.region_visible,
@@ -5998,6 +6001,11 @@ mod tests {
         assert_eq!(raw("Angle to True North"), 12.0);
         let plan = call(&mut s, "plan", json!({"view_id": site}));
         assert_eq!(plan["site_points"]["base"]["x"], 0.0);
+        // a plan turns by the angle to true north only when set to True North, as the Site plan starts
+        assert_eq!(plan["north_turn_deg"], 12.0);
+        call(&mut s, "patch_view", json!({"id": site, "patch": {"settings": {"orientation": "project_north"}}}));
+        assert_eq!(call(&mut s, "plan", json!({"view_id": site}))["north_turn_deg"], 0.0);
+        call(&mut s, "patch_view", json!({"id": site, "patch": {"settings": {"orientation": "true_north"}}}));
         // pinned points refuse to move; undo walks back
         call(&mut s, "patch_project_location", json!({"patch": {"base_pinned": true}}));
         assert!(s.handle("move_site_point", &json!({"which": "base", "point": [100.0, 100.0]})).is_err());
