@@ -111,6 +111,52 @@ pub struct Kerb {
     pub pinned: bool,
 }
 
+/// Kerb ramp limits (AS 1428.1-2009 as summarised by Sunshine Coast Council, 9 Nov 2026): as steep as 1 in [0],
+/// rising no more than [1] and no longer than [2] (mm).
+pub const KERB_RAMP: [f64; 3] = [8.0, 190.0, 1520.0];
+
+/// A kerb ramp: from the top of a kerb (`top`, the middle of its high edge) down to the ground at `bottom` (the middle
+/// of its low edge), `width_mm` wide, rising `rise_mm`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KerbRamp {
+    pub level: Id,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<Id>,
+    pub top: Point,
+    pub bottom: Point,
+    #[serde(default = "ramp_w")]
+    pub width_mm: f64,
+    #[serde(default = "kerb_h")]
+    pub rise_mm: f64,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+fn ramp_w() -> f64 { 1200.0 }
+
+impl KerbRamp {
+    pub fn length(&self) -> f64 { self.top.dist(&self.bottom) }
+
+    /// Its plan outline: top left, top right, bottom right, bottom left.
+    pub fn outline(&self) -> [Point; 4] {
+        let l = self.length().max(1e-9);
+        let d = Point::new((self.bottom.x - self.top.x) / l, (self.bottom.y - self.top.y) / l);
+        let h = self.width_mm / 2.0;
+        let s = Point::new(-d.y * h, d.x * h);
+        [Point::new(self.top.x - s.x, self.top.y - s.y), Point::new(self.top.x + s.x, self.top.y + s.y), Point::new(self.bottom.x + s.x, self.bottom.y + s.y), Point::new(self.bottom.x - s.x, self.bottom.y - s.y)]
+    }
+
+    /// Where it breaks the kerb ramp limits.
+    pub fn warnings(&self) -> Vec<String> {
+        let mut out = vec![];
+        let (l, r) = (self.length(), self.rise_mm);
+        if r > 0.0 && l / r < KERB_RAMP[0] - 1e-6 { out.push(format!("It slopes at 1:{:.1}, steeper than 1:{}: make it {:.0} long.", l / r, KERB_RAMP[0], r * KERB_RAMP[0])); }
+        if r > KERB_RAMP[1] + 1e-6 { out.push(format!("It rises {r:.0}, more than {:.0}.", KERB_RAMP[1])); }
+        if l > KERB_RAMP[2] + 1e-6 { out.push(format!("It is {l:.0} long, longer than {:.0}.", KERB_RAMP[2])); }
+        out
+    }
+}
+
 /// Wheel stop size (mm): long, deep (front to back) and high.
 pub const WHEEL_STOP: [f64; 3] = [1650.0, 150.0, 100.0];
 
@@ -242,6 +288,7 @@ impl LineMarking {
 impl Document {
     pub fn line_markings(&self) -> Vec<(Id, &LineMarking)> { self.iter().filter_map(|(id, e)| if let Element::LineMarking(x) = e { Some((id, x)) } else { None }).collect() }
     pub fn parking_rows(&self) -> Vec<(Id, &ParkingRow)> { self.iter().filter_map(|(id, e)| if let Element::ParkingRow(x) = e { Some((id, x)) } else { None }).collect() }
+    pub fn kerb_ramps(&self) -> Vec<(Id, &KerbRamp)> { self.iter().filter_map(|(id, e)| if let Element::KerbRamp(x) = e { Some((id, x)) } else { None }).collect() }
     pub fn kerbs(&self) -> Vec<(Id, &Kerb)> { self.iter().filter_map(|(id, e)| if let Element::Kerb(x) = e { Some((id, x)) } else { None }).collect() }
 
     /// The ground under a plan point for traffic items on `level`: a sub-division or toposolid there (as built), else
@@ -292,6 +339,16 @@ impl Document {
         self.transact("Kerb", |tx| Ok(tx.add(Element::Kerb(k))))
     }
 
+    /// Kerb Ramp: from `top` (at the kerb) down to `bottom`, on the ground under its bottom.
+    pub fn add_kerb_ramp(&mut self, level: Id, top: Point, bottom: Point, width_mm: f64, rise_mm: f64) -> Result<Id, String> {
+        if self.level(level).is_none() { return Err("unknown level".into()); }
+        if top.dist(&bottom) < 100.0 { return Err("A kerb ramp needs a top and a bottom at least 100 apart.".into()); }
+        if !(width_mm > 0.0 && rise_mm > 0.0) { return Err("A kerb ramp needs a width and a rise.".into()); }
+        let host = self.traffic_host_at(level, bottom);
+        let k = KerbRamp { level, host, top, bottom, width_mm, rise_mm, pinned: false };
+        self.transact("Kerb ramp", |tx| Ok(tx.add(Element::KerbRamp(k))))
+    }
+
     /// Parking Bay: a row of bays along `start` to `end` (the front of the bays) as `row` sets out.
     pub fn add_parking_row(&mut self, mut row: ParkingRow) -> Result<Id, String> {
         Self::check_parking(&row)?;
@@ -334,6 +391,11 @@ impl Document {
                 Self::check_parking(&n)?;
                 if n.bays().is_empty() { return Err("The row is too short for one bay at that size.".into()); }
                 Element::ParkingRow(n)
+            }
+            Some(Element::KerbRamp(k)) => {
+                let n: KerbRamp = crate::doc::apply_patch(&k, patch)?;
+                if !(n.width_mm > 0.0 && n.rise_mm > 0.0) || n.length() < 100.0 { return Err("A kerb ramp needs a width, a rise and a length.".into()); }
+                Element::KerbRamp(n)
             }
             Some(Element::Kerb(k)) => {
                 let n: Kerb = crate::doc::apply_patch(&k, patch)?;
@@ -392,6 +454,17 @@ mod tests {
         assert_eq!(r.wheel_stops().len(), 5);
         // the shared areas are closed at the back
         assert_eq!(r.lines().len(), 10 + 4);
+    }
+
+    #[test]
+    fn a_kerb_ramp_is_checked_against_one_in_eight() {
+        let k = KerbRamp { level: 0, host: None, top: p(0.0, 0.0), bottom: p(0.0, -1200.0), width_mm: 1200.0, rise_mm: 150.0, pinned: false };
+        assert!(k.warnings().is_empty(), "150 over 1200 is 1:8");
+        let steep = KerbRamp { bottom: p(0.0, -900.0), ..k.clone() };
+        assert!(steep.warnings()[0].contains("steeper than 1:8"));
+        let high = KerbRamp { rise_mm: 200.0, bottom: p(0.0, -1600.0), ..k.clone() };
+        assert_eq!(high.warnings().len(), 2, "{:?}", high.warnings());
+        assert!((k.outline()[1].dist(&k.outline()[0]) - 1200.0).abs() < 1e-6);
     }
 
     #[test]

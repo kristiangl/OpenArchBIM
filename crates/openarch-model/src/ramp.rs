@@ -90,6 +90,10 @@ pub struct Ramp {
     pub ifc: IfcParams,
 }
 
+/// A step ramp (AS 1428.1-2009 as summarised by Sunshine Coast Council and Moddex, 9 Nov 2026): as steep as 1 in
+/// [0], no longer than [1] and rising no more than [2] (mm).
+pub const STEP_RAMP: [f64; 3] = [10.0, 1900.0, 190.0];
+
 /// How long a run sloping at 1 in `ratio` may be before a landing.
 pub fn allowed_run_length(t: &RampType, ratio: f64) -> f64 {
     if ratio >= 20.0 { return f64::INFINITY; }
@@ -173,7 +177,15 @@ impl Document {
         if r.runs.is_empty() {
             warnings.push("The ramp has no runs.".into());
         } else if ratio < t.max_slope_ratio - 1e-6 {
-            warnings.push(format!("The ramp slopes at 1:{ratio:.1}, steeper than 1:{}: draw {:.0} more of it.", t.max_slope_ratio, height * t.max_slope_ratio - total));
+            // a step ramp (AS 1428.1: no longer than 1900 and rising no more than 190) may be as steep as 1:10
+            let step = total <= STEP_RAMP[1] + 1e-6 && height <= STEP_RAMP[2] + 1e-6;
+            if !step || ratio < STEP_RAMP[0] - 1e-6 {
+                warnings.push(if step {
+                    format!("The step ramp slopes at 1:{ratio:.1}, steeper than 1:{}: draw {:.0} more of it.", STEP_RAMP[0], height * STEP_RAMP[0] - total)
+                } else {
+                    format!("The ramp slopes at 1:{ratio:.1}, steeper than 1:{}: draw {:.0} more of it.", t.max_slope_ratio, height * t.max_slope_ratio - total)
+                });
+            }
         }
         let allowed = allowed_run_length(t, ratio);
         for run in &runs {
@@ -339,6 +351,21 @@ mod tests {
         let lv = d.levels().iter().min_by(|a, b| a.1.elevation_mm.total_cmp(&b.1.elevation_mm)).unwrap().0;
         let ty = d.ramp_types().iter().find(|(_, t)| t.name == "Accessible Ramp 1:14").unwrap().0;
         (d, lv, ty)
+    }
+
+    #[test]
+    fn a_short_low_ramp_is_a_step_ramp_and_may_be_one_in_ten() {
+        let (mut d, lv, ty) = doc();
+        let mut r = d.new_ramp(ty, lv, None).unwrap();
+        r.unconnected_height_mm = 150.0;
+        // 150 over 1600 is about 1:10.7: a step ramp, so no warning although it is steeper than 1:14
+        r.runs = vec![RampRun { start: Point::new(0.0, 0.0), end: Point::new(1600.0, 0.0), justification: RunJustification::Center, width_mm: 1200.0 }];
+        let id = d.add_ramp(r).unwrap();
+        assert!(d.ramp_layout(d.ramp(id).unwrap()).unwrap().warnings.is_empty());
+        // 150 over 1200 is 1:8: too steep even for a step ramp
+        d.set_ramp_runs(id, vec![RampRun { start: Point::new(0.0, 0.0), end: Point::new(1200.0, 0.0), justification: RunJustification::Center, width_mm: 1200.0 }]).unwrap();
+        let w = d.ramp_layout(d.ramp(id).unwrap()).unwrap().warnings;
+        assert!(w.iter().any(|w| w.contains("step ramp") && w.contains("1:10")), "{w:?}");
     }
 
     #[test]

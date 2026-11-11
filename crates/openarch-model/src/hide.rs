@@ -76,7 +76,7 @@ impl Document {
             Element::Toposolid(_) | Element::ContourLabel(_) => "Topography",
             Element::PropertyLine(_) => "Site",
             Element::LineMarking(_) | Element::ParkingRow(_) => "Parking",
-            Element::Kerb(_) => "Hardscape",
+            Element::Kerb(_) | Element::KerbRamp(_) => "Hardscape",
             Element::Stair(_) => "Stairs",
             Element::Railing(_) => "Railings",
             Element::Ramp(_) => "Ramps",

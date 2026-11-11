@@ -720,6 +720,7 @@ pub enum Element {
     LineMarking(crate::traffic::LineMarking),
     ParkingRow(crate::traffic::ParkingRow),
     Kerb(crate::traffic::Kerb),
+    KerbRamp(crate::traffic::KerbRamp),
 }
 
 impl Element {
@@ -821,6 +822,7 @@ impl Element {
             Element::LineMarking(_) => "LineMarking",
             Element::ParkingRow(_) => "ParkingRow",
             Element::Kerb(_) => "Kerb",
+            Element::KerbRamp(_) => "KerbRamp",
         }
     }
 }

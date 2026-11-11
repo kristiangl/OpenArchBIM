@@ -64,6 +64,7 @@ impl Clipboard {
                 Element::LineMarking(m) => for c in &m.curves { curve(c, &mut out); },
                 Element::Kerb(k) => for c in &k.curves { curve(c, &mut out); },
                 Element::ParkingRow(r) => out.push(vec![r.start, r.end]),
+                Element::KerbRamp(k) => out.push(vec![k.top, k.bottom]),
                 Element::Stair(s) => for r in &s.runs { out.push(vec![r.start, r.end]); },
                 Element::Railing(r) => out.push(r.path.clone()),
                 Element::Ramp(r) => for x in &r.runs { out.push(vec![x.start, x.end]); },
@@ -153,7 +154,7 @@ impl Document {
         let mut clip = Clipboard { elements: vec![], view, hosted_at: BTreeMap::new(), origin: Point::new(0.0, 0.0), skipped: BTreeMap::new() };
         for id in set {
             let Some(e) = self.get(id) else { continue };
-            let ok = matches!(e, Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::Stair(_) | Element::Ramp(_) | Element::Railing(_) | Element::FamilyInstance(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_)) || view_specific(e);
+            let ok = matches!(e, Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::Stair(_) | Element::Ramp(_) | Element::Railing(_) | Element::FamilyInstance(_) | Element::Room(_) | Element::RoomSeparation(_) | Element::Grid(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_)) || view_specific(e);
             if !ok { *clip.skipped.entry(e.kind()).or_default() += 1; continue; }
             if let Element::RevisionCloud(c) = e { if self.revision_record(c.revision).is_some_and(|r| r.issued) { return Err("Unissue the revision before copying its cloud.".into()); } }
             let mut e = e.clone();
@@ -321,6 +322,7 @@ impl Document {
                 Element::LineMarking(x) => { x.level = lvl(x.level)?; x.pinned = false; }
                 Element::ParkingRow(x) => { x.level = lvl(x.level)?; x.pinned = false; x.mark.clear(); }
                 Element::Kerb(x) => { x.level = lvl(x.level)?; x.pinned = false; }
+                Element::KerbRamp(x) => { x.level = lvl(x.level)?; x.pinned = false; }
                 _ => {}
             }
             // grids are the project's: they paste once, not onto each level
