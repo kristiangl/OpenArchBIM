@@ -3181,7 +3181,7 @@ impl Session {
             Element::Toposolid(t) => Ok(self.toposolid_props(id, t)),
             Element::ContourLabel(l) => Ok(self.contour_label_props(id, l)),
             Element::PropertyLine(pl) => Ok(self.property_line_props(id, pl)),
-            e @ (Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_)) => self.traffic_props(id, e).ok_or_else(|| "no properties".to_string()),
+            e @ (Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_)) => self.traffic_props(id, e).ok_or_else(|| "no properties".to_string()),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),
             Element::Ramp(r) => Ok(self.ramp_props(id, r)),

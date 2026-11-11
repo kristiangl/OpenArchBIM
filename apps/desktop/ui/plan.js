@@ -1826,7 +1826,7 @@ const Plan = (() => {
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
     if (tool === "topopoint" || tool === "topolabel" || tool === "topoexcavate") return Topo.promptText();
     if (tool === "propplace") return PropLines.promptText();
-    if (tool === "parkrow") return Traffic.promptText();
+    if (tool === "parkrow" || tool === "kerbramp") return Traffic.promptText();
     if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
@@ -2371,7 +2371,7 @@ const Plan = (() => {
     if (tool === "topopoint") { Topo.click(toWorld(sx, sy)); return; }
     if (tool === "topoexcavate") { Topo.excavateClick(cutterAt(sx, sy)); return; }
     if (tool === "propplace") { PropLines.placeClick(snap(sx, sy)); return; }
-    if (tool === "parkrow") { Traffic.click(snap(sx, sy)); return; }
+    if (tool === "parkrow" || tool === "kerbramp") { Traffic.click(snap(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
     if (tool === "shapepoint") { ShapeEdit.pointClick(snap(sx, sy)); return; }
     if (tool === "topolabel") { Topo.labelClick(snap(sx, sy, Topo.labelSnap())); return; }
@@ -2662,7 +2662,7 @@ const Plan = (() => {
     if (tool === "shapeline") ShapeEdit.lineHover(hover);
     if (tool === "topolabel") Topo.labelHover(hover);
     if (tool === "propplace") { PropLines.hover(hover); render(); }
-    if (tool === "parkrow") { Traffic.hover(hover); render(); }
+    if (tool === "parkrow" || tool === "kerbramp") { Traffic.hover(hover); render(); }
     cb.cursor(hover);
     if (Sketch.active) Sketch.move(hover, e.offsetX, e.offsetY);
     if (tool === "wall" && draw && SHAPE_CURVE[wallShape]) refreshWallShape();
@@ -3022,7 +3022,7 @@ const Plan = (() => {
       if (tool === "topolabel" && Topo.labelKey(e)) return true;
       if (tool === "topoexcavate" && Topo.excavateKey(e)) return true;
       if (tool === "propplace" && PropLines.key(e)) return true;
-      if (tool === "parkrow" && Traffic.key(e)) return true;
+      if ((tool === "parkrow" || tool === "kerbramp") && Traffic.key(e)) return true;
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }

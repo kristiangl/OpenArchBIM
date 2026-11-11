@@ -30,6 +30,8 @@ impl Session {
                 if p["paint"].as_str() == Some("yellow") { row.paint = Paint::Yellow; }
                 Ok(json!({ "id": self.doc.add_parking_row(row)? }))
             })(),
+            // Kerb Ramp: { level_id, top (at the kerb), bottom, width_mm?, rise_mm? }
+            "add_kerb_ramp" => (|| Ok(json!({ "id": self.doc.add_kerb_ramp(id_of(p, "level_id")?, point_of(&p["top"])?, point_of(&p["bottom"])?, p["width_mm"].as_f64().unwrap_or(1200.0), p["rise_mm"].as_f64().unwrap_or(150.0))? })))(),
             // Edit Path: { id } gives the path to sketch; set_traffic_path { id, curves }
             "traffic_path" => (|| {
                 let curves = match self.doc.get(id_of(p, "id")?) { Some(Element::LineMarking(m)) => m.curves.clone(), Some(Element::Kerb(k)) => k.curves.clone(), _ => return Err("not a line marking or kerb".into()) };
@@ -75,6 +77,18 @@ impl Session {
                 { "name": "Constraints", "rows": [level(k.level), host(k.host), pinned(k.pinned)] },
                 { "name": "Dimensions", "rows": [num("Height", "height_mm", k.height_mm), num("Width", "width_mm", k.width_mm), ro("Length", format!("{:.0}", k.curves.iter().map(|c| c.length()).sum::<f64>()))] },
             ])),
+            Element::KerbRamp(k) => {
+                // AS 1428.1: no steeper than 1:8, rising no more than 190, no longer than 1520
+                let warnings: Vec<Value> = k.warnings().into_iter().map(|m| json!({ "label": "Warning", "value": m, "kind": "ro", "warning": true })).collect();
+                let mut rules = warnings;
+                if rules.is_empty() { rules.push(ro("AS 1428.1 Kerb Ramp", "Met".into())); }
+                let grade = if k.rise_mm > 0.0 { format!("1:{:.1}", k.length() / k.rise_mm) } else { "-".into() };
+                ("KerbRamp", "Hardscape", "Kerb Ramp", json!([
+                    { "name": "Constraints", "rows": [level(k.level), host(k.host), pinned(k.pinned)] },
+                    { "name": "Dimensions", "rows": [num("Width", "width_mm", k.width_mm), num("Rise", "rise_mm", k.rise_mm), ro("Length", format!("{:.0}", k.length())), ro("Grade", grade)] },
+                    { "name": "Rules", "rows": rules },
+                ]))
+            }
             _ => return None,
         };
         Some(json!({ "id": id, "kind": kind, "category": cat, "title": title, "type_label": title, "target": { "method": "patch_traffic", "id": id }, "groups": groups }))
@@ -103,6 +117,13 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
             "symbols": r.access_symbols().iter().map(|c| pts(c)).collect::<Vec<_>>(),
             "stops": r.wheel_stops().iter().map(|c| pts(c)).collect::<Vec<_>>(), "bays": r.bays().iter().map(|c| pts(c)).collect::<Vec<_>>(), "start": [r.start.x, r.start.y], "end": [r.end.x, r.end.y], "pinned": r.pinned, "style": st }));
     }
+    for (id, k) in d.kerb_ramps() {
+        if !on_level(k.level) || v.hidden_elements.contains(&id) { continue; }
+        let Some(st) = style("Hardscape", id) else { continue };
+        let o = k.outline();
+        out.push(json!({ "id": id, "kind": "kerbramp", "outline": pts(&o), "lines": [pts(&[o[0], o[1], o[2], o[3], o[0]])], "top": [k.top.x, k.top.y], "bottom": [k.bottom.x, k.bottom.y],
+            "grade": if k.rise_mm > 0.0 { format!("1:{:.0}", k.length() / k.rise_mm) } else { String::new() }, "ok": k.warnings().is_empty(), "pinned": k.pinned, "style": st }));
+    }
     for (id, k) in d.kerbs() {
         if !on_level(k.level) || v.hidden_elements.contains(&id) { continue; }
         let Some(st) = style("Hardscape", id) else { continue };
@@ -124,6 +145,6 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
 
 /// The 3D meshes of traffic items whose category shows.
 pub(crate) fn meshes(d: &Document, shown: &dyn Fn(&str) -> bool, hidden: &std::collections::BTreeSet<Id>) -> Vec<Value> {
-    openarch_model::mesh::traffic_meshes(d).into_iter().filter(|(id, kind, _, v)| !v.is_empty() && !hidden.contains(id) && shown(if *kind == "Kerb" { "Hardscape" } else { "Parking" }))
+    openarch_model::mesh::traffic_meshes(d).into_iter().filter(|(id, kind, _, v)| !v.is_empty() && !hidden.contains(id) && shown(if *kind == "Kerb" || *kind == "KerbRamp" { "Hardscape" } else { "Parking" }))
         .map(|(id, kind, color, verts)| json!({ "id": id, "kind": kind, "color": color, "verts": verts })).collect()
 }

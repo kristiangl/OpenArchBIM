@@ -59,3 +59,27 @@ fn an_accessible_row_has_shared_areas_yellow_lines_and_symbols() {
     let scene = call(&mut s, "scene", json!({}));
     assert!(scene["meshes"].as_array().unwrap().iter().any(|m| m["kind"] == "AccessSymbol"));
 }
+
+#[test]
+fn a_kerb_ramp_is_drawn_built_in_3d_and_checked_against_as1428() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "Site").unwrap()["id"].as_u64().unwrap();
+    let ok = call(&mut s, "add_kerb_ramp", json!({ "level_id": level, "top": [0, 0], "bottom": [0, -1200] }))["id"].as_u64().unwrap();
+    let steep = call(&mut s, "add_kerb_ramp", json!({ "level_id": level, "top": [5000, 0], "bottom": [5000, -800] }))["id"].as_u64().unwrap();
+    let rows = |s: &mut Session, id: u64| -> Vec<Value> { call(s, "describe", json!({ "id": id }))["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect() };
+    assert_eq!(rows(&mut s, ok).iter().find(|r| r["label"] == "AS 1428.1 Kerb Ramp").unwrap()["value"], "Met");
+    assert!(rows(&mut s, steep).iter().any(|r| r["warning"] == true));
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let t = plan["traffic"].as_array().unwrap();
+    assert_eq!(t.iter().find(|x| x["id"] == ok).unwrap()["grade"], "1:8");
+    assert_eq!(t.iter().find(|x| x["id"] == steep).unwrap()["ok"], false);
+    let three = call(&mut s, "scene", json!({}));
+    let m = three["meshes"].as_array().unwrap().iter().find(|m| m["id"] == ok).expect("kerb ramp in 3D");
+    let top = m["verts"].as_array().unwrap().chunks(6).map(|c| c[2].as_f64().unwrap()).fold(f64::MIN, f64::max);
+    assert!((top * 1000.0 - 150.0).abs() < 1.0, "{top}");
+    // lengthening it to 1200 brings it back to 1:8
+    call(&mut s, "patch_traffic", json!({ "id": steep, "patch": { "bottom": { "x": 5000, "y": -1200 } } }));
+    assert!(!rows(&mut s, steep).iter().any(|r| r["warning"] == true));
+}

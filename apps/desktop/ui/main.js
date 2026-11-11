@@ -66,6 +66,7 @@ const COMMANDS = {
   parking: () => Traffic.startParking(),
   linemark: () => Traffic.startSketch("linemark"),
   kerb: () => Traffic.startSketch("kerb"),
+  "kerb-ramp": () => Traffic.startKerbRamp(),
   stair: () => Stairs.start(),
   ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),

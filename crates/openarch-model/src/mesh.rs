@@ -829,6 +829,27 @@ pub fn traffic_meshes(doc: &Document) -> Vec<(crate::Id, &'static str, [u8; 3], 
         }
         if !s.is_empty() { out.push((id, "WheelStop", if r.paint == Paint::Yellow { [232, 180, 20] } else { [70, 70, 70] }, s)); }
     }
+    // kerb ramps: a wedge from the top of the kerb at its high edge down to the ground at its low edge
+    for (id, k) in doc.kerb_ramps() {
+        let z = |p: Point| doc.traffic_z(k.level, k.host, p);
+        let o = k.outline();
+        let low = |p: Point| [p.x, p.y, z(p)];
+        let high = |p: Point| [p.x, p.y, z(k.bottom) + k.rise_mm];
+        let nrm = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| {
+            let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+            let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+            let l = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt().max(1e-12);
+            [n[0] / l, n[1] / l, n[2] / l]
+        };
+        let mut v = vec![];
+        let mut face = |a: [f64; 3], b: [f64; 3], c: [f64; 3]| { let n = nrm(a, b, c); let n = if n[2] < -1e-9 { [-n[0], -n[1], -n[2]] } else { n }; tri(&mut v, a, b, c, n); };
+        // the sloped top, the two sides and the high end
+        let (t0, t1, b1, b0) = (high(o[0]), high(o[1]), low(o[2]), low(o[3]));
+        face(t0, b0, b1); face(t0, b1, t1);
+        face(low(o[0]), b0, t0); face(low(o[1]), t1, b1);
+        face(low(o[0]), t0, t1); face(low(o[0]), t1, low(o[1]));
+        out.push((id, "KerbRamp", [175, 175, 170], v));
+    }
     for (id, k) in doc.kerbs() {
         let z = |p: Point| doc.traffic_z(k.level, k.host, p);
         let mut pts: Vec<Point> = vec![];
