@@ -135,3 +135,44 @@ fn a_dwg_is_linked_to_one_view_and_reloaded() {
     assert!(s.handle("import_cad", &json!({ "path": junk, "view_id": view })).is_err());
     assert_eq!(call(&mut s, "plan", json!({ "view_id": view }))["cad_imports"].as_array().unwrap().len(), 1);
 }
+
+#[test]
+fn contours_of_an_import_make_a_toposolid() {
+    // three contours 10 m apart at 10, 11 and 12 m, a spot level, and a flat boundary on its own layer
+    let contour = |y: f64, z: f64| format!("0\nLWPOLYLINE\n8\nCONTOURS\n90\n2\n70\n0\n38\n{z}\n10\n0.0\n20\n{y}\n10\n30.0\n20\n{y}\n");
+    let dxf = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{}{}{}\
+0\nPOINT\n8\nLEVELS\n10\n15.0\n20\n5.0\n30\n10.8\n\
+0\nLWPOLYLINE\n8\nBOUNDARY\n90\n4\n70\n1\n10\n-5.0\n20\n-5.0\n10\n35.0\n20\n-5.0\n10\n35.0\n20\n25.0\n10\n-5.0\n20\n25.0\n\
+0\nENDSEC\n0\nEOF\n", contour(0.0, 10.0), contour(10.0, 11.0), contour(20.0, 12.0));
+    let mut s = Session::new();
+    let (view, _) = plans(&mut s);
+    let path = temp("contours.dxf", dxf.as_bytes());
+    let id = call(&mut s, "import_cad", json!({ "path": path, "view_id": view, "position": "origin" }))["id"].as_u64().unwrap();
+    // turned a quarter, as a survey is to suit the plan: the ground goes with it
+    call(&mut s, "transform", json!({ "kind": "rotate", "ids": [id], "cx": 0.0, "cy": 0.0, "angle_deg": 90.0 }));
+
+    let h = call(&mut s, "cad_heights", json!({ "id": id }));
+    let layer = |n: &str| h["layers"].as_array().unwrap().iter().find(|l| l["name"] == n).unwrap().clone();
+    assert_eq!((layer("CONTOURS")["raised"].as_u64(), layer("CONTOURS")["lo"].as_f64(), layer("CONTOURS")["hi"].as_f64()), (Some(3), Some(10.0), Some(12.0)));
+    assert_eq!((layer("BOUNDARY")["raised"].as_u64(), layer("BOUNDARY")["flat"].as_u64(), layer("LEVELS")["raised"].as_u64()), (Some(0), Some(1), Some(1)));
+
+    call(&mut s, "ensure_toposolid_types", json!({}));
+    let ty = call(&mut s, "doc_info", json!({}))["toposolid_types"][0]["id"].as_u64().unwrap();
+    // flat layers alone give nothing
+    assert!(s.handle("toposolid_from_cad", &json!({ "id": id, "layers": ["BOUNDARY"], "type_id": ty })).is_err());
+    let r = call(&mut s, "toposolid_from_cad", json!({ "id": id, "layers": ["CONTOURS", "LEVELS", "BOUNDARY"], "type_id": ty, "base": "internal_origin" }));
+    assert_eq!((r["read"].as_u64(), r["lo"].as_f64(), r["hi"].as_f64()), (Some(7), Some(10000.0), Some(12000.0)));
+    let topo = r["id"].as_u64().unwrap();
+    let props = call(&mut s, "describe", json!({ "id": topo }));
+    let rows: Vec<Value> = props["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
+    let row = |l: &str| rows.iter().find(|r| r["label"] == l).unwrap().clone();
+    assert_eq!((row("Area")["raw"].as_f64(), row("Points")["raw"].as_f64()), (Some(600.0), Some(7.0)));
+    // the drawing's (30, 20) is at (-20, 30) m once turned
+    let t = call(&mut s, "plan", json!({ "view_id": view }))["toposolids"][0].clone();
+    let ring = t["rings"][0].as_array().unwrap();
+    assert!(ring.iter().any(|p| (p[0].as_f64().unwrap() + 20000.0).abs() < 1e-3 && (p[1].as_f64().unwrap() - 30000.0).abs() < 1e-3), "{ring:?}");
+    // one undo takes the toposolid away and leaves the drawing
+    call(&mut s, "undo", json!({}));
+    let plan = call(&mut s, "plan", json!({ "view_id": view }));
+    assert_eq!((plan["toposolids"].as_array().unwrap().len(), plan["cad_imports"].as_array().unwrap().len()), (0, 1));
+}

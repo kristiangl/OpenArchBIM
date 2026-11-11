@@ -362,6 +362,66 @@ const Cad = (() => {
     });
   }
 
+  // Create from CAD: a toposolid through the contours and survey points on layers of an import. With no id it takes
+  // the selected import, or the only one the plan shows.
+  async function toToposolid(id = null) {
+    if (id == null) {
+      const all = app.view.kind === "plan" ? list(Plan.viewData()) : [];
+      const c = all.find((x) => app.selection.length === 1 && x.id === app.selection[0]) || (all.length === 1 ? all[0] : null);
+      if (!c) { setPrompt(all.length ? "Select the CAD drawing with the contours, then choose Create from CAD again." : "Bring the survey in first with Insert > Import CAD or Link CAD, in a floor plan."); return; }
+      id = c.id;
+    }
+    if (!(app.info.toposolid_types || []).length) {
+      if (!(await run("ensure_toposolid_types", {}))) return;
+      await refresh();
+    }
+    const info = await run("cad_heights", { id });
+    if (!info) return;
+    const unit = info.unit || (info.scale === 1000 ? "m" : info.scale === 1 ? "mm" : "units");
+    const fmt = (v) => (Math.abs(v) >= 1000 ? v.toFixed(0) : v.toFixed(2));
+    openModal(`Create Toposolid from CAD: ${info.name}`, (body, foot, close) => {
+      const msg = el("div", { className: "modal-msg" });
+      const box = el("div", {});
+      box.style.cssText = "max-height:40vh;overflow:auto;border:1px solid var(--line);padding:4px 8px;min-width:420px;margin-bottom:8px";
+      // layers with heights first; flat ones after, unticked
+      const rows = info.layers.filter((l) => l.raised || l.flat).sort((a, b) => (b.raised > 0) - (a.raised > 0));
+      const ticks = rows.map((l) => {
+        const t = el("input", { type: "checkbox", checked: l.raised > 0 && l.shown });
+        const sw = el("span", {});
+        sw.style.cssText = `display:inline-block;width:12px;height:12px;border:1px solid #888;margin:0 6px;vertical-align:-2px;background:${rgb(l.color)}`;
+        const what = l.raised ? `${l.raised} with heights, ${fmt(l.lo)} to ${fmt(l.hi)} ${unit}${l.flat ? `; ${l.flat} at 0` : ""}` : `${l.flat} at height 0`;
+        const line = el("label", {}, [t, sw, el("span", { textContent: `${l.name}  (${what})` })]);
+        line.style.cssText = "display:block;white-space:nowrap;padding:1px 0";
+        if (!l.raised) line.style.opacity = "0.55";
+        box.append(line);
+        return { t, l };
+      });
+      if (!rows.some((l) => l.raised)) msg.textContent = "Nothing in this drawing has a height: its contours are drawn flat. Ask the surveyor for a 3D file, or use a points file.";
+      const skip = el("input", { type: "checkbox", checked: true });
+      const base = el("select", {}, [new Option("Survey Point (shared elevation)", "survey_point"), new Option("Project Base Point", "project_base_point"), new Option("Internal Origin", "internal_origin")]);
+      const levels = app.info.levels || [];
+      const level = el("select", {}, levels.map((l) => new Option(l.name, l.id, false, l.id === info.level_id)));
+      const types = el("select", {}, (app.info.toposolid_types || []).map((t) => new Option(t.name, t.id, false, t.id === Topo.typeId())));
+      const row = (l, c) => el("label", { className: "new-row" }, [el("span", { textContent: l }), c]);
+      body.append(el("div", { className: "modal-msg", textContent: "Layers with the contours and survey points:" }), box,
+        row("Leave out what lies at height 0", skip), row("The drawing's height 0 is at", base), row("Level", level), row("Type", types), msg);
+      const ok = async () => {
+        const layers = ticks.filter((x) => x.t.checked).map((x) => x.l.name);
+        if (!layers.length) { msg.textContent = "Tick at least one layer."; return; }
+        let r;
+        try {
+          r = await Backend.call("toposolid_from_cad", { id, layers, skip_zero: skip.checked, base: base.value, level_id: Number(level.value), type_id: Number(types.value) });
+        } catch (e) { msg.textContent = String(e.message || e); return; }
+        close();
+        app.topoTypeId = Number(types.value);
+        await refresh();
+        select(r.id);
+        setPrompt(`Toposolid created from ${r.read} point${r.read === 1 ? "" : "s"}${r.kept < r.read ? ` (thinned to ${r.kept})` : ""}.`);
+      };
+      foot.append(button("Cancel", close), button("OK", ok, true));
+    });
+  }
+
   // Modify | a selected import
   function selectionContext() {
     if (app.view.kind !== "plan" || app.selection.length !== 1 || Plan.tool !== "select") return null;
@@ -372,8 +432,11 @@ const Cad = (() => {
         { label: "Layers", icon: "importDxf", big: true, onclick: () => layersDialog(c.id) },
         ...(c.linked ? [{ label: "Reload", icon: "linkDxf", big: true, onclick: () => reload(c.id) }] : []),
       ] },
+      { label: "Site", labelled: true, items: [
+        { label: "Toposolid", icon: "topoFile", big: true, title: "Create a toposolid from the drawing's contours and survey points", onclick: () => toToposolid(c.id) },
+      ] },
     ] };
   }
 
-  return { start, draw, elements, snapSegs, selectionContext, layersDialog, reload };
+  return { start, draw, elements, snapSegs, selectionContext, layersDialog, reload, toToposolid };
 })();

@@ -88,6 +88,34 @@ impl Session {
                     "name": l.name, "color": l.color, "on_in_file": l.on, "shown": c.layer_shown(l), "shapes": used[i],
                 })).collect::<Vec<_>>() }))
             })(),
+            // What on each layer of an import has a height, for Create from CAD: { id }. Heights in the file's units.
+            "cad_heights" => (|| {
+                let id = id_of(p, "id")?;
+                let c = self.doc.cad_import(id).ok_or("not a CAD drawing")?;
+                let rows = self.doc.cad_heights(id)?;
+                Ok(json!({ "name": c.name, "unit": c.drawing.unit, "scale": c.scale, "level_id": c.level, "layers": rows.iter().zip(&c.drawing.layers).map(|(h, l)| json!({
+                    "name": h.layer, "color": l.color, "shown": c.layer_shown(l), "raised": h.raised, "flat": h.flat, "lo": h.lo, "hi": h.hi,
+                })).collect::<Vec<_>>() }))
+            })(),
+            // Create from CAD: a toposolid through the contours and points of an import's layers.
+            // { id, layers: [names], type_id, level_id?, skip_zero? (true), base? (where the drawing's height 0 is:
+            // survey_point, project_base_point or internal_origin) }
+            "toposolid_from_cad" => (|| {
+                let id = id_of(p, "id")?;
+                let c = self.doc.cad_import(id).ok_or("not a CAD drawing")?;
+                let level = p["level_id"].as_u64().unwrap_or(c.level);
+                let layers: std::collections::BTreeSet<String> = serde_json::from_value(p["layers"].clone()).map_err(|e| format!("bad layers: {e}"))?;
+                let base: openarch_model::topo::TopoBase = match p.get("base").filter(|v| !v.is_null()) {
+                    Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad elevation base: {e}"))?,
+                    None => openarch_model::topo::TopoBase::SurveyPoint,
+                };
+                let pts = self.doc.topo_points_from_cad(id, &layers, p["skip_zero"].as_bool().unwrap_or(true), self.doc.topo_base_z(base, level))?;
+                let read = pts.len();
+                let (lo, hi) = pts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), q| (a.min(q[2]), b.max(q[2])));
+                let topo = self.doc.add_toposolid_points(id_of(p, "type_id")?, level, pts)?;
+                let kept = self.doc.toposolid(topo).map_or(0, |t| t.points.len());
+                Ok(json!({ "id": topo, "read": read, "kept": kept, "lo": lo, "hi": hi }))
+            })(),
             // The drawing an import holds, as the page draws it: { id }. Coordinates are in the drawing's units, less
             // `base` (the middle of the drawing), so they stay small numbers however far from its origin a survey sits.
             // Shapes: [0, layer, colour, closed, [x, y, ...], z?] a run of lines (z: one height, or one each);

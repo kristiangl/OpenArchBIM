@@ -58,6 +58,7 @@ const COMMANDS = {
   ceiling: () => Ceilings.start(),
   "topo-sketch": () => Topo.startSketch(null),
   "topo-import": () => Topo.importFile(),
+  "topo-cad": () => Cad.toToposolid(),
   "topo-label": () => Topo.startLabels(),
   "site-surface": () => Topo.subDivide(),
   grading: () => Topo.grade(),
