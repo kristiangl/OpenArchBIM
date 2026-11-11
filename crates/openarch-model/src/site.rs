@@ -1885,6 +1885,16 @@ impl Document {
             for cap in &g.caps {
                 add(cap, 1.0, 0.0);
             }
+            // a shape edited flat roof: its top, and the thickness round its edge
+            if let Some((tin, bot)) = &g.shaped {
+                for k in &tin.tris {
+                    add(&[tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]], 1.0, 0.0);
+                }
+                for [i, j] in tin.boundary_edges() {
+                    let (a, b) = (tin.verts[i], tin.verts[j]);
+                    add(&[a, b, [b[0], b[1], bot[j]], [a[0], a[1], bot[i]]], 0.85, -0.5);
+                }
+            }
             for reg in &g.flat {
                 let ring: Vec<[f64; 3]> = reg.outer.iter().map(|p| [p.x, p.y, g.base_z]).collect();
                 let n = ring.len();

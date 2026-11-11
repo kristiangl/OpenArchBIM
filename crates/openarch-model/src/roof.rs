@@ -104,6 +104,12 @@ pub struct Roof {
     /// Pinned elements refuse move, delete and flip until unpinned.
     #[serde(default)]
     pub pinned: bool,
+    /// Shape editing of a flat roof: points on the top (plan position, height above the base), roofshape.rs.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub points: Vec<crate::site::P3>,
+    /// Split lines: pairs of indices into `points`; the top folds along each.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub split_lines: Vec<[usize; 2]>,
 }
 
 impl Roof {
@@ -124,6 +130,8 @@ impl Roof {
             phase_demolished: None,
             ifc: IfcParams { guid: new_ifc_guid(), ..IfcParams::default() },
             pinned: false,
+            points: vec![],
+            split_lines: vec![],
         }
     }
 
@@ -188,6 +196,9 @@ pub struct RoofGeometry {
     /// Hips, ridges, valleys and the tops of gable ends, in plan.
     pub ridges: Vec<[Point; 2]>,
     pub marks: Vec<SlopeMark>,
+    /// A shape edited flat roof: its top and the underside's height under each of the top's corners. `flat` is
+    /// then empty, and `ridges` are the lines the top folds along.
+    pub shaped: Option<(crate::shape::Tin, Vec<f64>)>,
     pub base_z: f64,
     pub top_z: f64,
 }
@@ -197,8 +208,9 @@ impl RoofGeometry {
     pub fn surface_area_mm2(&self) -> f64 {
         let faces: f64 = self.faces.iter().filter(|f| !f.vertical).map(|f| poly_area_3d(&f.poly)).sum();
         let flat: f64 = self.flat.iter().map(|r| r.area()).sum();
+        let shaped: f64 = self.shaped.iter().flat_map(|(t, _)| t.tris.iter().map(|k| poly_area_3d(&[t.verts[k[0]], t.verts[k[1]], t.verts[k[2]]]))).sum();
         let caps: f64 = self.caps.iter().map(|c| poly_area_3d(c)).sum();
-        faces + flat + caps
+        faces + flat + caps + shaped
     }
 }
 
@@ -345,7 +357,12 @@ impl Document {
         self.refuse_pinned(&[id], "edited")?;
         let loops = self.check_roof_sketch(&edges)?;
         let mut r = old;
+        if r.shaped() && loops.iter().flatten().any(|e| e.defines_slope) {
+            return Err("A shape edited roof can't take an edge that defines slope: use Reset Shape first.".into());
+        }
         r.shape = RoofShape::Footprint { loops };
+        // points and split lines outside the new footprint go
+        Self::keep_roof_points_within(&mut r);
         self.transact("Edit roof footprint", |tx| tx.update(id, Element::Roof(r)))
     }
 
@@ -510,7 +527,14 @@ impl Document {
                 }
             }
         }
-        g.top_z = g.faces.iter().flat_map(|f| f.poly.iter().map(|q| q[2])).chain(g.caps.iter().flatten().map(|q| q[2])).fold(base_z, f64::max);
+        // a shape edited flat roof: the surface through its points takes the place of the flat slab
+        if let Some(tin) = self.roof_shape_at(r, base_z) {
+            let bot = self.roof_bottoms(r, &tin, base_z);
+            g.flat.clear();
+            g.ridges.extend(Self::tin_folds(&tin));
+            g.shaped = Some((tin, bot));
+        }
+        g.top_z = g.faces.iter().flat_map(|f| f.poly.iter().map(|q| q[2])).chain(g.caps.iter().flatten().map(|q| q[2])).chain(g.shaped.iter().flat_map(|(t, _)| t.verts.iter().map(|v| v[2]))).fold(base_z, f64::max);
         Some(g)
     }
 

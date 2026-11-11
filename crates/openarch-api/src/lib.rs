@@ -686,6 +686,7 @@ impl Session {
                 let (kind, base, pts, rings) = match self.doc.get(id) {
                     Some(Element::Toposolid(t)) if t.host.is_none() => ("toposolid", self.doc.toposolid_base_z(t), t.points.clone(), t.polygons(20.0)),
                     Some(Element::Floor(f)) if f.slope.is_none() => ("floor", self.doc.floor_base_z(f), f.points.clone(), f.polygons(20.0)),
+                    Some(Element::Roof(r)) if !r.has_slope_edges() => ("roof", self.doc.roof_base_z(r), r.points.clone(), r.polygons(2.0)),
                     _ => return Ok(json!({ "kind": null })),
                 };
                 let corners: Vec<[f64; 2]> = rings.concat().into_iter().filter(|c| !pts.iter().any(|q| (q.x - c.x).hypot(q.y - c.y) <= 1.0)).map(|c| [c.x, c.y]).collect();
@@ -732,6 +733,16 @@ impl Session {
             "add_floor_point" => { self.doc.add_floor_point(id_of(p, "id")?, point_of(&p["point"])?, p["z"].as_f64().unwrap_or(0.0))?; Ok(json!({})) }
             "add_floor_split_line" => { self.doc.add_floor_split_line(id_of(p, "id")?, point_of(&p["a"])?, point_of(&p["b"])?)?; Ok(json!({})) }
             "reset_floor_shape" => { self.doc.reset_floor_shape(id_of(p, "id")?)?; Ok(json!({})) }
+            // shape editing of a flat roof, as for floors (heights above the roof's base)
+            "set_roof_points" => {
+                let pts: Vec<[f64; 3]> = serde_json::from_value(p["points"].clone()).map_err(|e| format!("bad points: {e}"))?;
+                let lines: Option<Vec<[usize; 2]>> = match p.get("lines").filter(|v| !v.is_null()) { Some(v) => Some(serde_json::from_value(v.clone()).map_err(|e| format!("bad lines: {e}"))?), None => None };
+                self.doc.set_roof_points(id_of(p, "id")?, pts.into_iter().map(|q| openarch_model::site::P3 { x: q[0], y: q[1], z: q[2] }).collect(), lines)?;
+                Ok(json!({}))
+            }
+            "add_roof_point" => { self.doc.add_roof_point(id_of(p, "id")?, point_of(&p["point"])?, p["z"].as_f64().unwrap_or(0.0))?; Ok(json!({})) }
+            "add_roof_split_line" => { self.doc.add_roof_split_line(id_of(p, "id")?, point_of(&p["a"])?, point_of(&p["b"])?)?; Ok(json!({})) }
+            "reset_roof_shape" => { self.doc.reset_roof_shape(id_of(p, "id")?)?; Ok(json!({})) }
             "patch_floor" => {
                 self.doc.patch_floor(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
@@ -2860,6 +2871,7 @@ impl Session {
                         "ridges": g.ridges.iter().map(|l| json!([pt(&l[0]), pt(&l[1])])).collect::<Vec<_>>(),
                         "marks": g.marks.iter().map(|m| json!({ "at": pt(&m.at), "up": m.up, "deg": m.deg })).collect::<Vec<_>>(),
                         "top": g.top_z, "base": g.base_z, "flat": !g.flat.is_empty() && g.faces.is_empty(),
+                        "shape_points": r.points.iter().map(|q| [q.x, q.y, q.z]).collect::<Vec<_>>(), "lines": r.split_lines, "pitched": r.has_slope_edges(),
                     }));
                 }
                 _ => {}

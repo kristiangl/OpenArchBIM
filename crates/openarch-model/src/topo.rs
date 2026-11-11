@@ -389,6 +389,13 @@ impl Document {
                 }
                 for rg in &g.flat { pieces.push((rg.outer.clone(), [0.0, 0.0, g.base_z - th])); }
                 for c in &g.caps { if c.len() >= 3 { pieces.push((plan(c), [0.0, 0.0, c[0][2] - th])); } }
+                // a shape edited flat roof: the underside under each triangle of its top
+                if let Some((tin, bot)) = &g.shaped {
+                    for k in &tin.tris {
+                        let under: Vec<[f64; 3]> = k.iter().map(|&i| [tin.verts[i][0], tin.verts[i][1], bot[i]]).collect();
+                        if let Some(pl) = crate::shape::plane_through(&under) { pieces.push((plan(&under), pl)); }
+                    }
+                }
                 pieces.retain(|p| p.0.len() >= 3);
                 if pieces.is_empty() { return None; }
                 let rings: Vec<Vec<Point>> = pieces.iter().map(|p| p.0.clone()).collect();

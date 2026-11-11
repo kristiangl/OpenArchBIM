@@ -608,6 +608,12 @@ impl Document {
             for e in loops.iter_mut().flatten() {
                 e.curve = e.curve.transform(x);
             }
+            // a shaped roof's points go with it; their heights stay
+            for p in nr.points.iter_mut() {
+                let q = x.apply(Point::new(p.x, p.y));
+                p.x = q.x;
+                p.y = q.y;
+            }
             if opt.copy {
                 nr.pinned = false;
                 if self.key_control(id, &["mark".into()], None).is_none() { nr.mark.clear(); }

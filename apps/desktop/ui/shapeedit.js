@@ -1,6 +1,6 @@
 // Shape editing in a plan: Modify Sub Elements (pick points, boundary corners and split lines; drag them across with
 // snapping; set their height; delete), Add Split Line and Add Point, for any host with a boundary, points and split
-// lines. Toposolids and floors use it (model side: shape.rs); roofs are to. A host is
+// lines. Toposolids, floors and flat roofs use it (model side: shape.rs). A host is
 //   { noun, get(id) -> { rings, points: [[x, y, z]], lines: [[i, j]] }, save(id, points, lines), addLine(id, a, b),
 //     addPoint?(id, p, z), done(id) }
 // with heights above the host's unmodified top. Private notes: site.md.

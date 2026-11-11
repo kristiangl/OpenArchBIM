@@ -46,6 +46,7 @@ pub mod topo;
 pub mod propline;
 pub mod cad;
 pub mod floorshape;
+pub mod roofshape;
 pub mod traffic;
 pub mod areas;
 pub mod key_schedule;

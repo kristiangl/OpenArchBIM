@@ -625,6 +625,10 @@ pub fn roof_mesh(doc: &Document, r: &Roof) -> Option<Vec<f32>> {
             }
         }
     }
+    // a shape edited flat roof: the solid under its surface
+    if let Some((tin, bot)) = &g.shaped {
+        out.extend(tin_solid_mesh(tin, bot, t));
+    }
     // the flat top left by a cutoff level
     for cap in &g.caps {
         let plan: Vec<Point> = cap.iter().map(|q| Point::new(q[0], q[1])).collect();

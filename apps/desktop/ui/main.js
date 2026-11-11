@@ -416,6 +416,8 @@ function currentContext() {
   // a section's split); the tab keeps the same groups before it
   const fs = FloorShape.selectionContext();
   if (fs) return fs;
+  const rfs = RoofShape.selectionContext();
+  if (rfs) return rfs;
   const b = editBoundaryTarget();
   if (b) return { auto: true, key: `boundary:${b.label}:${app.selection[0]}`, title: b.label.replace(/^Edit /, ""), groups: [
     { label: "Mode", items: [{ label: b.label, icon: "editBoundary", onclick: b.run }] } ] };
@@ -1961,7 +1963,7 @@ function shapeLift(g, sy0, sy) {
 async function commitShapeLift(g, dz) {
   const s = g.shape, pts = s.points.map((q) => q.slice());
   if (g.i != null) pts[g.i][2] += dz; else pts.push([g.x, g.y, dz]);
-  const ok = await run(s.kind === "floor" ? "set_floor_points" : "set_toposolid_points", { id: g.id, points: pts, lines: null });
+  const ok = await run(s.kind === "floor" ? "set_floor_points" : s.kind === "roof" ? "set_roof_points" : "set_toposolid_points", { id: g.id, points: pts, lines: null });
   if (ok) { await refresh(); renderProperties(); setPrompt(`Point ${dz > 0 ? "raised" : "lowered"} ${Math.abs(dz)} mm.`); }
 }
 const grip3At = (sx, sy) => grips3.find((g) => { const s = app.vp.project([g.x / 1000, g.y / 1000, g.z / 1000]); return s && Math.abs(s.x - sx) <= 7 && Math.abs(s.y - sy) <= 7; });

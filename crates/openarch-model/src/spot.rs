@@ -473,6 +473,10 @@ impl Document {
                             planes.push(([0.0, 0.0, 1.0], c[0][2]));
                         }
                     }
+                    // a shape edited flat roof: its surface there, and the slope of the triangle under the point
+                    if let Some((z, n, _)) = g.shaped.as_ref().and_then(|(tin, _)| tin.sample(p)) {
+                        planes.push((n, z));
+                    }
                     let Some(best) = planes.iter().copied().max_by(|a, b| a.1.total_cmp(&b.1)) else { continue };
                     let singular = planes.iter().any(|q| q.0[0] * best.0[0] + q.0[1] * best.0[1] + q.0[2] * best.0[2] < 0.999_999);
                     let nz = best.0[2].max(1e-6);

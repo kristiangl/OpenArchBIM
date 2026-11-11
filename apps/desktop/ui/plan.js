@@ -1344,6 +1344,7 @@ const Plan = (() => {
     Topo.draw(ctx, data, toScreen, cam.s, sel, tag, { fill: fillShapes, lw, colour, dash });
     // a selected or shape edited floor's points and split lines
     FloorShape.draw(ctx, data, toScreen, sel);
+    RoofShape.draw(ctx, data, toScreen, sel);
     // line marking, parking bays and kerbs on the ground
     Traffic.draw(ctx, data, toScreen, cam.s, sel, tag, { lw, colour, dash });
     // the site's boundary over the ground

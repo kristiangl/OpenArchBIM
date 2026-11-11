@@ -1239,6 +1239,18 @@ impl Document {
                 }
                 out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![poly], fill, cut: true, material: mat.clone(), ..Default::default() });
             }
+            // A shape edited flat roof follows its surface along the cut.
+            if let Some((tin, bot)) = &g.shaped {
+                let rings: Vec<&[Point]> = g.regions.iter().flat_map(|r| std::iter::once(r.outer.as_slice()).chain(r.holes.iter().map(|h| h.as_slice()))).collect();
+                for cut in sl.cuts(&rings, sl.plane + PLANE_EPS) {
+                    let prof = self.floor_profile(tin, bot, cut.p0, cut.p1);
+                    if prof.len() < 2 { continue; }
+                    let u = |t: f64| cut.u0 + (cut.u1 - cut.u0) * t;
+                    let mut poly: Vec<[f64; 2]> = prof.iter().map(|(t, top, _)| [u(*t), *top]).collect();
+                    poly.extend(prof.iter().rev().map(|(t, _, b)| [u(*t), *b]));
+                    out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![poly], fill, cut: true, material: mat.clone(), ..Default::default() });
+                }
+            }
             // Flat roofs are a slab at the base height.
             let rings: Vec<&[Point]> = g.flat.iter().flat_map(|r| std::iter::once(r.outer.as_slice()).chain(r.holes.iter().map(|h| h.as_slice()))).collect();
             if !rings.is_empty() {
