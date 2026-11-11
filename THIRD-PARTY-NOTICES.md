@@ -1,8 +1,8 @@
 # Third-party notices
 
 OpenArch BIM is licensed under the GNU Affero General Public License v3.0 only (see LICENSE). Some of its code is
-ported from other open-source projects under licences that allow it. Each such project, what was taken from it and
-its licence notice are listed here.
+ported from other open-source projects under licences that allow it, and some libraries it is built with ask for a
+notice. Each such project, what was taken from it or how it is used, and its licence notice are listed here.
 
 ## BIMCraft
 
@@ -22,6 +22,40 @@ its licence notice are listed here.
 MIT License
 
 Copyright (c) 2026 IPedrax and the BIMCraft contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
+## acadrust
+
+- Source: https://github.com/hakanaktt/acadrust, version 0.6.8 as published on crates.io
+  (https://crates.io/crates/acadrust/0.6.8). Copyright Hakan AK and the acadrust contributors.
+- Licence: Mozilla Public License 2.0. The licence text is at https://www.mozilla.org/en-US/MPL/2.0/ and in the
+  crate's `LICENSE` file.
+- Used unmodified, as a separate library: `crates/openarch-cad` calls it to read DXF and DWG files for Import CAD and
+  Link CAD. None of its source is copied into OpenArch BIM. Its source code is available from the two addresses above.
+- acadrust's own notices say its DWG reader and writer include code ported from ACadSharp, under the MIT licence:
+
+```
+MIT License
+
+Copyright (c) 2021 Albert Domenech
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
