@@ -29,6 +29,9 @@ pub struct Document {
     /// How many of the oldest undo steps have been dropped (`trim_undo`). An edit mark counts from the first step
     /// ever made, so a mark handed out before a trim still names the same step after it.
     undo_base: usize,
+    /// How many earlier saves of the project file are kept beside it as numbered backups. Kept in the project
+    /// file itself (not an element, so not undone); changing it makes the project unsaved.
+    pub(crate) max_backups: u32,
     revision: u64,
     /// Counts every write through a transaction, rollback, undo and redo; keys the solved-family cache.
     pub(crate) edit_count: u64,
@@ -142,7 +145,7 @@ impl Tx<'_> {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), display: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), display: Default::default() }
     }
 }
 
@@ -368,6 +371,23 @@ impl Document {
 
     /// Where the undo history stands, for a dialog that edits live but may still be cancelled
     /// (Type Properties): `fold_since` keeps its edits as one step, `roll_back_to` drops them.
+    /// How many numbered backups of the project file a save keeps.
+    pub fn max_backups(&self) -> u32 {
+        self.max_backups
+    }
+
+    /// Sets how many numbered backups a save keeps (0 keeps none). The project then has an unsaved change.
+    pub fn set_max_backups(&mut self, count: u32) -> Result<(), String> {
+        if count > crate::store::MOST_BACKUPS {
+            return Err(format!("At most {} backups can be kept.", crate::store::MOST_BACKUPS));
+        }
+        if count != self.max_backups {
+            self.max_backups = count;
+            self.revision += 1;
+        }
+        Ok(())
+    }
+
     pub fn edit_mark(&self) -> usize {
         self.undo_base + self.undo.len()
     }

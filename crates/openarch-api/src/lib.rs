@@ -2316,10 +2316,22 @@ impl Session {
                     Some(s) => PathBuf::from(s),
                     None => self.path.clone().ok_or("no file name yet")?,
                 };
-                self.doc.save(&path)?;
+                // the file as it was is kept as a numbered backup; one that cannot be made does not stop the save
+                use openarch_model::store::Backup;
+                let (backup, backup_error) = match self.doc.save_keeping_backups(&path)? {
+                    Backup::None => (None, None),
+                    Backup::Made(to) => (Some(to.to_string_lossy().to_string()), None),
+                    Backup::Failed(why) => (None, Some(why)),
+                };
                 self.path = Some(path.clone());
                 self.saved_revision = self.doc.revision();
-                Ok(json!({ "path": path.to_string_lossy() }))
+                Ok(json!({ "path": path.to_string_lossy(), "backup": backup, "backup_error": backup_error, "backups": openarch_model::store::backups_of(&path).len() }))
+            }
+            // File > Options: how many numbered backups of this project a save keeps (kept in the project file)
+            "set_max_backups" => {
+                let count = p.get("count").and_then(|v| v.as_u64()).ok_or("missing count")?;
+                self.doc.set_max_backups(u32::try_from(count).map_err(|_| "too many backups")?)?;
+                Ok(json!({ "max_backups": self.doc.max_backups() }))
             }
             // Open IFC: a new, unsaved project from an IFC file; what came in and what was left out
             "open_ifc" => {
@@ -2438,6 +2450,8 @@ impl Session {
         json!({
             "revision": d.revision(),
             "dirty": d.revision() != self.saved_revision,
+            "max_backups": d.max_backups(),
+            "most_backups": openarch_model::store::MOST_BACKUPS,
             "path": self.path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "views": d.views().iter().map(|(id, v)| json!({
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "area_scheme": v.area_scheme, "template_id": v.template, "type_id": d.view_type_of(v),
