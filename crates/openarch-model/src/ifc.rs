@@ -683,6 +683,106 @@ impl Document {
             products.insert(id, ent);
         }
 
+        // line markings, parking rows, kerbs and kerb ramps: IfcBuildingElementProxy (IFC4 has no class of their
+        // own), each with its meshes in their colours
+        {
+            let mut parts: BTreeMap<Id, Vec<(&'static str, [u8; 3], Vec<f32>)>> = BTreeMap::new();
+            for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self) {
+                parts.entry(id).or_default().push((kind, colour, verts));
+            }
+            let mut styles: BTreeMap<[u8; 3], u64> = BTreeMap::new();
+            for (id, meshes) in parts {
+                let (level, name) = match self.get(id) {
+                    Some(Element::LineMarking(m)) => (m.level, "Line Marking"),
+                    Some(Element::ParkingRow(r)) => (r.level, "Parking Bays"),
+                    Some(Element::Kerb(k)) => (k.level, "Kerb"),
+                    Some(Element::KerbRamp(k)) => (k.level, "Kerb Ramp"),
+                    _ => continue,
+                };
+                let lv = storey_of(level);
+                let (_, storey_at, sz) = storeys[&lv];
+                let mut items = vec![];
+                for (kind, colour, verts) in &meshes {
+                    let Some(set) = w.faceset(verts, -sz) else { continue };
+                    let style = *styles.entry(*colour).or_insert_with(|| w.style(kind, *colour, 0.0));
+                    w.add(format!("IFCSTYLEDITEM(#{set},(#{style}),$)"));
+                    items.push(set);
+                }
+                if items.is_empty() {
+                    continue;
+                }
+                let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let shape = w.tessellated(&items);
+                let ent = w.add(format!("IFCBUILDINGELEMENTPROXY({},$,{},$,{},#{at},#{shape},$,.USERDEFINED.)", s(&derived(ELEMENT, id)), s(name), s(name)));
+                contained.entry(lv).or_default().push(ent);
+                products.insert(id, ent);
+            }
+        }
+
+        // grids: one IfcGrid, the lines that run more up the page as its U axes and the rest as its V axes. The
+        // schema wants at least one of each, so a set of parallel lines gives its first to U; a lone line is left out.
+        {
+            let lowest = storey_of(storey_levels.first().map_or(0, |(i, _)| *i));
+            let (_, storey_at, _) = storeys[&lowest];
+            let mut axes: Vec<(bool, u64)> = vec![];
+            for (_, g) in self.grids() {
+                let mut pts: Vec<Point> = vec![];
+                for c in &g.curves {
+                    for q in c.tessellate(5.0) {
+                        if pts.last().is_none_or(|l| l.dist(&q) > 1e-6) {
+                            pts.push(q);
+                        }
+                    }
+                }
+                if pts.len() < 2 {
+                    continue;
+                }
+                let (a, b) = (pts[0], pts[pts.len() - 1]);
+                let ids: Vec<u64> = pts.iter().map(|q| w.point(*q)).collect();
+                let line = w.add(format!("IFCPOLYLINE(({}))", refs(&ids)));
+                axes.push(((b.y - a.y).abs() >= (b.x - a.x).abs(), w.add(format!("IFCGRIDAXIS({},#{line},.T.)", s(&g.name)))));
+            }
+            let (mut u, mut v): (Vec<u64>, Vec<u64>) = (axes.iter().filter(|a| a.0).map(|a| a.1).collect(), axes.iter().filter(|a| !a.0).map(|a| a.1).collect());
+            if u.is_empty() && v.len() > 1 {
+                u.push(v.remove(0));
+            } else if v.is_empty() && u.len() > 1 {
+                v.push(u.remove(0));
+            }
+            if !u.is_empty() && !v.is_empty() {
+                let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let ent = w.add(format!("IFCGRID({},$,'Grids',$,$,#{at},$,({}),({}),$,$)", s(&derived(ELEMENT, 0)), refs(&u), refs(&v)));
+                contained.entry(lowest).or_default().push(ent);
+            }
+        }
+
+        // property lines: IfcAnnotation, the boundary as a line on the lowest storey
+        {
+            let lowest = storey_of(storey_levels.first().map_or(0, |(i, _)| *i));
+            let (_, storey_at, _) = storeys[&lowest];
+            for (id, l) in self.property_lines() {
+                let mut pts: Vec<Point> = vec![];
+                for c in &l.curves {
+                    for q in c.tessellate(5.0) {
+                        if pts.last().is_none_or(|k| k.dist(&q) > 1e-6) {
+                            pts.push(q);
+                        }
+                    }
+                }
+                if pts.len() < 2 {
+                    continue;
+                }
+                let ids: Vec<u64> = pts.iter().map(|q| w.point(*q)).collect();
+                let line = w.add(format!("IFCPOLYLINE(({}))", refs(&ids)));
+                let rep = w.add(format!("IFCSHAPEREPRESENTATION(#{},'Axis','Curve2D',(#{line}))", w.axis));
+                let shape = w.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{rep}))"));
+                let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
+                let name = if l.name.trim().is_empty() { "Property Line".to_string() } else { l.name.clone() };
+                let ent = w.add(format!("IFCANNOTATION({},$,{},$,'Property Line',#{at},#{shape})", s(&derived(ELEMENT, id)), s(&name)));
+                contained.entry(lowest).or_default().push(ent);
+                products.insert(id, ent);
+            }
+        }
+
         // roofs: their 3D mesh
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };
@@ -1083,6 +1183,7 @@ mod tests {
             ("IFCMATERIALLAYER", 7), ("IFCMATERIALLAYERSET", 3), ("IFCMATERIALLAYERSETUSAGE", 5), ("IFCRELASSOCIATESMATERIAL", 6),
             ("IFCGROUP", 5), ("IFCRELASSIGNSTOGROUP", 7), ("IFCRELCONTAINEDINSPATIALSTRUCTURE", 6),
             ("IFCCURTAINWALL", 9), ("IFCPLATE", 9), ("IFCMEMBER", 9), ("IFCSTAIR", 9), ("IFCSTAIRFLIGHT", 13), ("IFCRAILING", 9), ("IFCRAMP", 9), ("IFCRAMPFLIGHT", 9),
+            ("IFCGRID", 11), ("IFCGRIDAXIS", 3), ("IFCANNOTATION", 7), ("IFCGEOGRAPHICELEMENT", 9),
         ]
         .into_iter()
         .collect();
