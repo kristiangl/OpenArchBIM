@@ -2606,7 +2606,13 @@ async function save(asNew) {
   let path = app.info.path;
   if (!path || asNew) path = await Backend.pickSavePath(path);
   if (!path) return;
-  if (await run("save", { path })) { setPrompt(`Saved ${path}`); await refresh(); }
+  const saved = await run("save", { path });
+  if (!saved) return;
+  // the file as it was is kept as a numbered backup (File > Options sets how many)
+  const file = (p) => p.split(/[\\/]/).pop();
+  if (saved.backup_error) setPrompt(`Saved ${path}, but the backup could not be made (${saved.backup_error}).`, true);
+  else setPrompt(saved.backup ? `Saved ${path}. The file as it was is kept as ${file(saved.backup)}.` : `Saved ${path}`);
+  await refresh();
 }
 
 // The 3D view's mouse buttons: which one selects, orbits and pans
@@ -3017,6 +3023,7 @@ $("#file-btn").onclick = () => {
     { label: "Export IFC...", run: () => runCommand("export-ifc") },
     { sep: true },
     { label: "Project Information...", run: () => runCommand("project-info") },
+    { label: "Options...", title: "Save reminders and backups", run: () => SaveOptions.open() },
     { sep: true },
     { label: "Close", run: () => closeWindow() },
   ]);
