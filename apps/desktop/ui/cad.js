@@ -183,7 +183,8 @@ const Cad = (() => {
   const ink = (c, black) => (black || !c || (c[0] > 235 && c[1] > 235 && c[2] > 235) ? "#000" : rgb(c));
 
   // `front` draws the imports set to Foreground, after the model; the rest go under it
-  function draw(ctx, d, toScreen, k, sel = new Set(), tag = null, front = false) {
+  // `thin` is the view's Thin Lines: every line of the drawing one pixel wide, whatever its layer's weight
+  function draw(ctx, d, toScreen, k, sel = new Set(), tag = null, front = false, thin = false) {
     prune(d);
     const scale = d?.view?.scale || 100;
     const recording = typeof ctx.oaTag === "function"; // PDF and DXF export: paths go out as lines, not Path2D
@@ -224,7 +225,7 @@ const Cad = (() => {
         const L = got.d.layers[g.layer];
         if (tag) tag({ cat: "Imported Drawings", sub: L.name, kind: "projection" });
         ctx.strokeStyle = on ? ACCENT : ink(g.col || L.color, c.black);
-        const w = Math.max(recording ? 0.13 * mmPx : 1, (L.weight_mm || 0.18) * mmPx);
+        const w = thin && !recording ? 1 : Math.max(recording ? 0.13 * mmPx : 1, (L.weight_mm || 0.18) * mmPx);
         ctx.lineWidth = w / px;
         const period = (L.dash || []).reduce((a, b) => a + b, 0) * px;
         // a dot is a dash too short to see: give it the line's width

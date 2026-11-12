@@ -1339,7 +1339,7 @@ const Plan = (() => {
     const order = { underlay: 0, beyond: 1, projection: 2, cut: 3 };
 
     // imported CAD drawings set to Background, under the model
-    Cad.draw(ctx, data, toScreen, cam.s, sel, tag, false);
+    Cad.draw(ctx, data, toScreen, cam.s, sel, tag, false, thin);
     // the ground under everything: toposolid boundaries and contours
     Topo.draw(ctx, data, toScreen, cam.s, sel, tag, { fill: fillShapes, lw, colour, dash });
     // a selected or shape edited floor's points and split lines
@@ -1677,7 +1677,7 @@ const Plan = (() => {
     }
 
     // imported CAD drawings set to Foreground, over the model
-    Cad.draw(ctx, data, toScreen, cam.s, sel, tag, true);
+    Cad.draw(ctx, data, toScreen, cam.s, sel, tag, true, thin);
     // Select tool: pre-highlight what a click would pick (Tab steps through the choices)
     // and the Tag tool the door or window a click would tag
     if ((tool === "select" || tool === "tag" || tool === "topoexcavate") && selHover && !band) {
