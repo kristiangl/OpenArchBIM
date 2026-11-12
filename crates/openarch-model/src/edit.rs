@@ -356,6 +356,12 @@ impl Document {
                 None => return Err(format!("no element {id}")),
             }
         }
+        if opt.copy && !walls.is_empty() {
+            // a copied wall takes the doors and windows it hosts with it, whether they were picked or not
+            let picked: BTreeSet<Id> = walls.iter().copied().collect();
+            let hosted: Vec<Id> = self.instances().iter().filter(|(id, i)| !set.contains(id) && i.host.is_some_and(|h| picked.contains(&h.wall))).map(|(id, _)| *id).collect();
+            insts.extend(hosted);
+        }
         if walls.is_empty() && floors.is_empty() && insts.is_empty() && grids.is_empty() && roofs.is_empty() && details.is_empty() {
             return Err("select walls, floors, roofs, grids, doors, windows or detail items".into());
         }
@@ -1416,6 +1422,36 @@ mod tests {
         assert!(!wall(&d, copies[0]).pinned, "a copy of a pinned wall is not pinned");
         assert!(wall(&d, a).pinned);
         assert_ne!(wall(&d, copies[0]).ifc.guid, wall(&d, a).ifc.guid);
+    }
+
+    #[test]
+    fn a_wall_copied_alone_takes_its_doors_and_windows() {
+        let (mut d, l, t) = setup();
+        let w = d.add_wall(t, l, p(0.0, 0.0), p(6000.0, 0.0), 2700.0).unwrap();
+        let other = d.add_wall(t, l, p(0.0, -3000.0), p(6000.0, -3000.0), 2700.0).unwrap();
+        let door = d.family_types().iter().find(|(_, t)| t.name.contains("820 x 2040")).unwrap().0;
+        let window = d.family_types().iter().find(|(_, t)| t.name.contains("1200 x 1200")).unwrap().0;
+        d.place_on_wall(door, w, p(1500.0, 0.0)).unwrap();
+        d.place_on_wall(window, w, p(4000.0, 0.0)).unwrap();
+        d.place_on_wall(door, other, p(1500.0, -3000.0)).unwrap();
+        let hosted = |d: &Document, wall: Id| d.instances().iter().filter(|(_, i)| i.host.is_some_and(|h| h.wall == wall)).count();
+        // Copy, Mirror and a turned copy of the one wall, nothing else picked
+        for x in [mv(0.0, 4000.0), Xform::Mirror { ax: 0.0, ay: 8000.0, bx: 1000.0, by: 8000.0 }, Xform::Rotate { cx: 20000.0, cy: 0.0, angle_deg: 30.0 }] {
+            let before = d.instances().len();
+            let copies = d.transform_elements(&[w], x, EditOptions { copy: true, disjoin: false }).unwrap();
+            let wall = *copies.iter().find(|id| matches!(d.get(**id), Some(Element::Wall(_)))).unwrap();
+            assert_eq!(hosted(&d, wall), 2, "the copy has the door and the window");
+            assert_eq!(d.instances().len(), before + 2, "and nothing else was copied");
+        }
+        assert_eq!(hosted(&d, w), 2);
+        assert_eq!(hosted(&d, other), 1);
+        // one undo step takes a copy and its openings away together
+        let n = d.instances().len();
+        d.undo();
+        assert_eq!(d.instances().len(), n - 2);
+        // moving a wall (no copy) still moves its openings and makes none
+        d.transform_elements(&[w], mv(0.0, 500.0), EditOptions::default()).unwrap();
+        assert_eq!(d.instances().len(), n - 2);
     }
 
     #[test]

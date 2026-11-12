@@ -5096,7 +5096,8 @@ mod tests {
         call(&mut s, "move_vertical", json!({ "ids": [w], "dz": 300 }));
         assert_eq!(call(&mut s, "describe", json!({ "id": w })).to_string().contains("300"), true);
         let n = call(&mut s, "move_vertical", json!({ "ids": [w], "dz": 0, "dx": 0, "dy": 5000, "copy": true }))["ids"].as_array().unwrap().len();
-        assert_eq!(n, 1);
+        // the wall and the window it hosts
+        assert_eq!(n, 2);
         call(&mut s, "undo", json!({}));
         // pinned elements refuse, and an element with no height to change says so
         call(&mut s, "pin", json!({ "ids": [w] }));
