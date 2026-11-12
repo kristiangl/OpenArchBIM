@@ -147,6 +147,9 @@ impl Tx<'_> {
     }
 }
 
+/// The highest a wall can be made by its own height (a wall up to a level is as high as the level makes it).
+pub const MAX_WALL_HEIGHT_MM: f64 = 1_000_000.0;
+
 impl Default for Document {
     fn default() -> Self {
         Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default() }
@@ -588,6 +591,9 @@ impl Document {
         if w.top_level.is_none() && w.height_mm <= 0.0 {
             return Err("wall height must be positive".into());
         }
+        if w.top_level.is_none() && !(w.height_mm <= MAX_WALL_HEIGHT_MM) {
+            return Err(format!("a wall can be at most {} m high", MAX_WALL_HEIGHT_MM / 1000.0));
+        }
         if let Some(c) = &w.curve {
             if c.is_closed() {
                 return Err("a curved wall must be an open curve (a circle is two arc walls)".into());
@@ -926,6 +932,13 @@ impl Document {
         if w.wall_type == wall_type {
             return Ok(()); // nothing to do, and no empty undo step
         }
+        // a curtain wall has panels and mullions where a door or window would sit in the wall's body
+        if self.wall_type(wall_type).is_some_and(|t| t.curtain.is_some()) && self.curtain_of(&w).is_none() {
+            let hosted = self.instances().iter().filter(|(_, i)| i.host.is_some_and(|h| h.wall == id)).count();
+            if hosted > 0 {
+                return Err(format!("This wall has {hosted} door{} or window{} in it. Remove {} before making it a curtain wall.", if hosted == 1 { "" } else { "s" }, if hosted == 1 { "" } else { "s" }, if hosted == 1 { "it" } else { "them" }));
+            }
+        }
         self.transact("Change wall type", |tx| tx.update(id, Element::Wall(Wall { wall_type, ..w })))
     }
 
@@ -964,6 +977,9 @@ impl Document {
         if height_mm <= 0.0 {
             return Err("wall height must be positive".into());
         }
+        if !(height_mm <= MAX_WALL_HEIGHT_MM) {
+            return Err(format!("a wall can be at most {} m high", MAX_WALL_HEIGHT_MM / 1000.0));
+        }
         if w.top_level.is_none() && w.height_mm == height_mm {
             return Ok(());
         }
@@ -992,6 +1008,7 @@ impl Document {
         match nw.top_level {
             Some(t) if self.level(t).is_none() => return Err("unknown top level".into()),
             None if nw.height_mm <= 0.0 => return Err("wall height must be positive".into()),
+            None if !(nw.height_mm <= MAX_WALL_HEIGHT_MM) => return Err(format!("a wall can be at most {} m high", MAX_WALL_HEIGHT_MM / 1000.0)),
             _ => {}
         }
         if nw.start.dist(&nw.end) < 1.0 {
@@ -1330,6 +1347,35 @@ impl Document {
     // ---- derived values ---------------------------------------------------
 
     /// Base and top elevation of a wall, mm.
+    /// A straight wall that lies along another on the same level, over some of its length and height: what a wall
+    /// drawn twice by mistake looks like. Gives the other wall's type name, for a warning (it is not refused).
+    pub fn wall_overlap(&self, id: Id) -> Option<String> {
+        let Some(Element::Wall(w)) = self.get(id) else { return None };
+        if w.curve.is_some() {
+            return None;
+        }
+        let (a, b) = (w.start, w.end);
+        let len = a.dist(&b);
+        if len < 1.0 {
+            return None;
+        }
+        let (dx, dy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+        let (z0, z1) = self.wall_extent(w);
+        // how far a point is off this wall's line, and how far along it
+        let off = |p: Point| ((p.x - a.x) * dy - (p.y - a.y) * dx).abs();
+        let along = |p: Point| (p.x - a.x) * dx + (p.y - a.y) * dy;
+        self.iter().find_map(|(other, e)| {
+            let Element::Wall(o) = e else { return None };
+            if other == id || o.curve.is_some() || o.base_level != w.base_level || off(o.start) > 1.0 || off(o.end) > 1.0 {
+                return None;
+            }
+            let (s, t) = (along(o.start).min(along(o.end)), along(o.start).max(along(o.end)));
+            let (y0, y1) = self.wall_extent(o);
+            let shared = t.min(len) - s.max(0.0);
+            (shared > 10.0 && y1.min(z1) - y0.max(z0) > 10.0).then(|| self.wall_type(o.wall_type).map_or_else(|| "another wall".to_string(), |t| t.name.clone()))
+        })
+    }
+
     pub fn wall_extent(&self, w: &Wall) -> (f64, f64) {
         let base = self.level(w.base_level).map_or(0.0, |l| l.elevation_mm) + w.base_offset_mm;
         let top = match w.top_level.and_then(|t| self.level(t)) {

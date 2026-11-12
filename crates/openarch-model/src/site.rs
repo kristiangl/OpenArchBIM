@@ -574,6 +574,19 @@ impl Document {
                 for (iid, i) in doc.instances() {
                     doc.fits(i, Some(iid)).map_err(|e| format!("a door or window would not fit: {e}"))?;
                 }
+                // a stair or ramp between levels cannot end at or below where it starts
+                for (_, e) in doc.iter() {
+                    let (what, heights, uses) = match e {
+                        Element::Stair(s) => ("stair", doc.stair_heights(s), s.base_level == id || s.top_level == Some(id)),
+                        Element::Ramp(r) => ("ramp", doc.ramp_heights(r), r.base_level == id || r.top_level == Some(id)),
+                        _ => continue,
+                    };
+                    if let (true, Some((base, top))) = (uses, heights) {
+                        if top - base < 1.0 {
+                            return Err(format!("That would put the top of a {what} at or below its base. Move or change the {what} first."));
+                        }
+                    }
+                }
             }
             Ok(())
         })

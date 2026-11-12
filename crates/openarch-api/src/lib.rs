@@ -1262,7 +1262,9 @@ impl Session {
                 if let Some(ll) = p.get("location_line") {
                     w.location_line = serde_json::from_value(ll.clone()).map_err(|_| "unknown location line".to_string())?;
                 }
-                Ok(json!({ "id": self.doc.add_wall_with(w)? }))
+                let id = self.doc.add_wall_with(w)?;
+                let warning = self.doc.wall_overlap(id).map(|other| format!("The wall overlaps another wall ({other}). One of them may be a mistake."));
+                Ok(json!({ "id": id, "warning": warning }))
             }
             "move_wall_end" => {
                 let end = p.get("end").and_then(|v| v.as_u64()).ok_or("missing end")?;

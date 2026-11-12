@@ -1335,7 +1335,7 @@ const nestPatch = (path, value) => path.split(".").reverse().reduce((v, k) => ({
 // ---- plan callbacks -------------------------------------------------------------
 Plan.callbacks.addWall = async (a, b) => {
   const r = await run("add_wall", { type_id: app.wallTypeId, level_id: curLevelId(), start: a, end: b, ...wallTopParams(curLevelId()), location_line: app.locationLine, flipped: !!app.flipped });
-  if (r) await refresh();
+  if (r) { await refresh(); if (r.warning) setPrompt(r.warning, true); }
 };
 Plan.callbacks.moveWallEnd = async (id, end, point) => {
   const r = await run("move_wall_end", { id, end, point });
