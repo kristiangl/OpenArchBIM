@@ -1823,12 +1823,76 @@ impl Document {
                 items.push(ElevItem { id, category: "Ceilings", depth: dmin - 0.5, polys: vec![convex_hull_2d(pts)], lines: vec![], fill: [214, 212, 206], stroke: true, ..Default::default() });
             }
         }
-        // toposolids: the ground as seen
+        // kerbs, kerb ramps and wheel stops: the faces of their solids turned toward the viewer, and the outline of
+        // those faces. Paint (line marking, bay lines, the access symbol) lies flat on the ground and is edge-on.
+        let (lo, hi) = sl.map_or((f64::NEG_INFINITY, f64::INFINITY), |s| (s.lo, s.hi));
+        for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self) {
+            let category = match kind {
+                "Kerb" | "KerbRamp" => "Hardscape",
+                "WheelStop" => "Parking",
+                _ => continue,
+            };
+            if hidden(id) {
+                continue;
+            }
+            // each triangle is 3 corners of position and normal, in metres
+            let mut polys: Vec<Vec<[f64; 2]>> = vec![];
+            let mut edges: std::collections::BTreeMap<[[i64; 2]; 2], ([[f64; 2]; 2], u32)> = Default::default();
+            let mut nearest = f64::INFINITY;
+            for t in verts.chunks_exact(18) {
+                let corner = |k: usize| Point::new(t[k * 6] as f64 * 1000.0, t[k * 6 + 1] as f64 * 1000.0);
+                let ps = [corner(0), corner(1), corner(2)];
+                let zs = [t[2] as f64 * 1000.0, t[8] as f64 * 1000.0, t[14] as f64 * 1000.0];
+                // the way the face looks, from its corners (so either winding does)
+                let (e1, e2) = ([ps[1].x - ps[0].x, ps[1].y - ps[0].y, zs[1] - zs[0]], [ps[2].x - ps[0].x, ps[2].y - ps[0].y, zs[2] - zs[0]]);
+                let across = (e1[1] * e2[2] - e1[2] * e2[1]) * look.x + (e1[2] * e2[0] - e1[0] * e2[2]) * look.y;
+                let facing = (t[3] as f64) * look.x + (t[4] as f64) * look.y;
+                if across.abs() < 1e-6 || facing > -1e-6 {
+                    continue; // edge-on, or turned away
+                }
+                let ds = [d_of(ps[0]), d_of(ps[1]), d_of(ps[2])];
+                let us = [u_of(ps[0]), u_of(ps[1]), u_of(ps[2])];
+                let (dmin, dmax) = (ds.iter().copied().fold(f64::INFINITY, f64::min), ds.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                let (umin, umax) = (us.iter().copied().fold(f64::INFINITY, f64::min), us.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                if dmin < near || dmax > far || umax < lo || umin > hi {
+                    continue;
+                }
+                nearest = nearest.min(dmin);
+                let q = [[us[0], zs[0]], [us[1], zs[1]], [us[2], zs[2]]];
+                for k in 0..3 {
+                    let (a, b) = (q[k], q[(k + 1) % 3]);
+                    let key = |p: [f64; 2]| [(p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64];
+                    let (ka, kb) = (key(a), key(b));
+                    if ka != kb {
+                        edges.entry(if ka < kb { [ka, kb] } else { [kb, ka] }).or_insert(([a, b], 0)).1 += 1;
+                    }
+                }
+                polys.push(q.to_vec());
+            }
+            if polys.is_empty() {
+                continue;
+            }
+            // an edge two faces share is inside the shape seen; one face alone has it on the outline
+            let lines: Vec<[[f64; 2]; 2]> = edges.into_values().filter(|(_, n)| *n == 1).map(|(l, _)| l).collect();
+            items.push(ElevItem { id, category, depth: nearest, polys, lines, fill: colour, stroke: false, ..Default::default() });
+        }
+        // toposolids: the ground as seen. An elevation that stands on the ground (its marker inside the boundary)
+        // cuts it at its own plane, as a section does: the profile with its layers, and beyond it what is seen.
+        // Without that the near side is behind the viewer and the top is edge-on, so no ground showed at all.
+        let own = crate::section::Slice { o, right, look, lo: -1.0e9, hi: 1.0e9, plane: 0.0, depth: frame.depth_mm, far: crate::section::FarClip::WithoutLine };
         for (id, t) in self.toposolids() {
             if hidden(id) {
                 continue;
             }
-            items.extend(self.toposolid_view_items(id, t, look, &u_of, &d_of, &visible, sl));
+            match sl {
+                Some(_) => items.extend(self.toposolid_view_items(id, t, look, &u_of, &d_of, &visible, sl)),
+                None => {
+                    let cut = self.toposolid_cut_items(id, t, &own, crate::section::PLANE_EPS);
+                    let beyond = if cut.is_empty() { None } else { Some(&own) };
+                    items.extend(cut);
+                    items.extend(self.toposolid_view_items(id, t, look, &u_of, &d_of, &visible, beyond));
+                }
+            }
         }
         // roofs: every plane as a polygon, so hips, gables and eaves show as they are
         for (id, e) in self.iter() {
