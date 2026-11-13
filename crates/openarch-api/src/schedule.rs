@@ -171,6 +171,8 @@ impl Session {
             Element::Wall(_) => Some("Walls".into()),
             Element::Floor(_) => Some("Floors".into()),
             Element::Roof(_) => Some("Roofs".into()),
+            Element::StructuralColumn(_) => Some("Structural Columns".into()),
+            Element::Beam(_) => Some("Structural Framing".into()),
             Element::FamilyInstance(i) => d.instance_family(i).map(|(f, _)| f.category.label().to_string()),
             _ => None,
         }
@@ -183,6 +185,8 @@ impl Session {
             "Walls" => d.wall_types().into_iter().map(|(i, _)| i).collect(),
             "Floors" => d.floor_types().into_iter().map(|(i, _)| i).collect(),
             "Roofs" => d.roof_types().into_iter().map(|(i, _)| i).collect(),
+            "Structural Columns" => d.structural_types().into_iter().filter(|(_, t)| t.used_for == openarch_model::structural::StructuralUse::Column).map(|(i, _)| i).collect(),
+            "Structural Framing" => d.structural_types().into_iter().filter(|(_, t)| t.used_for == openarch_model::structural::StructuralUse::Framing).map(|(i, _)| i).collect(),
             c => d.family_types().into_iter().filter(|(_, t)| d.family(t.family).is_some_and(|f| f.category.label() == c)).map(|(i, _)| i).collect(),
         }
     }

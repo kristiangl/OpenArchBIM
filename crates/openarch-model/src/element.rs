@@ -724,6 +724,10 @@ pub enum Element {
     CadImport(crate::cad::CadImport),
     /// A view filter (viewfilter.rs).
     ViewFilter(crate::viewfilter::ViewFilter),
+    /// Structural types, columns and beams (structural.rs).
+    StructuralType(crate::structural::StructuralType),
+    StructuralColumn(crate::structural::StructuralColumn),
+    Beam(crate::structural::Beam),
 }
 
 impl Element {
@@ -736,6 +740,8 @@ impl Element {
             Element::Ceiling(c) => c.ceiling_type,
             Element::FamilyInstance(i) => i.type_id,
             Element::Toposolid(t) => t.toposolid_type,
+            Element::StructuralColumn(c) => c.structural_type,
+            Element::Beam(b) => b.structural_type,
             Element::Stair(s) => s.stair_type,
             Element::Railing(r) => r.railing_type,
             Element::Ramp(r) => r.ramp_type,
@@ -760,6 +766,9 @@ impl Element {
             Element::View(_) => "View",
             Element::ViewTemplate(_) => "ViewTemplate",
             Element::ViewFilter(_) => "ViewFilter",
+            Element::StructuralType(_) => "StructuralType",
+            Element::StructuralColumn(_) => "StructuralColumn",
+            Element::Beam(_) => "Beam",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

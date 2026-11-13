@@ -31,6 +31,7 @@ mod topo;
 mod propline;
 mod cad;
 mod traffic;
+mod structural;
 mod areas;
 mod clipboard;
 mod hide;
@@ -276,6 +277,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_ceilings(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_structural(method, p) {
             return r;
         }
         if let Some(r) = self.handle_traffic(method, p) {
@@ -2514,6 +2518,7 @@ impl Session {
             "floor_types": d.floor_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "area_schemes": d.area_schemes().iter().map(|(id, s)| json!({ "id": id, "name": s.name, "description": s.description, "rules": s.rules, "built_in": s.built_in, "has_areas": d.areas().iter().any(|(_, a)| d.scheme_of_area(a) == Some(*id)) })).collect::<Vec<_>>(),
             "ceiling_types": d.ceiling_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm(), "grid": t.grid })).collect::<Vec<_>>(),
+            "structural_types": structural::types(d),
             "toposolid_types": d.toposolid_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "thickness_mm": t.thickness_mm() })).collect::<Vec<_>>(),
             "stair_types": d.stair_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "width_mm": t.rules.min_run_width_mm, "family": "Stair" })).collect::<Vec<_>>(),
             "railing_types": d.railing_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "family": "Railing" })).collect::<Vec<_>>(),
@@ -3034,6 +3039,7 @@ impl Session {
             if let Some(t) = propline::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(t) = cad::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(t) = traffic::drawing(d, vid).as_object() { o.extend(t.clone()); }
+            if let Some(t) = structural::drawing(d, vid).as_object() { o.extend(t.clone()); }
             if let Some(c) = stairs::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = railings::drawing(d, vid).as_object() { o.extend(c.clone()); }
             if let Some(c) = ramps::drawing(d, vid).as_object() { o.extend(c.clone()); }
@@ -3167,6 +3173,7 @@ impl Session {
         }
         // line markings, parking rows and kerbs on the ground
         meshes.extend(traffic::meshes(d, &shown, &hidden));
+        meshes.extend(structural::meshes(d, &shown, &hidden));
         // a material's transparency shows through
         for m in meshes.iter_mut() {
             if let Some(t) = m["material"].as_str().and_then(|n| d.material(n)).map(|x| x.graphics.shading_transparency).filter(|t| *t > 0) {
@@ -3228,6 +3235,8 @@ impl Session {
             Element::PropertyLine(pl) => Ok(self.property_line_props(id, pl)),
             Element::CadImport(c) => Ok(self.cad_props(id, c)),
             e @ (Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_)) => self.traffic_props(id, e).ok_or_else(|| "no properties".to_string()),
+            e @ (Element::StructuralColumn(_) | Element::Beam(_)) => self.structural_props(id, e).ok_or_else(|| "no properties".to_string()),
+            Element::StructuralType(t) => Ok(self.structural_type_props(id, t)),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),
             Element::Ramp(r) => Ok(self.ramp_props(id, r)),
@@ -3278,6 +3287,12 @@ impl Session {
                 v
             }
             Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) | Element::ToposolidType(_) => props::sys_type_props(d, id)?,
+            Element::StructuralType(t) => {
+                let mut v = self.structural_type_props(id, t);
+                v["patch"] = json!("patch_structural");
+                v["duplicate"] = json!("duplicate_structural_type");
+                v
+            }
             Element::RampType(t) => {
                 let mut v = ramps::ramp_type_props(d, id, t);
                 v["family"] = json!("Ramp");

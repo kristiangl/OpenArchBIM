@@ -77,6 +77,8 @@ impl Document {
             Element::PropertyLine(_) => "Site",
             Element::LineMarking(_) | Element::ParkingRow(_) => "Parking",
             Element::Kerb(_) | Element::KerbRamp(_) => "Hardscape",
+            Element::StructuralColumn(_) => "Structural Columns",
+            Element::Beam(_) => "Structural Framing",
             Element::CadImport(_) => "Imported Drawings",
             Element::Stair(_) => "Stairs",
             Element::Railing(_) => "Railings",

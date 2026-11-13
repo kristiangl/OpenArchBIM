@@ -59,6 +59,7 @@ pub mod sketch;
 pub mod spot;
 pub mod step;
 pub mod store;
+pub mod structural;
 pub mod styles;
 pub mod symbol;
 pub mod systypes;

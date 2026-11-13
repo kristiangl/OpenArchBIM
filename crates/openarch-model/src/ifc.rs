@@ -687,18 +687,31 @@ impl Document {
         // own), each with its meshes in their colours
         {
             let mut parts: BTreeMap<Id, Vec<(&'static str, [u8; 3], Vec<f32>)>> = BTreeMap::new();
-            for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self) {
+            for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self).into_iter().chain(self.structural_meshes()) {
                 parts.entry(id).or_default().push((kind, colour, verts));
             }
             let mut styles: BTreeMap<[u8; 3], u64> = BTreeMap::new();
             for (id, meshes) in parts {
-                let (level, name) = match self.get(id) {
-                    Some(Element::LineMarking(m)) => (m.level, "Line Marking"),
-                    Some(Element::ParkingRow(r)) => (r.level, "Parking Bays"),
-                    Some(Element::Kerb(k)) => (k.level, "Kerb"),
-                    Some(Element::KerbRamp(k)) => (k.level, "Kerb Ramp"),
+                const PROXY: (&str, &str) = ("IFCBUILDINGELEMENTPROXY", "USERDEFINED");
+                let type_name = |t: Id| self.structural_type(t).map_or(String::new(), |t| format!("{}: {}", t.family, t.name));
+                let (level, name, (class, predefined)) = match self.get(id) {
+                    Some(Element::LineMarking(m)) => (m.level, "Line Marking".to_string(), PROXY),
+                    Some(Element::ParkingRow(r)) => (r.level, "Parking Bays".to_string(), PROXY),
+                    Some(Element::Kerb(k)) => (k.level, "Kerb".to_string(), PROXY),
+                    Some(Element::KerbRamp(k)) => (k.level, "Kerb Ramp".to_string(), PROXY),
+                    Some(Element::StructuralColumn(c)) => (c.level, type_name(c.structural_type), ("IFCCOLUMN", "COLUMN")),
+                    Some(Element::Beam(b)) => {
+                        use crate::structural::FramingUsage as U;
+                        (b.level, type_name(b.structural_type), match b.usage {
+                            U::Girder | U::Other => ("IFCBEAM", "BEAM"),
+                            U::Joist => ("IFCBEAM", "JOIST"),
+                            U::Purlin => ("IFCMEMBER", "PURLIN"),
+                            U::HorizontalBracing | U::VerticalBracing => ("IFCMEMBER", "BRACE"),
+                        })
+                    }
                     _ => continue,
                 };
+                let name = name.as_str();
                 let lv = storey_of(level);
                 let (_, storey_at, sz) = storeys[&lv];
                 let mut items = vec![];
@@ -713,7 +726,7 @@ impl Document {
                 }
                 let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
                 let shape = w.tessellated(&items);
-                let ent = w.add(format!("IFCBUILDINGELEMENTPROXY({},$,{},$,{},#{at},#{shape},$,.USERDEFINED.)", s(&derived(ELEMENT, id)), s(name), s(name)));
+                let ent = w.add(format!("{class}({},$,{},$,{},#{at},#{shape},$,.{predefined}.)", s(&derived(ELEMENT, id)), s(name), s(name)));
                 contained.entry(lv).or_default().push(ent);
                 products.insert(id, ent);
             }

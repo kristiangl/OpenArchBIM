@@ -1839,9 +1839,11 @@ impl Document {
         // kerbs, kerb ramps and wheel stops: the faces of their solids turned toward the viewer, and the outline of
         // those faces. Paint (line marking, bay lines, the access symbol) lies flat on the ground and is edge-on.
         let (lo, hi) = sl.map_or((f64::NEG_INFINITY, f64::INFINITY), |s| (s.lo, s.hi));
-        for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self) {
+        for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self).into_iter().chain(self.structural_meshes()) {
             let category = match kind {
                 "Kerb" | "KerbRamp" => "Hardscape",
+                "StructuralColumn" => "Structural Columns",
+                "Beam" => "Structural Framing",
                 "WheelStop" => "Parking",
                 _ => continue,
             };

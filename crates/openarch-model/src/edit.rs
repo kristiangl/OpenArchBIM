@@ -346,7 +346,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
+                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -412,6 +412,7 @@ impl Document {
                 Some(Element::LineMarking(m)) => { let mut m = m.clone(); m.curves = m.curves.iter().map(|c| c.transform(x)).collect(); m.pinned = m.pinned && !opt.copy; Element::LineMarking(m) }
                 Some(Element::Kerb(k)) => { let mut k = k.clone(); k.curves = k.curves.iter().map(|c| c.transform(x)).collect(); k.pinned = k.pinned && !opt.copy; Element::Kerb(k) }
                 Some(Element::CadImport(c)) => Element::CadImport(Self::cad_transformed(c, &x, opt.copy)?),
+                Some(e @ (Element::StructuralColumn(_) | Element::Beam(_))) => Self::structural_transformed(e, &x, opt.copy).ok_or("not a structural member")?,
                 Some(Element::KerbRamp(k)) => { let mut k = k.clone(); k.top = x.apply(k.top); k.bottom = x.apply(k.bottom); k.pinned = k.pinned && !opt.copy; Element::KerbRamp(k) }
                 Some(Element::ParkingRow(r)) => { let mut r = r.clone(); r.start = x.apply(r.start); r.end = x.apply(r.end); if matches!(x, Xform::Mirror { .. }) { r.left = !r.left; } r.pinned = r.pinned && !opt.copy; Element::ParkingRow(r) }
                 Some(Element::PropertyLine(p)) => { let mut p = p.clone(); p.curves = p.curves.iter().map(|c| c.transform(x)).collect(); p.pinned = p.pinned && !opt.copy; Element::PropertyLine(p) }
