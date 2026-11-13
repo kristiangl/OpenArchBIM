@@ -18,6 +18,7 @@ use openarch_model::{SlopeArrow, SpanDirection};
 use openarch_model::{mesh, symbol, Document, Element, EndJoin, FamilyCategory, Id, JoinChange, JoinCleanup, JoinKind, LocationLine, Point, Wall};
 
 mod graphics;
+mod viewfilter;
 mod props;
 mod schedule;
 mod ifc_schedule;
@@ -238,6 +239,8 @@ impl Session {
     }
 
     fn handle_unguarded(&mut self, method: &str, p: &Value) -> Res {
+        // what each view's filters match, for whatever is about to be drawn
+        self.prime_filters();
         #[cfg(test)]
         if method == "test_panic" {
             // half a step, then a fault: what a bug in a command looks like
@@ -282,6 +285,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_cad(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_viewfilter(method, p) {
             return r;
         }
         if let Some(r) = self.handle_topo(method, p) {
@@ -2425,9 +2431,9 @@ impl Session {
             let hint = it.material.as_deref().and_then(|m| d.material(m)).map(Hint::from_material).unwrap_or_default();
             if it.cut {
                 // a category switched off in the view leaves its cut out
-                let Some(style) = style_for(d, &settings, it.category, None, view.element_overrides.get(&it.id), "cut", &hint) else { continue };
+                let Some(style) = style_for(d, &settings, it.category, None, d.graphics_of(view, &it.id).as_ref(), "cut", &hint) else { continue };
                 j["style"] = style;
-            } else if let Some(style) = style_for(d, &settings, it.category, None, view.element_overrides.get(&it.id), "projection", &hint) {
+            } else if let Some(style) = style_for(d, &settings, it.category, None, d.graphics_of(view, &it.id).as_ref(), "projection", &hint) {
                 // the projection pen its lines are drawn with
                 j["style"] = style;
             }
@@ -2693,7 +2699,7 @@ impl Session {
                     };
                     let t = d.wall_type(w.wall_type);
                     let hint = t.map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
-                    let Some(style) = style_for(d, &settings, "Walls", None, view.element_overrides.get(&id), display, &hint) else { continue };
+                    let Some(style) = style_for(d, &settings, "Walls", None, d.graphics_of(view, &id).as_ref(), display, &hint) else { continue };
                     // a curtain wall draws its panels and mullions: where the plane cuts them (the transoms below it seen
                     // from above), or all of them seen from above; at coarse detail just the line of its glass, at fine
                     // its glazing units
@@ -2820,7 +2826,8 @@ impl Session {
                     let Some(sym) = symbol::plan_symbol_at(d, id, door_detail, (display == "cut").then_some(range.cut)) else { continue };
                     let cat = fam.category.label();
                     let hint = Hint::default();
-                    let eo = view.element_overrides.get(&id);
+                    let eo_held = d.graphics_of(view, &id);
+        let eo = eo_held.as_ref();
                     let Some(style) = style_for(d, &settings, cat, None, eo, display, &hint) else { continue };
                     // each part of the symbol draws in its subcategory's style
                     let mut subs = serde_json::Map::new();
@@ -2859,7 +2866,7 @@ impl Session {
                         PlanDisplay::Beyond => "beyond",
                     };
                     let hint = d.floor_type(f.floor_type).map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
-                    let Some(style) = style_for(d, &settings, "Floors", None, view.element_overrides.get(&id), display, &hint) else { continue };
+                    let Some(style) = style_for(d, &settings, "Floors", None, d.graphics_of(view, &id).as_ref(), display, &hint) else { continue };
                     floors.push(json!({ "id": id, "shape_points": f.points.iter().map(|q| [q.x, q.y, q.z]).collect::<Vec<_>>(), "lines": f.split_lines, "sloped": f.slope.is_some(), "curves": f.loops().concat(), "points": f.outline().iter().map(pt).collect::<Vec<_>>(), "rings": f.polygons(1.0).iter().map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(), "display": display, "style": style, "pinned": f.pinned }));
                 }
                 Element::Roof(r) => {
@@ -2875,7 +2882,7 @@ impl Session {
                         PlanDisplay::Beyond => "beyond",
                     };
                     let hint = rt.map(|t| layers_hint(d, &t.layers, &t.coarse_fill, settings.detail_level, true)).unwrap_or_default();
-                    let Some(style) = style_for(d, &settings, "Roofs", None, view.element_overrides.get(&id), display, &hint) else { continue };
+                    let Some(style) = style_for(d, &settings, "Roofs", None, d.graphics_of(view, &id).as_ref(), display, &hint) else { continue };
                     let rings: Vec<Vec<Value>> = g.regions.iter().flat_map(|reg| std::iter::once(&reg.outer).chain(reg.holes.iter())).map(|ring| ring.iter().map(pt).collect()).collect();
                     roofs.push(json!({
                         "id": id, "display": display, "style": style, "pinned": r.pinned,
@@ -2926,7 +2933,7 @@ impl Session {
                 .iter()
                 .filter(|(id, _)| !view.hidden_elements.contains(id))
                 .filter_map(|(id, g)| {
-                    let style = style_for(d, &settings, "Grids", None, view.element_overrides.get(id), "normal", &Hint::default())?;
+                    let style = style_for(d, &settings, "Grids", None, d.graphics_of(view, id).as_ref(), "normal", &Hint::default())?;
                     let t = d.grid_type(g.grid_type);
                     Some(json!({
                         "id": id, "name": g.name, "path": g.path(1.5).iter().map(pt).collect::<Vec<_>>(),
@@ -2947,7 +2954,7 @@ impl Session {
                 .into_iter()
                 .filter(|(id, _)| !view.hidden_elements.contains(id))
                 .filter_map(|(id, dm)| {
-                    let style = style_for(d, &settings, "Dimensions", None, view.element_overrides.get(&id), "normal", &Hint::default())?;
+                    let style = style_for(d, &settings, "Dimensions", None, d.graphics_of(view, &id).as_ref(), "normal", &Hint::default())?;
                     let draw = d.dimension_draw(id)?;
                     let ty = d.dimension_type(dm.dim_type).cloned().unwrap_or_else(openarch_model::dimension::DimensionType::standard);
                     let mut v = serde_json::to_value(&draw).ok()?;
@@ -2972,7 +2979,7 @@ impl Session {
                     if !ann_shown(cat) {
                         return None;
                     }
-                    let style = style_for(d, &settings, cat, None, view.element_overrides.get(&id), "normal", &Hint::default())?;
+                    let style = style_for(d, &settings, cat, None, d.graphics_of(view, &id).as_ref(), "normal", &Hint::default())?;
                     let draw = d.spot_draw(id)?;
                     let ty = d.spot_type(sp.spot_type).cloned().unwrap_or_else(|| openarch_model::spot::SpotType::new("Spot", sp.kind));
                     let mut v = serde_json::to_value(&draw).ok()?;
@@ -3046,7 +3053,9 @@ impl Session {
             .and_then(|v| v.as_u64())
             .or_else(|| d.views().iter().find(|(_, v)| v.view_kind == ViewKind::ThreeD).map(|(id, _)| *id));
         let settings = view.and_then(|v| d.effective_settings(v));
-        let hidden = view.and_then(|v| d.view(v)).map(|v| v.hidden_elements.clone()).unwrap_or_default();
+        let mut hidden = view.and_then(|v| d.view(v)).map(|v| v.hidden_elements.clone()).unwrap_or_default();
+        // what the view's filters hide is hidden here too (their colours are not applied in 3D)
+        if let Some(v) = view { hidden.extend(d.filter_hidden(v)); }
         let shown = |cat: &str| settings.as_ref().map_or(true, |s| s.overrides.model.get(cat).map_or(true, |o| o.visible));
         // stairs and railings follow the view's detail level
         let detail = settings.as_ref().map_or_else(Default::default, |s| s.detail_level);

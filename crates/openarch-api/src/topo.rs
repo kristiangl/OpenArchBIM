@@ -257,7 +257,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
         let cut = cut_z.map(|z| d.toposolid_plan_cut(t, z)).filter(|(polys, _)| !polys.is_empty()).and_then(|(polys, lines)| {
             let material = d.toposolid_type(t.toposolid_type).and_then(|ty| ty.layers.first()).and_then(|l| d.material(&l.material));
             let hint = material.map(Hint::from_material).unwrap_or_default();
-            let style = style_for(d, &settings, "Topography", None, v.element_overrides.get(&id), "cut", &hint)?;
+            let style = style_for(d, &settings, "Topography", None, d.graphics_of(v, &id).as_ref(), "cut", &hint)?;
             Some(json!({
                 "polys": polys.iter().map(|q| q.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>()).collect::<Vec<_>>(),
                 "lines": lines.iter().map(|s| [s[0].x, s[0].y, s[1].x, s[1].y]).collect::<Vec<_>>(),

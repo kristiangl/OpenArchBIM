@@ -722,6 +722,8 @@ pub enum Element {
     Kerb(crate::traffic::Kerb),
     KerbRamp(crate::traffic::KerbRamp),
     CadImport(crate::cad::CadImport),
+    /// A view filter (viewfilter.rs).
+    ViewFilter(crate::viewfilter::ViewFilter),
 }
 
 impl Element {
@@ -757,6 +759,7 @@ impl Element {
             Element::Roof(_) => "Roof",
             Element::View(_) => "View",
             Element::ViewTemplate(_) => "ViewTemplate",
+            Element::ViewFilter(_) => "ViewFilter",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

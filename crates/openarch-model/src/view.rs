@@ -324,13 +324,16 @@ impl Default for CategoryOverride {
     }
 }
 
-/// A filter applied to a view with its own overrides (filters themselves are
-/// elements, added later).
+/// A filter applied to a view with its own overrides (the filters themselves are elements, viewfilter.rs).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct FilterApplication {
     pub filter: Id,
+    /// Off hides the elements the filter matches.
     #[serde(default = "yes")]
     pub visible: bool,
+    /// Off leaves the filter in the list, with its overrides, but skips it.
+    #[serde(default = "yes")]
+    pub enabled: bool,
     #[serde(default)]
     pub overrides: CategoryOverride,
 }

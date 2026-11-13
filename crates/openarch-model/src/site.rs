@@ -1228,7 +1228,7 @@ impl Document {
             };
             Cue { start: gd.depth_cue_start as f64 / 100.0, end: gd.depth_cue_end as f64 / 100.0, limit: gd.depth_cue_fade as f64 / 100.0, depth }
         });
-        let hidden = |id: Id| v.hidden_elements.contains(&id);
+        let hidden = |id: Id| v.hidden_elements.contains(&id) || self.filter_hides(v, id);
         // A section view is drawn run by run: each run of the line cuts at its own plane and shows what lies beyond
         // it across its own stretch of the view.
         let (mut items, wall_pieces, host_near, folds) = match self.section_slices(view) {
@@ -1362,7 +1362,7 @@ impl Document {
         let rect = |u0: f64, u1: f64, z0: f64, z1: f64| vec![[u0, z0], [u1, z0], [u1, z1], [u0, z1]];
         let (near, far) = sl.map_or((0.0, frame.depth_mm), |s| (s.plane, s.depth));
         let visible = |dmin: f64, dmax: f64| dmax > near && dmin < far;
-        let hidden = |id: Id| v.hidden_elements.contains(&id);
+        let hidden = |id: Id| v.hidden_elements.contains(&id) || self.filter_hides(v, id);
         // walls: one rectangle per footprint piece
         let wall_pieces = self.wall_footprint_pieces(&hidden);
         // Walls are drawn layer by layer from the joined plan layers, so a layer that runs round a corner

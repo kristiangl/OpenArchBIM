@@ -104,7 +104,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let on_level = |l: Id| v.level == Some(l);
     let pts = |q: &[openarch_model::Point]| q.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>();
     let mut out: Vec<Value> = vec![];
-    let style = |cat: &str, id: Id| style_for(d, &settings, cat, None, v.element_overrides.get(&id), "projection", &Hint::default());
+    let style = |cat: &str, id: Id| style_for(d, &settings, cat, None, d.graphics_of(v, &id).as_ref(), "projection", &Hint::default());
     for (id, m) in d.line_markings() {
         if !on_level(m.level) || v.hidden_elements.contains(&id) { continue; }
         let Some(st) = style("Parking", id) else { continue };

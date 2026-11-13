@@ -284,7 +284,8 @@ pub fn wall_groups(d: &Document, settings: &ViewSettings, view: &View, walls: &[
     use openarch_model::layers::union_rings;
     let mut groups: std::collections::BTreeMap<String, Vec<&LayeredWall>> = Default::default();
     for w in walls {
-        let eo = view.element_overrides.get(&w.id);
+        let eo_held = d.graphics_of(view, &w.id);
+        let eo = eo_held.as_ref();
         let Some(st) = style_for(d, settings, "Walls", None, eo, w.display, &Hint::default()) else { continue };
         let key = format!(
             "{}|{}|{}|{}|{}|{}",
@@ -300,7 +301,8 @@ pub fn wall_groups(d: &Document, settings: &ViewSettings, view: &View, walls: &[
     let mut out = vec![];
     for (_, members) in groups {
         let first = members[0];
-        let eo = view.element_overrides.get(&first.id);
+        let eo_held = d.graphics_of(view, &first.id);
+        let eo = eo_held.as_ref();
         let Some(line_style) = style_for(d, settings, "Walls", None, eo, first.display, &Hint::default()) else { continue };
         let edge = style_for(d, settings, "Walls", Some("Common Edges"), eo, first.display, &Hint::default()).map(|s| s["line"].clone());
         // outer boundary of everything in the group
@@ -309,7 +311,8 @@ pub fn wall_groups(d: &Document, settings: &ViewSettings, view: &View, walls: &[
         // one region per material and fill look
         let mut by_fill: std::collections::BTreeMap<String, (Value, Vec<openarch_model::layers::Ring>, String, bool)> = Default::default();
         for w in &members {
-            let eo = view.element_overrides.get(&w.id);
+            let eo_held = d.graphics_of(view, &w.id);
+        let eo = eo_held.as_ref();
             for l in &w.layers {
                 let (fill, void) = if l.is_void {
                     (Value::Null, true)

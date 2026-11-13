@@ -17,12 +17,13 @@ use crate::element::{Element, Id};
 /// 15: contour labels, and split lines on toposolids.
 /// 16: line markings, parking rows, kerbs, kerb ramps and CAD imports (new element kinds), shape points on roofs,
 ///     and the number of backups to keep.
+/// 17: view filters (a new element kind), and the Enable switch of a filter in a view.
 ///
 /// Raise this whenever a build starts to store something an earlier build would not know: a new element kind
 /// always (the test `the_element_kinds_match_the_format_version` holds the list), and a new field whose loss would
 /// matter. An earlier build then says the file is from a newer version instead of failing on it or, worse, opening
 /// it and saving it back without the new data.
-const FORMAT_VERSION: i64 = 16;
+const FORMAT_VERSION: i64 = 17;
 
 /// The backups a new project keeps, and the most that can be asked for.
 pub const DEFAULT_BACKUPS: u32 = 5;
@@ -181,7 +182,7 @@ mod tests {
     /// Every element kind the project file can hold, as of FORMAT_VERSION. A kind added to `Element` without this
     /// list (and so the version) being touched fails here: an earlier build could not read such a file and has to
     /// be told it is from a newer version.
-    const KINDS: (i64, &str) = (16, "Level WallType FloorType Wall Floor RoofType Roof View ViewTemplate Family FamilyType FamilyInstance ObjectStyles LineWeights LinePattern FillPattern Material ProjectLocation ElevationMarker Grid GridType AnnotationFamily LevelType Dimension DimensionType Spot SpotType Section ViewType ViewMarkerType DetailLine DetailRegion FilledRegionType TextNote TextNoteType GlobalParam GroupType GroupInstance GroupArray ProjectInfo Sheet Viewport SheetCollection SheetSchedule ProjectParameter Room RoomSeparation RoomTag RoomSettings Revision RevisionSettings RevisionCloud RevisionTag ElementTag CeilingType Ceiling AreaScheme AreaBoundary Area AreaTag ColorFillScheme ColorFillLegend StairType Stair RailingType Railing RampType Ramp ToposolidType Toposolid ContourLabel PropertyLine LineMarking ParkingRow Kerb KerbRamp CadImport");
+    const KINDS: (i64, &str) = (17, "Level WallType FloorType Wall Floor RoofType Roof View ViewTemplate Family FamilyType FamilyInstance ObjectStyles LineWeights LinePattern FillPattern Material ProjectLocation ElevationMarker Grid GridType AnnotationFamily LevelType Dimension DimensionType Spot SpotType Section ViewType ViewMarkerType DetailLine DetailRegion FilledRegionType TextNote TextNoteType GlobalParam GroupType GroupInstance GroupArray ProjectInfo Sheet Viewport SheetCollection SheetSchedule ProjectParameter Room RoomSeparation RoomTag RoomSettings Revision RevisionSettings RevisionCloud RevisionTag ElementTag CeilingType Ceiling AreaScheme AreaBoundary Area AreaTag ColorFillScheme ColorFillLegend StairType Stair RailingType Railing RampType Ramp ToposolidType Toposolid ContourLabel PropertyLine LineMarking ParkingRow Kerb KerbRamp CadImport ViewFilter");
 
     #[test]
     fn the_element_kinds_match_the_format_version() {

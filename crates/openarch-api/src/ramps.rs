@@ -172,7 +172,8 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let mut out = vec![];
     for (id, r) in d.ramps() {
         if v.hidden_elements.contains(&id) { continue; }
-        let eo = v.element_overrides.get(&id);
+        let eo_held = d.graphics_of(v, &id);
+        let eo = eo_held.as_ref();
         let Some(line) = style_for(d, &settings, "Ramps", None, eo, "projection", &Hint::default()) else { continue };
         let Some(l) = d.ramp_layout(r) else { continue };
         let (base, top) = (l.base_z, l.reached_z());

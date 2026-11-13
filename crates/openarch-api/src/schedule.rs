@@ -44,8 +44,14 @@ impl Cell {
     }
 
     /// Whether the cell passes a filter or a highlight's test.
-    fn passes(&self, op: FilterOp, against: &str) -> bool {
+    pub(crate) fn passes(&self, op: FilterOp, against: &str) -> bool {
         op.test_cell(&self.text, self.num, self.present, self.global.as_deref(), against)
+    }
+    pub(crate) fn text_of(&self) -> &str {
+        &self.text
+    }
+    pub(crate) fn number(&self) -> Option<f64> {
+        self.num
     }
 }
 
@@ -136,9 +142,16 @@ pub(crate) fn model_categories() -> Vec<String> {
 }
 
 /// An element's parameters and its type's, by name.
-struct Params {
+pub(crate) struct Params {
     instance: BTreeMap<String, Cell>,
     of_type: BTreeMap<String, Cell>,
+}
+
+impl Params {
+    /// A parameter by name: the element's own, else its type's.
+    pub(crate) fn get(&self, name: &str) -> Option<&Cell> {
+        self.instance.get(name).or_else(|| self.of_type.get(name))
+    }
 }
 
 impl Session {
@@ -191,7 +204,7 @@ impl Session {
         out
     }
 
-    fn params(&self, id: Id, types: &mut BTreeMap<Id, BTreeMap<String, Cell>>) -> Params {
+    pub(crate) fn params(&self, id: Id, types: &mut BTreeMap<Id, BTreeMap<String, Cell>>) -> Params {
         let mut instance = BTreeMap::new();
         let mut of_type = BTreeMap::new();
         if let Some(c) = self.schedule_category(id) {

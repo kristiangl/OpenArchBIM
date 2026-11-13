@@ -178,7 +178,8 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let mut out = vec![];
     for (id, r) in d.railings() {
         if v.hidden_elements.contains(&id) { continue; }
-        let eo = v.element_overrides.get(&id);
+        let eo_held = d.graphics_of(v, &id);
+        let eo = eo_held.as_ref();
         let Some(line) = style_for(d, &settings, "Railings", None, eo, "projection", &Hint::default()) else { continue };
         let Some(host) = d.railing_host_line(r) else { continue };
         let (lo, hi) = host.pts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), p| (a.min(p.1), b.max(p.1)));

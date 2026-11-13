@@ -518,7 +518,8 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let mut out = vec![];
     for (id, s) in d.stairs() {
         if v.hidden_elements.contains(&id) { continue; }
-        let eo = v.element_overrides.get(&id);
+        let eo_held = d.graphics_of(v, &id);
+        let eo = eo_held.as_ref();
         let Some(line) = style_for(d, &settings, "Stairs", Some("Outlines"), eo, "projection", &Hint::default()) else { continue };
         let above = style_for(d, &settings, "Stairs", Some("<Above> Outlines"), eo, "projection", &Hint::default()).unwrap_or_else(|| line.clone());
         let cut_style = style_for(d, &settings, "Stairs", Some("Cut Marks"), eo, "projection", &Hint::default()).unwrap_or_else(|| line.clone());

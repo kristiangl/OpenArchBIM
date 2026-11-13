@@ -99,7 +99,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     if v.view_kind != ViewKind::FloorPlan { return json!({ "property_lines": [] }); }
     let settings = d.effective_settings(view).unwrap_or_default();
     let list: Vec<Value> = d.property_lines().into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).filter_map(|(id, pl)| {
-        let style = style_for(d, &settings, "Site", Some("Property Lines"), v.element_overrides.get(&id), "projection", &Hint::default())?;
+        let style = style_for(d, &settings, "Site", Some("Property Lines"), d.graphics_of(v, &id).as_ref(), "projection", &Hint::default())?;
         let lines: Vec<Vec<[f64; 2]>> = pl.curves.iter().map(|c| c.tessellate(20.0).iter().map(|p| [p.x, p.y]).collect()).collect();
         let labels: Vec<Value> = if pl.label_segments {
             d.property_line_labels(pl).into_iter().map(|(at, angle, text)| json!({ "at": [at.x, at.y], "angle": angle, "text": text })).collect()

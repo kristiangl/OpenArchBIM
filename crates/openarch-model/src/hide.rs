@@ -108,7 +108,7 @@ impl Document {
 
     /// True when the view hides the element itself (Hide in View, or for now).
     pub fn hidden_in(&self, view: Id, id: Id) -> bool {
-        self.view(view).is_some_and(|v| v.hidden_elements.contains(&id) || v.element_overrides.get(&id).is_some_and(|o| !o.visible))
+        self.view(view).is_some_and(|v| v.hidden_elements.contains(&id) || v.element_overrides.get(&id).is_some_and(|o| !o.visible) || self.filter_hides(v, id))
     }
 
     fn display_view(&self, view: Id) -> Result<(), String> {
