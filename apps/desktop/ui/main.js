@@ -68,6 +68,9 @@ const COMMANDS = {
   linemark: () => Traffic.startSketch("linemark"),
   kerb: () => Traffic.startSketch("kerb"),
   "kerb-ramp": () => Traffic.startKerbRamp(),
+  "s-column": () => Structure.startColumn(),
+  column: () => Structure.startColumn(),
+  "s-beam": () => Structure.startBeam(),
   stair: () => Stairs.start(),
   ramp: () => Ramps.start(),
   railing: () => Railings.startSketch(),
@@ -400,6 +403,8 @@ function currentContext() {
   if (pc) return pc;
   const cadc = Cad.selectionContext();
   if (cadc) return cadc;
+  const stc = Structure.selectionContext();
+  if (stc) return stc;
   const trc = Traffic.selectionContext();
   if (trc) return trc;
   // Tag by Category, and Place Door / Place Window with Tag on Placement, in a plan or an elevation

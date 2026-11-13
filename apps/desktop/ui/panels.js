@@ -336,6 +336,10 @@ async function renderProperties() {
     const tp = Traffic.placementProperties();
     title = tp.title;
     groups.push(...tp.groups);
+  } else if (tool === "scolumn" || tool === "sbeam") {
+    const tp = Structure.placementProperties();
+    title = tp.title;
+    groups.push(...tp.groups);
   } else if (tool === "sketch" && (Sketch.kind === "linemark" || Sketch.kind === "kerb")) {
     title = Sketch.kind === "kerb" ? "Kerb" : "Line Marking";
   } else if (tool === "sketch" && Sketch.kind === "propline") {

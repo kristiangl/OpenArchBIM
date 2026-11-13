@@ -290,7 +290,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Structure.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -1347,6 +1347,8 @@ const Plan = (() => {
     RoofShape.draw(ctx, data, toScreen, sel);
     // line marking, parking bays and kerbs on the ground
     Traffic.draw(ctx, data, toScreen, cam.s, sel, tag, { lw, colour, dash });
+    // structural columns and beams
+    Structure.draw(ctx, data, toScreen, cam.s, sel, tag, { lw, colour, dash });
     // the site's boundary over the ground
     PropLines.draw(ctx, data, toScreen, cam.s, sel, tag, { lw, colour, dash });
 
@@ -1863,6 +1865,7 @@ const Plan = (() => {
     if (tool === "topopoint" || tool === "topolabel" || tool === "topoexcavate") return Topo.promptText();
     if (tool === "propplace") return PropLines.promptText();
     if (tool === "parkrow" || tool === "kerbramp") return Traffic.promptText();
+    if (tool === "scolumn" || tool === "sbeam") return Structure.promptText();
     if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
@@ -2408,6 +2411,7 @@ const Plan = (() => {
     if (tool === "topoexcavate") { Topo.excavateClick(cutterAt(sx, sy)); return; }
     if (tool === "propplace") { PropLines.placeClick(snap(sx, sy)); return; }
     if (tool === "parkrow" || tool === "kerbramp") { Traffic.click(snap(sx, sy)); return; }
+    if (tool === "scolumn" || tool === "sbeam") { Structure.click(snap(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
     if (tool === "shapepoint") { ShapeEdit.pointClick(snap(sx, sy)); return; }
     if (tool === "topolabel") { Topo.labelClick(snap(sx, sy, Topo.labelSnap())); return; }
@@ -2699,6 +2703,7 @@ const Plan = (() => {
     if (tool === "topolabel") Topo.labelHover(hover);
     if (tool === "propplace") { PropLines.hover(hover); render(); }
     if (tool === "parkrow" || tool === "kerbramp") { Traffic.hover(hover); render(); }
+    if (tool === "scolumn" || tool === "sbeam") { Structure.hover(hover); render(); }
     cb.cursor(hover);
     if (Sketch.active) Sketch.move(hover, e.offsetX, e.offsetY);
     if (tool === "wall" && draw && SHAPE_CURVE[wallShape]) refreshWallShape();
@@ -2964,7 +2969,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();
@@ -3062,6 +3067,7 @@ const Plan = (() => {
       if (tool === "topoexcavate" && Topo.excavateKey(e)) return true;
       if (tool === "propplace" && PropLines.key(e)) return true;
       if ((tool === "parkrow" || tool === "kerbramp") && Traffic.key(e)) return true;
+      if ((tool === "scolumn" || tool === "sbeam") && Structure.key(e)) return true;
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }
