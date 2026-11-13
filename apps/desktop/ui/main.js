@@ -1197,6 +1197,8 @@ async function refreshView(force) {
       app.sceneRevision = scene.revision;
       app.sceneStyle = scene.visual_style || "shaded";
       app.vp.setMeshes(scene.meshes, app.selection);
+      // imported CAD drawings, as lines at their levels
+      Cad.lines3D(scene.cad_imports).then((lines) => { if (app.view.kind === "3d" && app.vp) app.vp.setLines(lines); });
       snapGeometry3D(scene.meshes);
       if (force) app.vp.fit();
     }

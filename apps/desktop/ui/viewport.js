@@ -360,6 +360,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const boxBuf = mk(st.box, GPUBufferUsage.VERTEX), stressBuf = mk(st.stress, GPUBufferUsage.VERTEX);
     const clipped = new Float32Array(Math.max(st.grid.length, st.bigGrid.length));
     const gridBuf = device.createBuffer({ size: clipped.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+    let extraBuf = null, extraClip = null;
     let depth = null;
     const be = {
       name: "WebGPU",
@@ -382,6 +383,16 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         pass.setBindGroup(0, bind);
         const n = clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
         if (n) { device.queue.writeBuffer(gridBuf, 0, clipped, 0, n * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, gridBuf); pass.draw(n); }
+        // lines given with setLines (imported CAD drawings), cut to the view like the grid
+        if (f.lines && f.lines.length && !f.stress) {
+            if (!extraClip || extraClip.length < f.lines.length) {
+              extraClip = new Float32Array(f.lines.length);
+              extraBuf?.destroy();
+              extraBuf = device.createBuffer({ size: extraClip.byteLength, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST });
+            }
+            const k = clipLines(f.lines, f.uniforms.subarray(0, 16), extraClip, true);
+            if (k) { device.queue.writeBuffer(extraBuf, 0, extraClip, 0, k * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, extraBuf); pass.draw(k); }
+        }
         if (f.stress) {
           pass.setPipeline(boxPipe);
           pass.setVertexBuffer(0, boxBuf); pass.setVertexBuffer(1, stressBuf); pass.draw(36, st.stress.length / 12);
@@ -458,6 +469,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     };
     const gridDyn = buf(new Float32Array(6)), gridDynVao = vao(gridDyn, 24, [[0, 3, 0], [1, 3, 12]]);
     const clipped = new Float32Array(Math.max(st.grid.length, st.bigGrid.length));
+    let extraClip = null;
     const stressVao = vao(buf(st.box), 24, [[0, 3, 0], [1, 3, 12]], buf(st.stress));
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
     let lastW = 0, lastH = 0;
@@ -499,6 +511,13 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gl.bufferData(gl.ARRAY_BUFFER, clipped.subarray(0, n * 6), gl.DYNAMIC_DRAW);
         gl.bindVertexArray(gridDynVao);
         gl.drawArrays(gl.LINES, 0, n);
+        // lines given with setLines (imported CAD drawings), cut to the view like the grid
+        if (f.lines && f.lines.length && !f.stress) {
+          if (!extraClip || extraClip.length < f.lines.length) extraClip = new Float32Array(f.lines.length);
+          const k = clipLines(f.lines, vp, extraClip, false);
+          gl.bufferData(gl.ARRAY_BUFFER, extraClip.subarray(0, k * 6), gl.DYNAMIC_DRAW);
+          gl.drawArrays(gl.LINES, 0, k);
+        }
         gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
         if (f.stress) {
           use(boxProg);
@@ -571,6 +590,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       }
     }
 
+    let extraLines = null;
     function frame(now) {
       requestAnimationFrame(frame);
       if (stress) { cam.az += 0.0025; dirty = true; }
@@ -588,7 +608,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const lineMode = !stress && style === "hidden_line" ? 1 : !stress && style === "wireframe" ? 2 : 0;
       const u = new Float32Array(28); u.set(vp, 0); u.set([0.4, -0.5, 0.8, lineMode === 1 ? 1 : 0], 16); u.set([...page, 1], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
-      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g) });
+      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g), lines: extraLines });
       if (afterRender) afterRender();
     }
 
@@ -763,6 +783,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         if (on) { cam.dist = 450; cam.el = 0.5; cam.target = [0, 0, 20]; } else { this.fit(); }
         dirty = true;
       },
+      /** Lines drawn with the model, hidden where it covers them: a Float32Array of x y z r g b for each end (metres, colours 0 to 1), or null. */
+      setLines(a) { extraLines = a && a.length ? a : null; dirty = true; },
       /** Replace the displayed model meshes: [{ id, kind, verts: [x y z nx ny nz ...] }]. */
       setMeshes(list, selected = []) {
         for (const m of meshes) be.free(m.g);

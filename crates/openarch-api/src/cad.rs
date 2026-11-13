@@ -200,6 +200,20 @@ impl Session {
     }
 }
 
+/// The CAD drawings a 3D view shows, each flat at its level: those not kept to one view, not hidden in the view.
+pub(crate) fn scene(d: &Document, view: Option<Id>, shown: bool) -> Vec<Value> {
+    if !shown { return vec![]; }
+    let v = view.and_then(|v| d.view(v));
+    d.cad_imports().into_iter().filter(|(id, c)| c.view.is_none() && !v.is_some_and(|v| v.hidden_elements.contains(id))).map(|(id, c)| {
+        let b = c.drawing.bulk.or(c.drawing.extents).unwrap_or([0.0; 4]);
+        json!({
+            "id": id, "name": c.name, "stamp": c.stamp, "at": [c.at.x, c.at.y], "angle_deg": c.angle_deg, "scale": c.scale,
+            "base": [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0], "z": d.level(c.level).map_or(0.0, |l| l.elevation_mm),
+            "hidden": view.map_or_else(|| c.hidden_layers.clone(), |v| d.cad_hidden_in(v, id)), "black": c.colors == CadColors::BlackAndWhite,
+        })
+    }).collect()
+}
+
 /// What a view is told about the CAD drawings it draws: where each sits and which of its layers are hidden.
 pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let Some(v) = d.view(view) else { return json!({}) };

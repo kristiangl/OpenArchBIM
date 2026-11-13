@@ -3162,7 +3162,7 @@ impl Session {
                 m["transparency"] = json!(t);
             }
         }
-        json!({ "revision": d.revision(), "meshes": meshes, "visual_style": settings.as_ref().map(|s| s.visual_style) })
+        json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style) })
     }
 
     /// A member of a group (at any depth) outside Edit Group: only the values that vary by group instance

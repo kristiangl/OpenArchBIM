@@ -19,14 +19,15 @@ const Cad = (() => {
   // ---- the drawing, fetched and sorted for drawing ----------------------------------------------------------------
   // lines and arcs of one layer and colour are stroked as one path
   function build(d) {
-    const groups = new Map(), texts = [], points = [], segs = [], segLayer = [];
+    const groups = new Map(), texts = [], points = [], segs = [], segLayer = [], segDrawn = [];
     const group = (layer, col) => {
       const key = layer + "|" + (col ? col.join(",") : "");
       let g = groups.get(key);
       if (!g) { g = { layer, col, strokes: [], solids: [], pales: [], path: null, solid: null, pale: null }; groups.set(key, g); }
       return g;
     };
-    const seg = (layer, x0, y0, x1, y1) => { segs.push(x0, y0, x1, y1); segLayer.push(layer); };
+    // `drawn` is off for the stand-ins a text and a point are picked by, which are not lines of the drawing
+    const seg = (layer, x0, y0, x1, y1, drawn = 1) => { segs.push(x0, y0, x1, y1); segLayer.push(layer); segDrawn.push(drawn); };
     const round = (layer, x, y, r, a0, sweep) => {
       const n = Math.max(4, Math.ceil(Math.abs(sweep) / (Math.PI * 2) * 32));
       for (let i = 0; i < n; i++) {
@@ -53,15 +54,15 @@ const Cad = (() => {
         texts.push({ layer, col, x: s[3], y: s[4], h: s[5], a: s[6], ha: s[7], va: s[8], lines });
         // picked along its first line
         const len = s[5] * 0.6 * Math.max(1, lines[0].length), off = s[7] === 1 ? -len / 2 : s[7] === 2 ? -len : 0;
-        seg(layer, s[3] + off * Math.cos(s[6]), s[4] + off * Math.sin(s[6]), s[3] + (off + len) * Math.cos(s[6]), s[4] + (off + len) * Math.sin(s[6]));
+        seg(layer, s[3] + off * Math.cos(s[6]), s[4] + off * Math.sin(s[6]), s[3] + (off + len) * Math.cos(s[6]), s[4] + (off + len) * Math.sin(s[6]), 0);
       } else if (kind === 4) {
         (s[3] ? group(layer, col).pales : group(layer, col).solids).push(s);
       } else if (kind === 5) {
         points.push({ layer, col, x: s[3], y: s[4] });
-        seg(layer, s[3], s[4], s[3], s[4]);
+        seg(layer, s[3], s[4], s[3], s[4], 0);
       }
     }
-    return { stamp: d.stamp, d, groups: [...groups.values()], texts, points, segs: Float64Array.from(segs), segLayer: Int32Array.from(segLayer) };
+    return { stamp: d.stamp, d, groups: [...groups.values()], texts, points, segs: Float64Array.from(segs), segLayer: Int32Array.from(segLayer), segDrawn: Uint8Array.from(segDrawn) };
   }
 
   // a shape's outline on a canvas or a path (both take moveTo, lineTo, arc and closePath)
@@ -105,7 +106,7 @@ const Cad = (() => {
   // imports that are gone leave the cache
   function prune(d) {
     const ids = new Set(list(d).map((c) => c.id));
-    if (app.view.kind !== "plan") return;
+    if (!app.view || app.view.kind !== "plan") return; // the plan can draw once before a view is open
     for (const id of placed.keys()) if (!ids.has(id)) placed.delete(id);
   }
 
@@ -448,6 +449,45 @@ const Cad = (() => {
     });
   }
 
+  // ---- the 3D view -------------------------------------------------------------------------------------------------
+  // The lines of the imports a 3D view shows (scene.cad_imports), flat at each import's level, in its layers'
+  // colours: x y z r g b for each end, in metres, for the viewport's setLines. Text and fills are left out.
+  const LINES_3D = 400000; // segments; past this the rest is left out
+  async function lines3D(imports) {
+    const parts = [];
+    let total = 0;
+    for (const c of imports || []) {
+      let k = cache.get(c.id);
+      if (!k || k.stamp !== c.stamp) {
+        try { k = build(await Backend.call("cad_drawing", { id: c.id })); cache.set(c.id, k); placed.delete(c.id); } catch { continue; }
+      }
+      const hidden = new Set((c.hidden || []).map((n) => k.d.layers.findIndex((l) => l.name === n)));
+      const { cs, sn, ox, oy } = placer(c, k.d.base);
+      const z = c.z / 1000, n = k.segLayer.length;
+      const out = new Float32Array(Math.min(n, LINES_3D - total) * 12);
+      let m = 0;
+      for (let i = 0; i < n && m < out.length; i++) {
+        if (!k.segDrawn[i] || hidden.has(k.segLayer[i])) continue;
+        const col = k.d.layers[k.segLayer[i]]?.color;
+        const white = !col || (col[0] > 235 && col[1] > 235 && col[2] > 235);
+        const r = c.black || white ? 0.1 : col[0] / 255, g = c.black || white ? 0.1 : col[1] / 255, b = c.black || white ? 0.1 : col[2] / 255;
+        for (let j = 0; j < 2; j++) {
+          const x = k.segs[4 * i + 2 * j], y = k.segs[4 * i + 2 * j + 1];
+          out[m++] = (ox + x * cs - y * sn) / 1000; out[m++] = (oy + x * sn + y * cs) / 1000; out[m++] = z;
+          out[m++] = r; out[m++] = g; out[m++] = b;
+        }
+      }
+      parts.push(out.subarray(0, m));
+      total += m / 12;
+      if (total >= LINES_3D) break;
+    }
+    if (!parts.length) return null;
+    const all = new Float32Array(parts.reduce((a, p) => a + p.length, 0));
+    let at = 0;
+    for (const p of parts) { all.set(p, at); at += p.length; }
+    return all;
+  }
+
   // Modify | a selected import
   function selectionContext() {
     if (app.view.kind !== "plan" || app.selection.length !== 1 || Plan.tool !== "select") return null;
@@ -464,5 +504,5 @@ const Cad = (() => {
     ] };
   }
 
-  return { start, draw, elements, snapSegs, selectionContext, layersDialog, reload, toToposolid };
+  return { start, draw, elements, snapSegs, selectionContext, layersDialog, reload, toToposolid, lines3D };
 })();
