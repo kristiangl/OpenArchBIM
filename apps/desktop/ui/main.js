@@ -167,6 +167,7 @@ const COMMANDS = {
   pin: () => pinSelection(true),
   unpin: () => pinSelection(false),
   "v-vg": () => openVG(),
+  "v-filters": () => Filters.open(),
   "m-styles": () => openObjectStyles(),
   "m-snaps": () => openSnaps(),
   "m-families": () => FamModel.list(),
