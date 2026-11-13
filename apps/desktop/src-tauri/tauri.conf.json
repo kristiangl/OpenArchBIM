@@ -53,7 +53,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEVGQkYzOTIwOTk1NTc4QjgKUldTNGVGV1pJRG0vNzZQak5BbjBhUURodEdoUEFDU1plMW85dTJkNjhieVVYWGt3U2ZRcDFISFkK",
       "endpoints": [
         "https://github.com/kristiangl/OpenArchBIM/releases/latest/download/latest.json"
       ],
