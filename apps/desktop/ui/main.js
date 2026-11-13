@@ -3003,9 +3003,13 @@ $("#qa-measure").onclick = () => {
   runCommand("me");
 };
 // Help is a drop-down on the top bar, not a ribbon tab
-$("#qa-help").onclick = (e) => {
+$("#qa-help").onclick = async (e) => {
   const r = e.currentTarget.getBoundingClientRect();
-  showMenu(r.left, r.bottom, [{ label: "Open Log Folder", run: () => runCommand("open-log") }]);
+  const v = await Updates.version();
+  showMenu(r.left, r.bottom, [
+    { label: "Check for Updates...", title: v ? `This is version ${v.version}` : "For the installed desktop program", run: () => Updates.check(true) },
+    { label: "Open Log Folder", run: () => runCommand("open-log") },
+  ]);
 };
 
 // The File menu: under the File button at the left of the top bar
@@ -3023,7 +3027,7 @@ $("#file-btn").onclick = () => {
     { label: "Export IFC...", run: () => runCommand("export-ifc") },
     { sep: true },
     { label: "Project Information...", run: () => runCommand("project-info") },
-    { label: "Options...", title: "Save reminders and backups", run: () => SaveOptions.open() },
+    { label: "Options...", title: "Save reminders, backups and updates", run: () => SaveOptions.open() },
     { sep: true },
     { label: "Close", run: () => closeWindow() },
   ]);

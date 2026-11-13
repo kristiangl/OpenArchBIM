@@ -1,12 +1,13 @@
 // File > Options, and the reminder to save.
 //
+// Check for updates at start-up: kept on this computer (updates.js does the checking).
 // Save reminder interval: kept on this computer (it is how a person likes to work, not part of a project).
 // Backups to keep: kept in the project file. Each save over the project's file first keeps the file as it was as
 // Name.0001.oab, Name.0002.oab and so on beside it, and removes the oldest past this number (the core does this,
 // see save_keeping_backups in store.rs).
 const SaveOptions = (() => {
   const KEY = "openarch.options";
-  const DEFAULTS = { saveReminderMin: 30 };
+  const DEFAULTS = { saveReminderMin: 30, checkUpdates: true };
   const INTERVALS = [[15, "15 minutes"], [30, "30 minutes"], [60, "One hour"], [120, "Two hours"], [240, "Four hours"], [0, "No reminders"]];
   const load = () => { try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(KEY) || "{}") }; } catch { return { ...DEFAULTS }; } };
   const store = (o) => { try { localStorage.setItem(KEY, JSON.stringify(o)); } catch { /* storage off: kept for this session only */ } };
@@ -51,11 +52,14 @@ const SaveOptions = (() => {
       const most = (app.info && app.info.most_backups) || 99;
       const keep = el("input", { type: "number", min: 0, max: most, step: 1, value: app.info ? app.info.max_backups : 5 });
       keep.style.width = "70px";
+      const updates = el("input", { type: "checkbox", checked: options.checkUpdates !== false });
       const row = (label, control) => { const r = el("label", { className: "new-row" }, [el("span", { textContent: label }), control]); r.style.gridTemplateColumns = "170px 1fr"; return r; };
       body.append(
         el("div", { className: "modal-sub", textContent: "This computer" }),
         row("Save reminder interval", every),
         el("div", { className: "modal-note", textContent: "Asks you to save when the project has had unsaved changes for this long." }),
+        row("Check for updates at start-up", updates),
+        el("div", { className: "modal-note", textContent: "Asks the project's releases page whether there is a newer version, and offers to install it. Help > Check for Updates asks at any time." }),
         el("div", { className: "modal-sub", textContent: "This project" }),
         row("Backups to keep", keep),
         el("div", { className: "modal-note", textContent: "Each save keeps the file as it was beside the project, as Name.0001.oab, Name.0002.oab and so on, and removes the oldest past this number. 0 keeps none. The number is saved with the project." }),
@@ -67,7 +71,7 @@ const SaveOptions = (() => {
         if (app.info && count !== app.info.max_backups) {
           try { await Backend.call("set_max_backups", { count }); } catch (e) { msg.textContent = String(e.message || e); return; }
         }
-        options = { ...options, saveReminderMin: Number(every.value) };
+        options = { ...options, saveReminderMin: Number(every.value), checkUpdates: updates.checked };
         store(options);
         since = Date.now();
         close();

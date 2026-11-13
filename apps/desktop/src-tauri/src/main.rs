@@ -244,6 +244,84 @@ fn open_log_folder(log: tauri::State<Log>) -> Result<String, String> {
     Ok(log.dir.display().to_string())
 }
 
+// ---- updates -----------------------------------------------------------------------------------
+// Help > Check for Updates and the check at start-up. The program asks the project's latest release on GitHub
+// (the address in tauri.conf.json, plugins.updater.endpoints) for latest.json, which names the newest version and,
+// for each platform, where its installer is and its signature. An installer is only ever run after its signature
+// has been checked against the public key built into this program (plugins.updater.pubkey). A build with no key
+// in it (a developer's own build) has no updates and says so.
+
+/// Whether this build carries the key updates are checked against.
+fn updates_configured(app: &tauri::AppHandle) -> bool {
+    app.config().plugins.0.get("updater").and_then(|u| u.get("pubkey")).and_then(|k| k.as_str()).is_some_and(|k| !k.trim().is_empty())
+}
+
+const NO_UPDATES: &str = "This build was not set up for updates (it has no signing key in it). Installers from the project's releases page are.";
+
+#[derive(serde::Serialize)]
+struct UpdateInfo {
+    /// The version running.
+    current: String,
+    /// The newer version on offer, when there is one.
+    version: Option<String>,
+    /// The release's notes.
+    notes: Option<String>,
+}
+
+/// The version of this program.
+#[tauri::command]
+fn app_version(app: tauri::AppHandle) -> serde_json::Value {
+    serde_json::json!({ "version": app.package_info().version.to_string(), "updates": updates_configured(&app) })
+}
+
+/// Asks the releases page whether there is a newer version. Nothing is downloaded.
+#[tauri::command]
+async fn update_check(app: tauri::AppHandle, log: tauri::State<'_, Log>) -> Result<UpdateInfo, String> {
+    use tauri_plugin_updater::UpdaterExt;
+    let current = app.package_info().version.to_string();
+    if !updates_configured(&app) {
+        return Err(NO_UPDATES.to_string());
+    }
+    let found = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| {
+        log.line(&format!("update check failed: {e}"));
+        format!("Could not check for updates: {e}")
+    })?;
+    log.line(&match &found {
+        Some(u) => format!("update check: {} is available (this is {current})", u.version),
+        None => format!("update check: {current} is the latest"),
+    });
+    Ok(UpdateInfo { current, version: found.as_ref().map(|u| u.version.clone()), notes: found.and_then(|u| u.body) })
+}
+
+/// Downloads the newer version, checks its signature, installs it and starts the program again. The page saves
+/// the project before calling this. While it downloads the page is sent `update-progress` { done, total } (bytes).
+#[tauri::command]
+async fn update_install(app: tauri::AppHandle, log: tauri::State<'_, Log>) -> Result<(), String> {
+    use tauri_plugin_updater::UpdaterExt;
+    if !updates_configured(&app) {
+        return Err(NO_UPDATES.to_string());
+    }
+    let update = app.updater().map_err(|e| e.to_string())?.check().await.map_err(|e| format!("Could not check for updates: {e}"))?.ok_or("There is no newer version to install.")?;
+    log.line(&format!("update: downloading {}", update.version));
+    let mut done: u64 = 0;
+    let progress = app.clone();
+    update
+        .download_and_install(
+            |chunk, total| {
+                done += chunk as u64;
+                let _ = progress.emit("update-progress", serde_json::json!({ "done": done, "total": total }));
+            },
+            || {},
+        )
+        .await
+        .map_err(|e| {
+            log.line(&format!("update failed: {e}"));
+            format!("The update could not be installed: {e}")
+        })?;
+    log.line("update installed, starting again");
+    app.restart();
+}
+
 /// Linux: WebKitGTK's DMA-BUF renderer shows a blank window with the NVIDIA proprietary driver
 /// (common on Wayland). Turn it off when that driver is loaded, unless the person set it themselves.
 #[cfg(target_os = "linux")]
@@ -267,6 +345,10 @@ fn main() {
                 .unwrap_or_else(|_| std::env::temp_dir().join("openarch-logs"));
             app.manage(Log::open(dir));
             watch_slow_calls(app.handle().clone());
+            // updates only where the build carries the key they are checked against
+            if updates_configured(app.handle()) {
+                app.handle().plugin(tauri_plugin_updater::Builder::new().build())?;
+            }
             // the page draws the one top bar; macOS keeps its own window buttons, over the bar's left end
             #[cfg(target_os = "macos")]
             if let Some(w) = app.get_webview_window("main") {
@@ -296,7 +378,7 @@ fn main() {
                 let _ = window.emit("close-requested", ());
             }
         })
-        .invoke_handler(tauri::generate_handler![rpc_send, rpc_wait, close_ack, quit, ui_log, ui_alive, open_log_folder])
+        .invoke_handler(tauri::generate_handler![rpc_send, rpc_wait, close_ack, quit, ui_log, ui_alive, open_log_folder, app_version, update_check, update_install])
         .run(tauri::generate_context!())
         .expect("error while running OpenArch BIM");
 }

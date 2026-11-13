@@ -97,6 +97,12 @@ On Ubuntu or Debian the webview libraries are:
 
 Installers for Windows, Mac and Linux are built by GitHub Actions for tagged releases. Linux comes as a .deb (Ubuntu 22.04 and later, Debian 12 and later), an .rpm (Fedora and similar) and an AppImage (most other distributions: make it executable and run it). On Linux the 3D view draws with WebGL2, because the system webview (WebKitGTK) does not offer WebGPU yet. With the NVIDIA proprietary driver the app turns off WebKitGTK's DMA-BUF renderer, which otherwise leaves the window blank.
 
+### Updates
+
+An installed copy checks the project's latest release on GitHub when it starts, and offers to install a newer version. Help > Check for Updates asks at any time, and File > Options turns the check at start-up off. Nothing is sent but the request for the release's `latest.json`. An update is only installed after its signature has been checked against the public key built into the program, and you are asked about unsaved work first. On Linux the AppImage updates itself; a .deb or .rpm is updated by installing the newer package.
+
+A release is made by pushing a tag: `v0.3.0` builds version 0.3.0, signs the installers and publishes them with `latest.json`. The signing key is the repository secret `TAURI_SIGNING_PRIVATE_KEY` (made once with `npx tauri signer generate`); its public half is `plugins.updater.pubkey` in `apps/desktop/src-tauri/tauri.conf.json`. A build without the key has no updates.
+
 Mac builds are ad-hoc signed but not notarized, so a dmg downloaded in a browser is quarantined and macOS says "damaged". Fix once in Terminal, then open normally:
 
     xattr -dr com.apple.quarantine ~/Downloads/"OpenArch BIM_"*.dmg      # before opening the dmg

@@ -3,6 +3,13 @@ name: build
 # Tests run on every push to main and every pull request (Linux only, quick).
 # The Windows, Mac and Linux installers are only built for a release: push a tag like v0.3.0,
 # or run this workflow by hand from the Actions tab (Run workflow).
+#
+# A tag publishes a GitHub Release with the installers and latest.json, which is what the program's
+# Help > Check for Updates reads. The tag is the version (v0.3.0 builds version 0.3.0). The installers are
+# signed with the key in the repository secret TAURI_SIGNING_PRIVATE_KEY (its password, if it has one, in
+# TAURI_SIGNING_PRIVATE_KEY_PASSWORD); the matching public key is in apps/desktop/src-tauri/tauri.conf.json.
+# A run by hand builds installers without publishing anything; without the secret they are built unsigned and
+# have no updates.
 on:
   push:
     branches: [main]
@@ -42,6 +49,9 @@ jobs:
           - os: ubuntu-22.04
             label: linux
     runs-on: ${{ matrix.os }}
+    env:
+      TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+      TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
@@ -61,10 +71,31 @@ jobs:
       - name: Install Tauri CLI
         working-directory: apps/desktop
         run: npm ci
+      # What this build adds to tauri.conf.json: the version from the tag, and the signed update files when the
+      # signing key is there. A release without the key would publish a version nobody can update to, so it stops.
+      - name: Version and signing
+        shell: bash
+        working-directory: apps/desktop
+        run: |
+          version=""
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then version="${GITHUB_REF_NAME#v}"; fi
+          signed=false
+          if [[ -n "$TAURI_SIGNING_PRIVATE_KEY" ]]; then signed=true; fi
+          if [[ -n "$version" && "$signed" != true ]]; then
+            echo "::error::A release needs the repository secret TAURI_SIGNING_PRIVATE_KEY (see the top of this file)."
+            exit 1
+          fi
+          VERSION="$version" SIGNED="$signed" node -e '
+            const c = {};
+            if (process.env.VERSION) c.version = process.env.VERSION;
+            if (process.env.SIGNED === "true") c.bundle = { createUpdaterArtifacts: true };
+            require("fs").writeFileSync("ci.conf.json", JSON.stringify(c));
+            console.log("ci.conf.json", JSON.stringify(c));
+          '
       - name: Build installers (Windows)
         if: runner.os == 'Windows'
         working-directory: apps/desktop
-        run: npx tauri build
+        run: npx tauri build --config ci.conf.json
       # Ad-hoc signature ("-") so Apple Silicon will run the app. It is still
       # not notarized, so a browser-downloaded dmg needs the quarantine flag
       # cleared once (see README).
@@ -73,11 +104,11 @@ jobs:
         working-directory: apps/desktop
         env:
           APPLE_SIGNING_IDENTITY: "-"
-        run: npx tauri build
+        run: npx tauri build --config ci.conf.json
       - name: Build packages (Linux)
         if: runner.os == 'Linux'
         working-directory: apps/desktop
-        run: npx tauri build --bundles deb,rpm,appimage
+        run: npx tauri build --bundles deb,rpm,appimage --config ci.conf.json
       - uses: actions/upload-artifact@v4
         with:
           name: openarch-${{ matrix.label }}
@@ -88,4 +119,25 @@ jobs:
             apps/desktop/src-tauri/target/release/bundle/deb/*.deb
             apps/desktop/src-tauri/target/release/bundle/rpm/*.rpm
             apps/desktop/src-tauri/target/release/bundle/appimage/*.AppImage
+            apps/desktop/src-tauri/target/release/bundle/macos/*.app.tar.gz
+            apps/desktop/src-tauri/target/release/bundle/**/*.sig
           if-no-files-found: error
+
+  # A tag publishes the installers as a GitHub Release, with latest.json for Help > Check for Updates.
+  release:
+    needs: app
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      - name: Release files and latest.json
+        run: node .github/scripts/release-files.mjs artifacts release "${GITHUB_REF_NAME#v}" "$GITHUB_REPOSITORY" "$GITHUB_REF_NAME"
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" release/* --title "OpenArch BIM ${GITHUB_REF_NAME#v}" --generate-notes --verify-tag
