@@ -14,15 +14,20 @@ use crate::{Document, Element, Id, Point};
 /// layers above the variable one hang from the top, those below it stand on the underside, and the variable one
 /// fills between; with no variable layer every layer hangs from the top.
 pub fn floor_layer_spans(ty: &crate::element::FloorType, top: f64, bottom: f64) -> Vec<(f64, f64)> {
-    let v = ty.layers.iter().position(|l| l.variable);
-    let mut out = vec![(0.0, 0.0); ty.layers.len()];
-    let stop = v.unwrap_or(ty.layers.len());
+    layer_spans(&ty.layers, top, bottom)
+}
+
+/// The same for any layered type (a shaped roof's layers lie as a shaped floor's do).
+pub fn layer_spans(layers: &[crate::element::Layer], top: f64, bottom: f64) -> Vec<(f64, f64)> {
+    let v = layers.iter().position(|l| l.variable);
+    let mut out = vec![(0.0, 0.0); layers.len()];
+    let stop = v.unwrap_or(layers.len());
     let mut z = top;
-    for (k, l) in ty.layers.iter().enumerate().take(stop) { out[k] = (z, z - l.thickness_mm); z -= l.thickness_mm; }
+    for (k, l) in layers.iter().enumerate().take(stop) { out[k] = (z, z - l.thickness_mm); z -= l.thickness_mm; }
     if let Some(v) = v {
         let mut z = bottom;
-        for k in (v + 1..ty.layers.len()).rev() { out[k] = (z + ty.layers[k].thickness_mm, z); z += ty.layers[k].thickness_mm; }
-        out[v] = (top - ty.layers[..v].iter().map(|l| l.thickness_mm).sum::<f64>(), z);
+        for k in (v + 1..layers.len()).rev() { out[k] = (z + layers[k].thickness_mm, z); z += layers[k].thickness_mm; }
+        out[v] = (top - layers[..v].iter().map(|l| l.thickness_mm).sum::<f64>(), z);
     }
     out
 }

@@ -72,3 +72,29 @@ fn a_pitched_roof_refuses_shape_editing() {
     let err = s.handle("add_roof_point", &json!({ "id": id, "point": [4000, 3000], "z": 50 })).unwrap_err();
     assert!(err.contains("pitched"), "{err}");
 }
+
+#[test]
+fn a_section_draws_each_layer_of_a_roof() {
+    let mut s = Session::new();
+    let (id, _) = roof(&mut s, false);
+    let info = call(&mut s, "doc_info", json!({}));
+    let level = info["levels"][0]["id"].as_u64().unwrap();
+    let sec = call(&mut s, "add_section", json!({ "level_id": level, "start": [-1000, 3000], "end": [9000, 3000] }))["id"].as_u64().unwrap();
+    let view = call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().iter().filter(|v| v["view_kind"] == "section").map(|v| v["id"].as_u64().unwrap()).find(|v| *v > sec).unwrap();
+    let cuts = |s: &mut Session| -> Vec<Value> {
+        call(s, "elevation", json!({ "view_id": view }))["items"].as_array().unwrap().iter().filter(|i| i["id"].as_u64() == Some(id) && i["cut"] == json!(true)).cloned().collect()
+    };
+    let span = |i: &Value| { let zs: Vec<f64> = i["polys"][0].as_array().unwrap().iter().map(|q| q[1].as_f64().unwrap()).collect(); (zs.iter().cloned().fold(f64::INFINITY, f64::min), zs.iter().cloned().fold(f64::NEG_INFINITY, f64::max)) };
+    // flat: the first roof type has three layers (1, 40 and 90 thick), stacked down from the base at 3000
+    let flat = cuts(&mut s);
+    assert_eq!(flat.len(), 3, "{flat:?}");
+    let mut spans: Vec<(f64, f64)> = flat.iter().map(span).collect();
+    spans.sort_by(|a, b| b.1.total_cmp(&a.1));
+    assert!((spans[0].1 - 3000.0).abs() < 1e-6 && (spans[0].0 - 2999.0).abs() < 1e-6 && (spans[2].0 - 2869.0).abs() < 1e-6, "{spans:?}");
+    // shaped: still three, and they dip to the outlet on the cut line
+    call(&mut s, "add_roof_point", json!({ "id": id, "point": [4000, 3000], "z": -80 }));
+    let shaped = cuts(&mut s);
+    assert_eq!(shaped.len(), 3);
+    let low = shaped.iter().map(|i| span(i).0).fold(f64::INFINITY, f64::min);
+    assert!((low - (2869.0 - 80.0)).abs() < 1e-6, "{low}");
+}

@@ -1178,12 +1178,19 @@ impl Document {
             }
             let Some(g) = self.roof_geometry(r) else { continue };
             let t = self.roof_type(r.roof_type);
-            let mat = t.and_then(|t| t.layers.first()).map(|l| l.material.clone());
-            let fill = mat.as_deref().map_or([150, 120, 110], shade);
             let thick = t.map_or(0.0, |t| t.thickness_mm());
             if thick <= 0.0 {
                 continue;
             }
+            // the layers, top first, each as the part of the thickness it takes up: (from, to, fill, material)
+            let bands: Vec<(f64, f64, [u8; 3], Option<String>)> = {
+                let mut off = 0.0;
+                t.map(|t| t.layers.iter().filter_map(|l| {
+                    let (a, b) = (off / thick, (off + l.thickness_mm) / thick);
+                    off += l.thickness_mm;
+                    (!l.is_void && l.thickness_mm > 0.0).then(|| (a, b, shade(&l.material), Some(l.material.clone())))
+                }).collect()).unwrap_or_default()
+            };
             // Sloping planes: where the plane crosses the polygon of each face, with the height of the surface at both ends.
             struct Seg {
                 u0: f64,
@@ -1228,16 +1235,19 @@ impl Document {
                     chain.push(&segs[k]);
                 }
                 k += 1;
-                let mut poly: Vec<[f64; 2]> = vec![];
-                for s in &chain {
-                    poly.push([s.u0, s.z0]);
-                    poly.push([s.u1, s.z1]);
+                // each layer follows the planes, its share of the drop below the top
+                for (a, b, fill, material) in &bands {
+                    let mut poly: Vec<[f64; 2]> = vec![];
+                    for s in &chain {
+                        poly.push([s.u0, s.z0 - s.drop * a]);
+                        poly.push([s.u1, s.z1 - s.drop * a]);
+                    }
+                    for s in chain.iter().rev() {
+                        poly.push([s.u1, s.z1 - s.drop * b]);
+                        poly.push([s.u0, s.z0 - s.drop * b]);
+                    }
+                    out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![poly], fill: *fill, cut: true, material: material.clone(), ..Default::default() });
                 }
-                for s in chain.iter().rev() {
-                    poly.push([s.u1, s.z1 - s.drop]);
-                    poly.push([s.u0, s.z0 - s.drop]);
-                }
-                out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![poly], fill, cut: true, material: mat.clone(), ..Default::default() });
             }
             // A shape edited flat roof follows its surface along the cut.
             if let Some((tin, bot)) = &g.shaped {
@@ -1246,16 +1256,24 @@ impl Document {
                     let prof = self.floor_profile(tin, bot, cut.p0, cut.p1);
                     if prof.len() < 2 { continue; }
                     let u = |t: f64| cut.u0 + (cut.u1 - cut.u0) * t;
-                    let mut poly: Vec<[f64; 2]> = prof.iter().map(|(t, top, _)| [u(*t), *top]).collect();
-                    poly.extend(prof.iter().rev().map(|(t, _, b)| [u(*t), *b]));
-                    out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![poly], fill, cut: true, material: mat.clone(), ..Default::default() });
+                    // each layer between the top and the underside, a variable layer taking up the difference
+                    let layers = t.map(|t| t.layers.as_slice()).unwrap_or_default();
+                    let spans: Vec<Vec<(f64, f64)>> = prof.iter().map(|(_, top, b)| crate::floorshape::layer_spans(layers, *top, *b)).collect();
+                    for (k, l) in layers.iter().enumerate() {
+                        if l.is_void || l.thickness_mm <= 0.0 { continue; }
+                        let mut poly: Vec<[f64; 2]> = prof.iter().zip(&spans).map(|((t, _, _), s)| [u(*t), s[k].0]).collect();
+                        poly.extend(prof.iter().zip(&spans).rev().map(|((t, _, _), s)| [u(*t), s[k].1]));
+                        out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![poly], fill: shade(&l.material), cut: true, material: Some(l.material.clone()), ..Default::default() });
+                    }
                 }
             }
             // Flat roofs are a slab at the base height.
             let rings: Vec<&[Point]> = g.flat.iter().flat_map(|r| std::iter::once(r.outer.as_slice()).chain(r.holes.iter().map(|h| h.as_slice()))).collect();
             if !rings.is_empty() {
                 for cut in sl.cuts(&rings, sl.plane + PLANE_EPS) {
-                    out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![rect(cut.u0, cut.u1, g.base_z - thick, g.base_z)], fill, cut: true, material: mat.clone(), ..Default::default() });
+                    for (a, b, fill, material) in &bands {
+                        out.push(ElevItem { id, category: "Roofs", depth: -1.0 + 0.003, polys: vec![rect(cut.u0, cut.u1, g.base_z - thick * b, g.base_z - thick * a)], fill: *fill, cut: true, material: material.clone(), ..Default::default() });
+                    }
                 }
             }
         }
