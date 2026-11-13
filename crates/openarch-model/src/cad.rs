@@ -259,6 +259,19 @@ pub struct CadHeights {
     /// The lowest and highest height, in the drawing's units (of the raised ones; 0, 0 with none).
     pub lo: f64,
     pub hi: f64,
+    /// Text that reads as a level (a number with a decimal point, as a surveyor writes a spot level).
+    pub level_texts: usize,
+    /// Closed lines, any of which can be the boundary of the ground made from the drawing.
+    pub closed: usize,
+}
+
+/// A text read as a spot level: a number with a decimal point, with or without RL in front ("12.45", "RL 12.45").
+pub fn level_of_text(text: &str) -> Option<f64> {
+    let t = text.trim();
+    let t = t.strip_prefix("RL").or_else(|| t.strip_prefix("rl")).unwrap_or(t).trim_start_matches([':', '=', ' ']).trim();
+    let t = t.strip_prefix('+').unwrap_or(t);
+    if !t.contains('.') || t.contains(char::is_whitespace) { return None; }
+    t.parse::<f64>().ok().filter(|v| v.is_finite())
 }
 
 /// The points of a shape with their heights, in the drawing's units. Text and fills have none.
@@ -292,10 +305,15 @@ impl Document {
     /// The layers of an import and what on each has a height, for Create from CAD.
     pub fn cad_heights(&self, id: Id) -> Result<Vec<CadHeights>, String> {
         let c = self.cad_import(id).ok_or("not a CAD drawing")?;
-        let mut out: Vec<CadHeights> = c.drawing.layers.iter().map(|l| CadHeights { layer: l.name.clone(), raised: 0, flat: 0, lo: f64::INFINITY, hi: f64::NEG_INFINITY }).collect();
+        let mut out: Vec<CadHeights> = c.drawing.layers.iter().map(|l| CadHeights { layer: l.name.clone(), raised: 0, flat: 0, lo: f64::INFINITY, hi: f64::NEG_INFINITY, level_texts: 0, closed: 0 }).collect();
         let mut pts = vec![];
         for s in &c.drawing.shapes {
             let Some(h) = out.get_mut(s.layer as usize) else { continue };
+            match &s.kind {
+                Kind::Text { text, .. } if level_of_text(text).is_some() => h.level_texts += 1,
+                Kind::Poly { pts, closed: true, .. } if pts.len() >= 3 => h.closed += 1,
+                _ => {}
+            }
             pts.clear();
             heights_of(&s.kind, &mut pts);
             if pts.is_empty() { continue; }
@@ -313,9 +331,10 @@ impl Document {
 
     /// The points of an import's chosen layers with their heights, where the import sits in the model: plan
     /// positions as placed, heights at the import's scale above `base_z` (the height the drawing's zero is at).
-    /// `skip_zero` leaves out what lies at height zero (flat linework sharing a layer with the contours). Points
-    /// within a millimetre of one already taken are left out.
-    pub fn topo_points_from_cad(&self, id: Id, layers: &BTreeSet<String>, skip_zero: bool, base_z: f64) -> Result<Vec<[f64; 3]>, String> {
+    /// `skip_zero` leaves out what lies at height zero (flat linework sharing a layer with the contours).
+    /// `text_levels` also takes each text that reads as a level (`level_of_text`) as a point where the text
+    /// starts. Points within a millimetre of one already taken are left out.
+    pub fn topo_points_from_cad(&self, id: Id, layers: &BTreeSet<String>, skip_zero: bool, text_levels: bool, base_z: f64) -> Result<Vec<[f64; 3]>, String> {
         let c = self.cad_import(id).ok_or("not a CAD drawing")?;
         let chosen: Vec<bool> = c.drawing.layers.iter().map(|l| layers.contains(&l.name)).collect();
         let mut seen = std::collections::HashSet::new();
@@ -324,6 +343,9 @@ impl Document {
             if !chosen.get(s.layer as usize).copied().unwrap_or(false) { continue; }
             raw.clear();
             heights_of(&s.kind, &mut raw);
+            if let (true, Kind::Text { at, text, .. }) = (text_levels, &s.kind) {
+                if let Some(z) = level_of_text(text) { raw.push([at[0], at[1], z]); }
+            }
             for p in &raw {
                 if !p[2].is_finite() || (skip_zero && p[2] == 0.0) { continue; }
                 let q = c.place([p[0], p[1]]);
@@ -334,6 +356,27 @@ impl Document {
             return Err(if skip_zero { "Nothing on those layers has a height. Pick the layers with the contours or survey points, or untick Leave out what lies at height 0." } else { "Those layers have fewer than three points." }.into());
         }
         Ok(out)
+    }
+
+    /// The largest closed line on a layer of an import, where the import sits in the model: the boundary of a lot,
+    /// for the edge of the ground made from the drawing.
+    pub fn cad_boundary(&self, id: Id, layer: &str) -> Result<Vec<Point>, String> {
+        let c = self.cad_import(id).ok_or("not a CAD drawing")?;
+        let li = c.drawing.layers.iter().position(|l| l.name == layer).ok_or_else(|| format!("The drawing has no layer {layer}."))?;
+        let mut best: Option<(f64, Vec<Point>)> = None;
+        for s in c.drawing.shapes.iter().filter(|s| s.layer as usize == li) {
+            let Kind::Poly { pts, closed: true, .. } = &s.kind else { continue };
+            let mut ring: Vec<Point> = pts.iter().map(|p| c.place(*p)).collect();
+            ring.dedup_by(|a, b| a.dist(b) < 1.0);
+            if ring.len() > 3 && ring[0].dist(&ring[ring.len() - 1]) < 1.0 { ring.pop(); }
+            if ring.len() < 3 { continue; }
+            let a = crate::geom::signed_area(&ring).abs();
+            if best.as_ref().is_none_or(|b| a > b.0) { best = Some((a, ring)); }
+        }
+        match best {
+            Some((a, ring)) if a > 1.0 => Ok(ring),
+            _ => Err(format!("Layer {layer} has no closed line to use as the boundary.")),
+        }
     }
 }
 

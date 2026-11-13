@@ -720,10 +720,45 @@ impl Document {
     /// Create from Import: a toposolid through surveyed points (absolute, internal coordinates), its boundary
     /// their convex hull, on `level` with no offset. More than `MAX_POINTS` are thinned.
     pub fn add_toposolid_points(&mut self, toposolid_type: Id, level: Id, points: Vec<[f64; 3]>) -> Result<Id, String> {
-        let points = thin(points, MAX_POINTS);
-        let hull = convex_hull(&points.iter().map(|p| Point::new(p[0], p[1])).collect::<Vec<_>>());
+        self.add_toposolid_points_within(toposolid_type, level, points, None)
+    }
+
+    /// The same with a boundary given (a lot's outline) in place of the convex hull. The ground inside it is the
+    /// surface through all the points, cut off at the boundary: the points inside are kept, a point is added where
+    /// each edge of that surface crosses the boundary, and each corner of the boundary takes the surface's height
+    /// there (the nearest point's where the points don't reach that far).
+    pub fn add_toposolid_points_within(&mut self, toposolid_type: Id, level: Id, points: Vec<[f64; 3]>, boundary: Option<Vec<Point>>) -> Result<Id, String> {
+        let mut points = thin(points, MAX_POINTS);
+        let mut hull = convex_hull(&points.iter().map(|p| Point::new(p[0], p[1])).collect::<Vec<_>>());
         if hull.len() < 3 || crate::geom::signed_area(&hull).abs() < 1.0 {
             return Err("The points need to cover an area: at least three that are not in a line.".into());
+        }
+        if let Some(ring) = boundary {
+            if ring.len() < 3 || crate::geom::signed_area(&ring).abs() < 1.0 { return Err("The boundary needs to enclose an area.".into()); }
+            let all = crate::shape::triangulate(&[hull.clone()], &points, &[], 0.0).ok_or("The points could not be made into a surface.")?;
+            let nearest = |q: Point| points.iter().map(|p| ((p[0] - q.x).hypot(p[1] - q.y), p[2])).min_by(|a, b| a.0.total_cmp(&b.0)).map_or(0.0, |m| m.1);
+            let mut edge: Vec<[f64; 3]> = ring.iter().map(|q| [q.x, q.y, all.z_at(*q).unwrap_or_else(|| nearest(*q))]).collect();
+            let n = ring.len();
+            let mut crossings = 0;
+            for ([i, j], _) in all.edges() {
+                let (u, v) = (all.verts[i], all.verts[j]);
+                let (pu, pv) = (Point::new(u[0], u[1]), Point::new(v[0], v[1]));
+                for k in 0..n {
+                    if let Some((t, _)) = seg_cross(pu, pv, ring[k], ring[(k + 1) % n]) {
+                        edge.push([u[0] + (v[0] - u[0]) * t, u[1] + (v[1] - u[1]) * t, u[2] + (v[2] - u[2]) * t]);
+                        crossings += 1;
+                    }
+                }
+            }
+            let rings = [ring.clone()];
+            points.retain(|p| within(&rings, Point::new(p[0], p[1])));
+            if points.is_empty() && crossings == 0 { return Err("The boundary doesn't lie over the contours and points: is it the right layer?".into()); }
+            // the edge samples after the points, so a point already on the boundary keeps its own height
+            for e in edge {
+                if !points.iter().any(|p| (p[0] - e[0]).hypot(p[1] - e[1]) < 1.0) { points.push(e); }
+            }
+            points = thin(points, MAX_POINTS);
+            hull = ring;
         }
         let far = points.iter().map(|p| p[0].hypot(p[1])).fold(0.0, f64::max);
         if far > 20_000_000.0 {

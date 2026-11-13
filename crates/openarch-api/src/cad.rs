@@ -94,12 +94,13 @@ impl Session {
                 let c = self.doc.cad_import(id).ok_or("not a CAD drawing")?;
                 let rows = self.doc.cad_heights(id)?;
                 Ok(json!({ "name": c.name, "unit": c.drawing.unit, "scale": c.scale, "level_id": c.level, "layers": rows.iter().zip(&c.drawing.layers).map(|(h, l)| json!({
-                    "name": h.layer, "color": l.color, "shown": c.layer_shown(l), "raised": h.raised, "flat": h.flat, "lo": h.lo, "hi": h.hi,
+                    "name": h.layer, "color": l.color, "shown": c.layer_shown(l), "raised": h.raised, "flat": h.flat, "lo": h.lo, "hi": h.hi, "level_texts": h.level_texts, "closed": h.closed,
                 })).collect::<Vec<_>>() }))
             })(),
             // Create from CAD: a toposolid through the contours and points of an import's layers.
             // { id, layers: [names], type_id, level_id?, skip_zero? (true), base? (where the drawing's height 0 is:
-            // survey_point, project_base_point or internal_origin) }
+            // survey_point, project_base_point or internal_origin), text_levels? (text that reads as a level is a
+            // point), boundary_layer? (the largest closed line on it is the boundary, else the convex hull) }
             "toposolid_from_cad" => (|| {
                 let id = id_of(p, "id")?;
                 let c = self.doc.cad_import(id).ok_or("not a CAD drawing")?;
@@ -109,10 +110,11 @@ impl Session {
                     Some(v) => serde_json::from_value(v.clone()).map_err(|e| format!("bad elevation base: {e}"))?,
                     None => openarch_model::topo::TopoBase::SurveyPoint,
                 };
-                let pts = self.doc.topo_points_from_cad(id, &layers, p["skip_zero"].as_bool().unwrap_or(true), self.doc.topo_base_z(base, level))?;
+                let pts = self.doc.topo_points_from_cad(id, &layers, p["skip_zero"].as_bool().unwrap_or(true), p["text_levels"].as_bool().unwrap_or(false), self.doc.topo_base_z(base, level))?;
+                let boundary = match p["boundary_layer"].as_str() { Some(l) => Some(self.doc.cad_boundary(id, l)?), None => None };
                 let read = pts.len();
                 let (lo, hi) = pts.iter().fold((f64::INFINITY, f64::NEG_INFINITY), |(a, b), q| (a.min(q[2]), b.max(q[2])));
-                let topo = self.doc.add_toposolid_points(id_of(p, "type_id")?, level, pts)?;
+                let topo = self.doc.add_toposolid_points_within(id_of(p, "type_id")?, level, pts, boundary)?;
                 let kept = self.doc.toposolid(topo).map_or(0, |t| t.points.len());
                 Ok(json!({ "id": topo, "read": read, "kept": kept, "lo": lo, "hi": hi }))
             })(),

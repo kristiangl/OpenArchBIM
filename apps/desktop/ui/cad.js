@@ -385,39 +385,45 @@ const Cad = (() => {
       const box = el("div", {});
       box.style.cssText = "max-height:40vh;overflow:auto;border:1px solid var(--line);padding:4px 8px;min-width:420px;margin-bottom:8px";
       // layers with heights first; flat ones after, unticked
-      const rows = info.layers.filter((l) => l.raised || l.flat).sort((a, b) => (b.raised > 0) - (a.raised > 0));
+      const rows = info.layers.filter((l) => l.raised || l.flat || l.level_texts).sort((a, b) => (b.raised > 0) - (a.raised > 0));
       const ticks = rows.map((l) => {
         const t = el("input", { type: "checkbox", checked: l.raised > 0 && l.shown });
         const sw = el("span", {});
         sw.style.cssText = `display:inline-block;width:12px;height:12px;border:1px solid #888;margin:0 6px;vertical-align:-2px;background:${rgb(l.color)}`;
-        const what = l.raised ? `${l.raised} with heights, ${fmt(l.lo)} to ${fmt(l.hi)} ${unit}${l.flat ? `; ${l.flat} at 0` : ""}` : `${l.flat} at height 0`;
+        const texts = l.level_texts ? `; ${l.level_texts} level text${l.level_texts === 1 ? "" : "s"}` : "";
+        const what = (l.raised ? `${l.raised} with heights, ${fmt(l.lo)} to ${fmt(l.hi)} ${unit}${l.flat ? `; ${l.flat} at 0` : ""}` : `${l.flat} at height 0`) + texts;
         const line = el("label", {}, [t, sw, el("span", { textContent: `${l.name}  (${what})` })]);
         line.style.cssText = "display:block;white-space:nowrap;padding:1px 0";
         if (!l.raised) line.style.opacity = "0.55";
         box.append(line);
         return { t, l };
       });
-      if (!rows.some((l) => l.raised)) msg.textContent = "Nothing in this drawing has a height: its contours are drawn flat. Ask the surveyor for a 3D file, or use a points file.";
+      if (!rows.some((l) => l.raised)) msg.textContent = info.layers.some((l) => l.level_texts) ? "Nothing in this drawing is drawn at a height, but it has levels written as text: tick their layers and Read level text as heights." : "Nothing in this drawing has a height: its contours are drawn flat. Ask the surveyor for a 3D file, or use a points file.";
       const skip = el("input", { type: "checkbox", checked: true });
+      // spot levels written as text (12.45) on the ticked layers; off by default, since a survey with level points
+      // as well would give each level twice, the text a little to one side
+      const anyText = info.layers.some((l) => l.level_texts);
+      const texts = el("input", { type: "checkbox", checked: anyText && !rows.some((l) => l.raised), disabled: !anyText });
+      const edge = el("select", {}, [new Option("Around the points", ""), ...info.layers.filter((l) => l.closed).map((l) => new Option(`Largest closed line on ${l.name}`, l.name))]);
       const base = el("select", {}, [new Option("Survey Point (shared elevation)", "survey_point"), new Option("Project Base Point", "project_base_point"), new Option("Internal Origin", "internal_origin")]);
       const levels = app.info.levels || [];
       const level = el("select", {}, levels.map((l) => new Option(l.name, l.id, false, l.id === info.level_id)));
       const types = el("select", {}, (app.info.toposolid_types || []).map((t) => new Option(t.name, t.id, false, t.id === Topo.typeId())));
       const row = (l, c) => el("label", { className: "new-row" }, [el("span", { textContent: l }), c]);
       body.append(el("div", { className: "modal-msg", textContent: "Layers with the contours and survey points:" }), box,
-        row("Leave out what lies at height 0", skip), row("The drawing's height 0 is at", base), row("Level", level), row("Type", types), msg);
+        row("Leave out what lies at height 0", skip), row("Read level text as heights", texts), row("Boundary", edge), row("The drawing's height 0 is at", base), row("Level", level), row("Type", types), msg);
       const ok = async () => {
         const layers = ticks.filter((x) => x.t.checked).map((x) => x.l.name);
         if (!layers.length) { msg.textContent = "Tick at least one layer."; return; }
         let r;
         try {
-          r = await Backend.call("toposolid_from_cad", { id, layers, skip_zero: skip.checked, base: base.value, level_id: Number(level.value), type_id: Number(types.value) });
+          r = await Backend.call("toposolid_from_cad", { id, layers, skip_zero: skip.checked, text_levels: texts.checked, boundary_layer: edge.value || null, base: base.value, level_id: Number(level.value), type_id: Number(types.value) });
         } catch (e) { msg.textContent = String(e.message || e); return; }
         close();
         app.topoTypeId = Number(types.value);
         await refresh();
         select(r.id);
-        setPrompt(`Toposolid created from ${r.read} point${r.read === 1 ? "" : "s"}${r.kept < r.read ? ` (thinned to ${r.kept})` : ""}.`);
+        setPrompt(edge.value ? `Toposolid created inside the boundary on ${edge.value}, with ${r.kept} points.` : `Toposolid created from ${r.read} point${r.read === 1 ? "" : "s"}${r.kept < r.read ? ` (thinned to ${r.kept})` : ""}.`);
       };
       foot.append(button("Cancel", close), button("OK", ok, true));
     });

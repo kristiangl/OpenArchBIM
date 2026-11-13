@@ -176,3 +176,41 @@ fn contours_of_an_import_make_a_toposolid() {
     let plan = call(&mut s, "plan", json!({ "view_id": view }));
     assert_eq!((plan["toposolids"].as_array().unwrap().len(), plan["cad_imports"].as_array().unwrap().len()), (0, 1));
 }
+
+#[test]
+fn level_text_and_a_lot_boundary_shape_the_ground_from_an_import() {
+    // contours at 10, 11 and 12 m, a lot drawn inside them, a level written as text, and a lot number that isn't one
+    let contour = |y: f64, z: f64| format!("0\nLWPOLYLINE\n8\nCONTOURS\n90\n2\n70\n0\n38\n{z}\n10\n0.0\n20\n{y}\n10\n30.0\n20\n{y}\n");
+    let dxf = format!("0\nSECTION\n2\nHEADER\n9\n$INSUNITS\n70\n6\n0\nENDSEC\n0\nSECTION\n2\nENTITIES\n{}{}{}\
+0\nTEXT\n8\nLEVELS\n10\n15.0\n20\n5.0\n40\n0.3\n1\nRL 10.80\n\
+0\nTEXT\n8\nLEVELS\n10\n15.0\n20\n15.0\n40\n0.3\n1\nLOT 123\n\
+0\nLWPOLYLINE\n8\nBOUNDARY\n90\n4\n70\n1\n10\n5.0\n20\n2.0\n10\n25.0\n20\n2.0\n10\n25.0\n20\n18.0\n10\n5.0\n20\n18.0\n\
+0\nENDSEC\n0\nEOF\n", contour(0.0, 10.0), contour(10.0, 11.0), contour(20.0, 12.0));
+    let mut s = Session::new();
+    let (view, _) = plans(&mut s);
+    let path = temp("lot.dxf", dxf.as_bytes());
+    let id = call(&mut s, "import_cad", json!({ "path": path, "view_id": view, "position": "origin" }))["id"].as_u64().unwrap();
+    let h = call(&mut s, "cad_heights", json!({ "id": id }));
+    let layer = |n: &str| h["layers"].as_array().unwrap().iter().find(|l| l["name"] == n).unwrap().clone();
+    assert_eq!((layer("LEVELS")["level_texts"].as_u64(), layer("BOUNDARY")["closed"].as_u64(), layer("CONTOURS")["closed"].as_u64()), (Some(1), Some(1), Some(0)));
+
+    call(&mut s, "ensure_toposolid_types", json!({}));
+    let ty = call(&mut s, "doc_info", json!({}))["toposolid_types"][0]["id"].as_u64().unwrap();
+    // without the text there are six contour ends; with it, seven points
+    let r = call(&mut s, "toposolid_from_cad", json!({ "id": id, "layers": ["CONTOURS", "LEVELS"], "type_id": ty, "base": "internal_origin", "text_levels": true }));
+    assert_eq!(r["read"].as_u64(), Some(7));
+    call(&mut s, "undo", json!({}));
+    // bounded by the lot: its area, and its corners at the height of the ground there (2 m up the slope is 10.2 m)
+    assert!(s.handle("toposolid_from_cad", &json!({ "id": id, "layers": ["CONTOURS"], "type_id": ty, "boundary_layer": "CONTOURS" })).is_err());
+    let r = call(&mut s, "toposolid_from_cad", json!({ "id": id, "layers": ["CONTOURS"], "type_id": ty, "base": "internal_origin", "boundary_layer": "BOUNDARY" }));
+    let topo = r["id"].as_u64().unwrap();
+    let props = call(&mut s, "describe", json!({ "id": topo }));
+    let rows: Vec<Value> = props["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
+    assert_eq!(rows.iter().find(|r| r["label"] == "Area").unwrap()["raw"].as_f64(), Some(320.0));
+    let t = call(&mut s, "plan", json!({ "view_id": view }))["toposolids"][0].clone();
+    let level = call(&mut s, "doc_info", json!({}))["levels"][0]["elevation_mm"].as_f64().unwrap_or(0.0);
+    let corner = t["points"].as_array().unwrap().iter().find(|p| p[0] == json!(5000.0) && p[1] == json!(2000.0)).expect("a point at the lot's corner");
+    assert!((corner[2].as_f64().unwrap() + level - 10200.0).abs() < 1e-6, "{corner:?}");
+    // the contour ends outside the lot are gone
+    assert!(!t["points"].as_array().unwrap().iter().any(|p| p[0] == json!(0.0)));
+}
