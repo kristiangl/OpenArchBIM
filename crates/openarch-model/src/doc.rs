@@ -44,6 +44,8 @@ pub struct Document {
     pub(crate) room_cache: std::cell::RefCell<crate::rooms::RoomCache>,
     /// What each view's filters do to its elements, as last worked out (viewfilter.rs).
     pub(crate) filter_cache: std::cell::RefCell<crate::viewfilter::FilterCache>,
+    /// Temporary View Properties: the template over a view for now, by view (viewtemplate.rs). Not saved.
+    pub(crate) temp_templates: std::cell::RefCell<BTreeMap<Id, Id>>,
     /// Temporary Hide/Isolate and Reveal Hidden Elements: the session's, not saved and not undone.
     pub(crate) display: crate::hide::ViewDisplay,
 }
@@ -147,7 +149,7 @@ impl Tx<'_> {
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), display: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default() }
     }
 }
 
@@ -1280,7 +1282,14 @@ impl Document {
     /// The settings a view actually uses: its own, with every property its
     /// template includes taken from the template.
     pub fn effective_settings(&self, id: Id) -> Option<ViewSettings> {
-        Some(self.effective_settings_of(self.view(id)?))
+        let mut s = self.effective_settings_of(self.view(id)?);
+        // Temporary View Properties: a template over the view for now
+        if let Some(t) = self.temp_view_template(id).and_then(|t| self.view_template(t)) {
+            for p in &t.included {
+                s.take(&t.settings, *p);
+            }
+        }
+        Some(s)
     }
 
     /// Like `effective_settings` for a view value that may not be stored yet.

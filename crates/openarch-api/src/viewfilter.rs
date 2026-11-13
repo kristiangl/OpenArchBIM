@@ -153,8 +153,17 @@ impl Session {
             })(),
             // The filters a view applies, as they take effect: { view_id } -> { filters, locked (its template's) }
             "view_filter_list" => (|| {
-                let view = id_of(p, "view_id")?;
                 let d = &self.doc;
+                // a view template's own list
+                if let Some(t) = p.get("template_id").and_then(|v| v.as_u64()) {
+                    let tt = d.view_template(t).ok_or("not a view template")?;
+                    return Ok(json!({ "locked": false, "filters": tt.settings.overrides.filters.iter().map(|a| {
+                        let mut x = serde_json::to_value(a).unwrap_or_default();
+                        x["name"] = json!(d.view_filter(a.filter).map_or("", |f| f.name.as_str()));
+                        x
+                    }).collect::<Vec<_>>() }));
+                }
+                let view = id_of(p, "view_id")?;
                 let v = d.view(view).ok_or("Unknown view.")?;
                 let locked = v.template.and_then(|t| d.view_template(t)).is_some_and(|t| t.included.contains(&openarch_model::view::TemplateProp::VgFilters));
                 let list = d.effective_settings(view).map(|s| s.overrides.filters).unwrap_or_default();
@@ -173,6 +182,31 @@ impl Session {
                 }
                 Ok(json!({}))
             })(),
+            // ---- view templates: the Manage View Templates box ----
+            // Every template: what it includes, a few of its values in words, and how many views are bound to it
+            "view_templates_info" => (|| {
+                let d = &self.doc;
+                let bound = |t: Id| d.views().iter().filter(|(_, v)| v.template == Some(t)).count();
+                Ok(json!({ "all_properties": openarch_model::view::TemplateProp::ALL, "templates": d.view_templates().into_iter().map(|(id, t)| {
+                    let s = serde_json::to_value(&t.settings).unwrap_or_default();
+                    let o = &t.settings.overrides;
+                    let n = |k: usize, what: &str| match k { 0 => "None".to_string(), 1 => format!("1 {}", what.replace("categories", "category").trim_end_matches('s')), _ => format!("{k} {what}") };
+                    json!({ "id": id, "name": t.name, "view_kind": t.view_kind, "included": t.included, "used_by": bound(id), "values": {
+                        "scale": format!("1 : {}", t.settings.scale), "detail_level": s["detail_level"], "visual_style": s["visual_style"], "display_model": s["display_model"],
+                        "discipline": s["discipline"], "parts_visibility": s["parts_visibility"],
+                        "vg_model": n(o.model.len(), "categories overridden"), "vg_annotation": n(o.annotation.len(), "categories overridden"), "vg_import": n(o.imported.len(), "categories overridden"),
+                        "vg_filters": n(o.filters.len(), "filters"),
+                    } })
+                }).collect::<Vec<_>>() }))
+            })(),
+            "duplicate_view_template" => (|| Ok(json!({ "id": self.doc.duplicate_view_template(id_of(p, "id")?, p["name"].as_str())? })))(),
+            // Apply Template Properties: stamped on once, no link kept
+            "apply_view_template_once" => (|| Ok(json!({ "taken": self.doc.apply_view_template_once(id_of(p, "view_id")?, id_of(p, "template_id")?)? })))(),
+            "update_view_template_from_view" => (|| { self.doc.update_view_template_from_view(id_of(p, "template_id")?, id_of(p, "view_id")?)?; Ok(json!({})) })(),
+            // Temporary View Properties: { view_id, template_id | null }; and which views have one on
+            "set_temp_view_template" => (|| { self.doc.set_temp_view_template(id_of(p, "view_id")?, p.get("template_id").and_then(|v| v.as_u64()))?; Ok(json!({})) })(),
+            "temp_view_template" => (|| Ok(json!({ "template_id": self.doc.temp_view_template(id_of(p, "view_id")?) })))(),
+            "clear_temp_view_templates" => (|| Ok(json!({ "cleared": self.doc.clear_temp_view_templates() })))(),
             _ => return None,
         })
     }

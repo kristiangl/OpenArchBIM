@@ -72,6 +72,7 @@ pub mod runpath;
 pub mod colorfill;
 pub mod view;
 pub mod viewfilter;
+pub mod viewtemplate;
 pub mod viewmarker;
 pub mod wallpath;
 pub mod wallprofile;

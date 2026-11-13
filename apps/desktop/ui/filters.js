@@ -8,15 +8,17 @@ const Filters = (() => {
   const blankRule = () => ({ node: "rule", field: "", op: "equal", value: "", not: false, match_case: false });
   const NO_VALUE = new Set(["has_value", "has_no_value"]);
 
-  async function open(startTab = "view") {
-    const v = curView();
+  // `target.template` ({ id, name }) works on a view template's own list instead of the current view's
+  async function open(startTab = "view", target = null) {
+    const tpl = target && target.template;
+    const v = tpl ? { id: tpl.id, name: tpl.name, view_kind: "floor_plan" } : curView();
     const std = await run("standards", {});
     const linePats = std ? std.line_patterns.map((p) => p.pattern.name) : ["Solid"];
     const fillPats = std ? std.fill_patterns.map((p) => p.pattern.name) : ["Solid fill"];
     let all = await run("view_filters", {});
     if (!all) return;
     const isView = v && ["floor_plan", "ceiling_plan", "three_d", "elevation", "section", "area_plan"].includes(v.view_kind);
-    const inView = isView ? await run("view_filter_list", { view_id: v.id }) : null;
+    const inView = isView ? await run("view_filter_list", tpl ? { template_id: tpl.id } : { view_id: v.id }) : null;
     let list = inView ? clone(inView.filters) : [];
     let tab = isView ? startTab : "all";
     let picked = all.filters[0]?.id ?? null; // the filter being edited in All Filters
@@ -122,7 +124,7 @@ const Filters = (() => {
       }
       async function saveView() {
         if (!isView || inView.locked) return true;
-        try { await Backend.call("set_view_filter_list", { view_id: v.id, filters: list }); } catch (e) { say(String(e.message || e)); return false; }
+        try { await Backend.call("set_view_filter_list", tpl ? { template_id: tpl.id, filters: list } : { view_id: v.id, filters: list }); } catch (e) { say(String(e.message || e)); return false; }
         await refresh(true);
         return true;
       }
@@ -254,7 +256,7 @@ const Filters = (() => {
 
       function render() {
         say("");
-        const tabNames = { ...(isView ? { view: `In This View: ${v.name}` } : {}), all: "All Filters" };
+        const tabNames = { ...(isView ? { view: tpl ? `In Template: ${v.name}` : `In This View: ${v.name}` } : {}), all: "All Filters" };
         tabs.replaceChildren(...Object.entries(tabNames).map(([k, label]) => { const b = el("button", { textContent: label, className: k === tab ? "active" : "" }); b.onclick = () => { tab = k; render(); }; return b; }));
         host.replaceChildren();
         if (tab === "view") renderView(); else renderAll();

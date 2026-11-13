@@ -99,3 +99,32 @@ fn the_higher_filter_wins_a_property_and_an_element_override_wins_over_both() {
     assert_ne!(green["color"], blue);
     assert_eq!(green["weight"].as_u64(), Some(7), "the weight still comes from the filter");
 }
+
+#[test]
+fn templates_are_copied_stamped_on_once_and_put_on_temporarily() {
+    let Setup { mut s, view, big, .. } = setup();
+    call(&mut s, "patch_view", json!({ "id": view, "patch": { "settings": { "scale": 50 } } }));
+    let t = call(&mut s, "create_view_template", json!({ "name": "Check", "view_id": view }))["id"].as_u64().unwrap();
+    // the template hides big floors through a filter of its own
+    let rules = json!({ "name": "Big floors", "kind": "rules", "categories": ["Floors"], "root": { "node": "and", "of": [{ "node": "rule", "field": "Area", "op": "greater", "value": "10" }] } });
+    let f = call(&mut s, "add_view_filter", json!({ "filter": rules }))["id"].as_u64().unwrap();
+    call(&mut s, "set_view_filter_list", json!({ "template_id": t, "filters": [{ "filter": f, "visible": false }] }));
+    assert_eq!(call(&mut s, "view_filter_list", json!({ "template_id": t }))["filters"][0]["name"], "Big floors");
+    let info = call(&mut s, "view_templates_info", json!({}));
+    assert_eq!((info["templates"][0]["values"]["scale"].as_str(), info["templates"][0]["values"]["vg_filters"].as_str(), info["templates"][0]["used_by"].as_u64()), (Some("1 : 50"), Some("1 filter"), Some(0)));
+
+    // the view as saved shows the big floor; with the template on temporarily it doesn't; then it does again
+    assert!(!floor(&mut s, view, big).is_null());
+    call(&mut s, "set_temp_view_template", json!({ "view_id": view, "template_id": t }));
+    assert_eq!(call(&mut s, "temp_view_template", json!({ "view_id": view }))["template_id"].as_u64(), Some(t));
+    assert!(floor(&mut s, view, big).is_null(), "the temporary template's filter hides it");
+    assert_eq!(call(&mut s, "clear_temp_view_templates", json!({}))["cleared"], 1);
+    assert!(!floor(&mut s, view, big).is_null());
+
+    // stamped on once: the view takes the filter list and stays free of the template
+    assert!(call(&mut s, "apply_view_template_once", json!({ "view_id": view, "template_id": t }))["taken"].as_u64().unwrap() > 5);
+    assert!(floor(&mut s, view, big).is_null());
+    assert_eq!(call(&mut s, "view_filter_list", json!({ "view_id": view }))["locked"], false);
+    let copy = call(&mut s, "duplicate_view_template", json!({ "id": t }))["id"].as_u64().unwrap();
+    assert_eq!(call(&mut s, "view_templates_info", json!({}))["templates"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(copy)).unwrap()["name"], "Check Copy 1");
+}
