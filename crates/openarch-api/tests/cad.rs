@@ -214,3 +214,31 @@ fn level_text_and_a_lot_boundary_shape_the_ground_from_an_import() {
     // the contour ends outside the lot are gone
     assert!(!t["points"].as_array().unwrap().iter().any(|p| p[0] == json!(0.0)));
 }
+
+#[test]
+fn a_layer_can_be_hidden_in_one_view_only() {
+    let mut s = Session::new();
+    let (view, _) = plans(&mut s);
+    let path = temp("views.dxf", DXF.as_bytes());
+    let id = call(&mut s, "import_cad", json!({ "path": path, "view_id": view, "position": "origin", "layers": "all" }))["id"].as_u64().unwrap();
+    // a second plan of the same level shows the import too
+    let dup = call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().iter()
+        .filter(|v| v["view_kind"] == "floor_plan").map(|v| v["id"].as_u64().unwrap())
+        .find(|v| *v != view && call(&mut s, "plan", json!({ "view_id": v }))["cad_imports"].as_array().is_some_and(|a| !a.is_empty()));
+    let hidden = |s: &mut Session, v: u64| call(s, "plan", json!({ "view_id": v }))["cad_imports"][0]["hidden"].clone();
+    assert_eq!(hidden(&mut s, view), json!([]));
+
+    call(&mut s, "set_cad_view_layers", json!({ "view_id": view, "id": id, "hidden": ["NOTES", "no such layer"] }));
+    assert_eq!(hidden(&mut s, view), json!(["NOTES"]));
+    if let Some(other) = dup { assert_eq!(hidden(&mut s, other), json!([]), "the other view still shows it"); }
+    let layers = call(&mut s, "cad_layers", json!({ "id": id, "view_id": view }));
+    let notes = layers["layers"].as_array().unwrap().iter().find(|l| l["name"] == "NOTES").unwrap().clone();
+    assert_eq!((notes["shown"].as_bool(), notes["off_in_view"].as_bool()), (Some(true), Some(true)));
+
+    // hidden everywhere as well: both lists apply, and the view's own is kept apart
+    call(&mut s, "patch_cad_import", json!({ "id": id, "patch": { "hidden_layers": ["WALLS"] } }));
+    assert_eq!(hidden(&mut s, view), json!(["NOTES", "WALLS"]));
+    call(&mut s, "undo", json!({}));
+    call(&mut s, "undo", json!({}));
+    assert_eq!(hidden(&mut s, view), json!([]));
+}

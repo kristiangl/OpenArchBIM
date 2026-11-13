@@ -79,13 +79,20 @@ impl Session {
                 Ok(summary(id, self.doc.cad_import(id).ok_or("gone")?))
             })(),
             "patch_cad_import" => (|| { self.doc.patch_cad_import(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
-            // An import's layers, for its Layers box: { id }
+            // The layers of an import hidden in one view only: { view_id, id, hidden: [names] }
+            "set_cad_view_layers" => (|| {
+                let hidden: std::collections::BTreeSet<String> = serde_json::from_value(p["hidden"].clone()).map_err(|e| format!("bad layers: {e}"))?;
+                self.doc.set_cad_view_layers(id_of(p, "view_id")?, id_of(p, "id")?, hidden)?;
+                Ok(json!({}))
+            })(),
+            // An import's layers, for its Layers box: { id, view_id? } (`off_in_view`: hidden in that view only)
             "cad_layers" => (|| {
                 let c = self.doc.cad_import(id_of(p, "id")?).ok_or("not a CAD drawing")?;
                 let mut used = vec![0usize; c.drawing.layers.len()];
                 for s in &c.drawing.shapes { if let Some(n) = used.get_mut(s.layer as usize) { *n += 1; } }
+                let off = p["view_id"].as_u64().and_then(|v| self.doc.view(v)).and_then(|v| v.cad_layers_off.get(&id_of(p, "id").unwrap_or(0)).cloned()).unwrap_or_default();
                 Ok(json!({ "name": c.name, "layers": c.drawing.layers.iter().enumerate().map(|(i, l)| json!({
-                    "name": l.name, "color": l.color, "on_in_file": l.on, "shown": c.layer_shown(l), "shapes": used[i],
+                    "name": l.name, "color": l.color, "on_in_file": l.on, "shown": c.layer_shown(l), "shapes": used[i], "off_in_view": off.contains(&l.name),
                 })).collect::<Vec<_>>() }))
             })(),
             // What on each layer of an import has a height, for Create from CAD: { id }. Heights in the file's units.
@@ -202,7 +209,7 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
             "id": id, "name": c.name, "stamp": c.stamp, "at": [c.at.x, c.at.y], "angle_deg": c.angle_deg, "scale": c.scale,
             "base": [(b[0] + b[2]) / 2.0, (b[1] + b[3]) / 2.0],
             "ring": c.corners().map(|q| q.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>()),
-            "hidden": c.hidden_layers, "black": c.colors == CadColors::BlackAndWhite, "foreground": c.foreground, "pinned": c.pinned, "linked": c.path.is_some(),
+            "hidden": d.cad_hidden_in(view, id), "black": c.colors == CadColors::BlackAndWhite, "foreground": c.foreground, "pinned": c.pinned, "linked": c.path.is_some(),
         })
     }).collect();
     json!({ "cad_imports": list })

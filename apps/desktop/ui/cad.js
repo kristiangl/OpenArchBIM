@@ -333,7 +333,8 @@ const Cad = (() => {
 
   // the layers of an import, each with a tick: shown or hidden wherever the import is drawn
   async function layersDialog(id) {
-    const info = await run("cad_layers", { id });
+    const viewId = app.view.kind === "plan" ? app.view.viewId : null;
+    const info = await run("cad_layers", { id, view_id: viewId });
     if (!info) return;
     openModal(`Layers: ${info.name}`, (body, foot, close) => {
       const msg = el("div", { className: "modal-msg" });
@@ -349,13 +350,31 @@ const Cad = (() => {
         box.append(line);
         return { t, l };
       });
-      const set = (f) => () => ticks.forEach((x) => { x.t.checked = f(x.l); });
+      // where the ticks apply: wherever the drawing shows, or this view alone (on top of what is hidden everywhere)
+      const where = el("select", {}, [new Option("In every view", "all"), ...(viewId != null ? [new Option("In this view only", "view")] : [])]);
+      const everywhere = new Map(info.layers.map((l) => [l.name, l.shown]));
+      const here = new Map(info.layers.map((l) => [l.name, !l.off_in_view]));
+      const keep = () => ticks.forEach((x) => { if (!x.t.disabled) (where.dataset.was === "view" ? here : everywhere).set(x.l.name, x.t.checked); });
+      const show = () => {
+        const view = where.value === "view";
+        ticks.forEach((x) => { const on = everywhere.get(x.l.name); x.t.disabled = view && !on; x.t.checked = view ? on && here.get(x.l.name) : on; x.t.title = x.t.disabled ? "Hidden in every view" : ""; });
+        where.dataset.was = where.value;
+      };
+      where.onchange = () => { keep(); show(); };
+      const set = (f) => () => ticks.forEach((x) => { if (!x.t.disabled) x.t.checked = f(x.l); });
       const bar = el("div", {}, [button("All", set(() => true)), button("None", set(() => false)), button("As in the File", set((l) => l.on_in_file))]);
-      bar.style.cssText = "display:flex;gap:6px;margin-bottom:6px";
+      bar.style.cssText = "display:flex;gap:6px;margin-bottom:6px;align-items:center";
+      where.style.marginLeft = "auto";
+      bar.append(where);
       body.append(bar, box, msg);
+      if (info.layers.some((l) => l.off_in_view)) where.value = "view";
+      show();
       const ok = async () => {
         try {
-          await Backend.call("patch_cad_import", { id, patch: { hidden_layers: ticks.filter((x) => !x.t.checked).map((x) => x.l.name) } });
+          keep();
+          const hiddenAll = info.layers.filter((l) => !everywhere.get(l.name)).map((l) => l.name);
+          if (hiddenAll.join("\n") !== info.layers.filter((l) => !l.shown).map((l) => l.name).join("\n")) await Backend.call("patch_cad_import", { id, patch: { hidden_layers: hiddenAll } });
+          if (viewId != null) await Backend.call("set_cad_view_layers", { view_id: viewId, id, hidden: info.layers.filter((l) => everywhere.get(l.name) && !here.get(l.name)).map((l) => l.name) });
           close(); await refresh(true);
         } catch (e) { msg.textContent = String(e.message || e); }
       };

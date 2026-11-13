@@ -235,6 +235,24 @@ impl Document {
         self.transact("CAD drawing properties", |tx| tx.update(id, Element::CadImport(c)))
     }
 
+    /// The layers of an import hidden in one view only (the whole list; empty shows all the import shows).
+    pub fn set_cad_view_layers(&mut self, view: Id, id: Id, hidden: BTreeSet<String>) -> Result<(), String> {
+        let c = self.cad_import(id).ok_or("not a CAD drawing")?;
+        let known: BTreeSet<&str> = c.drawing.layers.iter().map(|l| l.name.as_str()).collect();
+        let hidden: BTreeSet<String> = hidden.into_iter().filter(|l| known.contains(l.as_str()) && !c.hidden_layers.contains(l)).collect();
+        let mut v = self.view(view).ok_or("Unknown view.")?.clone();
+        if v.cad_layers_off.get(&id).cloned().unwrap_or_default() == hidden { return Ok(()); }
+        if hidden.is_empty() { v.cad_layers_off.remove(&id); } else { v.cad_layers_off.insert(id, hidden); }
+        self.transact("CAD layers in view", |tx| tx.update(view, Element::View(v)))
+    }
+
+    /// The layers of an import a view doesn't draw: those hidden everywhere and those hidden in the view.
+    pub fn cad_hidden_in(&self, view: Id, id: Id) -> BTreeSet<String> {
+        let mut out = self.cad_import(id).map(|c| c.hidden_layers.clone()).unwrap_or_default();
+        if let Some(off) = self.view(view).and_then(|v| v.cad_layers_off.get(&id)) { out.extend(off.iter().cloned()); }
+        out
+    }
+
     /// An import moved, turned or copied. A drawing can't be mirrored (its text would read backwards).
     pub(crate) fn cad_transformed(c: &CadImport, x: &Xform, copy: bool) -> Result<CadImport, String> {
         let mut c = c.clone();

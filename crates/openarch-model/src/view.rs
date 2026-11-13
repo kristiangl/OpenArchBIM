@@ -651,6 +651,10 @@ pub struct View {
     /// Elements hidden in this view.
     #[serde(default)]
     pub hidden_elements: BTreeSet<Id>,
+    /// Layers of imported CAD drawings hidden in this view only, by import (on top of the layers the import
+    /// itself has hidden everywhere).
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub cad_layers_off: BTreeMap<Id, BTreeSet<String>>,
     /// What an elevation view looks at (marker, which of its pointers, crop and depth).
     #[serde(default)]
     pub elevation: Option<ElevationDef>,
@@ -735,6 +739,7 @@ impl View {
             rotation_on_sheet: RotationOnSheet::None,
             element_overrides: BTreeMap::new(),
             hidden_elements: BTreeSet::new(),
+            cad_layers_off: BTreeMap::new(),
             elevation: None,
             section: None,
             view_type: None,
