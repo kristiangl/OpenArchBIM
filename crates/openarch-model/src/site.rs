@@ -1839,10 +1839,43 @@ impl Document {
             let mut polys: Vec<Vec<[f64; 2]>> = vec![];
             let mut edges: std::collections::BTreeMap<[[i64; 2]; 2], ([[f64; 2]; 2], u32)> = Default::default();
             let mut nearest = f64::INFINITY;
+            // where a section's plane passes through the solid: the pieces of its triangles on the plane
+            let mut cut: Vec<[[f64; 2]; 2]> = vec![];
             for t in verts.chunks_exact(18) {
                 let corner = |k: usize| Point::new(t[k * 6] as f64 * 1000.0, t[k * 6 + 1] as f64 * 1000.0);
                 let ps = [corner(0), corner(1), corner(2)];
                 let zs = [t[2] as f64 * 1000.0, t[8] as f64 * 1000.0, t[14] as f64 * 1000.0];
+                let ds = [d_of(ps[0]), d_of(ps[1]), d_of(ps[2])];
+                let us = [u_of(ps[0]), u_of(ps[1]), u_of(ps[2])];
+                let (dmin, dmax) = (ds.iter().copied().fold(f64::INFINITY, f64::min), ds.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                let (umin, umax) = (us.iter().copied().fold(f64::INFINITY, f64::min), us.iter().copied().fold(f64::NEG_INFINITY, f64::max));
+                if dmax < near || dmin > far || umax < lo || umin > hi {
+                    continue;
+                }
+                // (u, depth, z) of what is left of the triangle between the near and far planes
+                let mut poly: Vec<[f64; 3]> = (0..3).map(|k| [us[k], ds[k], zs[k]]).collect();
+                for (limit, keep_above) in [(near, true), (far, false)] {
+                    let inside = |q: &[f64; 3]| if keep_above { q[1] >= limit } else { q[1] <= limit };
+                    let mut out: Vec<[f64; 3]> = vec![];
+                    for k in 0..poly.len() {
+                        let (p, q) = (poly[k], poly[(k + 1) % poly.len()]);
+                        if inside(&p) { out.push(p); }
+                        if inside(&p) != inside(&q) {
+                            let f = (limit - p[1]) / (q[1] - p[1]);
+                            out.push([p[0] + (q[0] - p[0]) * f, limit, p[2] + (q[2] - p[2]) * f]);
+                        }
+                    }
+                    poly = out;
+                }
+                if poly.len() < 3 {
+                    continue;
+                }
+                if sl.is_some() && dmin < near {
+                    let on: Vec<[f64; 2]> = poly.iter().filter(|q| (q[1] - near).abs() < 1e-6).map(|q| [q[0], q[2]]).collect();
+                    if let [a, .., b] = on.as_slice() {
+                        if (a[0] - b[0]).hypot(a[1] - b[1]) > 1e-3 { cut.push([*a, *b]); }
+                    }
+                }
                 // the way the face looks, from its corners (so either winding does)
                 let (e1, e2) = ([ps[1].x - ps[0].x, ps[1].y - ps[0].y, zs[1] - zs[0]], [ps[2].x - ps[0].x, ps[2].y - ps[0].y, zs[2] - zs[0]]);
                 let across = (e1[1] * e2[2] - e1[2] * e2[1]) * look.x + (e1[2] * e2[0] - e1[0] * e2[2]) * look.y;
@@ -1850,24 +1883,37 @@ impl Document {
                 if across.abs() < 1e-6 || facing > -1e-6 {
                     continue; // edge-on, or turned away
                 }
-                let ds = [d_of(ps[0]), d_of(ps[1]), d_of(ps[2])];
-                let us = [u_of(ps[0]), u_of(ps[1]), u_of(ps[2])];
-                let (dmin, dmax) = (ds.iter().copied().fold(f64::INFINITY, f64::min), ds.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-                let (umin, umax) = (us.iter().copied().fold(f64::INFINITY, f64::min), us.iter().copied().fold(f64::NEG_INFINITY, f64::max));
-                if dmin < near || dmax > far || umax < lo || umin > hi {
-                    continue;
-                }
-                nearest = nearest.min(dmin);
-                let q = [[us[0], zs[0]], [us[1], zs[1]], [us[2], zs[2]]];
-                for k in 0..3 {
-                    let (a, b) = (q[k], q[(k + 1) % 3]);
+                nearest = nearest.min(dmin.max(near));
+                let q: Vec<[f64; 2]> = poly.iter().map(|v| [v[0], v[2]]).collect();
+                for k in 0..q.len() {
+                    let (a, b) = (q[k], q[(k + 1) % q.len()]);
                     let key = |p: [f64; 2]| [(p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64];
                     let (ka, kb) = (key(a), key(b));
                     if ka != kb {
                         edges.entry(if ka < kb { [ka, kb] } else { [kb, ka] }).or_insert(([a, b], 0)).1 += 1;
                     }
                 }
-                polys.push(q.to_vec());
+                polys.push(q);
+            }
+            // the cut face: the pieces joined end to end into closed outlines, filled and drawn as cut
+            if !cut.is_empty() {
+                let key = |p: [f64; 2]| [(p[0] * 10.0).round() as i64, (p[1] * 10.0).round() as i64];
+                let mut left = cut;
+                let mut loops: Vec<Vec<[f64; 2]>> = vec![];
+                while let Some([a, b]) = left.pop() {
+                    let mut ring = vec![a, b];
+                    loop {
+                        let end = key(*ring.last().unwrap());
+                        if end == key(ring[0]) { ring.pop(); break; }
+                        let Some(i) = left.iter().position(|s| key(s[0]) == end || key(s[1]) == end) else { break };
+                        let s = left.swap_remove(i);
+                        ring.push(if key(s[0]) == end { s[1] } else { s[0] });
+                    }
+                    if ring.len() >= 3 { loops.push(ring); }
+                }
+                if !loops.is_empty() {
+                    items.push(ElevItem { id, category, depth: -1.0 + 0.004, polys: loops, fill: colour, cut: true, ..Default::default() });
+                }
             }
             if polys.is_empty() {
                 continue;

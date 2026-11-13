@@ -102,6 +102,18 @@ fn kerbs_kerb_ramps_and_wheel_stops_show_in_elevations_and_sections() {
     let v2 = section_view(&mut s, away);
     let unseen = items(&mut s, v2, "Hardscape").len() + items(&mut s, v2, "Parking").len();
     assert!(seen.max(unseen) == 3 && seen.min(unseen) == 0, "one way sees the kerb, ramp and stops, the other none: {seen} and {unseen}");
+    // a section across the kerb cuts it: the cut face is the kerb's profile (as high as the kerb, standing on the
+    // level), and beyond the plane the rest of the kerb is still seen, right up to the plane
+    call(&mut s, "delete", json!({ "ids": [away] }));
+    let across = call(&mut s, "add_section", json!({ "level_id": level, "start": [1000, -9000], "end": [1000, -3000] }))["id"].as_u64().unwrap();
+    let v3 = section_view(&mut s, across);
+    let hard = items(&mut s, v3, "Hardscape");
+    let cut: Vec<&Value> = hard.iter().filter(|i| i["id"].as_u64() == Some(kerb) && i["cut"] == json!(true)).collect();
+    assert_eq!(cut.len(), 1, "{hard:?}");
+    let (c0, c1, cz0, cz1) = extent(cut[0]);
+    assert!(c1 - c0 > 50.0 && c1 - c0 < 1000.0 && cz0.abs() < 1.0 && (cz1 - 150.0).abs() < 1.0, "cut face {c0} {c1} {cz0} {cz1}");
+    assert!(hard.iter().any(|i| i["id"].as_u64() == Some(kerb) && i["cut"] != json!(true)), "the kerb beyond the plane is seen");
+    call(&mut s, "delete", json!({ "ids": [across] }));
     // hiding the kerb in a view takes it out of that view
     call(&mut s, "hide_elements", json!({ "view_id": south, "ids": [kerb] }));
     assert!(!items(&mut s, south, "Hardscape").iter().any(|i| i["id"].as_u64() == Some(kerb)));
