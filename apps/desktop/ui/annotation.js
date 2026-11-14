@@ -161,5 +161,15 @@ const Ann = (() => {
     return { minX: x0, maxX: x1, minY: y0, maxY: y1 };
   }
 
-  return { paths, labels, layout, draw, extent, mapper, rgb };
+  // where each label of a drawn symbol is on screen (as `labels` places them): { x, y, w, h, text }
+  function labelBoxes(list, o) {
+    const m = mapper({ ...o, rot: 0 }), out = [];
+    for (const t of list || []) {
+      if (t.hidden) continue;
+      const L = layout(t);
+      out.push({ x: o.flip ? m([L.x0 + L.w, 0]).x : m([L.x0, 0]).x, y: m([0, L.top]).y, w: L.w * o.k, h: L.h * o.k, text: L.lines.join(" ") });
+    }
+    return out;
+  }
+  return { paths, labels, labelBoxes, layout, draw, extent, mapper, rgb };
 })();

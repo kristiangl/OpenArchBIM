@@ -67,7 +67,7 @@ const MODIFY_TAB = [
   { label: "Create", items: [
     modifyItem("Create Assembly", "assembly", null),
     modifyItem("Create Group", "modelGroup", { project: "gp" }),
-    modifyItem("Create Similar", "createSimilar", null, { big: true }) ] },
+    modifyItem("Create Similar", "createSimilar", { project: "create-similar" }, { big: true }) ] },
 ];
 
 const RIBBON = {

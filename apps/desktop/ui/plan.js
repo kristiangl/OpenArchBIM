@@ -270,7 +270,10 @@ const Plan = (() => {
   }
   // the parts of a door or window symbol that pick it besides its footprint in the wall: open leaves and swing arcs
   function insertParts(i) {
-    return { polys: i.polys || [], arcs: (i.arcs || []).map((a) => ({ a, pts: arcPoints(a) })) };
+    // a family's plan symbol comes as parts: closed outlines (a door's leaf, its frame) and open lines (its swing)
+    const polys = [...(i.polys || [])], open = [];
+    for (const part of i.parts || []) for (const r of part.rings || []) if (r.length > 1) (part.closed ? polys : open).push(r);
+    return { polys, arcs: [...(i.arcs || []).map((a) => ({ a, pts: arcPoints(a) })), ...open.map((pts) => ({ a: null, pts }))] };
   }
 
   // every selectable element as { id, kind, ring, pinned, category, display }
@@ -449,7 +452,16 @@ const Plan = (() => {
           const pd = selOpts.face && inPoly(p, q) ? 0 : pe <= tol ? pe : Infinity;
           d = Math.min(d, pd);
         }
-        for (const { a } of e.parts.arcs) { const ad = arcDist(p, a); if (ad <= tol) d = Math.min(d, ad); }
+        for (const { a, pts } of e.parts.arcs) {
+          let ad = Infinity;
+          if (a) ad = arcDist(p, a);
+          else {
+            for (let k = 0; k + 1 < pts.length; k++) ad = Math.min(ad, segDist(p, pts[k], pts[k + 1]));
+            // inside the sweep of a swing picks too, as a face does
+            if (selOpts.face && pts.length > 2 && inPoly(p, pts)) ad = 0;
+          }
+          if (ad <= tol) d = Math.min(d, ad);
+        }
       }
       if (d !== Infinity) found.push({ e, d });
     }
@@ -2570,6 +2582,12 @@ const Plan = (() => {
     if (tool === "select" && selOpts.dragOnSel && e.button === 0) {
       const c = candidates(e.offsetX, e.offsetY);
       if (c.length) down.drag = { ids: c[0], p0: snap(e.offsetX, e.offsetY) };
+      else {
+        // a selected imported drawing drags from anywhere inside its box, not only from one of its lines
+        const p = toWorld(e.offsetX, e.offsetY);
+        const cad = elements().find((x) => x.kind === "cadimport" && sel.has(x.id) && x.ring && inPoly(p, x.ring));
+        if (cad) down.drag = { ids: [cad.id], p0: snap(e.offsetX, e.offsetY) };
+      }
     }
   });
   canvas.addEventListener("pointermove", (ev) => { const e = unturn(ev);
@@ -2766,7 +2784,7 @@ const Plan = (() => {
       if (wasClick && Sketch.active) { Sketch.rightClick(); return; }
       if (wasClick && tool === "spot") { if (!Spots.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
       if (wasClick && tool === "dimension") { if (!Dims.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
-      if (wasClick) { if (draw) { draw = null; cb.prompt(promptText()); render(); } else if (tool !== "select") setTool("select"); else cb.contextMenu?.(e.clientX, e.clientY); }
+      if (wasClick) { if (draw) { draw = null; cb.prompt(promptText()); render(); } else if (tool !== "select") setTool("select"); else { const g = wgrips.find((q) => !q.pt && Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 9); cb.contextMenu?.(e.clientX, e.clientY, { wallEnd: g ? { id: g.id, end: g.end } : null }); } }
       return;
     }
     if (dragging) {
@@ -2800,8 +2818,10 @@ const Plan = (() => {
       render();
       return;
     }
-    // Drawing tools accept a pick even while the pointer moves during the press.
-    if (down && (tool !== "select" && tool !== "joins" || Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5)) click(e.offsetX, e.offsetY, e);
+    // Drawing tools take the pick where the button went down, however far the pointer has moved by the time it
+    // comes up: working fast, the hand is already on its way to the next point.
+    if (down && tool !== "select" && tool !== "joins") click(down.x, down.y, e);
+    else if (down && Math.hypot(e.offsetX - down.x, e.offsetY - down.y) < 5) click(e.offsetX, e.offsetY, e);
     down = null;
   });
   canvas.addEventListener("dblclick", (ev) => { const e = unturn(ev);

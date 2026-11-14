@@ -92,6 +92,7 @@ const COMMANDS = {
   "paste-current": () => Clip.pasteCurrent(),
   "paste-same": () => Clip.pasteSame(),
   "match-type": () => Clip.matchType(),
+  "create-similar": () => createSimilar(),
   "temp-hide-el": () => Hide.temp("hide_elements"),
   "temp-iso-el": () => Hide.temp("isolate_elements"),
   "temp-hide-cat": () => Hide.temp("hide_categories"),
@@ -928,14 +929,54 @@ async function selectAllInstances(inView) {
   const shown = inView ? idsInView() : null;
   selectIds(inView ? r.ids.filter((i) => shown.has(i)) : r.ids);
 }
-async function viewContextMenu(x, y) {
+// Create Similar: the tool that made the selected element, set to its type
+async function createSimilar() {
+  if (app.selection.length !== 1) { setPrompt("Select one element to create another like it.", true); return; }
+  const d = await run("describe", { id: app.selection[0] });
+  if (!d) return;
+  const t = d.type_id, cat = d.category || "";
+  const go = (id) => runCommand(id);
+  switch (d.kind) {
+    case "Wall": if (t != null) app.wallTypeId = t; return go("wall");
+    case "Floor": if (t != null) app.floorTypeId = t; return go("floor");
+    case "Roof": if (t != null) app.roofTypeId = t; return go("roof");
+    case "Ceiling": if (t != null) app.ceilingTypeId = t; return go("ceiling");
+    case "FamilyInstance":
+      if (cat === "Doors") { app.doorTypeId = t; return go("door"); }
+      if (cat === "Windows") { app.windowTypeId = t; return go("window"); }
+      app.componentTypeId = t; return go("component");
+    case "StructuralColumn": case "Beam": case "BeamSystem": case "Truss": return Structure.similar(d);
+    case "Grid": return go("grid");
+    case "Level": return go("level");
+    case "Stair": return go("stair");
+    case "Ramp": return go("ramp");
+    case "Railing": return go("railing");
+    case "Room": return go("room");
+    case "PropertyLine": return go("property-line");
+    case "ParkingRow": return go("parking");
+    case "Kerb": return go("kerb");
+    case "LineMarking": return go("linemark");
+    case "KerbRamp": return go("kerb-ramp");
+    default: setPrompt(`Create Similar has no tool for ${cat || "that element"} yet.`, true);
+  }
+}
+async function viewContextMenu(x, y, at = {}) {
   const sel = app.selection, one = sel.length === 1;
+  // a right-click on a wall's end: whether that end may join other walls
+  let endItems = [];
+  if (at.wallEnd) {
+    let allowed = true;
+    try { const ji = await Backend.call("wall_join_info", { id: at.wallEnd.id, end: at.wallEnd.end }); const own = (ji.walls || []).find((w) => w.id === at.wallEnd.id && w.end === at.wallEnd.end); if (own) allowed = own.allowed !== false; else if (ji.allowed === false) allowed = false; } catch (e) { /* a free end has no join to describe */ }
+    endItems = [{ label: allowed ? "Disallow Join" : "Allow Join", run: async () => { if (await run("set_wall_join", { id: at.wallEnd.id, end: at.wallEnd.end, allowed: !allowed })) { await refresh(); setPrompt(allowed ? "That end of the wall no longer joins other walls. Right-click it again to allow joins." : "That end of the wall joins other walls again."); } } }, { sep: true }];
+  }
   let typeId = null;
   if (one) { try { typeId = (await Backend.call("describe", { id: sel[0] })).type_id ?? null; } catch (e) { typeId = null; } }
   const cmd = (id) => () => runCommand(id);
   const fit = () => (app.view.kind === "elevation" ? Elev.fit() : Plan.fit());
   const items = sel.length ? [
+    ...endItems,
     { label: "Cancel", run: () => selectIds([]) },
+    { label: "Create Similar", keys: "CS", disabled: !one, run: cmd("create-similar") },
     { sep: true },
     { label: "Select All Instances: Visible in View", disabled: !one || typeId == null, title: one ? "" : "Select one element", run: () => selectAllInstances(true) },
     { label: "Select All Instances: In Entire Project", disabled: !one || typeId == null, run: () => selectAllInstances(false) },
@@ -960,7 +1001,7 @@ async function viewContextMenu(x, y) {
   ];
   showMenu(x, y, items);
 }
-Plan.callbacks.contextMenu = (x, y) => viewContextMenu(x, y);
+Plan.callbacks.contextMenu = (x, y, at) => viewContextMenu(x, y, at);
 Elev.callbacks.contextMenu = (x, y) => viewContextMenu(x, y);
 
 // Right-click menus of the Project Browser's views
@@ -3126,7 +3167,7 @@ document.addEventListener("keydown", (e) => {
     keyBuf = (keyBuf + e.key.toUpperCase()).slice(-2);
     clearTimeout(keyTimer);
     keyTimer = setTimeout(() => (keyBuf = ""), 900);
-    const map = { GR: "grid", LL: "level", WA: "wall", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", ME: "me", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
+    const map = { GR: "grid", LL: "level", WA: "wall", CS: "create-similar", DE: "del", DR: "door", WN: "window", MV: "mv", CO: "cp", RO: "ro", MM: "mi", OF: "of", TR: "tr", AL: "al", ME: "me", PN: "pin", UP: "unpin", HH: "temp-hide-el", HI: "temp-iso-el", HC: "temp-hide-cat", IC: "temp-iso-cat", HR: "temp-reset", EH: "hide-el", VH: "hide-cat", RH: "reveal" };
     const run = shortcutCommand(map[keyBuf]);
     if (run) { run(); keyBuf = ""; }
     else if (app.view.kind === "plan" && Snap.isOverride(keyBuf) && (["wall", "sketch"].includes(Plan.tool) || Plan.isEditTool())) {

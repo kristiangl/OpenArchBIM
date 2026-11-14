@@ -335,6 +335,23 @@ const Elev = (() => {
     }
   }
 
+  // the name or the elevation in a selected level's head under the cursor: a click there edits it
+  let headPick = null;
+  function headLabelAt(sx, sy) {
+    if (!data) return null;
+    for (const l of data.levels) {
+      if (!sel.has(l.id) || !l.head) continue;
+      const { a, b } = levelParts(l);
+      for (const end of [0, 1]) {
+        if (!l.bubbles[end]) continue;
+        const p = end === 0 ? a : b;
+        for (const box of Ann.labelBoxes(l.head.labels, { x: p.x, y: p.y, k: k(), flip: end === 0 })) {
+          if (sx >= box.x - 3 && sx <= box.x + box.w + 3 && sy >= box.y - 3 && sy <= box.y + box.h + 3) return { id: l.id, l, name: box.text.trim() === String(l.name).trim(), x: box.x, y: box.y };
+        }
+      }
+    }
+    return null;
+  }
   function levelAt(sx, sy) {
     if (!data) return null;
     let best = null;
@@ -1207,6 +1224,9 @@ const Elev = (() => {
       // pressing on a selected curtain grid line placed by hand and moving drags it along the wall
       const sg = sel.size === 1 ? gridLine([...sel][0]) : null;
       if (sg && !sg.l.typed && !sg.l.edge && sg.l.segs.some((s) => near(e.offsetX, e.offsetY, s, 5))) cgDrag = { id: sg.l.id, f: sg.f, vertical: sg.l.vertical, start: sg.l.at, at: sg.l.at, x: e.offsetX, y: e.offsetY, moved: false };
+      // a click on the name or the elevation in a selected level's head edits it in place
+      headPick = headLabelAt(e.offsetX, e.offsetY);
+      if (headPick) { down = null; return; }
       const lid = levelAt(e.offsetX, e.offsetY);
       if (lid !== null && sel.has(lid) && !itemsAt(e.offsetX, e.offsetY).length) {
         const l = data.levels.find((x) => x.id === lid);
@@ -1307,6 +1327,12 @@ const Elev = (() => {
     render();
   });
   canvas.addEventListener("pointerup", (e) => {
+    if (headPick) {
+      const h = headPick; headPick = null;
+      if (h.name) openInput(h.x, h.y, h.l.name, (v) => { if (v.trim()) cb.renameLevel(h.id, v.trim()); });
+      else openInput(h.x, h.y, String(Math.round(h.l.elev)), (v) => { const n = parseFloat(v); if (Number.isFinite(n)) cb.editElevation(h.id, n); });
+      return;
+    }
     if (Det.dragging) { down = null; Det.gripUp(); return; }
     if (EDims.dragging) { down = null; EDims.up(e.offsetX, e.offsetY); return; }
     if (ESpots.dragging) { down = null; ESpots.up(e.offsetX, e.offsetY); return; }

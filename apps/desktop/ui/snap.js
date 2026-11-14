@@ -15,7 +15,7 @@ const Snap = (() => {
     lengthOn: true, lengths: [1000, 100, 20, 5, 1],
     angleOn: true, angles: [90, 45, 15, 5, 1],
     // lines drawn within this many degrees of horizontal or vertical go exactly horizontal or vertical
-    hvOn: true, hvDeg: 2,
+    hvOn: true, hvDeg: 4,
   };
   let s = { ...DEFAULTS };
   try {
@@ -24,9 +24,11 @@ const Snap = (() => {
     if (!saved.gridSnapV2) saved.grid = false;
     // the length increments gained 1 mm; settings saved before then get it too
     if (!saved.mm1SnapV3 && Array.isArray(saved.lengths) && !saved.lengths.includes(1)) saved.lengths = [...saved.lengths, 1];
+    // level and plumb pull harder than they did: the old 2 degree window becomes 4
+    if (!saved.hvV4 && saved.hvDeg === 2) saved.hvDeg = 4;
     Object.assign(s, saved);
   } catch { /* storage can be unavailable */ }
-  const save = () => { try { localStorage.setItem("openarch.snaps", JSON.stringify({ ...s, gridSnapV2: true, mm1SnapV3: true })); } catch { /* ignore */ } };
+  const save = () => { try { localStorage.setItem("openarch.snaps", JSON.stringify({ ...s, gridSnapV2: true, mm1SnapV3: true, hvV4: true })); } catch { /* ignore */ } };
 
   // what each kind is called under the cursor, and how it ranks when several are in reach
   const LABEL = { endpoint: "Endpoint", midpoint: "Midpoint", intersection: "Intersection", center: "Center", perpendicular: "Perpendicular", nearest: "Nearest", grid: "Work Plane Grid", quadrant: "Quadrant", tangent: "Tangent", extension: "Extension", extint: "Intersection" };
@@ -283,6 +285,17 @@ const Snap = (() => {
     // Sharp object snaps still win; "nearest" does not, so a line can run exactly along an axis past a wall.
     // `hvDeg` widens the window for a line that should go level or plumb readily (a text note's leader)
     const hv = last && !s.off && override !== "off" && s.hvOn !== false && !shift ? hvAxis(w, last, o.hvDeg) : null;
+    // a sharp snap that is itself only just off the axis does not pull the line off it: the point stays on the
+    // axis, level with the snap
+    if (hv && cands.length && RANK[cands[0].kind] < RANK.extension) {
+      const c = cands[0];
+      const off = hv.horizontal ? c.y - last.y : c.x - last.x, along = hv.horizontal ? c.x - last.x : c.y - last.y;
+      const win = Math.tan(((o.hvDeg > 0 ? o.hvDeg : s.hvDeg > 0 ? s.hvDeg : 4) * Math.PI) / 180);
+      if (Math.abs(off) > 0.5 && Math.abs(along) > 1 && Math.abs(off) <= Math.abs(along) * win) {
+        const p = hv.horizontal ? { x: c.x, y: last.y } : { x: last.x, y: c.y };
+        return { ...p, kind: "hv", label: `${hv.horizontal ? "Horizontal" : "Vertical"} and ${LABEL[c.kind] || "Snap"}`, cands: [], index: 0, horizontal: hv.horizontal, guides: [{ a: { x: c.x, y: c.y }, b: p }] };
+      }
+    }
     if (hv && !(cands.length && RANK[cands[0].kind] < RANK.extension)) cands = [];
     if (hv && !cands.length) {
       // an extension line crossing the axis near the cursor holds the point there

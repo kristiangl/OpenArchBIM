@@ -319,5 +319,13 @@ const Structure = (() => {
     ctx.restore();
   }
 
-  return { owns, startBrace: () => start("sbrace"), startTruss: () => start("struss"), startSystem: () => start("sbsystem"), startColumn: () => start("scolumn"), startBeam: () => start("sbeam"), click, hover, key, promptText, placementProperties, selectionContext, elements, snapSegs, draw };
+  // Create Similar: the tool for a selected member, with its type
+  function similar(d) {
+    const o = opts();
+    if (d.kind === "StructuralColumn") { o.column_type = d.type_id; return start("scolumn"); }
+    if (d.kind === "Beam") { o.beam_type = d.type_id; return start("sbeam"); }
+    if (d.kind === "BeamSystem") { o.beam_type = d.type_id; return start("sbsystem"); }
+    return start("struss");
+  }
+  return { owns, similar, startBrace: () => start("sbrace"), startTruss: () => start("struss"), startSystem: () => start("sbsystem"), startColumn: () => start("scolumn"), startBeam: () => start("sbeam"), click, hover, key, promptText, placementProperties, selectionContext, elements, snapSegs, draw };
 })();
