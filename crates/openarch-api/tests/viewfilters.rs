@@ -128,3 +128,18 @@ fn templates_are_copied_stamped_on_once_and_put_on_temporarily() {
     let copy = call(&mut s, "duplicate_view_template", json!({ "id": t }))["id"].as_u64().unwrap();
     assert_eq!(call(&mut s, "view_templates_info", json!({}))["templates"].as_array().unwrap().iter().find(|x| x["id"].as_u64() == Some(copy)).unwrap()["name"], "Check Copy 1");
 }
+
+#[test]
+fn a_filter_colours_and_fades_what_it_matches_in_3d() {
+    let Setup { mut s, big, small, .. } = setup();
+    let info = call(&mut s, "doc_info", json!({}));
+    let v3 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+    let rules = json!({ "name": "Big floors", "kind": "rules", "categories": ["Floors"], "root": { "node": "and", "of": [{ "node": "rule", "field": "Area", "op": "greater", "value": "10" }] } });
+    let f = call(&mut s, "add_view_filter", json!({ "filter": rules }))["id"].as_u64().unwrap();
+    call(&mut s, "set_view_filter_list", json!({ "view_id": v3, "filters": [{ "filter": f, "overrides": { "surface_foreground": { "visible": true, "color": [0, 160, 80], "pattern": null }, "transparency": 40 } }] }));
+    let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
+    let mesh = |id: u64| scene["meshes"].as_array().unwrap().iter().find(|m| m["id"].as_u64() == Some(id)).unwrap().clone();
+    assert_eq!((mesh(big)["color"].clone(), mesh(big)["transparency"].as_u64()), (json!([0, 160, 80]), Some(40)));
+    assert_ne!(mesh(small)["color"], json!([0, 160, 80]));
+    assert!(mesh(small)["transparency"].is_null());
+}

@@ -2458,6 +2458,8 @@ impl Session {
             } else if let Some(style) = style_for(d, &settings, it.category, None, d.graphics_of(view, &it.id).as_ref(), "projection", &hint) {
                 // the projection pen its lines are drawn with
                 j["style"] = style;
+                // a surface colour override (by element, or a filter) is the face's shaded colour too
+                if let Some(c) = d.graphics_of(view, &it.id).and_then(|o| o.surface_foreground.color.filter(|_| o.surface_foreground.visible)) { j["fill"] = json!(c); }
             }
             items.push(j);
         }
@@ -3078,7 +3080,7 @@ impl Session {
             .or_else(|| d.views().iter().find(|(_, v)| v.view_kind == ViewKind::ThreeD).map(|(id, _)| *id));
         let settings = view.and_then(|v| d.effective_settings(v));
         let mut hidden = view.and_then(|v| d.view(v)).map(|v| v.hidden_elements.clone()).unwrap_or_default();
-        // what the view's filters hide is hidden here too (their colours are not applied in 3D)
+        // what the view's filters hide is hidden here too; their colours and transparency are applied below
         if let Some(v) = view { hidden.extend(d.filter_hidden(v)); }
         let shown = |cat: &str| settings.as_ref().map_or(true, |s| s.overrides.model.get(cat).map_or(true, |o| o.visible));
         // stairs and railings follow the view's detail level
@@ -3194,6 +3196,20 @@ impl Session {
         for m in meshes.iter_mut() {
             if let Some(t) = m["material"].as_str().and_then(|n| d.material(n)).map(|x| x.graphics.shading_transparency).filter(|t| *t > 0) {
                 m["transparency"] = json!(t);
+            }
+        }
+        // an element's overrides in this view (Override by Element, and the view's filters): its surface colour,
+        // transparency and halftone
+        if let Some(v) = view.and_then(|v| d.view(v)) {
+            for m in meshes.iter_mut() {
+                let Some(id) = m["id"].as_u64() else { continue };
+                let Some(o) = d.graphics_of(v, &id) else { continue };
+                if let Some(c) = o.surface_foreground.color.filter(|_| o.surface_foreground.visible) { m["color"] = json!(c); }
+                if o.transparency > 0 { m["transparency"] = json!(o.transparency); }
+                if o.halftone {
+                    let c: Vec<u64> = m["color"].as_array().map(|a| a.iter().filter_map(|x| x.as_u64()).collect()).unwrap_or_else(|| vec![190, 190, 190]);
+                    m["color"] = json!(c.iter().map(|x| (x + 255) / 2).collect::<Vec<_>>());
+                }
             }
         }
         json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style) })

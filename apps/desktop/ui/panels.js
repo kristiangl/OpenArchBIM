@@ -763,7 +763,14 @@ async function openVG() {
         b.className = k === tab ? "active" : "";
         b.onclick = () => { tab = k; render(); };
         return b;
-      }));
+      }), (() => {
+        // the view's filters: what is changed here is applied first, then the Filters dialog opens on this view
+        const b = document.createElement("button");
+        b.textContent = "Filters";
+        b.title = "Apply the changes here and open this view's filters";
+        b.onclick = async () => { await save(true); Filters.open("view"); };
+        return b;
+      })());
       host.replaceChildren();
       if (locked[tab]) { const n = document.createElement("p"); n.className = "note"; n.textContent = "These settings are controlled by this view's template."; host.append(n); }
       const isModel = tab === "model";
