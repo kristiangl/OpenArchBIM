@@ -338,6 +338,9 @@ pub fn starter_materials() -> Vec<Material> {
         mat("Aluminium", "Metal", [176, 180, 186], None, None, 2700.0, 160.0),
         mat("Ceiling Tile", "Mineral Fibre", [238, 236, 230], None, None, 300.0, 0.06),
         mat("Earth", "Earth", [150, 128, 100], Some("Earth"), None, 1600.0, 1.0),
+        // what structural columns and beams are made of: steel cuts solid, as sections of it are drawn
+        mat("Steel", "Metal", [150, 156, 166], Some(SOLID_FILL), None, 7850.0, 50.0),
+        mat("Timber", "Wood", [198, 166, 120], Some("Diagonal crosshatch"), None, 550.0, 0.13),
     ]
 }
 
