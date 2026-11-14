@@ -336,7 +336,7 @@ async function renderProperties() {
     const tp = Traffic.placementProperties();
     title = tp.title;
     groups.push(...tp.groups);
-  } else if (tool === "scolumn" || tool === "sbeam") {
+  } else if (Structure.owns(tool)) {
     const tp = Structure.placementProperties();
     title = tp.title;
     groups.push(...tp.groups);

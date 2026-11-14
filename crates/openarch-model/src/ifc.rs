@@ -709,6 +709,8 @@ impl Document {
                             U::HorizontalBracing | U::VerticalBracing => ("IFCMEMBER", "BRACE"),
                         })
                     }
+                    Some(Element::BeamSystem(b)) => (b.level, format!("Beam System: {}", type_name(b.structural_type)), ("IFCBEAM", "JOIST")),
+                    Some(Element::Truss(t)) => (t.level, "Truss".to_string(), ("IFCMEMBER", "USERDEFINED")),
                     _ => continue,
                 };
                 let name = name.as_str();

@@ -95,7 +95,7 @@ const RIBBON = {
   Structure: [
     { label: "Structure", items: [
       { id: "s-beam", label: "Beam", big: true }, { id: "s-brace", label: "Brace", big: true },
-      { id: "s-column", label: "Column", big: true }, { id: "s-truss", label: "Truss", big: true } ] },
+      { id: "s-column", label: "Column", big: true }, { id: "s-truss", label: "Truss", big: true }, { id: "s-bsystem", label: "Beam System", big: true } ] },
     { label: "Foundation", items: [
       { id: "s-isolated", label: "Isolated Footing", big: true }, { id: "s-strip", label: "Strip Footing", big: true },
       { id: "s-slab", label: "Slab / Edge Thickening", big: true } ] },

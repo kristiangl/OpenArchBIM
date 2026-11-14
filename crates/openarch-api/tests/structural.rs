@@ -81,6 +81,22 @@ fn a_column_and_a_beam_are_placed_drawn_described_and_exported() {
     assert_eq!((f.matches("=IFCCOLUMN(").count(), f.matches("=IFCBEAM(").count()), (1, 1));
     assert!(f.contains(".COLUMN.") && f.contains(".BEAM."));
 
+    // the beam's start is on the column: cut back to its face (200 after the type's width became 400) and 10 more
+    let d = call(&mut s, "describe", json!({ "id": beam }));
+    assert_eq!(rows(&d).iter().find(|x| x["label"] == "Cut Length").unwrap()["raw"].as_f64(), Some(6000.0 - 210.0));
+    let b = structure(&mut s, upper).iter().find(|x| x["id"].as_u64() == Some(beam)).unwrap().clone();
+    let x0 = b["outline"].as_array().unwrap().iter().map(|p| p[0].as_f64().unwrap()).fold(f64::INFINITY, f64::min);
+    assert!((x0 - 210.0).abs() < 1e-6, "{x0}");
+    call(&mut s, "patch_structural", json!({ "id": beam, "patch": { "start_join": false } }));
+    assert_eq!(rows(&call(&mut s, "describe", json!({ "id": beam }))).iter().find(|x| x["label"] == "Cut Length").unwrap()["raw"].as_f64(), Some(6000.0));
+    call(&mut s, "undo", json!({}));
+    // slanted through Properties, and a slanted one placed: the plan gives its line
+    call(&mut s, "patch_structural", json!({ "id": col, "patch": { "top_at": { "x": 800.0, "y": 0.0 } } }));
+    let c = structure(&mut s, ground).iter().find(|x| x["id"].as_u64() == Some(col)).unwrap().clone();
+    assert_eq!(c["axis"], json!([[0.0, 0.0], [800.0, 0.0]]));
+    assert!(rows(&call(&mut s, "describe", json!({ "id": col }))).iter().any(|x| x["label"] == "Top Attached To"));
+    call(&mut s, "undo", json!({}));
+
     // deleted and undone
     call(&mut s, "delete", json!({ "ids": [col, beam] }));
     assert!(structure(&mut s, ground).is_empty());

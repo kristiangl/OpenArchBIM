@@ -3236,6 +3236,7 @@ impl Session {
             Element::CadImport(c) => Ok(self.cad_props(id, c)),
             e @ (Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_)) => self.traffic_props(id, e).ok_or_else(|| "no properties".to_string()),
             e @ (Element::StructuralColumn(_) | Element::Beam(_)) => self.structural_props(id, e).ok_or_else(|| "no properties".to_string()),
+            e @ (Element::BeamSystem(_) | Element::Truss(_)) => self.framing_props(id, e).ok_or_else(|| "no properties".to_string()),
             Element::StructuralType(t) => Ok(self.structural_type_props(id, t)),
             Element::Stair(s) => Ok(self.stair_props(id, s)),
             Element::Railing(r) => Ok(self.railing_props(id, r)),

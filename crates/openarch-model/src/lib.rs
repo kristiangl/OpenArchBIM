@@ -60,6 +60,7 @@ pub mod spot;
 pub mod step;
 pub mod store;
 pub mod structural;
+pub mod framing;
 pub mod styles;
 pub mod symbol;
 pub mod systypes;

@@ -728,6 +728,9 @@ pub enum Element {
     StructuralType(crate::structural::StructuralType),
     StructuralColumn(crate::structural::StructuralColumn),
     Beam(crate::structural::Beam),
+    /// Beam systems and trusses (framing.rs).
+    BeamSystem(crate::framing::BeamSystem),
+    Truss(crate::framing::Truss),
 }
 
 impl Element {
@@ -742,6 +745,7 @@ impl Element {
             Element::Toposolid(t) => t.toposolid_type,
             Element::StructuralColumn(c) => c.structural_type,
             Element::Beam(b) => b.structural_type,
+            Element::BeamSystem(s) => s.structural_type,
             Element::Stair(s) => s.stair_type,
             Element::Railing(r) => r.railing_type,
             Element::Ramp(r) => r.ramp_type,
@@ -769,6 +773,8 @@ impl Element {
             Element::StructuralType(_) => "StructuralType",
             Element::StructuralColumn(_) => "StructuralColumn",
             Element::Beam(_) => "Beam",
+            Element::BeamSystem(_) => "BeamSystem",
+            Element::Truss(_) => "Truss",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

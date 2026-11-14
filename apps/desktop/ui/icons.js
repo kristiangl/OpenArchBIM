@@ -321,7 +321,7 @@ const ICON_ALIAS = {
   "curtain-grid": "curtainGrid", "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "det-group": "detailGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
   "set-wp": "setWp", "show-wp": "showWp", "ref-plane": "refPlane",
   // structure
-  "s-beam": "beam", "s-brace": "brace", "s-column": "sColumn", "s-truss": "truss", "s-isolated": "footing", "s-strip": "stripFooting", "s-slab": "slabEdge",
+  "s-beam": "beam", "s-bsystem": "beam", "s-brace": "brace", "s-column": "sColumn", "s-truss": "truss", "s-isolated": "footing", "s-strip": "stripFooting", "s-slab": "slabEdge",
   // insert
   "link-ifc": "linkIfc", "open-ifc": "linkIfc", "import-ifc": "linkIfc", "link-model": "link", "link-cad": "linkDxf", "import-cad": "importDxf", "import-image": "image", "load-family": "loadFamily",
   // annotate
