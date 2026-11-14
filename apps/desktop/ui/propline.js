@@ -1,10 +1,14 @@
 // Property lines: Create by sketching or by entering distances and bearings (then placed by its start point), Edit
 // Sketch, Edit Table, and how a floor plan draws them (the lines in the Property Lines style and each segment's
 // bearing and distance). Bearings are whole circle from true north. Private notes: site.md.
+// Annotate > Tag > Property Line: a view's label of a line's bearings and distances, on every segment (All Segments)
+// or on the one clicked (Segments). The labels belong to the tag, so another plan can label the line differently.
 const PropLines = (() => {
   const data = () => Plan.viewData()?.property_lines || [];
   // a table-based property line waiting to be placed: its rows, its lines from (0, 0), and where the cursor is
   const place = { rows: null, lines: null, at: null };
+  // the Property Line tag tool: one segment at a time or every segment
+  let tagSegments = false;
 
   function select(id) {
     app.selection = [id]; Plan.setSelection([id]); app.vp?.setSelection([id]);
@@ -152,7 +156,40 @@ const PropLines = (() => {
     updateRibbonContext(true);
     setPrompt(promptText());
   }
-  const promptText = () => "Property Line: click where the first segment starts (a survey corner or a snapped point). Esc cancels.";
+  const promptText = () => Plan.tool === "proptag"
+    ? (tagSegments ? "Property Line Tag: click a segment to label its bearing and distance. Esc finishes." : "Property Line Tag: click a property line to label every segment's bearing and distance. Esc finishes.")
+    : "Property Line: click where the first segment starts (a survey corner or a snapped point). Esc cancels.";
+
+  async function startTag(segments) {
+    if (!(await ensureFloorPlan())) return;
+    if (!data().length) { setPrompt("This plan shows no property lines to tag.", true); return; }
+    tagSegments = segments;
+    app.selection = []; Plan.setSelection([]); app.vp?.setSelection([]);
+    Plan.setTool("proptag");
+    updateRibbonContext(true);
+    setPrompt(promptText());
+  }
+  // the property line segment nearest a point, within `tol` (mm)
+  function segmentAt(p, tol) {
+    let best = null;
+    for (const pl of data()) pl.lines.forEach((l, k) => {
+      for (let i = 0; i + 1 < l.length; i++) {
+        const [a, b] = [l[i], l[i + 1]], dx = b[0] - a[0], dy = b[1] - a[1], L2 = dx * dx + dy * dy;
+        const t = L2 ? Math.max(0, Math.min(1, ((p.x - a[0]) * dx + (p.y - a[1]) * dy) / L2)) : 0;
+        const d = Math.hypot(p.x - (a[0] + t * dx), p.y - (a[1] + t * dy));
+        if (d <= tol && (!best || d < best.d)) best = { d, line: pl.id, segment: k };
+      }
+    });
+    return best;
+  }
+  async function tagClick(p, tol) {
+    const s = p && segmentAt(p, tol);
+    if (!s) { setPrompt("Click on a property line.", true); return; }
+    const r = await run("add_property_line_tag", { view_id: app.view.viewId, line_id: s.line, ...(tagSegments ? { segment: s.segment } : {}) });
+    if (!r) return;
+    await refresh();
+    setPrompt(`Tagged. ${promptText()}`);
+  }
   async function placeClick(p) {
     if (!place.rows || !p) return;
     const r = await run("add_property_line_table", { at: [p.x, p.y], rows: place.rows });
@@ -166,6 +203,7 @@ const PropLines = (() => {
   function hover(p) { place.at = p; }
   function key(e) {
     if (e.key !== "Escape") return false;
+    if (Plan.tool === "proptag") { Plan.setTool("select"); return true; }
     stopPlace();
     setPrompt("Property line cancelled.");
     return true;
@@ -174,6 +212,13 @@ const PropLines = (() => {
   // ---- a selected property line -----------------------------------------------------------------------------------
   function selectionContext() {
     if (app.view.kind !== "plan") return null;
+    if (Plan.tool === "proptag") return { auto: true, key: `proptag:${tagSegments}`, title: "Tag Property Line", groups: [
+      { label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => Plan.setTool("select") }] },
+      { label: "Tag", labelled: true, items: [
+        { label: "All Segments", ico: "Al", big: true, active: !tagSegments, onclick: () => { tagSegments = false; updateRibbonContext(true); setPrompt(promptText()); } },
+        { label: "Segments", ico: "Sg", big: true, active: tagSegments, onclick: () => { tagSegments = true; updateRibbonContext(true); setPrompt(promptText()); } },
+      ] },
+    ] };
     if (Plan.tool === "propplace") return { auto: true, key: "propplace", title: "Place Property Line", groups: [{ label: "Mode", items: [{ label: "Modify", ico: "Se", big: true, onclick: () => stopPlace() }] }] };
     if (app.selection.length !== 1 || Plan.tool !== "select") return null;
     const pl = data().find((p) => p.id === app.selection[0]);
@@ -189,10 +234,21 @@ const PropLines = (() => {
   // ---- plan drawing --------------------------------------------------------------------------------------------------
   // an open run picks along its length: each piece goes there and back, so it has no inside
   function elements(d) {
-    return (d?.property_lines || []).filter((p) => p.id !== Sketch.editingId).map((p) => {
+    const out = (d?.property_lines || []).filter((p) => p.id !== Sketch.editingId).map((p) => {
       const rings = p.lines.map((l) => [...l, ...l.slice().reverse()]);
       return { id: p.id, kind: "propertyline", category: "Site", ring: rings[0], rings, pinned: p.pinned, display: "normal" };
     });
+    // each tag picks by the boxes round its labels' text (2 mm high on paper, above the line)
+    const s = d?.view?.scale || 100, h = 2 * s, tags = new Map();
+    for (const p of d?.property_lines || []) for (const t of p.labels) {
+      const w = t.text.length * h * 0.55, c = Math.cos(t.angle), sn = Math.sin(t.angle);
+      const at = (u, v) => [t.at[0] + u * c - v * sn, t.at[1] + u * sn + v * c];
+      const ring = [at(-w / 2, h * 0.2), at(w / 2, h * 0.2), at(w / 2, h * 1.4), at(-w / 2, h * 1.4)];
+      if (!tags.has(t.tag)) tags.set(t.tag, []);
+      tags.get(t.tag).push(ring);
+    }
+    for (const [id, rings] of tags) out.push({ id, kind: "proplinetag", category: "Site", ring: rings[0], rings, pinned: false, display: "normal" });
+    return out;
   }
 
   // the lines in the Property Lines style, each segment's label along it, and a table-based one being placed
@@ -215,8 +271,8 @@ const PropLines = (() => {
       // bearing and distance along each segment, on the side the text reads from
       const px = 2 * s * k;
       ctx.font = `${px}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "bottom";
-      ctx.fillStyle = on ? "#2e6f9e" : "#333";
       for (const t of p.labels) {
+        ctx.fillStyle = on || sel.has(t.tag) ? "#2e6f9e" : "#333";
         const q = toScreen({ x: t.at[0], y: t.at[1] });
         ctx.save(); ctx.translate(q.x, q.y); ctx.rotate(-t.angle); ctx.fillText(t.text, 0, -px * 0.35); ctx.restore();
       }
@@ -230,5 +286,5 @@ const PropLines = (() => {
     ctx.restore();
   }
 
-  return { start, startSketch, finish, editTable, selectionContext, elements, draw, promptText, placeClick, hover, key };
+  return { start, startSketch, startTag, tagClick, finish, editTable, selectionContext, elements, draw, promptText, placeClick, hover, key };
 })();

@@ -331,9 +331,24 @@ fn graded_regions_report_cut_and_fill_and_property_lines_come_from_bearings() {
     let back = call(&mut s, "property_line", json!({ "id": pl }));
     assert_eq!(back["table"], true);
     assert_eq!(back["rows"][3]["bearing"], "180°00'00\"");
+    // no labels until a tag asks for them in this view: all four segments, then one in another plan
+    let labels = |s: &mut Session, view: u64, line: u64| call(s, "plan", json!({ "view_id": view }))["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == line).unwrap()["labels"].as_array().unwrap().clone();
+    assert!(labels(&mut s, site, pl).is_empty());
+    let all = call(&mut s, "add_property_line_tag", json!({ "view_id": site, "line_id": pl }))["id"].as_u64().unwrap();
+    let l = labels(&mut s, site, pl);
+    assert_eq!((l.len(), l[1]["text"].as_str(), l[0]["tag"].as_u64()), (4, Some("0°00'00\"  30.000"), Some(all)));
+    assert!(s.handle("add_property_line_tag", &json!({ "view_id": site, "line_id": pl, "segment": 2 })).is_err(), "all are tagged already");
+    let info = call(&mut s, "doc_info", json!({}));
+    let other = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["id"].as_u64() != Some(site)).unwrap()["id"].as_u64().unwrap();
+    call(&mut s, "add_property_line_tag", json!({ "view_id": other, "line_id": pl, "segment": 2 }));
+    let l = labels(&mut s, other, pl);
+    assert_eq!((l.len(), l[0]["segment"].as_u64()), (1, Some(2)));
+    // a tag deleted on its own, then undone
+    call(&mut s, "delete", json!({ "ids": [all] }));
+    assert!(labels(&mut s, site, pl).is_empty());
+    call(&mut s, "undo", json!({}));
     let plan = call(&mut s, "plan", json!({ "view_id": site }));
     let drawn = plan["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == pl).unwrap().clone();
-    assert_eq!(drawn["labels"][1]["text"], "0°00'00\"  30.000");
     assert_eq!(drawn["style"]["line"]["pattern"], "Dash dot dot");
     assert!(s.handle("add_property_line_table", &json!({ "at": [0, 0], "rows": [{ "distance_mm": 1000, "bearing": "N 95 E" }] })).is_err());
     assert!(s.handle("set_property_line_sketch", &json!({ "id": pl, "curves": square(0.0, 0.0, 1000.0, 1000.0) })).is_err());
@@ -342,7 +357,7 @@ fn graded_regions_report_cut_and_fill_and_property_lines_come_from_bearings() {
     assert_eq!(row(&mut s, open, "Area")["value"], "Not closed");
     call(&mut s, "set_property_line_sketch", json!({ "id": open, "curves": square(0.0, 0.0, 5000.0, 5000.0) }));
     assert_eq!(row(&mut s, open, "Area")["raw"], 25.0);
-    call(&mut s, "patch_property_line", json!({ "id": open, "patch": { "name": "Lot 7", "label_segments": false } }));
+    call(&mut s, "patch_property_line", json!({ "id": open, "patch": { "name": "Lot 7" } }));
     // saved and opened again
     let file = std::env::temp_dir().join(format!("openarch-graded-{}.oab", std::process::id()));
     call(&mut s, "save", json!({ "path": file }));
@@ -353,6 +368,10 @@ fn graded_regions_report_cut_and_fill_and_property_lines_come_from_bearings() {
     assert_eq!(row(&mut again, open, "Name")["value"], "Lot 7");
     let plan = call(&mut again, "plan", json!({ "view_id": site }));
     assert!(plan["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == open).unwrap()["labels"].as_array().unwrap().is_empty());
+    assert_eq!(plan["property_lines"].as_array().unwrap().iter().find(|p| p["id"] == pl).unwrap()["labels"].as_array().unwrap().len(), 4, "the tag is saved");
+    // the line deleted takes its tags with it
+    call(&mut again, "delete", json!({ "ids": [pl] }));
+    assert!(again.handle("describe", &json!({ "id": all })).is_err());
 }
 
 #[test]

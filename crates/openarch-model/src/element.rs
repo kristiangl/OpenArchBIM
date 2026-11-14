@@ -731,6 +731,8 @@ pub enum Element {
     /// Beam systems and trusses (framing.rs).
     BeamSystem(crate::framing::BeamSystem),
     Truss(crate::framing::Truss),
+    /// A view's label of a property line's bearings and distances (propline.rs).
+    PropertyLineTag(crate::propline::PropertyLineTag),
 }
 
 impl Element {
@@ -775,6 +777,7 @@ impl Element {
             Element::Beam(_) => "Beam",
             Element::BeamSystem(_) => "BeamSystem",
             Element::Truss(_) => "Truss",
+            Element::PropertyLineTag(_) => "PropertyLineTag",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

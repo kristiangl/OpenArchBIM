@@ -328,7 +328,7 @@ const ICON_ALIAS = {
   "dim-aligned": "dimAligned", "dim-linear": "dimLinear", "dim-angular": "dimAngular", "dim-radial": "dimRadial", "dim-diameter": "dimDiameter",
   "dim-arc": "dimArc", "dim-elev": "spotElev", "dim-coord": "spotCoord", "dim-slope": "spotSlope", "edit-witness": "editWitness",
   "det-line": "detailLine", "det-region": "region", "det-comp": "detailComp", "det-insulation": "insulation", "det-revcloud": "revCloud",
-  keynote: "keynote", "tag-all": "tagAll", "tag-cat": "tag", "tag-mat": "tagMat", "scale-bar": "scaleBar",
+  keynote: "keynote", "tag-all": "tagAll", "tag-cat": "tag", "tag-mat": "tagMat", "tag-propline": "tag", "tag-propline-seg": "tag", "scale-bar": "scaleBar",
   // site
   "topo-points": "topoPoints", "topo-file": "topoFile", "topo-sketch": "topoPoints", "topo-import": "topoFile", "topo-cad": "topoFile", "topo-label": "spotElev", "property-line": "propLine", "site-component": "component", "parking-component": "parking", "site-surface": "surface", grading: "grading", cutfill: "cutFill",
   parking: "parking", linemark: "lineMark", kerb: "kerb", "kerb-ramp": "kerbRamp",

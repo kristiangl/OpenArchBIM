@@ -124,7 +124,9 @@ const RIBBON = {
       { id: "text", label: "Text", big: true }, { id: "keynote", label: "Keynote", big: true } ] },
     { label: "Tag", items: [
       { id: "tag-all", label: "Tag All", big: true }, { id: "tag-cat", label: "Tag by Category", big: true },
-      { id: "tag-mat", label: "Material Tag", big: true }, { id: "tag-revision", label: "Revision Tag", big: true } ] },
+      { id: "tag-mat", label: "Material Tag", big: true },
+      { id: "tag-propline", label: "Property Line", big: true, menu: [
+        { id: "tag-propline", label: "All Segments" }, { id: "tag-propline-seg", label: "Segments" } ] }, { id: "tag-revision", label: "Revision Tag", big: true } ] },
     { label: "Color Fill", items: [
       { id: "color-legend", label: "Color Fill Legend", big: true } ] },
     { label: "Symbol", items: [

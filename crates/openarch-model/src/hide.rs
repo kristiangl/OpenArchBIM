@@ -74,7 +74,7 @@ impl Document {
             Element::Roof(_) => "Roofs",
             Element::Ceiling(_) => "Ceilings",
             Element::Toposolid(_) | Element::ContourLabel(_) => "Topography",
-            Element::PropertyLine(_) => "Site",
+            Element::PropertyLine(_) | Element::PropertyLineTag(_) => "Site",
             Element::LineMarking(_) | Element::ParkingRow(_) => "Parking",
             Element::Kerb(_) | Element::KerbRamp(_) => "Hardscape",
             Element::StructuralColumn(_) => "Structural Columns",

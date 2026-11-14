@@ -47,7 +47,7 @@ impl Session {
             "property_line_preview" => (|| {
                 let rows = rows_of(p)?;
                 let curves = self.doc.property_line_curves(openarch_model::Point::new(0.0, 0.0), &rows)?;
-                let pl = PropertyLine { curves, table: true, name: String::new(), label_segments: true, pinned: false };
+                let pl = PropertyLine { curves, table: true, name: String::new(), pinned: false };
                 Ok(json!({
                     "lines": pl.curves.iter().map(|c| c.tessellate(20.0).iter().map(|q| [q.x, q.y]).collect::<Vec<_>>()).collect::<Vec<_>>(),
                     "closed": pl.closed(), "area_m2": pl.area().map(|a| a / 1e6), "rows": table_json(&self.doc, &pl),
@@ -60,6 +60,8 @@ impl Session {
             })(),
             "set_property_line_sketch" => (|| { self.doc.set_property_line_sketch(id_of(p, "id")?, curves_of(p)?)?; Ok(json!({})) })(),
             "set_property_line_table" => (|| { self.doc.set_property_line_table(id_of(p, "id")?, &rows_of(p)?)?; Ok(json!({})) })(),
+            // Property Line Tag: { view_id, line_id, segment? } (no segment tags every one)
+            "add_property_line_tag" => (|| Ok(json!({ "id": self.doc.add_property_line_tag(id_of(p, "view_id")?, id_of(p, "line_id")?, p["segment"].as_u64().map(|k| k as usize))? })))(),
             "patch_property_line" => (|| { self.doc.patch_property_line(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             // a bearing as typed, read: { text } gives { deg, text } (the text as it will show)
             "parse_bearing" => (|| { let deg = parse_bearing(p["text"].as_str().unwrap_or(""))?; Ok(json!({ "deg": deg, "text": format_bearing(deg) })) })(),
@@ -81,9 +83,6 @@ impl Session {
                     { "label": "Area", "kind": "ro", "value": area.map_or("Not closed".to_string(), |a| format!("{a:.2} m\u{b2}")), "raw": area },
                     { "label": "Length", "kind": "ro", "value": format!("{length:.0}"), "raw": length },
                 ] },
-                { "name": "Graphics", "rows": [
-                    { "label": "Label Segments", "kind": "bool", "path": "label_segments", "raw": pl.label_segments, "value": if pl.label_segments { "Yes" } else { "No" } },
-                ] },
                 { "name": "Identity Data", "rows": [
                     { "label": "Name", "kind": "text", "path": "name", "value": pl.name },
                     { "label": "Made From", "kind": "ro", "value": if pl.table { "Distances and bearings" } else { "Sketch" } },
@@ -93,7 +92,8 @@ impl Session {
     }
 }
 
-/// What a floor plan draws for property lines: each one's lines in the Property Lines style, and its segment labels.
+/// What a floor plan draws for property lines: each one's lines in the Property Lines style, and the segment labels
+/// this view's tags ask for (each with the tag's id, so it can be picked and deleted).
 pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let Some(v) = d.view(view) else { return json!({}) };
     if v.view_kind != ViewKind::FloorPlan { return json!({ "property_lines": [] }); }
@@ -101,9 +101,10 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
     let list: Vec<Value> = d.property_lines().into_iter().filter(|(id, _)| !v.hidden_elements.contains(id)).filter_map(|(id, pl)| {
         let style = style_for(d, &settings, "Site", Some("Property Lines"), d.graphics_of(v, &id).as_ref(), "projection", &Hint::default())?;
         let lines: Vec<Vec<[f64; 2]>> = pl.curves.iter().map(|c| c.tessellate(20.0).iter().map(|p| [p.x, p.y]).collect()).collect();
-        let labels: Vec<Value> = if pl.label_segments {
-            d.property_line_labels(pl).into_iter().map(|(at, angle, text)| json!({ "at": [at.x, at.y], "angle": angle, "text": text })).collect()
-        } else { vec![] };
+        let all = d.property_line_labels(pl);
+        let labels: Vec<Value> = d.property_line_tags().into_iter().filter(|(t, x)| x.view == view && x.line == id && !v.hidden_elements.contains(t)).flat_map(|(t, x)| {
+            all.iter().enumerate().filter(move |(k, _)| x.segment.is_none_or(|s| s == *k)).map(move |(k, (at, angle, text))| json!({ "tag": t, "segment": k, "at": [at.x, at.y], "angle": angle, "text": text }))
+        }).collect();
         Some(json!({ "id": id, "lines": lines, "pinned": pl.pinned, "style": style, "labels": labels, "table": pl.table }))
     }).collect();
     json!({ "property_lines": list })

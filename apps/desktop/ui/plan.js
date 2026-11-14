@@ -432,7 +432,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, proplinetag: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1875,7 +1875,7 @@ const Plan = (() => {
     if (tool === "tag") return "Click a door or window to tag it. Esc finishes.";
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
     if (tool === "topopoint" || tool === "topolabel" || tool === "topoexcavate") return Topo.promptText();
-    if (tool === "propplace") return PropLines.promptText();
+    if (tool === "propplace" || tool === "proptag") return PropLines.promptText();
     if (tool === "parkrow" || tool === "kerbramp") return Traffic.promptText();
     if (Structure.owns(tool)) return Structure.promptText();
     if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") return ShapeEdit.promptText();
@@ -2422,6 +2422,7 @@ const Plan = (() => {
     if (tool === "topopoint") { Topo.click(toWorld(sx, sy)); return; }
     if (tool === "topoexcavate") { Topo.excavateClick(cutterAt(sx, sy)); return; }
     if (tool === "propplace") { PropLines.placeClick(snap(sx, sy)); return; }
+    if (tool === "proptag") { PropLines.tagClick(toWorld(sx, sy), 8 / cam.s); return; }
     if (tool === "parkrow" || tool === "kerbramp") { Traffic.click(snap(sx, sy)); return; }
     if (Structure.owns(tool)) { Structure.click(snap(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
@@ -3085,7 +3086,7 @@ const Plan = (() => {
       if ((tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") && ShapeEdit.key(e)) return true;
       if (tool === "topolabel" && Topo.labelKey(e)) return true;
       if (tool === "topoexcavate" && Topo.excavateKey(e)) return true;
-      if (tool === "propplace" && PropLines.key(e)) return true;
+      if ((tool === "propplace" || tool === "proptag") && PropLines.key(e)) return true;
       if ((tool === "parkrow" || tool === "kerbramp") && Traffic.key(e)) return true;
       if ((Structure.owns(tool)) && Structure.key(e)) return true;
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }

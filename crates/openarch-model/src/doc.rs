@@ -857,7 +857,7 @@ impl Document {
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
                 Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
                 Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
-                Some(Element::StructuralColumn(_)) | Some(Element::Beam(_)) | Some(Element::BeamSystem(_)) | Some(Element::Truss(_)) => {}
+                Some(Element::StructuralColumn(_)) | Some(Element::Beam(_)) | Some(Element::BeamSystem(_)) | Some(Element::Truss(_)) | Some(Element::PropertyLineTag(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
                 Some(_) => return Err("only walls, floors, roofs, doors, windows, grids, dimensions, spot annotations, detail lines, regions, text notes, views, view templates, sheets, sheet collections and viewports can be deleted for now".into()),
@@ -872,8 +872,13 @@ impl Document {
                 Element::DetailLine(l) => Some(l.view),
                 Element::DetailRegion(r) => Some(r.view),
                 Element::TextNote(t) => Some(t.view),
+                Element::PropertyLineTag(t) => Some(t.view),
                 _ => None,
             };
+            // a property line's tags go with it
+            if let Element::PropertyLineTag(t) = e {
+                if ids.contains(&t.line) && !ids.contains(&i) { ids.push(i); }
+            }
             if view.is_some_and(|v| views.contains(&v) || ids.contains(&v)) && !ids.contains(&i) {
                 ids.push(i);
             }

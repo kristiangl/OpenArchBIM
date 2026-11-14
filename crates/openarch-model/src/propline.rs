@@ -5,7 +5,8 @@
 //! The lines are kept as curves, a chain end to end. The table is read back off them, so a sketched property line
 //! can be edited as a table too (Edit Table), after which it is a table-based one. Bearings are whole circle
 //! bearings from true north (the project's Angle to True North), clockwise. When the chain closes, it has an area.
-//! Each segment can be labelled in plans with its bearing and distance.
+//! A property line tag (Annotate > Property Line Tag) writes a segment's bearing and distance along it, in one
+//! view: on every segment of the line (All) or on one (Segments).
 
 use serde::{Deserialize, Serialize};
 
@@ -24,14 +25,19 @@ pub struct PropertyLine {
     pub table: bool,
     #[serde(default)]
     pub name: String,
-    /// Plans label each segment with its bearing and distance.
-    #[serde(default = "yes")]
-    pub label_segments: bool,
     #[serde(default)]
     pub pinned: bool,
 }
 
-fn yes() -> bool { true }
+/// A view's label of a property line's bearings and distances: every segment, or one.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PropertyLineTag {
+    pub view: Id,
+    pub line: Id,
+    /// The segment (from the line's start, 0 first); none tags them all.
+    #[serde(default)]
+    pub segment: Option<usize>,
+}
 
 /// A row of the distances and bearings table: the chord's length and whole circle bearing from true north, and for
 /// an arc its radius and whether it bulges to the left of the chord (going along it).
@@ -190,14 +196,14 @@ impl Document {
     /// Create by sketching: the lines and arcs, put end to end.
     pub fn add_property_line_sketch(&mut self, curves: Vec<Curve>) -> Result<Id, String> {
         let curves = Self::check_property_line(&curves)?;
-        let p = PropertyLine { curves, table: false, name: String::new(), label_segments: true, pinned: false };
+        let p = PropertyLine { curves, table: false, name: String::new(), pinned: false };
         self.transact("Create property line", |tx| Ok(tx.add(Element::PropertyLine(p))))
     }
 
     /// Create by entering distances and bearings, from `at`.
     pub fn add_property_line_table(&mut self, at: Point, rows: &[Bearing]) -> Result<Id, String> {
         let curves = self.property_line_curves(at, rows)?;
-        let p = PropertyLine { curves, table: true, name: String::new(), label_segments: true, pinned: false };
+        let p = PropertyLine { curves, table: true, name: String::new(), pinned: false };
         self.transact("Create property line", |tx| Ok(tx.add(Element::PropertyLine(p))))
     }
 
@@ -226,6 +232,25 @@ impl Document {
         if old.pinned && p.pinned && p.curves != old.curves { return Err("Unpin the property line before moving it.".into()); }
         p.curves = Self::check_property_line(&p.curves)?;
         self.transact("Property line properties", |tx| tx.update(id, Element::PropertyLine(p)))
+    }
+
+    pub fn property_line_tags(&self) -> Vec<(Id, &PropertyLineTag)> {
+        self.iter().filter_map(|(id, e)| if let Element::PropertyLineTag(t) = e { Some((id, t)) } else { None }).collect()
+    }
+
+    /// Property Line Tag: label a line's segments (all of them, or `segment`) in a plan view.
+    pub fn add_property_line_tag(&mut self, view: Id, line: Id, segment: Option<usize>) -> Result<Id, String> {
+        let pl = self.property_line(line).ok_or("not a property line")?;
+        if !self.view(view).is_some_and(|v| v.view_kind == crate::view::ViewKind::FloorPlan) { return Err("Property lines are tagged in a floor plan.".into()); }
+        if segment.is_some_and(|k| k >= pl.curves.len()) { return Err("That line has no such segment.".into()); }
+        let here: Vec<Option<usize>> = self.property_line_tags().into_iter().filter(|(_, t)| t.view == view && t.line == line).map(|(_, t)| t.segment).collect();
+        if here.contains(&None) || here.contains(&segment) { return Err(if segment.is_some() { "That segment is tagged in this view already." } else { "That property line is tagged in this view already." }.into()); }
+        // tagging them all takes the place of the single segments tagged before
+        let replaced: Vec<Id> = if segment.is_none() { self.property_line_tags().into_iter().filter(|(_, t)| t.view == view && t.line == line).map(|(i, _)| i).collect() } else { vec![] };
+        self.transact("Tag property line", |tx| {
+            for i in replaced { tx.remove(i)?; }
+            Ok(tx.add(Element::PropertyLineTag(PropertyLineTag { view, line, segment })))
+        })
     }
 
     /// What plans write along each segment: where (the middle), the text's angle (radians, reading left to right)

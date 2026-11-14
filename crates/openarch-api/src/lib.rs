@@ -3249,6 +3249,12 @@ impl Session {
             Element::Toposolid(t) => Ok(self.toposolid_props(id, t)),
             Element::ContourLabel(l) => Ok(self.contour_label_props(id, l)),
             Element::PropertyLine(pl) => Ok(self.property_line_props(id, pl)),
+            Element::PropertyLineTag(t) => Ok(json!({ "id": id, "kind": "PropertyLineTag", "category": "Site", "title": "Property Line Tag", "groups": [
+                { "name": "Text", "rows": [
+                    { "label": "Labels", "kind": "ro", "value": t.segment.map_or("All segments".to_string(), |k| format!("Segment {}", k + 1)) },
+                    { "label": "Property Line", "kind": "ro", "value": self.doc.property_line(t.line).map_or(String::new(), |pl| if pl.name.is_empty() { format!("{}", t.line) } else { pl.name.clone() }) },
+                ] },
+            ] })),
             Element::CadImport(c) => Ok(self.cad_props(id, c)),
             e @ (Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_)) => self.traffic_props(id, e).ok_or_else(|| "no properties".to_string()),
             e @ (Element::StructuralColumn(_) | Element::Beam(_)) => self.structural_props(id, e).ok_or_else(|| "no properties".to_string()),
