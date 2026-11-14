@@ -511,6 +511,24 @@ fn joined_rings(walls: &[LWall]) -> (Vec<Vec<Ring>>, Vec<(usize, usize, usize)>,
         }
     }
 
+    // walls that cross each other part way along both clean up as joined walls do: the older one's layers run through
+    for a in 0..walls.len() {
+        for b in a + 1..walls.len() {
+            let (wa, wb) = (&walls[a].join, &walls[b].join);
+            if wa.level != wb.level || wa.id == wb.id { continue; }
+            let (r, s) = (Point::new(wa.end.x - wa.start.x, wa.end.y - wa.start.y), Point::new(wb.end.x - wb.start.x, wb.end.y - wb.start.y));
+            let den = r.x * s.y - r.y * s.x;
+            let (la, lb) = (r.x.hypot(r.y), s.x.hypot(s.y));
+            if den.abs() < 0.2 * la * lb || la < 1.0 || lb < 1.0 { continue; }
+            let q = Point::new(wb.start.x - wa.start.x, wb.start.y - wa.start.y);
+            let (t, u) = ((q.x * s.y - q.y * s.x) / den, (q.x * r.y - q.y * r.x) / den);
+            // clear of both walls' ends, where the end joins have it already
+            if t * la > 1.0 && (1.0 - t) * la > 1.0 && u * lb > 1.0 && (1.0 - u) * lb > 1.0 && !j.related.iter().any(|x| (x.0 == a && x.1 == b) || (x.0 == b && x.1 == a)) {
+                j.related.push((a, b, if wa.id <= wb.id { a } else { b }));
+            }
+        }
+    }
+
     let mut rings = layer_rings(walls, &j);
     // a join that folds a short wall over itself is dropped
     for i in 0..walls.len() {

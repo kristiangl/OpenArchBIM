@@ -1266,7 +1266,11 @@ impl Session {
                 if let Some(ll) = p.get("location_line") {
                     w.location_line = serde_json::from_value(ll.clone()).map_err(|_| "unknown location line".to_string())?;
                 }
-                let id = self.doc.add_wall_with(w)?;
+                // an end that stops close to another wall joins it, unless the caller says otherwise
+                let (w, moves) = if p.get("join").and_then(|v| v.as_bool()).unwrap_or(true) { self.doc.wall_with_joined_ends(w, &[]) } else { (w, vec![]) };
+                let id = if moves.is_empty() { self.doc.add_wall_with(w)? } else {
+                    self.doc.grouped("Wall", |d| { let id = d.add_wall_with(w)?; for (o, k, x) in moves { d.move_wall_end(o, k, x)?; } Ok(id) })?
+                };
                 let warning = self.doc.wall_overlap(id).map(|other| format!("The wall overlaps another wall ({other}). One of them may be a mistake."));
                 Ok(json!({ "id": id, "warning": warning }))
             }
@@ -1275,7 +1279,19 @@ impl Session {
                 if end > 1 {
                     return Err("end is 0 (start) or 1 (end)".into());
                 }
-                self.doc.move_wall_end(id_of(p, "id")?, end as u8, point_of(p.get("point").ok_or("missing point")?)?)?;
+                let (id, to) = (id_of(p, "id")?, point_of(p.get("point").ok_or("missing point")?)?);
+                // dropped close to another wall, the end joins it
+                let joined = match self.doc.get(id) {
+                    Some(Element::Wall(w)) if w.curve.is_none() && p.get("join").and_then(|v| v.as_bool()).unwrap_or(true) && (if end == 0 { w.start_join.allowed } else { w.end_join.allowed }) => {
+                        let (l, r) = self.doc.wall_extents(w);
+                        self.doc.wall_end_join(w.base_level, to, if end == 0 { w.end } else { w.start }, l.max(r), &[id])
+                    }
+                    _ => None,
+                };
+                match joined {
+                    Some((x, other)) => self.doc.grouped("Move wall end", |d| { d.move_wall_end(id, end as u8, x)?; if let Some((o, k)) = other { d.move_wall_end(o, k, x)?; } Ok(()) })?,
+                    None => self.doc.move_wall_end(id, end as u8, to)?,
+                }
                 Ok(json!({}))
             }
             "move_wall_ends" => {

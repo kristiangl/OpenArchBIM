@@ -405,6 +405,106 @@ pub fn join_walls(walls: &[JoinWall]) -> BTreeMap<Id, [Point; 4]> {
     result
 }
 
+/// How far past a wall's face (or short of another wall's end) an end can stop and still be taken to join it.
+pub const NEAR_JOIN: f64 = 150.0;
+
+impl crate::Document {
+    /// Where a straight wall's end that stops close to another wall should be so that the two join: on the other
+    /// wall's location line if it stops near that wall's length (a T), or where the two location lines meet if it
+    /// stops near that wall's end (a corner), in which case the other wall's end comes to the same point too and
+    /// is returned. `p` is the end, `from` the wall's other end, `reach` half its thickness. None when the end is
+    /// already on a join or near nothing. Ends with joins disallowed, curved walls and the walls in `skip` are
+    /// left alone.
+    pub fn wall_end_join(&self, level: Id, p: Point, from: Point, reach: f64, skip: &[Id]) -> Option<(Point, Option<(Id, u8)>)> {
+        use crate::Element;
+        let run = from.dist(&p);
+        if run < 1.0 {
+            return None;
+        }
+        let u = Point::new((p.x - from.x) / run, (p.y - from.y) / run);
+        let walls: Vec<(Id, &crate::element::Wall)> = self.iter().filter_map(|(id, e)| match e { Element::Wall(w) if w.base_level == level && !skip.contains(&id) && w.start.dist(&w.end) > 1.0 => Some((id, w)), _ => None }).collect();
+        // an end that other walls already meet at stays where it is
+        let shared = |id: Id, q: Point| walls.iter().any(|(o, w)| *o != id && (w.start.dist(&q) <= TOL || w.end.dist(&q) <= TOL || (w.curve.is_none() && dist_to_segment(q, w.start, w.end) <= TOL)));
+        let mut corner: Option<(f64, Point, Option<(Id, u8)>)> = None;
+        let mut tee: Option<(f64, Point)> = None;
+        for &(id, w) in &walls {
+            if w.start.dist(&p) <= TOL || w.end.dist(&p) <= TOL {
+                return None;
+            }
+            if w.curve.is_some() {
+                continue;
+            }
+            let len = w.start.dist(&w.end);
+            let d = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+            let (l, r) = self.wall_extents(w);
+            let lim = l.max(r) + reach + NEAR_JOIN;
+            let sin = cross2(u, d);
+            let rel = Point::new(p.x - w.start.x, p.y - w.start.y);
+            let (side, along) = (cross2(d, rel), dot2(rel, d));
+            for (k, q, allowed) in [(0u8, w.start, w.start_join.allowed), (1u8, w.end, w.end_join.allowed)] {
+                let gap = p.dist(&q);
+                if !allowed || gap > lim || corner.is_some_and(|c| c.0 <= gap) {
+                    continue;
+                }
+                let off = cross2(u, Point::new(q.x - from.x, q.y - from.y)).abs();
+                if sin.abs() > 0.2 && !w.pinned && !shared(id, q) {
+                    // the two lines carried on to where they meet
+                    if let Some(x) = intersect(p, u, w.start, d).filter(|x| x.dist(&q) <= lim && x.dist(&p) <= 2.0 * lim) {
+                        corner = Some((gap, x, (x.dist(&q) > 1e-6).then_some((id, k))));
+                    }
+                } else if off <= 25.0 {
+                    // in line with it, or it cannot move: the end goes to that end
+                    corner = Some((gap, q, None));
+                }
+            }
+            if along > TOL && along < len - TOL && side.abs() <= if side > 0.0 { l } else { r } + NEAR_JOIN {
+                if side.abs() <= TOL {
+                    return None;
+                }
+                if sin.abs() > 0.2 && !tee.is_some_and(|t| t.0 <= side.abs()) {
+                    if let Some(x) = intersect(p, u, w.start, d) {
+                        let t = dot2(Point::new(x.x - w.start.x, x.y - w.start.y), d);
+                        if t > TOL && t < len - TOL && x.dist(&p) <= 2.0 * lim {
+                            tee = Some((side.abs(), x));
+                        }
+                    }
+                }
+            }
+        }
+        let (x, other) = match (corner, tee) {
+            (Some(c), _) => (c.1, c.2),
+            (None, Some(t)) => (t.1, None),
+            (None, None) => return None,
+        };
+        // the wall keeps its direction and some length
+        (dot2(Point::new(x.x - from.x, x.y - from.y), u) > 10.0 && x.dist(&p) > 1e-6 || other.is_some()).then_some((x, other))
+    }
+
+    /// A new straight wall with its ends brought onto the walls they stop close to (see `wall_end_join`), and
+    /// the other walls' ends that come to meet them: (wall, end, point).
+    pub fn wall_with_joined_ends(&self, mut w: crate::element::Wall, skip: &[Id]) -> (crate::element::Wall, Vec<(Id, u8, Point)>) {
+        let mut moves = vec![];
+        if w.curve.is_some() {
+            return (w, moves);
+        }
+        let (l, r) = self.wall_extents(&w);
+        let reach = l.max(r);
+        if w.start_join.allowed {
+            if let Some((x, other)) = self.wall_end_join(w.base_level, w.start, w.end, reach, skip) {
+                w.start = x;
+                moves.extend(other.map(|(id, k)| (id, k, x)));
+            }
+        }
+        if w.end_join.allowed {
+            if let Some((x, other)) = self.wall_end_join(w.base_level, w.end, w.start, reach, skip) {
+                w.end = x;
+                moves.extend(other.filter(|o| !moves.iter().any(|m| m.0 == o.0 && m.1 == o.1)).map(|(id, k)| (id, k, x)));
+            }
+        }
+        (w, moves)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
