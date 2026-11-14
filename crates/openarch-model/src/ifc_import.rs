@@ -1404,6 +1404,63 @@ fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, St
         out.counts.insert("doors", doors);
         out.counts.insert("windows", windows);
 
+        // grids: each axis of an IfcGrid a grid line, by its tag
+        let mut grids = 0;
+        for gid in named(&["IFCGRID"]) {
+            let Some(g) = e(gid) else { continue };
+            let f = r.frame(g);
+            for axis in [7, 8, 9].into_iter().flat_map(|k| refs(g.args.get(k))) {
+                let Some(ax) = e(axis) else { continue };
+                let Some(pts) = r.curve(reference(ax.args.get(1)), 0) else { continue };
+                let curves = polyline_curves(pts.into_iter().map(|p| r.flat(f.at(p))).collect());
+                if curves.is_empty() { continue; }
+                let tag = text(ax.args.first());
+                // a tag the project has already: the next free name instead
+                let name = tag.filter(|t| !d.grids().iter().any(|(_, x)| x.name == *t));
+                if d.add_grid(curves, None, name).is_ok() { grids += 1; }
+            }
+            taken.insert(gid);
+        }
+        out.counts.insert("grids", grids);
+
+        // property lines: an IfcAnnotation of that kind with its boundary as its Axis
+        let mut plines = 0;
+        for aid in named(&["IFCANNOTATION"]) {
+            let Some(a) = e(aid) else { continue };
+            let kind = text(a.args.get(4)).unwrap_or("");
+            if !kind.eq_ignore_ascii_case("Property Line") { continue; }
+            let Some(pts) = r.axis(a) else { continue };
+            let curves = polyline_curves(pts.into_iter().map(|p| r.flat(p)).collect());
+            let Ok(pid) = d.add_property_line_sketch(curves) else {
+                out.skipped.push(format!("{}: its boundary is not one run of lines", who(aid)));
+                continue;
+            };
+            if let Some(n) = text(a.args.get(2)).filter(|n| *n != "Property Line") {
+                let _ = d.patch_property_line(pid, &serde_json::json!({ "name": n }));
+            }
+            plines += 1;
+            taken.insert(aid);
+        }
+        out.counts.insert("property_lines", plines);
+
+        // kerbs: a proxy named Kerb with its path as its Axis, and its height and width where the file gives them
+        let mut kerbs = 0;
+        for kid in named(&["IFCBUILDINGELEMENTPROXY"]) {
+            let Some(k) = e(kid) else { continue };
+            if text(k.args.get(2)) != Some("Kerb") { continue; }
+            let Some(pts) = r.axis(k) else { continue };
+            let z = pts.first().map_or(0.0, |p| p[2]);
+            let curves = polyline_curves(pts.into_iter().map(|p| r.flat(p)).collect());
+            if curves.is_empty() { continue; }
+            let prop = |name: &str| property(&file, &ids, kid, "OpenArch_Kerb", name).map(|v| v * mmu);
+            let level = level_for(kid, z);
+            if d.add_kerb(level, curves, prop("Height").unwrap_or(150.0), prop("Width").unwrap_or(150.0)).is_ok() {
+                kerbs += 1;
+                taken.insert(kid);
+            }
+        }
+        out.counts.insert("kerbs", kerbs);
+
         // what has no OpenArch element yet
         let mut others: BTreeMap<&str, usize> = BTreeMap::new();
         for id in named(OTHERS) {
@@ -1419,6 +1476,41 @@ fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, St
         }
         Ok(out)
     }
+}
+
+/// A run of points as lines, with the points that only carry a straight line on (an arc's chords stay) left out.
+fn polyline_curves(pts: Vec<Point>) -> Vec<crate::curve::Curve> {
+    let mut p: Vec<Point> = vec![];
+    for q in pts {
+        if p.last().is_none_or(|l| l.dist(&q) > 1.0) { p.push(q); }
+    }
+    let mut keep: Vec<Point> = p.first().copied().into_iter().collect();
+    for i in 1..p.len() {
+        if i + 1 < p.len() {
+            let (a, b, c) = (*keep.last().unwrap(), p[i], p[i + 1]);
+            let (u, v) = (Point::new(b.x - a.x, b.y - a.y), Point::new(c.x - b.x, c.y - b.y));
+            let (lu, lv) = (u.x.hypot(u.y), v.x.hypot(v.y));
+            if (u.x * v.y - u.y * v.x).abs() <= 1e-4 * lu * lv && u.x * v.x + u.y * v.y > 0.0 { continue; }
+        }
+        keep.push(p[i]);
+    }
+    keep.windows(2).map(|w| crate::curve::Curve::Line { a: w[0], b: w[1] }).collect()
+}
+
+/// A number from a property set of `product`: the set named `set`, its property `name`, in the file's units.
+fn property(f: &File, ids: &[u64], product: u64, set: &str, name: &str) -> Option<f64> {
+    for id in ids {
+        let Some(rel) = f.entities.get(id).filter(|x| x.name == "IFCRELDEFINESBYPROPERTIES") else { continue };
+        if !refs(rel.args.get(4)).contains(&product) { continue; }
+        let Some(ps) = reference(rel.args.get(5)).and_then(|p| f.entities.get(&p)).filter(|p| p.name == "IFCPROPERTYSET" && text(p.args.get(2)) == Some(set)) else { continue };
+        for pid in refs(ps.args.get(4)) {
+            let Some(pv) = f.entities.get(&pid) else { continue };
+            if pv.name == "IFCPROPERTYSINGLEVALUE" && text(pv.args.first()) == Some(name) {
+                return real(pv.args.get(2));
+            }
+        }
+    }
+    None
 }
 
 fn valid_guid(g: &str) -> bool {

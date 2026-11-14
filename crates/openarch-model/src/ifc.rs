@@ -727,8 +727,30 @@ impl Document {
                     continue;
                 }
                 let at = w.place(Some(storey_at), (0.0, 0.0, 0.0), None);
-                let shape = w.tessellated(&items);
+                // a kerb carries its path as its Axis, and its height and width, so an import can make the kerb again
+                let kerb = match self.get(id) { Some(Element::Kerb(k)) => Some(k.clone()), _ => None };
+                let shape = match &kerb {
+                    Some(k) => {
+                        let mut pts: Vec<Point> = vec![];
+                        for c in &k.curves {
+                            for q in c.tessellate(5.0) {
+                                if pts.last().is_none_or(|l| l.dist(&q) > 1e-6) { pts.push(q); }
+                            }
+                        }
+                        let ids: Vec<u64> = pts.iter().map(|q| w.point(*q)).collect();
+                        let line = w.add(format!("IFCPOLYLINE(({}))", refs(&ids)));
+                        let axis = w.add(format!("IFCSHAPEREPRESENTATION(#{},'Axis','Curve2D',(#{line}))", w.axis));
+                        let body = w.add(format!("IFCSHAPEREPRESENTATION(#{},'Body','Tessellation',({}))", w.body, refs(&items)));
+                        w.add(format!("IFCPRODUCTDEFINITIONSHAPE($,$,(#{axis},#{body}))"))
+                    }
+                    None => w.tessellated(&items),
+                };
                 let ent = w.add(format!("{class}({},$,{},$,{},#{at},#{shape},$,.{predefined}.)", s(&derived(ELEMENT, id)), s(name), s(name)));
+                if let Some(k) = &kerb {
+                    let h = w.add(format!("IFCPROPERTYSINGLEVALUE('Height',$,IFCPOSITIVELENGTHMEASURE({}),$)", real(k.height_mm)));
+                    let wd = w.add(format!("IFCPROPERTYSINGLEVALUE('Width',$,IFCPOSITIVELENGTHMEASURE({}),$)", real(k.width_mm)));
+                    w.pset(ent, id, "OpenArch_Kerb", &[h, wd]);
+                }
                 contained.entry(lv).or_default().push(ent);
                 products.insert(id, ent);
             }

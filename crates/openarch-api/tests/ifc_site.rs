@@ -1,4 +1,5 @@
-//! IFC export of what stands on the site: the ground, grids, kerbs, parking and line marking, and property lines.
+//! IFC export of what stands on the site: the ground, grids, kerbs, parking and line marking, and property lines;
+//! and the grids, kerbs and property lines read back in.
 use openarch_api::Session;
 use serde_json::{json, Value};
 
@@ -63,7 +64,7 @@ fn the_site_goes_out_with_its_ground_grids_kerbs_parking_and_property_lines() {
     call(&mut s, "add_grid", json!({ "curves": [line([-2000.0, 0.0], [8000.0, 0.0])] }));
 
     call(&mut s, "add_toposolid", json!({ "type_id": info["toposolid_types"][0]["id"], "level_id": level, "offset_mm": -200, "curves": square(-8000.0, -14000.0, 22000.0, 14000.0) }));
-    call(&mut s, "add_kerb", json!({ "level_id": level, "curves": [line([0.0, -3000.0], [9000.0, -3000.0])] }));
+    call(&mut s, "add_kerb", json!({ "level_id": level, "curves": [line([0.0, -3000.0], [9000.0, -3000.0]), line([9000.0, -3000.0], [9000.0, 1000.0])], "height_mm": 120, "width_mm": 180 }));
     call(&mut s, "add_kerb_ramp", json!({ "level_id": level, "top": [4000, -3000], "bottom": [4000, -4200] }));
     call(&mut s, "add_line_marking", json!({ "level_id": level, "curves": [line([0.0, -5000.0], [9000.0, -5000.0])] }));
     call(&mut s, "add_parking_row", json!({ "level_id": level, "start": [12000, -5000], "end": [20100, -5000], "bay_width_mm": 2700, "bay_length_mm": 5500, "wheel_stops": true, "accessible": true }));
@@ -99,5 +100,20 @@ fn the_site_goes_out_with_its_ground_grids_kerbs_parking_and_property_lines() {
     let path = std::env::temp_dir().join(format!("openarch-ifc-site-{}", std::process::id())).join("site.ifc");
     let back = call(&mut s, "open_ifc", json!({ "path": path.to_string_lossy() }));
     assert!(back["counts"].is_object(), "{back}");
+    // with its grids, property line and kerb made again
+    assert_eq!((back["counts"]["grids"].as_u64(), back["counts"]["property_lines"].as_u64(), back["counts"]["kerbs"].as_u64()), (Some(3), Some(1), Some(1)), "{back}");
+    assert!(!back["skipped"].to_string().contains("IFCGRID"), "{back}");
+    let info = call(&mut s, "doc_info", json!({}));
+    let site = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan").unwrap()["id"].as_u64().unwrap();
+    let plan = call(&mut s, "plan", json!({ "view_id": site }));
+    let names: Vec<&str> = plan["grids"].as_array().unwrap().iter().filter_map(|g| g["name"].as_str()).collect();
+    assert_eq!(names.len(), 3, "{names:?}");
+    let pl = &plan["property_lines"].as_array().unwrap()[0];
+    assert_eq!(pl["lines"].as_array().unwrap().len(), 4, "four sides");
+    let kerb = plan["traffic"].as_array().unwrap().iter().find(|t| t["kind"] == "kerb").expect("the kerb").clone();
+    let d = call(&mut s, "describe", json!({ "id": kerb["id"] }));
+    let rows: Vec<Value> = d["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
+    let raw = |label: &str| rows.iter().find(|r| r["label"] == label).and_then(|r| r["raw"].as_f64());
+    assert_eq!((raw("Height"), raw("Width")), (Some(120.0), Some(180.0)), "{rows:?}");
     std::fs::remove_dir_all(path.parent().unwrap()).ok();
 }

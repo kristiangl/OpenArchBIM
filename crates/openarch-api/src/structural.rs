@@ -2,7 +2,7 @@
 //! draw. Elevations and sections draw them from their solids (the model's elevation items).
 use serde_json::{json, Value};
 
-use openarch_model::framing::{BeamSystem, LayoutRule, SystemJustification, Truss, TrussPart, TrussProfile, TrussWeb};
+use openarch_model::framing::{BeamSystem, LayoutRule, SystemJustification, Truss, TrussProfile, TrussWeb};
 use openarch_model::structural::{Beam, FramingUsage, Section, StructuralColumn, StructuralType, StructuralUse, YJustification, ZJustification};
 use openarch_model::view::{PlanDisplay, ViewKind};
 use openarch_model::{Document, Element, Id};
