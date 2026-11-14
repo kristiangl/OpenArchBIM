@@ -157,17 +157,42 @@ pub fn builtin_fill_patterns() -> Vec<FillPattern> {
         // aggregate speckle for concrete: short dashes, each row shifted
         drafting("Concrete", vec![line(0.0, 1.6, 0.9, &[0.12, 1.8]), line(0.0, 1.6, 0.0, &[0.12, 3.9])]),
         drafting("Sand", vec![line(0.0, 1.0, 0.7, &[0.1, 1.1])]),
-        // ground in section: short dashes on a diagonal, staggered
-        drafting("Earth", vec![line(45.0, 3.0, 1.5, &[2.0, 1.5]), line(135.0, 3.0, 0.0, &[1.0, 2.5])]),
+        // ground in section: groups of three short strokes, level and upright in turn, in 2 mm cells
+        drafting("Earth", earth_lines()),
         drafting("Insulation", vec![line(45.0, 1.8, 0.0, &[3.0, 1.0]), line(135.0, 1.8, 0.0, &[3.0, 1.0])]),
-        // courses of brick at 76 mm (model size), stretcher bond
+        // 230 x 76 bricks with 10 mm joints (model size): courses every 86, stretcher bond with the perpends of
+        // each course half a brick (120) along from the course below
         FillPattern {
             name: "Brick".into(),
             pattern_type: PatternKind::Model,
             solid: false,
-            lines: vec![line(0.0, 76.0, 0.0, &[]), line(90.0, 230.0, 115.0, &[76.0, 76.0])],
+            lines: brick_lines(),
             built_in: true,
         },
+    ]
+}
+
+fn earth_lines() -> Vec<HatchLine> {
+    // a 2 mm cell holds three strokes 1.6 long; level ones in every other cell, upright ones in the cells between
+    let level = |y: f64| HatchLine { angle_deg: 0.0, origin: [0.2, y], shift: 2.0, spacing: 2.0, dashes: vec![1.6, 2.4] };
+    let upright = |x: f64| HatchLine { angle_deg: 90.0, origin: [x, 2.2], shift: 2.0, spacing: 2.0, dashes: vec![1.6, 2.4] };
+    vec![level(0.4), level(1.0), level(1.6), upright(0.4), upright(1.0), upright(1.6)]
+}
+
+fn brick_lines() -> Vec<HatchLine> {
+    vec![
+        HatchLine { angle_deg: 0.0, origin: [0.0, 0.0], shift: 0.0, spacing: 86.0, dashes: vec![] },
+        HatchLine { angle_deg: 90.0, origin: [0.0, 0.0], shift: 86.0, spacing: 120.0, dashes: vec![86.0, 86.0] },
+    ]
+}
+
+/// Built-in patterns whose first definitions drew wrongly: (name, the old lines). A project that still has the old
+/// lines gets the new ones; one whose pattern was edited keeps it.
+fn superseded_fill_patterns() -> Vec<(&'static str, Vec<HatchLine>)> {
+    let line = |angle: f64, spacing: f64, shift: f64, dashes: &[f64]| HatchLine { angle_deg: angle, origin: [0.0, 0.0], shift, spacing, dashes: dashes.to_vec() };
+    vec![
+        ("Earth", vec![line(45.0, 3.0, 1.5, &[2.0, 1.5]), line(135.0, 3.0, 0.0, &[1.0, 2.5])]),
+        ("Brick", vec![line(0.0, 76.0, 0.0, &[]), line(90.0, 230.0, 115.0, &[76.0, 76.0])]),
     ]
 }
 
@@ -299,7 +324,7 @@ pub fn starter_materials() -> Vec<Material> {
     vec![
         mat("Plasterboard", "Gypsum", [235, 233, 226], None, None, 700.0, 0.25),
         mat("Timber Frame", "Wood", [196, 160, 112], Some("Diagonal up"), None, 500.0, 0.13),
-        mat("Face Brick", "Masonry", [176, 98, 72], Some("Diagonal crosshatch"), Some("Brick"), 1800.0, 0.8),
+        mat("Face Brick", "Masonry", [176, 98, 72], Some("Diagonal up"), Some("Brick"), 1800.0, 0.8),
         mat("Concrete", "Concrete", [168, 170, 172], Some("Concrete"), None, 2400.0, 1.6),
         mat("Concrete Block", "Masonry", [180, 180, 176], Some("Crosshatch"), None, 1900.0, 0.9),
         mat("Timber Flooring", "Wood", [206, 170, 120], Some("Horizontal"), Some("Horizontal"), 650.0, 0.15),
@@ -582,6 +607,15 @@ impl Tx<'_> {
         for p in builtin_fill_patterns().into_iter().filter(|p| !fp.contains(&p.name)) {
             self.add(Element::FillPattern(p));
         }
+        let old: Vec<(Id, FillPattern)> = self.doc_elements().filter_map(|(id, e)| match e {
+            Element::FillPattern(p) if superseded_fill_patterns().iter().any(|(n, l)| *n == p.name && *l == p.lines) => Some((*id, p.clone())),
+            _ => None,
+        }).collect();
+        for (id, p) in old {
+            if let Some(new) = builtin_fill_patterns().into_iter().find(|b| b.name == p.name) {
+                let _ = self.update(id, Element::FillPattern(FillPattern { lines: new.lines, ..p }));
+            }
+        }
         let ms = have(self, &|e| if let Element::Material(m) = e { Some(m.name.clone()) } else { None });
         let mut known = ms.clone();
         for m in starter_materials().into_iter().filter(|m| !ms.contains(&m.name)) {
@@ -621,8 +655,10 @@ impl Tx<'_> {
 /// A material for a layer name found in an older project, classed by keyword.
 fn guess_material(name: &str) -> Material {
     let l = name.to_lowercase();
-    let (class, shade, cut): (&str, Color, Option<&str>) = if l.contains("concrete block") || l.contains("blockwork") || l.contains("brick") {
-        ("Masonry", [176, 98, 72], Some("Diagonal crosshatch"))
+    let (class, shade, cut): (&str, Color, Option<&str>) = if l.contains("brick") {
+        ("Masonry", [176, 98, 72], Some("Diagonal up"))
+    } else if l.contains("concrete block") || l.contains("blockwork") {
+        ("Masonry", [180, 180, 176], Some("Diagonal crosshatch"))
     } else if l.contains("concrete") || l.contains("slab") {
         ("Concrete", [168, 170, 172], Some("Concrete"))
     } else if l.contains("timber") || l.contains("wood") || l.contains("ply") {
@@ -1232,5 +1268,28 @@ mod tests {
         assert_eq!(o.object_styles().unwrap().1.model["Floors"].cut_weight, Some(6));
         assert_eq!(o.materials().len(), d.materials().len(), "no duplicates added on open");
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    #[test]
+    fn an_old_project_gets_the_corrected_earth_and_brick_patterns() {
+        let mut d = Document::new_project();
+        let old = superseded_fill_patterns();
+        let ids: Vec<Id> = ["Earth", "Brick"].iter().map(|n| d.iter().find(|(_, e)| matches!(e, Element::FillPattern(p) if p.name == *n)).unwrap().0).collect();
+        // put the first definitions back, as a project saved before the fix has them; an edited Earth stays edited
+        d.transact("old", |tx| {
+            for (id, (name, lines)) in ids.iter().zip(&old) {
+                let Some(Element::FillPattern(p)) = tx.doc_ref().get(*id).cloned() else { unreachable!() };
+                tx.update(*id, Element::FillPattern(FillPattern { name: name.to_string(), lines: lines.clone(), ..p }))?;
+            }
+            Ok(())
+        }).unwrap();
+        d.transact("defaults", |tx| { tx.add_style_defaults(); Ok(()) }).unwrap();
+        assert_eq!(d.fill_pattern("Brick").unwrap().lines, brick_lines());
+        assert_eq!(d.fill_pattern("Earth").unwrap().lines, earth_lines());
+        let mut edited = earth_lines();
+        edited[0].spacing = 5.0;
+        d.transact("edit", |tx| { let Some(Element::FillPattern(p)) = tx.doc_ref().get(ids[0]).cloned() else { unreachable!() }; tx.update(ids[0], Element::FillPattern(FillPattern { lines: edited.clone(), ..p })) }).unwrap();
+        d.transact("defaults", |tx| { tx.add_style_defaults(); Ok(()) }).unwrap();
+        assert_eq!(d.fill_pattern("Earth").unwrap().lines, edited);
     }
 }

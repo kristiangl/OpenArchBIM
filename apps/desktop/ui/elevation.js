@@ -500,19 +500,28 @@ const Elev = (() => {
     for (const L of def.lines) {
       const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, sp = L.spacing * unit;
       if (sp * cam.s < 2.5) { ctx.globalAlpha = 0.35; ctx.fillStyle = col; const { w, h } = size(); ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; break; }
-      const v0 = L.origin[0] * unit * nx + L.origin[1] * unit * ny;
+      const v0 = L.origin[0] * unit * nx + L.origin[1] * unit * ny, w0 = L.origin[0] * unit * dx + L.origin[1] * unit * dy;
       const vs = corners.map(([x, y]) => x * nx + y * ny), us = corners.map(([x, y]) => x * dx + y * dy);
       const k0 = Math.ceil((Math.min(...vs) - v0) / sp), k1 = Math.floor((Math.max(...vs) - v0) / sp), umin = Math.min(...us), umax = Math.max(...us);
       budget -= k1 - k0 + 1;
       if (budget < 0) break;
       const dashPx = (L.dashes || []).map((d) => Math.max(d * unit * cam.s, 0.6));
+      const period = dashPx.reduce((m, d) => m + d, 0);
       ctx.setLineDash(dashPx);
-      ctx.beginPath();
+      if (!dashPx.length) ctx.beginPath();
       for (let n = k0; n <= k1; n++) {
         const v = v0 + n * sp, p0 = toScreen(umin * dx + v * nx, umin * dy + v * ny), p1 = toScreen(umax * dx + v * nx, umax * dy + v * ny);
+        if (dashPx.length) {
+          // each line's dashes start where its origin, moved on by the shift, says
+          ctx.beginPath();
+          const into = (umin - (w0 + n * (L.shift || 0) * unit)) * cam.s;
+          ctx.lineDashOffset = ((into % period) + period) % period;
+        }
         ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
+        if (dashPx.length) ctx.stroke();
       }
-      ctx.stroke();
+      if (!dashPx.length) ctx.stroke();
+      ctx.lineDashOffset = 0;
     }
     ctx.setLineDash([]);
   }
@@ -987,6 +996,22 @@ const Elev = (() => {
         for (const h of it.holes || []) { h.forEach(([u, z], i) => { const s = toScreen(u, z); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
         if (style === "hidden_line") { ctx.fillStyle = viewBg; ctx.fill("evenodd"); }
         else if (style !== "wireframe") { ctx.fillStyle = f < 1 ? mix(fill, viewBg, f) : fill; ctx.fill("evenodd"); }
+        // the material's surface pattern over the face (brick courses, cladding boards)
+        const sf = it.style && it.style.fill, sdef = sf && sf.visible && sf.pattern && (data.fill_patterns || {})[sf.pattern];
+        if (style !== "wireframe" && sdef && !sdef.solid) {
+          const pc = f < 1 ? mix(sf.color, viewBg, f) : sf.color;
+          if (ctx.semantic && ctx.oaHatch) {
+            const ring = (r) => r.map(([u, z]) => { const s2 = toScreen(u, z); return [s2.x, s2.y]; });
+            ctx.oaHatch({ rings: [poly, ...(it.holes || [])].map(ring), evenodd: true, name: sf.pattern, colour: pc, lines: sdef.lines, unit: sdef.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
+          } else {
+            ctx.save(); ctx.clip("evenodd");
+            hatchLines({ polys: [poly] }, sf, pc);
+            ctx.restore();
+          }
+          // the outline again: the pattern used the path
+          polyPath(poly);
+          for (const h of it.holes || []) { h.forEach(([u, z], i) => { const s = toScreen(u, z); i ? ctx.lineTo(s.x, s.y) : ctx.moveTo(s.x, s.y); }); ctx.closePath(); }
+        }
         // a selected element shows through a light wash of the selection colour
         if (selected && !printing) { ctx.save(); ctx.globalAlpha = 0.18; ctx.fillStyle = accent; ctx.fill("evenodd"); ctx.restore(); }
         ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : projW(it); if (it.stroke !== false || selected) ctx.stroke();

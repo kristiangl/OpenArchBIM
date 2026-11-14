@@ -176,7 +176,7 @@ pub struct ElevItem {
     pub stroke: bool,
     /// Cut by a section plane: drawn over everything else, with the material's cut pattern.
     pub cut: bool,
-    /// The material whose cut pattern fills a cut item.
+    /// The material: its cut pattern fills a cut item, its surface pattern (brick courses) a face seen in projection.
     pub material: Option<String>,
     /// Openings in a cut item (doors and windows the plane passes through).
     pub holes: Vec<Vec<[f64; 2]>>,
@@ -1390,6 +1390,8 @@ impl Document {
             fill: [u8; 3],
             edge_on: bool,
             stroke: bool,
+            /// The layer's material, whose surface pattern (brick courses, cladding) a face shows.
+            material: String,
         }
         let mut layer_items: Vec<LayerItem> = vec![];
         let layer_geo = self.wall_layer_geometry();
@@ -1446,17 +1448,17 @@ impl Document {
                             if edge_on {
                                 let (lo, hi) = clipped.iter().flatten().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| (l.min(p.y), h.max(p.y)));
                                 if hi > lo {
-                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![rect(u0, u1, z0 + lo, z0 + hi)], lines: vec![], fill, stroke, ..Default::default() });
+                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![rect(u0, u1, z0 + lo, z0 + hi)], lines: vec![], fill, stroke, material: Some(layer.material.clone()), ..Default::default() });
                                 }
                             } else {
                                 let view = |r: &Vec<Point>| r.iter().map(|p| [ua + us_per * p.x, z0 + p.y]).collect::<Vec<[f64; 2]>>();
                                 for s in &clipped {
-                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![view(&s[0])], holes: s[1..].iter().map(view).collect(), lines: vec![], fill, stroke, ..Default::default() });
+                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![view(&s[0])], holes: s[1..].iter().map(view).collect(), lines: vec![], fill, stroke, material: Some(layer.material.clone()), ..Default::default() });
                                 }
                             }
                             continue;
                         }
-                        layer_items.push(LayerItem { id: *id, depth, u0, u1, z0, z1, fill, edge_on, stroke });
+                        layer_items.push(LayerItem { id: *id, depth, u0, u1, z0, z1, fill, edge_on, stroke, material: layer.material.clone() });
                     }
                 }
                 continue;
@@ -1498,7 +1500,7 @@ impl Document {
                     continue;
                 }
                 let (a, b) = (&layer_items[e], &layer_items[f]);
-                let same = a.fill == b.fill && (a.z0 - b.z0).abs() < 1.0 && (a.z1 - b.z1).abs() < 1.0 && (a.depth - b.depth).abs() < 300.0;
+                let same = a.fill == b.fill && a.material == b.material && (a.z0 - b.z0).abs() < 1.0 && (a.z1 - b.z1).abs() < 1.0 && (a.depth - b.depth).abs() < 300.0;
                 if same && a.u1 >= b.u0 - 1.0 && a.u0 <= b.u1 + 1.0 {
                     let (u0, u1) = (a.u0.min(b.u0), a.u1.max(b.u1));
                     layer_items[f].u0 = u0;
@@ -1509,7 +1511,7 @@ impl Document {
         }
         for (k, l) in layer_items.iter().enumerate() {
             if !merged[k] {
-                items.push(ElevItem { id: l.id, category: "Walls", depth: l.depth, polys: vec![rect(l.u0, l.u1, l.z0, l.z1)], lines: vec![], fill: l.fill, stroke: l.stroke , ..Default::default() });
+                items.push(ElevItem { id: l.id, category: "Walls", depth: l.depth, polys: vec![rect(l.u0, l.u1, l.z0, l.z1)], lines: vec![], fill: l.fill, stroke: l.stroke, material: Some(l.material.clone()), ..Default::default() });
             }
         }
         // curtain walls: each panel and mullion a rectangle across the view at its depth, glass in its own colour (at
