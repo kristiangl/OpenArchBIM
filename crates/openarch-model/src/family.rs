@@ -773,7 +773,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
 
 /// The starter families shipped as family files (door-window-spec.md step 3), opened and changed in the family
 /// editor like any other.
-const BUNDLED: [(&str, &str); 19] = [
+const BUNDLED: [(&str, &str); 25] = [
     ("Metal Door Frame - Square Bend", include_str!("../families/Profiles/Metal Door Frame - Square Bend.oaf")),
     ("Metal Door Frame - Square Bend Slider", include_str!("../families/Profiles/Metal Door Frame - Square Bend Slider.oaf")),
     ("Timber Door Jamb - Rebated", include_str!("../families/Profiles/Timber Door Jamb - Rebated.oaf")),
@@ -792,6 +792,12 @@ const BUNDLED: [(&str, &str); 19] = [
     ("Stacking Sliding Door - 4 Panel", include_str!("../families/Doors/Stacking Sliding Door - 4 Panel.oaf")),
     ("Bifold Door - 3 Panel", include_str!("../families/Doors/Bifold Door - 3 Panel.oaf")),
     ("Bifold Door - 4 Panel", include_str!("../families/Doors/Bifold Door - 4 Panel.oaf")),
+    ("Fixed Window", include_str!("../families/Windows/Fixed Window.oaf")),
+    ("Sliding Window", include_str!("../families/Windows/Sliding Window.oaf")),
+    ("Awning Window", include_str!("../families/Windows/Awning Window.oaf")),
+    ("Double Hung Window", include_str!("../families/Windows/Double Hung Window.oaf")),
+    ("Casement Window", include_str!("../families/Windows/Casement Window.oaf")),
+    ("Louvre Window", include_str!("../families/Windows/Louvre Window.oaf")),
 ];
 
 /// The bundled family files read into starter families, with their types.

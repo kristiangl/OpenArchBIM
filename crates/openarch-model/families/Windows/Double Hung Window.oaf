@@ -1,0 +1,2068 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Double Hung Window",
+    "category": "windows",
+    "host": "wall",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Default Sill Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Constraints",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 900.0
+      },
+      {
+        "name": "Sill Height",
+        "param_kind": "length",
+        "instance": true,
+        "group": "Constraints",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 900.0
+      },
+      {
+        "name": "Head Height",
+        "param_kind": "length",
+        "instance": true,
+        "group": "Constraints",
+        "formula": "[Sill Height] + [Height]",
+        "reporting": true,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 1200.0
+      },
+      {
+        "name": "Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 1200.0
+      },
+      {
+        "name": "Frame Depth",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Across the wall",
+        "locked": false,
+        "default": 52.0
+      },
+      {
+        "name": "Frame Face",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The frame's sightline",
+        "locked": false,
+        "default": 30.0
+      },
+      {
+        "name": "Frame Offset",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The frame's centre from the wall's centreline, positive to the exterior",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Glass Thickness",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 6.0
+      },
+      {
+        "name": "Sash Face",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The sash's stiles and rails",
+        "locked": false,
+        "default": 35.0
+      },
+      {
+        "name": "Sash Depth",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Across the wall",
+        "locked": false,
+        "default": 20.0
+      },
+      {
+        "name": "Sash Overlap",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Where the sashes meet",
+        "locked": false,
+        "default": 30.0
+      },
+      {
+        "name": "Track Spacing",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Between the sashes' centres across the frame",
+        "locked": false,
+        "default": 26.0
+      },
+      {
+        "name": "Frame Material",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Aluminium"
+      },
+      {
+        "name": "Glass",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Glass"
+      },
+      {
+        "name": "Sash Material",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Aluminium"
+      },
+      {
+        "name": "Construction Type",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Rough Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Width] + 60",
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 1200.0
+      },
+      {
+        "name": "Rough Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Height] + 60",
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 1200.0
+      },
+      {
+        "name": "Wall Closure",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [
+          "By Host",
+          "Neither",
+          "Interior",
+          "Exterior",
+          "Both"
+        ],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "By Host"
+      },
+      {
+        "name": "Opening Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Width]",
+        "reporting": true,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Opening Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Height]",
+        "reporting": true,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Outside Frame Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Inside Frame Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Outside Leaf Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Inside Leaf Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Handle Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 1000.0
+      },
+      {
+        "name": "Handle Offset from Edge",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 60.0
+      },
+      {
+        "name": "Door Panel Type",
+        "param_kind": "family_type",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "family_category": "windows",
+        "default": ""
+      },
+      {
+        "name": "Door Stop & Closer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Handle & Lockset",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Accessories",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Hardware Set",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "U-value",
+        "param_kind": "number",
+        "instance": false,
+        "group": "Analytical Properties",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "SHGC",
+        "param_kind": "number",
+        "instance": false,
+        "group": "Analytical Properties",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Glazing Type & Treatment",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Acoustic Rating",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Fire Rating",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "BAL Rating",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Double hung"
+      },
+      {
+        "name": "Opening Type Middle Transom",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Sidelight Side 1",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Transom Side 1",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Sidelight Side 2",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Transom Side 2",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Keynote",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Model",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Manufacturer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "URL",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Assembly Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Assembly Code",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Mark",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "OmniClass Number",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "OmniClass Title",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Cost",
+        "param_kind": "number",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Sill",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "bottom"
+        },
+        {
+          "id": 11,
+          "name": "Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "(-1)*([Width])/2"
+          },
+          "ref_kind": "left"
+        },
+        {
+          "id": 12,
+          "name": "Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "(1)*([Width])/2"
+          },
+          "ref_kind": "right"
+        },
+        {
+          "id": 13,
+          "name": "Head",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Height]"
+          },
+          "ref_kind": "top"
+        },
+        {
+          "id": 14,
+          "name": "Exterior",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Host Thickness] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 15,
+          "name": "Interior",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Host Thickness] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 19,
+          "name": "Wall Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 11,
+            "by": "-30"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 20,
+          "name": "Wall Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 12,
+            "by": "30"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 21,
+          "name": "Wall Head",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 13,
+            "by": "30"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 22,
+          "name": "Wall Sill",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "-30"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 23,
+          "name": "Frame Centre",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Frame Offset]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 25,
+          "name": "Inner Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 11,
+            "by": "[Frame Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 26,
+          "name": "Inner Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 12,
+            "by": "-[Frame Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 27,
+          "name": "Inner Sill",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Frame Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 28,
+          "name": "Inner Head",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 13,
+            "by": "-[Frame Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 29,
+          "name": "Mid Height",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Height] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 30,
+          "name": "Exterior Track",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 23,
+            "by": "[Track Spacing] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 31,
+          "name": "Interior Track",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 23,
+            "by": "-[Track Spacing] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 32,
+          "name": "Meeting Bottom",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 29,
+            "by": "-[Sash Overlap] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 33,
+          "name": "Meeting Top",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 29,
+            "by": "[Sash Overlap] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 34,
+          "name": "Top Sash Glass Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 25,
+            "by": "[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 35,
+          "name": "Top Sash Glass Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 26,
+            "by": "-[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 36,
+          "name": "Top Sash Glass Bottom",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 32,
+            "by": "[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 37,
+          "name": "Top Sash Glass Top",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 28,
+            "by": "-[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 40,
+          "name": "Bottom Sash Glass Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 25,
+            "by": "[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 41,
+          "name": "Bottom Sash Glass Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 26,
+            "by": "-[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 42,
+          "name": "Bottom Sash Glass Bottom",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 27,
+            "by": "[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 43,
+          "name": "Bottom Sash Glass Top",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 33,
+            "by": "-[Sash Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 46,
+          "name": "Bottom Sash Centre",
+          "axis": "z",
+          "anchor": {
+            "type": "mid",
+            "a": 27,
+            "b": 33
+          },
+          "ref_kind": "weak"
+        }
+      ],
+      "forms": [
+        {
+          "id": 18,
+          "name": "Opening",
+          "shape": {
+            "type": "extrusion",
+            "plane": 2,
+            "start": "-[Host Thickness] / 2",
+            "end": "[Host Thickness] / 2",
+            "start_lock": 15,
+            "end_lock": 14,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 19,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 22,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 20,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 22,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 20,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 21,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 19,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 21,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": true,
+          "cuts_host": true,
+          "opening": true,
+          "cut_by": [],
+          "material": "",
+          "material_param": null,
+          "subcategory": "Opening",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 24,
+          "name": "Frame",
+          "shape": {
+            "type": "sweep",
+            "plane": 23,
+            "path": {
+              "nodes": [
+                {
+                  "u": {
+                    "plane": 12,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 3,
+                    "off": 0.0
+                  }
+                },
+                {
+                  "u": {
+                    "plane": 12,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 13,
+                    "off": 0.0
+                  }
+                },
+                {
+                  "u": {
+                    "plane": 11,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 13,
+                    "off": 0.0
+                  }
+                },
+                {
+                  "u": {
+                    "plane": 11,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 3,
+                    "off": 0.0
+                  }
+                }
+              ],
+              "bulges": [],
+              "closed": true
+            },
+            "profile": [],
+            "profile_angle": 0.0,
+            "flip": false,
+            "profile_family": {
+              "family": "Aluminium Window Frame",
+              "type_name": "Double Hung",
+              "params": {
+                "Frame Depth": "[Frame Depth]",
+                "Frame Face": "[Frame Face]"
+              }
+            }
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "",
+          "material_param": "Frame Material",
+          "subcategory": "Frame/Mullion",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 38,
+          "name": "Top Sash",
+          "shape": {
+            "type": "extrusion",
+            "plane": 30,
+            "start": "-[Sash Depth] / 2",
+            "end": "[Sash Depth] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 25,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 32,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 26,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 32,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 26,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 28,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 25,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 28,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              },
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 34,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 36,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 35,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 36,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 35,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 37,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 34,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 37,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "",
+          "material_param": "Sash Material",
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 39,
+          "name": "Top Sash Glass",
+          "shape": {
+            "type": "extrusion",
+            "plane": 30,
+            "start": "-[Glass Thickness] / 2",
+            "end": "[Glass Thickness] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 34,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 36,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 35,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 36,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 35,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 37,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 34,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 37,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "Glass",
+          "material_param": "Glass",
+          "subcategory": "Glass",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 44,
+          "name": "Bottom Sash",
+          "shape": {
+            "type": "extrusion",
+            "plane": 31,
+            "start": "-[Sash Depth] / 2",
+            "end": "[Sash Depth] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 25,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 27,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 26,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 27,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 26,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 33,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 25,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 33,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              },
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 40,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 42,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 41,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 42,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 41,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 43,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 40,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 43,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "",
+          "material_param": "Sash Material",
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 45,
+          "name": "Bottom Sash Glass",
+          "shape": {
+            "type": "extrusion",
+            "plane": 31,
+            "start": "-[Glass Thickness] / 2",
+            "end": "[Glass Thickness] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 40,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 42,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 41,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 42,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 41,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 43,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 40,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 43,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "Glass",
+          "material_param": "Glass",
+          "subcategory": "Glass",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "syms": [
+        {
+          "id": 47,
+          "view": "front",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": -150.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 150.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 48,
+          "view": "front",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 40.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 90.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 150.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -40.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 90.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0,
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 49,
+          "view": "back",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": -150.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 150.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 50,
+          "view": "back",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 40.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 90.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 150.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -40.0
+                },
+                "v": {
+                  "plane": 46,
+                  "off": 90.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0,
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "nested": [],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [
+        {
+          "id": 16,
+          "a": 11,
+          "b": 12,
+          "via": [
+            1
+          ],
+          "reports_to": null,
+          "view": "plan",
+          "label": "Width",
+          "seg_labels": [],
+          "eq": true,
+          "locked": false,
+          "at": null,
+          "drives": [
+            11,
+            12
+          ]
+        },
+        {
+          "id": 17,
+          "a": 3,
+          "b": 13,
+          "via": [],
+          "reports_to": null,
+          "view": "front",
+          "label": "Height",
+          "seg_labels": [],
+          "eq": false,
+          "locked": false,
+          "at": null,
+          "drives": [
+            13
+          ]
+        }
+      ],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": true,
+      "next_id": 50
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true,
+      "subcategories": [
+        "Frame/Mullion",
+        "Glass",
+        "Sash",
+        "Opening",
+        "Sill/Head",
+        "Plan Swing",
+        "Elevation Swing",
+        "Trim"
+      ]
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "610 x 1200",
+      "values": {
+        "Default Sill Height": 900.0,
+        "Height": 1200.0,
+        "Width": 610.0
+      }
+    },
+    {
+      "name": "850 x 1200",
+      "values": {
+        "Default Sill Height": 900.0,
+        "Height": 1200.0,
+        "Width": 850.0
+      }
+    },
+    {
+      "name": "850 x 1460",
+      "values": {
+        "Default Sill Height": 640.0,
+        "Height": 1460.0,
+        "Width": 850.0
+      }
+    },
+    {
+      "name": "1210 x 1460",
+      "values": {
+        "Default Sill Height": 640.0,
+        "Height": 1460.0,
+        "Width": 1210.0
+      }
+    },
+    {
+      "name": "850 x 1800",
+      "values": {
+        "Default Sill Height": 300.0,
+        "Height": 1800.0,
+        "Width": 850.0
+      }
+    }
+  ]
+}

@@ -654,6 +654,67 @@ mod tests {
     }
 
     #[test]
+    fn the_starter_windows_sit_in_their_stud_openings_with_their_sashes() {
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let r = |v: f64| (v * 10.0).round() / 10.0;
+        // (family, type, width, height, default sill, sashes, glass panes showing, front view lines)
+        let cases = [
+            ("Fixed Window", "1210 x 1200", 1210.0, 1200.0, 900.0, 0, 1, 0),
+            ("Sliding Window", "1810 x 1200", 1810.0, 1200.0, 900.0, 2, 2, 2),
+            ("Awning Window", "1210 x 600", 1210.0, 600.0, 1500.0, 1, 1, 1),
+            ("Double Hung Window", "850 x 1460", 850.0, 1460.0, 640.0, 2, 2, 2),
+            ("Casement Window", "610 x 1200", 610.0, 1200.0, 900.0, 1, 1, 1),
+            // blades: as many 102 blades at 89 as fit the 1140 inside, and 152 at 139
+            ("Louvre Window", "610 x 1200", 610.0, 1200.0, 900.0, 0, 12, 0),
+            ("Louvre Window", "850 x 1200 (152 blades)", 850.0, 1200.0, 900.0, 0, 8, 0),
+        ];
+        for (x, (fam, ty, w, h, sill, sashes, panes, front)) in cases.into_iter().enumerate() {
+            let what = format!("{fam} {ty}");
+            let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == ty && d.family(t.family).unwrap().name == fam).map(|(i, t)| (t.family, i)).unwrap_or_else(|| panic!("{what}"));
+            let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+            assert!(s.warnings.is_empty(), "{what}: {:?}", s.warnings);
+            // the frame is the Width by Height frame size, 52 deep on the wall's centreline
+            let fb = tri_box(s.forms.iter().find(|f| f.subcategory == "Frame/Mullion").unwrap());
+            assert_eq!([r(fb[0][0]), r(fb[1][0]), r(fb[0][1]), r(fb[1][1]), r(fb[0][2]), r(fb[1][2])], [-w / 2.0, w / 2.0, -26.0, 26.0, 0.0, h], "{what} frame");
+            assert_eq!(s.forms.iter().filter(|f| f.subcategory == "Sash").count(), sashes, "{what} sashes");
+            let glass: Vec<_> = s.forms.iter().filter(|f| f.subcategory == "Glass" && f.vis.present).collect();
+            assert_eq!(glass.len(), panes, "{what} glass");
+            // every pane within the frame
+            for g in &glass {
+                let b = tri_box(g);
+                assert!(b[0][0] >= -w / 2.0 + 29.9 && b[1][0] <= w / 2.0 - 29.9 && b[0][2] >= 29.9 && b[1][2] <= h - 29.9 && b[0][1] > -26.0 && b[1][1] < 26.0, "{what} pane {b:?}");
+            }
+            assert_eq!(s.syms.iter().filter(|y| y.view == SymView::Front).count(), front, "{what} front view lines");
+            // placed: at its default sill, the hole the stud opening, frame + 60 each way
+            let w_ = d.add_wall(wt, lvl, Point::new(0., 5000.0 * x as f64), Point::new(6000., 5000.0 * x as f64), 2700.).unwrap();
+            let inst = d.place_on_wall(tid, w_, Point::new(3000., 5000.0 * x as f64)).unwrap();
+            let ops = d.wall_openings(w_);
+            assert_eq!((r(ops[0].u1 - ops[0].u0), r(ops[0].z0), r(ops[0].z1)), (w + 60.0, sill - 30.0, sill + h + 30.0), "{what} hole");
+            assert!(d.instance_solved(inst).unwrap().as_ref().as_ref().unwrap().warnings.is_empty(), "{what}");
+            // plan cut a quarter up (clear of a double hung's meeting rails): the frame and glass at every level, the sashes from Medium
+            let cut = sill + h / 4.0;
+            for (detail, with_sash) in [(crate::view::DetailLevel::Coarse, false), (crate::view::DetailLevel::Medium, true), (crate::view::DetailLevel::Fine, true)] {
+                let sym = crate::symbol::plan_symbol_at(&d, inst, detail, Some(cut)).unwrap();
+                let has = |sub: &str| sym.parts.iter().any(|p| p.subcategory == sub && p.cut);
+                assert!(has("Frame/Mullion") && has("Glass"), "{what} {detail:?}");
+                assert_eq!(has("Sash"), with_sash && sashes > 0, "{what} {detail:?} sash");
+            }
+            let (cat, solid, glass3d) = crate::mesh::instance_meshes(&d, inst).unwrap();
+            assert!(cat == FamilyCategory::Windows && !solid.is_empty() && !glass3d.is_empty(), "{what} 3D");
+        }
+        // the sliding window's sashes: the fixed one left on the exterior track, the sliding one right on the
+        // interior, meeting with 30 of overlap; the double hung's top sash outside the bottom one
+        let sash_boxes = |fam: &str, ty: &str| {
+            let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == ty && d.family(t.family).unwrap().name == fam).map(|(i, t)| (t.family, i)).unwrap();
+            let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+            s.forms.iter().filter(|f| f.subcategory == "Sash").map(|f| { let b = tri_box(f); [r(b[0][0]), r(b[1][0]), r(b[0][1]), r(b[1][1]), r(b[0][2]), r(b[1][2])] }).collect::<Vec<_>>()
+        };
+        assert_eq!(sash_boxes("Sliding Window", "1810 x 1200"), vec![[-875.0, 15.0, 3.0, 23.0, 30.0, 1170.0], [-15.0, 875.0, -23.0, -3.0, 30.0, 1170.0]]);
+        assert_eq!(sash_boxes("Double Hung Window", "850 x 1460"), vec![[-395.0, 395.0, 3.0, 23.0, 715.0, 1430.0], [-395.0, 395.0, -23.0, -3.0, 30.0, 745.0]]);
+    }
+
+    #[test]
     fn a_raked_head_cuts_its_own_shape_in_the_wall() {
         let mut fam = hatch_family();
         fam.body.forms.retain(|f| !f.void);
