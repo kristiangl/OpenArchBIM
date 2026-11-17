@@ -2458,9 +2458,9 @@ impl Session {
             let hint = it.material.as_deref().and_then(|m| d.material(m)).map(Hint::from_material).unwrap_or_default();
             if it.cut {
                 // a category switched off in the view leaves its cut out
-                let Some(style) = style_for(d, &settings, it.category, None, d.graphics_of(view, &it.id).as_ref(), "cut", &hint) else { continue };
+                let Some(style) = style_for(d, &settings, it.category, it.sub.as_deref(), d.graphics_of(view, &it.id).as_ref(), "cut", &hint) else { continue };
                 j["style"] = style;
-            } else if let Some(style) = style_for(d, &settings, it.category, None, d.graphics_of(view, &it.id).as_ref(), "projection", &hint) {
+            } else if let Some(style) = style_for(d, &settings, it.category, it.sub.as_deref(), d.graphics_of(view, &it.id).as_ref(), "projection", &hint) {
                 // the projection pen its lines are drawn with
                 j["style"] = style;
                 // a surface colour override (by element, or a filter) is the face's shaded colour too

@@ -995,7 +995,7 @@
           "ref_kind": "weak"
         },
         {
-          "id": 30,
+          "id": 31,
           "name": "Blade 1 Bottom",
           "axis": "z",
           "anchor": {
@@ -1006,18 +1006,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 31,
+          "id": 32,
           "name": "Blade 1 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 30,
+            "from": 31,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 33,
+          "id": 34,
           "name": "Blade 2 Bottom",
           "axis": "z",
           "anchor": {
@@ -1028,18 +1028,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 34,
+          "id": 35,
           "name": "Blade 2 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 33,
+            "from": 34,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 36,
+          "id": 37,
           "name": "Blade 3 Bottom",
           "axis": "z",
           "anchor": {
@@ -1050,18 +1050,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 37,
+          "id": 38,
           "name": "Blade 3 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 36,
+            "from": 37,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 39,
+          "id": 40,
           "name": "Blade 4 Bottom",
           "axis": "z",
           "anchor": {
@@ -1072,18 +1072,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 40,
+          "id": 41,
           "name": "Blade 4 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 39,
+            "from": 40,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 42,
+          "id": 43,
           "name": "Blade 5 Bottom",
           "axis": "z",
           "anchor": {
@@ -1094,18 +1094,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 43,
+          "id": 44,
           "name": "Blade 5 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 42,
+            "from": 43,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 45,
+          "id": 46,
           "name": "Blade 6 Bottom",
           "axis": "z",
           "anchor": {
@@ -1116,18 +1116,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 46,
+          "id": 47,
           "name": "Blade 6 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 45,
+            "from": 46,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 48,
+          "id": 49,
           "name": "Blade 7 Bottom",
           "axis": "z",
           "anchor": {
@@ -1138,18 +1138,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 49,
+          "id": 50,
           "name": "Blade 7 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 48,
+            "from": 49,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 51,
+          "id": 52,
           "name": "Blade 8 Bottom",
           "axis": "z",
           "anchor": {
@@ -1160,18 +1160,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 52,
+          "id": 53,
           "name": "Blade 8 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 51,
+            "from": 52,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 54,
+          "id": 55,
           "name": "Blade 9 Bottom",
           "axis": "z",
           "anchor": {
@@ -1182,18 +1182,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 55,
+          "id": 56,
           "name": "Blade 9 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 54,
+            "from": 55,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 57,
+          "id": 58,
           "name": "Blade 10 Bottom",
           "axis": "z",
           "anchor": {
@@ -1204,18 +1204,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 58,
+          "id": 59,
           "name": "Blade 10 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 57,
+            "from": 58,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 60,
+          "id": 61,
           "name": "Blade 11 Bottom",
           "axis": "z",
           "anchor": {
@@ -1226,18 +1226,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 61,
+          "id": 62,
           "name": "Blade 11 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 60,
+            "from": 61,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 63,
+          "id": 64,
           "name": "Blade 12 Bottom",
           "axis": "z",
           "anchor": {
@@ -1248,18 +1248,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 64,
+          "id": 65,
           "name": "Blade 12 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 63,
+            "from": 64,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 66,
+          "id": 67,
           "name": "Blade 13 Bottom",
           "axis": "z",
           "anchor": {
@@ -1270,18 +1270,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 67,
+          "id": 68,
           "name": "Blade 13 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 66,
+            "from": 67,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 69,
+          "id": 70,
           "name": "Blade 14 Bottom",
           "axis": "z",
           "anchor": {
@@ -1292,18 +1292,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 70,
+          "id": 71,
           "name": "Blade 14 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 69,
+            "from": 70,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 72,
+          "id": 73,
           "name": "Blade 15 Bottom",
           "axis": "z",
           "anchor": {
@@ -1314,18 +1314,18 @@
           "ref_kind": "weak"
         },
         {
-          "id": 73,
+          "id": 74,
           "name": "Blade 15 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 72,
+            "from": 73,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
         },
         {
-          "id": 75,
+          "id": 76,
           "name": "Blade 16 Bottom",
           "axis": "z",
           "anchor": {
@@ -1336,12 +1336,12 @@
           "ref_kind": "weak"
         },
         {
-          "id": 76,
+          "id": 77,
           "name": "Blade 16 Top",
           "axis": "z",
           "anchor": {
             "type": "offset",
-            "from": 75,
+            "from": 76,
             "by": "[Blade Height]"
           },
           "ref_kind": "weak"
@@ -1514,7 +1514,7 @@
           }
         },
         {
-          "id": 32,
+          "id": 33,
           "name": "Blade 1",
           "shape": {
             "type": "extrusion",
@@ -1532,7 +1532,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 30,
+                      "plane": 31,
                       "off": 0.0
                     }
                   },
@@ -1542,7 +1542,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 30,
+                      "plane": 31,
                       "off": 0.0
                     }
                   },
@@ -1552,7 +1552,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 31,
+                      "plane": 32,
                       "off": 0.0
                     }
                   },
@@ -1562,7 +1562,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 31,
+                      "plane": 32,
                       "off": 0.0
                     }
                   }
@@ -1594,7 +1594,7 @@
           }
         },
         {
-          "id": 35,
+          "id": 36,
           "name": "Blade 2",
           "shape": {
             "type": "extrusion",
@@ -1612,7 +1612,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 33,
+                      "plane": 34,
                       "off": 0.0
                     }
                   },
@@ -1622,7 +1622,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 33,
+                      "plane": 34,
                       "off": 0.0
                     }
                   },
@@ -1632,7 +1632,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 34,
+                      "plane": 35,
                       "off": 0.0
                     }
                   },
@@ -1642,7 +1642,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 34,
+                      "plane": 35,
                       "off": 0.0
                     }
                   }
@@ -1674,7 +1674,7 @@
           }
         },
         {
-          "id": 38,
+          "id": 39,
           "name": "Blade 3",
           "shape": {
             "type": "extrusion",
@@ -1692,7 +1692,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 36,
+                      "plane": 37,
                       "off": 0.0
                     }
                   },
@@ -1702,7 +1702,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 36,
+                      "plane": 37,
                       "off": 0.0
                     }
                   },
@@ -1712,7 +1712,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 37,
+                      "plane": 38,
                       "off": 0.0
                     }
                   },
@@ -1722,7 +1722,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 37,
+                      "plane": 38,
                       "off": 0.0
                     }
                   }
@@ -1754,7 +1754,7 @@
           }
         },
         {
-          "id": 41,
+          "id": 42,
           "name": "Blade 4",
           "shape": {
             "type": "extrusion",
@@ -1772,7 +1772,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 39,
+                      "plane": 40,
                       "off": 0.0
                     }
                   },
@@ -1782,7 +1782,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 39,
+                      "plane": 40,
                       "off": 0.0
                     }
                   },
@@ -1792,7 +1792,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 40,
+                      "plane": 41,
                       "off": 0.0
                     }
                   },
@@ -1802,7 +1802,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 40,
+                      "plane": 41,
                       "off": 0.0
                     }
                   }
@@ -1834,7 +1834,7 @@
           }
         },
         {
-          "id": 44,
+          "id": 45,
           "name": "Blade 5",
           "shape": {
             "type": "extrusion",
@@ -1852,7 +1852,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 42,
+                      "plane": 43,
                       "off": 0.0
                     }
                   },
@@ -1862,7 +1862,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 42,
+                      "plane": 43,
                       "off": 0.0
                     }
                   },
@@ -1872,7 +1872,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 43,
+                      "plane": 44,
                       "off": 0.0
                     }
                   },
@@ -1882,7 +1882,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 43,
+                      "plane": 44,
                       "off": 0.0
                     }
                   }
@@ -1914,7 +1914,7 @@
           }
         },
         {
-          "id": 47,
+          "id": 48,
           "name": "Blade 6",
           "shape": {
             "type": "extrusion",
@@ -1932,7 +1932,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 45,
+                      "plane": 46,
                       "off": 0.0
                     }
                   },
@@ -1942,7 +1942,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 45,
+                      "plane": 46,
                       "off": 0.0
                     }
                   },
@@ -1952,7 +1952,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 46,
+                      "plane": 47,
                       "off": 0.0
                     }
                   },
@@ -1962,7 +1962,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 46,
+                      "plane": 47,
                       "off": 0.0
                     }
                   }
@@ -1994,7 +1994,7 @@
           }
         },
         {
-          "id": 50,
+          "id": 51,
           "name": "Blade 7",
           "shape": {
             "type": "extrusion",
@@ -2012,7 +2012,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 48,
+                      "plane": 49,
                       "off": 0.0
                     }
                   },
@@ -2022,7 +2022,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 48,
+                      "plane": 49,
                       "off": 0.0
                     }
                   },
@@ -2032,7 +2032,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 49,
+                      "plane": 50,
                       "off": 0.0
                     }
                   },
@@ -2042,7 +2042,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 49,
+                      "plane": 50,
                       "off": 0.0
                     }
                   }
@@ -2074,7 +2074,7 @@
           }
         },
         {
-          "id": 53,
+          "id": 54,
           "name": "Blade 8",
           "shape": {
             "type": "extrusion",
@@ -2092,7 +2092,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 51,
+                      "plane": 52,
                       "off": 0.0
                     }
                   },
@@ -2102,7 +2102,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 51,
+                      "plane": 52,
                       "off": 0.0
                     }
                   },
@@ -2112,7 +2112,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 52,
+                      "plane": 53,
                       "off": 0.0
                     }
                   },
@@ -2122,7 +2122,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 52,
+                      "plane": 53,
                       "off": 0.0
                     }
                   }
@@ -2154,7 +2154,7 @@
           }
         },
         {
-          "id": 56,
+          "id": 57,
           "name": "Blade 9",
           "shape": {
             "type": "extrusion",
@@ -2172,7 +2172,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 54,
+                      "plane": 55,
                       "off": 0.0
                     }
                   },
@@ -2182,7 +2182,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 54,
+                      "plane": 55,
                       "off": 0.0
                     }
                   },
@@ -2192,7 +2192,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 55,
+                      "plane": 56,
                       "off": 0.0
                     }
                   },
@@ -2202,7 +2202,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 55,
+                      "plane": 56,
                       "off": 0.0
                     }
                   }
@@ -2234,7 +2234,7 @@
           }
         },
         {
-          "id": 59,
+          "id": 60,
           "name": "Blade 10",
           "shape": {
             "type": "extrusion",
@@ -2252,7 +2252,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 57,
+                      "plane": 58,
                       "off": 0.0
                     }
                   },
@@ -2262,7 +2262,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 57,
+                      "plane": 58,
                       "off": 0.0
                     }
                   },
@@ -2272,7 +2272,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 58,
+                      "plane": 59,
                       "off": 0.0
                     }
                   },
@@ -2282,7 +2282,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 58,
+                      "plane": 59,
                       "off": 0.0
                     }
                   }
@@ -2314,7 +2314,7 @@
           }
         },
         {
-          "id": 62,
+          "id": 63,
           "name": "Blade 11",
           "shape": {
             "type": "extrusion",
@@ -2332,7 +2332,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 60,
+                      "plane": 61,
                       "off": 0.0
                     }
                   },
@@ -2342,7 +2342,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 60,
+                      "plane": 61,
                       "off": 0.0
                     }
                   },
@@ -2352,7 +2352,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 61,
+                      "plane": 62,
                       "off": 0.0
                     }
                   },
@@ -2362,7 +2362,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 61,
+                      "plane": 62,
                       "off": 0.0
                     }
                   }
@@ -2394,7 +2394,7 @@
           }
         },
         {
-          "id": 65,
+          "id": 66,
           "name": "Blade 12",
           "shape": {
             "type": "extrusion",
@@ -2412,7 +2412,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 63,
+                      "plane": 64,
                       "off": 0.0
                     }
                   },
@@ -2422,7 +2422,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 63,
+                      "plane": 64,
                       "off": 0.0
                     }
                   },
@@ -2432,7 +2432,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 64,
+                      "plane": 65,
                       "off": 0.0
                     }
                   },
@@ -2442,7 +2442,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 64,
+                      "plane": 65,
                       "off": 0.0
                     }
                   }
@@ -2474,7 +2474,7 @@
           }
         },
         {
-          "id": 68,
+          "id": 69,
           "name": "Blade 13",
           "shape": {
             "type": "extrusion",
@@ -2492,7 +2492,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 66,
+                      "plane": 67,
                       "off": 0.0
                     }
                   },
@@ -2502,7 +2502,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 66,
+                      "plane": 67,
                       "off": 0.0
                     }
                   },
@@ -2512,7 +2512,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 67,
+                      "plane": 68,
                       "off": 0.0
                     }
                   },
@@ -2522,7 +2522,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 67,
+                      "plane": 68,
                       "off": 0.0
                     }
                   }
@@ -2554,7 +2554,7 @@
           }
         },
         {
-          "id": 71,
+          "id": 72,
           "name": "Blade 14",
           "shape": {
             "type": "extrusion",
@@ -2572,7 +2572,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 69,
+                      "plane": 70,
                       "off": 0.0
                     }
                   },
@@ -2582,7 +2582,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 69,
+                      "plane": 70,
                       "off": 0.0
                     }
                   },
@@ -2592,7 +2592,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 70,
+                      "plane": 71,
                       "off": 0.0
                     }
                   },
@@ -2602,7 +2602,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 70,
+                      "plane": 71,
                       "off": 0.0
                     }
                   }
@@ -2634,7 +2634,7 @@
           }
         },
         {
-          "id": 74,
+          "id": 75,
           "name": "Blade 15",
           "shape": {
             "type": "extrusion",
@@ -2652,7 +2652,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 72,
+                      "plane": 73,
                       "off": 0.0
                     }
                   },
@@ -2662,7 +2662,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 72,
+                      "plane": 73,
                       "off": 0.0
                     }
                   },
@@ -2672,7 +2672,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 73,
+                      "plane": 74,
                       "off": 0.0
                     }
                   },
@@ -2682,7 +2682,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 73,
+                      "plane": 74,
                       "off": 0.0
                     }
                   }
@@ -2714,7 +2714,7 @@
           }
         },
         {
-          "id": 77,
+          "id": 78,
           "name": "Blade 16",
           "shape": {
             "type": "extrusion",
@@ -2732,7 +2732,7 @@
                       "off": 9.0
                     },
                     "v": {
-                      "plane": 75,
+                      "plane": 76,
                       "off": 0.0
                     }
                   },
@@ -2742,7 +2742,7 @@
                       "off": 3.0
                     },
                     "v": {
-                      "plane": 75,
+                      "plane": 76,
                       "off": 0.0
                     }
                   },
@@ -2752,7 +2752,7 @@
                       "off": -9.0
                     },
                     "v": {
-                      "plane": 76,
+                      "plane": 77,
                       "off": 0.0
                     }
                   },
@@ -2762,7 +2762,7 @@
                       "off": -3.0
                     },
                     "v": {
-                      "plane": 76,
+                      "plane": 77,
                       "off": 0.0
                     }
                   }
@@ -2794,7 +2794,56 @@
           }
         }
       ],
-      "syms": [],
+      "syms": [
+        {
+          "id": 30,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 25,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 23,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 26,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 23,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Glass",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": false,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
       "nested": [],
       "model_lines": [],
       "controls": [],
@@ -2840,7 +2889,7 @@
       "lookup_tables": [],
       "always_vertical": false,
       "cut_with_voids": true,
-      "next_id": 77
+      "next_id": 78
     },
     "settings": {
       "can_host_rebar": false,

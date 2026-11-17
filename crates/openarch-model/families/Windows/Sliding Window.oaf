@@ -1097,7 +1097,7 @@
           "ref_kind": "weak"
         },
         {
-          "id": 40,
+          "id": 41,
           "name": "Sliding Sash Glass Left",
           "axis": "x",
           "anchor": {
@@ -1108,7 +1108,7 @@
           "ref_kind": "weak"
         },
         {
-          "id": 41,
+          "id": 42,
           "name": "Sliding Sash Glass Right",
           "axis": "x",
           "anchor": {
@@ -1119,7 +1119,7 @@
           "ref_kind": "weak"
         },
         {
-          "id": 42,
+          "id": 43,
           "name": "Sliding Sash Glass Bottom",
           "axis": "z",
           "anchor": {
@@ -1130,7 +1130,7 @@
           "ref_kind": "weak"
         },
         {
-          "id": 43,
+          "id": 44,
           "name": "Sliding Sash Glass Top",
           "axis": "z",
           "anchor": {
@@ -1141,7 +1141,7 @@
           "ref_kind": "weak"
         },
         {
-          "id": 46,
+          "id": 48,
           "name": "Sliding Sash Centre",
           "axis": "x",
           "anchor": {
@@ -1525,7 +1525,7 @@
           }
         },
         {
-          "id": 44,
+          "id": 45,
           "name": "Sliding Sash",
           "shape": {
             "type": "extrusion",
@@ -1585,26 +1585,6 @@
                 "nodes": [
                   {
                     "u": {
-                      "plane": 40,
-                      "off": 0.0
-                    },
-                    "v": {
-                      "plane": 42,
-                      "off": 0.0
-                    }
-                  },
-                  {
-                    "u": {
-                      "plane": 41,
-                      "off": 0.0
-                    },
-                    "v": {
-                      "plane": 42,
-                      "off": 0.0
-                    }
-                  },
-                  {
-                    "u": {
                       "plane": 41,
                       "off": 0.0
                     },
@@ -1615,11 +1595,31 @@
                   },
                   {
                     "u": {
-                      "plane": 40,
+                      "plane": 42,
                       "off": 0.0
                     },
                     "v": {
                       "plane": 43,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 42,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 44,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 41,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 44,
                       "off": 0.0
                     }
                   }
@@ -1651,7 +1651,7 @@
           }
         },
         {
-          "id": 45,
+          "id": 46,
           "name": "Sliding Sash Glass",
           "shape": {
             "type": "extrusion",
@@ -1665,26 +1665,6 @@
                 "nodes": [
                   {
                     "u": {
-                      "plane": 40,
-                      "off": 0.0
-                    },
-                    "v": {
-                      "plane": 42,
-                      "off": 0.0
-                    }
-                  },
-                  {
-                    "u": {
-                      "plane": 41,
-                      "off": 0.0
-                    },
-                    "v": {
-                      "plane": 42,
-                      "off": 0.0
-                    }
-                  },
-                  {
-                    "u": {
                       "plane": 41,
                       "off": 0.0
                     },
@@ -1695,11 +1675,31 @@
                   },
                   {
                     "u": {
-                      "plane": 40,
+                      "plane": 42,
                       "off": 0.0
                     },
                     "v": {
                       "plane": 43,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 42,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 44,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 41,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 44,
                       "off": 0.0
                     }
                   }
@@ -1733,27 +1733,27 @@
       ],
       "syms": [
         {
-          "id": 47,
-          "view": "front",
+          "id": 40,
+          "view": "plan",
           "path": {
             "nodes": [
               {
                 "u": {
-                  "plane": 46,
-                  "off": 150.0
+                  "plane": 34,
+                  "off": 0.0
                 },
                 "v": {
-                  "plane": 29,
+                  "plane": 30,
                   "off": 0.0
                 }
               },
               {
                 "u": {
-                  "plane": 46,
-                  "off": -150.0
+                  "plane": 35,
+                  "off": 0.0
                 },
                 "v": {
-                  "plane": 29,
+                  "plane": 30,
                   "off": 0.0
                 }
               }
@@ -1765,11 +1765,11 @@
           },
           "filled": false,
           "masking": false,
-          "subcategory": "Sash",
+          "subcategory": "Glass",
           "vis": {
-            "coarse": false,
+            "coarse": true,
             "medium": true,
-            "fine": true,
+            "fine": false,
             "plan": true,
             "front_back": true,
             "left_right": true,
@@ -1781,54 +1781,43 @@
           }
         },
         {
-          "id": 48,
-          "view": "front",
+          "id": 47,
+          "view": "plan",
           "path": {
             "nodes": [
               {
                 "u": {
-                  "plane": 46,
-                  "off": -90.0
+                  "plane": 41,
+                  "off": 0.0
                 },
                 "v": {
-                  "plane": 29,
-                  "off": 40.0
-                }
-              },
-              {
-                "u": {
-                  "plane": 46,
-                  "off": -150.0
-                },
-                "v": {
-                  "plane": 29,
+                  "plane": 31,
                   "off": 0.0
                 }
               },
               {
                 "u": {
-                  "plane": 46,
-                  "off": -90.0
+                  "plane": 42,
+                  "off": 0.0
                 },
                 "v": {
-                  "plane": 29,
-                  "off": -40.0
+                  "plane": 31,
+                  "off": 0.0
                 }
               }
             ],
             "bulges": [
-              0.0,
               0.0
             ],
             "closed": false
           },
           "filled": false,
           "masking": false,
-          "subcategory": "Sash",
+          "subcategory": "Glass",
           "vis": {
-            "coarse": false,
+            "coarse": true,
             "medium": true,
-            "fine": true,
+            "fine": false,
             "plan": true,
             "front_back": true,
             "left_right": true,
@@ -1841,12 +1830,12 @@
         },
         {
           "id": 49,
-          "view": "back",
+          "view": "front",
           "path": {
             "nodes": [
               {
                 "u": {
-                  "plane": 46,
+                  "plane": 48,
                   "off": 150.0
                 },
                 "v": {
@@ -1856,7 +1845,7 @@
               },
               {
                 "u": {
-                  "plane": 46,
+                  "plane": 48,
                   "off": -150.0
                 },
                 "v": {
@@ -1889,12 +1878,12 @@
         },
         {
           "id": 50,
-          "view": "back",
+          "view": "front",
           "path": {
             "nodes": [
               {
                 "u": {
-                  "plane": 46,
+                  "plane": 48,
                   "off": -90.0
                 },
                 "v": {
@@ -1904,7 +1893,7 @@
               },
               {
                 "u": {
-                  "plane": 46,
+                  "plane": 48,
                   "off": -150.0
                 },
                 "v": {
@@ -1914,7 +1903,114 @@
               },
               {
                 "u": {
-                  "plane": 46,
+                  "plane": 48,
+                  "off": -90.0
+                },
+                "v": {
+                  "plane": 29,
+                  "off": -40.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0,
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 51,
+          "view": "back",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 48,
+                  "off": 150.0
+                },
+                "v": {
+                  "plane": 29,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 48,
+                  "off": -150.0
+                },
+                "v": {
+                  "plane": 29,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Sash",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 52,
+          "view": "back",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 48,
+                  "off": -90.0
+                },
+                "v": {
+                  "plane": 29,
+                  "off": 40.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 48,
+                  "off": -150.0
+                },
+                "v": {
+                  "plane": 29,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 48,
                   "off": -90.0
                 },
                 "v": {
@@ -1992,7 +2088,7 @@
       "lookup_tables": [],
       "always_vertical": false,
       "cut_with_voids": true,
-      "next_id": 50
+      "next_id": 52
     },
     "settings": {
       "can_host_rebar": false,

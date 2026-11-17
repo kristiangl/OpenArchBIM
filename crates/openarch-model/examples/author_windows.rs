@@ -92,8 +92,10 @@ impl W {
             vis: v,
         });
     }
+    /// A pane, and its glazing line in plan at Coarse and Medium (Fine shows the pane in section).
     fn glass(&mut self, name: &str, plane: PlaneId, r: Rect) {
         self.extrude(name, plane, "[Glass Thickness] / 2", &[r], "Glass", Some("Glass"), Visibility::default());
+        self.sym(SymView::Plan, vec![n(r.0, plane), n(r.1, plane)], "Glass", vis(true, true, false));
     }
     /// A sash: its stiles and rails Sash Face wide round its glass, Sash Depth deep on `plane`.
     fn sash(&mut self, name: &str, plane: PlaneId, (l, r, b, t): Rect) {
@@ -254,8 +256,10 @@ fn louvre() -> Family {
     w.add_param(length("Blade Height", "Construction", 102.0, "Wideline: 102 blades span to 750, 152 to 900"));
     w.add_param(ParamDef { formula: Some("[Blade Height] - 13".into()), ..length("Blade Pitch", "Construction", 89.0, "Closed, each blade overlaps the one below by 13") });
     w.add_param(ParamDef { param_kind: ParamKind::Number, formula: Some("floor(([Height] - 2 * [Frame Face] - [Blade Height]) / [Blade Pitch]) + 1".into()), default: ParamValue::Number(0.0), ..length("Blade Count", "Construction", 0.0, "How many blades fit") });
-    let (_, _, is, _) = w.inner;
+    let (il, ir, is, _) = w.inner;
     let c = w.centre;
+    // the glazing line in plan at Coarse and Medium, whichever blade the cut plane meets
+    w.sym(SymView::Plan, vec![n(il, c), n(ir, c)], "Glass", vis(true, true, false));
     for k in 0..BLADES {
         let b = w.off(&format!("Blade {} Bottom", k + 1), is, &format!("{k} * [Blade Pitch]"));
         let t = w.off(&format!("Blade {} Top", k + 1), b, "[Blade Height]");

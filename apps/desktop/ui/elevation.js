@@ -1016,10 +1016,14 @@ const Elev = (() => {
         if (selected && !printing) { ctx.save(); ctx.globalAlpha = 0.18; ctx.fillStyle = accent; ctx.fill("evenodd"); ctx.restore(); }
         ctx.strokeStyle = selected ? accent : hovered ? accent : ink; ctx.lineWidth = selected ? 2 : projW(it); if (it.stroke !== false || selected) ctx.stroke();
       }
+      // lines in their style's pattern (a door's dashed Elevation Swing)
+      const dash = (((data.line_patterns || {})[it.style && it.style.line && it.style.line.pattern]) || []).map((v) => Math.max(v * ((data.scale || 100) * cam.s), 0.8));
+      ctx.setLineDash(dash);
       for (const [p, q] of it.lines) {
         const a = toScreen(p[0], p[1]), b = toScreen(q[0], q[1]);
         ctx.strokeStyle = ink; ctx.lineWidth = projW(it); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       }
+      ctx.setLineDash([]);
     }
     // What the plane cuts: every fill first, then every outline, so two elements that overlap (a wall and a slab that
     // clash) both show their outlines. Nothing is trimmed for the person; a clash stays a clash until they resolve it.

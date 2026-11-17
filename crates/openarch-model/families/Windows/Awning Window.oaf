@@ -1401,6 +1401,54 @@
       "syms": [
         {
           "id": 36,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 30,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 23,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 31,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 23,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Glass",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": false,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 37,
           "view": "front",
           "path": {
             "nodes": [
@@ -1459,7 +1507,7 @@
           }
         },
         {
-          "id": 37,
+          "id": 38,
           "view": "back",
           "path": {
             "nodes": [
@@ -1563,7 +1611,7 @@
       "lookup_tables": [],
       "always_vertical": false,
       "cut_with_voids": true,
-      "next_id": 37
+      "next_id": 38
     },
     "settings": {
       "can_host_rebar": false,

@@ -185,11 +185,14 @@ pub struct ElevItem {
     /// The part of a curtain wall it is (a panel or mullion), by its part id; `id` is the wall.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub part: Option<Id>,
+    /// The subcategory a family's piece or line is drawn in (a door's Elevation Swing, dashed), for its style.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sub: Option<String>,
 }
 
 impl Default for ElevItem {
     fn default() -> Self {
-        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0, part: None }
+        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0, part: None, sub: None }
     }
 }
 
@@ -1576,9 +1579,29 @@ impl Document {
                 items.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(u0, u1, s.z0, s.z1)], lines: vec![], fill, stroke: true, part, ..Default::default() });
             }
         }
+        // doors and windows a section's plane passes through are cut like the other solids further down (their
+        // frame, sashes and glass in section), not drawn as seen
+        let mut cut_inserts: Vec<(Id, &'static str, [u8; 3], Vec<f32>)> = vec![];
+        if sl.is_some() {
+            for (iid, i) in self.instances() {
+                if hidden(iid) || i.host.is_none() {
+                    continue;
+                }
+                let Some((cat, solid, glass)) = crate::mesh::instance_meshes(self, iid) else { continue };
+                let ds: Vec<f64> = solid.chunks_exact(6).chain(glass.chunks_exact(6)).map(|v| d_of(Point::new(v[0] as f64 * 1000.0, v[1] as f64 * 1000.0))).collect();
+                if !(ds.iter().any(|d| *d < near) && ds.iter().any(|d| *d > near)) {
+                    continue;
+                }
+                let kind = if cat == FamilyCategory::Doors { "Doors" } else { "Windows" };
+                cut_inserts.push((iid, kind, [205, 196, 180], solid));
+                if !glass.is_empty() {
+                    cut_inserts.push((iid, kind, [190, 218, 236], glass));
+                }
+            }
+        }
         // doors and windows sit on the wall face
         for (iid, i) in self.instances() {
-            if hidden(iid) {
+            if hidden(iid) || cut_inserts.iter().any(|c| c.0 == iid) {
                 continue;
             }
             let Some(h) = i.host else { continue };
@@ -1592,64 +1615,59 @@ impl Document {
             if half < 15.0 {
                 continue;
             }
-            let (uc, dc) = (u_of(f.origin), d_of(f.origin));
+            let dc = d_of(f.origin);
             if !visible(dc, dc) {
                 continue;
             }
             let Some((fam, _)) = self.instance_family(i) else { continue };
-            let door = fam.category == FamilyCategory::Doors;
-            let (z0, z1) = (f.z0, f.z1);
-            let inset = 60.0_f64.min(half / 2.0);
+            let cat = if fam.category == FamilyCategory::Doors { "Doors" } else { "Windows" };
             let depth = host_near.get(&h.wall).map_or(dc - 1.0, |d| d - 1.0);
-            // a family with a stored body is drawn from its own geometry, nearest form last
-            if let Some(solved) = self.instance_solved(iid) {
-                if let Ok(s) = solved.as_ref() {
-                    use crate::famgeom::Axis;
-                    let cat = if door { "Doors" } else { "Windows" };
-                    let sl = look.x * f.left.x + look.y * f.left.y;
-                    let swing = if f.flip_facing { -1.0 } else { 1.0 };
-                    let mut shown: Vec<(f64, crate::famview::Piece2D)> = vec![];
-                    for p in s.project(Axis::Y) {
-                        let Some(form) = s.form(p.form) else { continue };
-                        if p.void || !form.vis.front_back {
-                            continue;
-                        }
-                        // how near the viewer this form lies: larger is nearer
-                        let y = form.solid.bounds().map_or(0.0, |b| (b[0][1] + b[1][1]) / 2.0);
-                        shown.push((-sl.signum() * swing * y, p));
-                    }
-                    shown.sort_by(|a, b| a.0.total_cmp(&b.0));
-                    for (k, (_, p)) in shown.into_iter().enumerate() {
-                        let polys: Vec<Vec<[f64; 2]>> = p
-                            .shape
-                            .iter()
-                            .map(|ring| ring.iter().map(|q| [u_of(f.fam_world(q.x, 0.0)), f.z_ref + q.y]).collect())
-                            .collect();
-                        let fill = match p.subcategory.as_str() {
-                            "Glass" => [190, 218, 236],
-                            "Panel" => [232, 226, 214],
-                            _ => [205, 196, 180],
-                        };
-                        items.push(ElevItem { id: iid, category: cat, depth: depth - 0.01 * k as f64, polys, lines: vec![], fill, stroke: true , ..Default::default() });
-                    }
+            // drawn from the family's own geometry (a family without a body draws nothing), nearest form last, then
+            // the symbolic lines of the view it is seen in: Front from the exterior side (+y), Back from the interior
+            let Some(solved) = self.instance_solved(iid) else { continue };
+            let Ok(s) = solved.as_ref() else { continue };
+            use crate::famgeom::Axis;
+            let at_detail = |v: &crate::famgeom::SolvedVis| match detail {
+                crate::view::DetailLevel::Coarse => v.coarse,
+                crate::view::DetailLevel::Medium => v.medium,
+                crate::view::DetailLevel::Fine => v.fine,
+            };
+            let sl = look.x * f.left.x + look.y * f.left.y;
+            let swing = if f.flip_facing { -1.0 } else { 1.0 };
+            let viewer = -sl.signum() * swing;
+            let mut shown: Vec<(f64, crate::famview::Piece2D)> = vec![];
+            for p in s.project(Axis::Y) {
+                let Some(form) = s.form(p.form) else { continue };
+                if p.void || !form.vis.front_back || !form.vis.present || !at_detail(&form.vis) {
                     continue;
                 }
+                // how near the viewer this form lies: larger is nearer
+                let y = form.solid.bounds().map_or(0.0, |b| (b[0][1] + b[1][1]) / 2.0);
+                shown.push((viewer * y, p));
             }
-            if door {
-                // the frame is a U: up both jambs and across the head, open at the floor
-                let frame = vec![
-                    [uc - half, z0], [uc - half, z1], [uc + half, z1], [uc + half, z0],
-                    [uc + half - inset, z0], [uc + half - inset, z1 - inset], [uc - half + inset, z1 - inset], [uc - half + inset, z0],
-                ];
-                items.push(ElevItem { id: iid, category: "Doors", depth, polys: vec![frame], lines: vec![], fill: [205, 196, 180], stroke: true , ..Default::default() });
-                let mut leaves = vec![rect(uc - half + inset, uc + half - inset, z0, z1 - inset)];
-                if f.width > 1500.0 {
-                    leaves = vec![rect(uc - half + inset, uc - inset / 2.0, z0, z1 - inset), rect(uc + inset / 2.0, uc + half - inset, z0, z1 - inset)];
+            shown.sort_by(|a, b| a.0.total_cmp(&b.0));
+            let to_view = |q: &Point| [u_of(f.fam_world(q.x, 0.0)), f.z_ref + q.y];
+            let n = shown.len();
+            for (k, (_, p)) in shown.into_iter().enumerate() {
+                // the outline, and its holes left open (a frame round its glass) so what lies behind shows through
+                let mut rings = p.shape.iter().map(|ring| ring.iter().map(to_view).collect::<Vec<[f64; 2]>>());
+                let polys: Vec<Vec<[f64; 2]>> = rings.next().into_iter().collect();
+                let holes: Vec<Vec<[f64; 2]>> = rings.collect();
+                let fill = match p.subcategory.as_str() {
+                    "Glass" => [190, 218, 236],
+                    "Panel" => [232, 226, 214],
+                    _ => [205, 196, 180],
+                };
+                items.push(ElevItem { id: iid, category: cat, depth: depth - 0.01 * k as f64, polys, holes, lines: vec![], fill, stroke: true, sub: (!p.subcategory.is_empty()).then(|| p.subcategory.clone()), ..Default::default() });
+            }
+            let side = if viewer > 0.0 { crate::famgeom::SymView::Front } else { crate::famgeom::SymView::Back };
+            for (k, y) in s.syms.iter().filter(|y| y.view == side && y.vis.present && at_detail(&y.vis) && !y.filled && y.points.len() >= 2).enumerate() {
+                let pts: Vec<[f64; 2]> = y.points.iter().map(to_view).collect();
+                let mut lines: Vec<[[f64; 2]; 2]> = pts.windows(2).map(|w| [w[0], w[1]]).collect();
+                if y.closed {
+                    lines.push([pts[pts.len() - 1], pts[0]]);
                 }
-                items.push(ElevItem { id: iid, category: "Doors", depth: depth - 0.1, polys: leaves, lines: vec![], fill: [232, 226, 214], stroke: true , ..Default::default() });
-            } else {
-                let polys = vec![rect(uc - half, uc + half, z0, z1), rect(uc - half + inset, uc + half - inset, z0 + inset, z1 - inset)];
-                items.push(ElevItem { id: iid, category: "Windows", depth, polys, lines: vec![[[uc, z0 + inset], [uc, z1 - inset]]], fill: [190, 218, 236], stroke: true , ..Default::default() });
+                items.push(ElevItem { id: iid, category: cat, depth: depth - 0.01 * (n + k) as f64, lines, stroke: true, sub: (!y.subcategory.is_empty()).then(|| y.subcategory.clone()), ..Default::default() });
             }
         }
         // free standing families (furniture, fixtures, generic models): their solids as seen from the view. Seen square
@@ -1839,11 +1857,13 @@ impl Document {
                 items.push(ElevItem { id, category: "Ceilings", depth: dmin - 0.5, polys: vec![convex_hull_2d(pts)], lines: vec![], fill: [214, 212, 206], stroke: true, ..Default::default() });
             }
         }
-        // kerbs, kerb ramps and wheel stops: the faces of their solids turned toward the viewer, and the outline of
-        // those faces. Paint (line marking, bay lines, the access symbol) lies flat on the ground and is edge-on.
+        // kerbs, kerb ramps and wheel stops, structural members, and the doors and windows a section cuts: the faces
+        // of their solids turned toward the viewer, and the outline of those faces. Paint (line marking, bay lines, the access symbol) lies flat on the ground and is edge-on.
         let (lo, hi) = sl.map_or((f64::NEG_INFINITY, f64::INFINITY), |s| (s.lo, s.hi));
-        for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self).into_iter().chain(self.structural_meshes()) {
+        for (id, kind, colour, verts) in crate::mesh::traffic_meshes(self).into_iter().chain(self.structural_meshes()).chain(cut_inserts) {
             let category = match kind {
+                "Doors" => "Doors",
+                "Windows" => "Windows",
                 "Kerb" | "KerbRamp" => "Hardscape",
                 "StructuralColumn" => "Structural Columns",
                 "Beam" => "Structural Framing",
