@@ -1105,6 +1105,8 @@ fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, St
         // how big the mullions and panels are; on a curtain type of those sizes, with the grid as the wall's own lines
         let mut curtains = 0;
         let mut curtain_doors: BTreeSet<u64> = BTreeSet::new();
+        // the curtain wall doors placed in their cells, counted with the doors
+        let mut cell_doors: BTreeSet<u64> = BTreeSet::new();
         let mut taken: BTreeSet<u64> = BTreeSet::new();
         for id in named(&["IFCCURTAINWALL"]) {
             let Some(cw) = e(id) else { continue };
@@ -1264,9 +1266,45 @@ fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, St
             if fresh(&g) {
                 nw.ifc.guid = g;
             }
-            d.transact("Import IFC", |tx| Ok(tx.add(Element::Wall(nw))))?;
+            let wid = d.transact("Import IFC", |tx| Ok(tx.add(Element::Wall(nw))))?;
             curtains += 1;
             taken.extend(parts.iter().copied());
+            // its doors, each filling the cell its body stands in, on the type the file names or one of its size
+            for pid in parts.iter().filter(|pid| kind(**pid).starts_with("IFCDOOR")) {
+                // its body, or without one the box its placement and overall size make (from its corner, Overall Width
+                // along its x and Overall Height up)
+                let pts: Vec<P3> = match bodies.iter().find(|(b, _)| b == pid) {
+                    Some((_, pts)) => pts.clone(),
+                    None => {
+                        let Some(x) = e(*pid) else { continue };
+                        let f = r.frame(x);
+                        let (h, w) = (r.len(x.args.get(8)).unwrap_or(0.0), r.len(x.args.get(9)).unwrap_or(0.0));
+                        vec![f.o, [f.o[0] + f.x[0] * w + f.z[0] * h, f.o[1] + f.x[1] * w + f.z[1] * h, f.o[2] + f.x[2] * w + f.z[2] * h]]
+                    }
+                };
+                let flat: Vec<Point> = pts.iter().map(|p| r.flat(*p)).collect();
+                let (Some((a0, a1)), Some((h0, h1))) = (span(flat.iter().map(along)), span(pts.iter().map(|p| p[2]))) else { continue };
+                let mut at = (a0 + a1) / 2.0 - u0;
+                if flip {
+                    at = len - at;
+                }
+                let cell = match d.get(wid) {
+                    Some(Element::Wall(w)) => d.curtain_layout(w).and_then(|lay| lay.cell_at(mm(at), mm((h0 + h1) / 2.0 - z0))),
+                    _ => None,
+                };
+                let Some((i, j)) = cell else {
+                    out.skipped.push(format!("{}: it is not in a cell of its curtain wall", who(*pid)));
+                    continue;
+                };
+                let placed = opening_type(&mut d, FamilyCategory::Doors, mm(a1 - a0), mm(h1 - h0), label(*pid).as_deref())
+                    .and_then(|tid| d.set_curtain_panel_pinned(wid, i, j, false).and_then(|_| d.set_curtain_panel(wid, i, j, crate::curtain::PanelChoice::Door(tid))));
+                match placed {
+                    Ok(()) => {
+                        cell_doors.insert(*pid);
+                    }
+                    Err(why) => out.skipped.push(format!("{}: {why}", who(*pid))),
+                }
+            }
         }
         out.counts.insert("curtain_walls", curtains);
 
@@ -1335,14 +1373,18 @@ fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, St
         out.counts.insert("floors", floors);
 
         // doors and windows: where their openings cut their walls, on a type of their size
-        let (mut doors, mut windows) = (0, 0);
+        let (mut doors, mut windows) = (cell_doors.len(), 0);
         for id in named(OPENINGS) {
+            // a curtain wall's door went into its cell above (or was reported there)
+            if cell_doors.contains(&id) || (curtain_doors.contains(&id) && e(id).is_some_and(|x| x.name.starts_with("IFCDOOR"))) {
+                continue;
+            }
             let Some(o) = e(id) else { continue };
             let is_door = o.name.starts_with("IFCDOOR");
             let opening = l.fills.get(&id).copied();
             let Some(&(host, a, b, _)) = opening.and_then(|op| l.host.get(&op)).and_then(|h| walls.get(h)) else {
                 let why = if curtain_doors.contains(&id) {
-                    "a door in a curtain wall comes in with curtain wall doors (later); its cell is glazed meanwhile"
+                    "a window in a curtain wall is not imported; its cell is glazed"
                 } else if opening.is_some() {
                     "its wall was left out"
                 } else {
@@ -1523,7 +1565,13 @@ fn valid_guid(g: &str) -> bool {
 
 /// A door or window type `width` by `height`: one the project has, else a copy of the first of the category resized.
 fn opening_type(d: &mut Document, cat: FamilyCategory, width: f64, height: f64, name: Option<&str>) -> Result<Id, String> {
-    let of_cat: Vec<(Id, FamilyType)> = d.family_types().into_iter().filter(|(_, t)| d.family(t.family).is_some_and(|f| f.category == cat)).map(|(i, t)| (i, t.clone())).collect();
+    // the families a wall hosts (not the panels and profiles doors use); the type the file names (Family:Type) first
+    let of_cat: Vec<(Id, FamilyType)> = d.family_types().into_iter().filter(|(_, t)| d.family(t.family).is_some_and(|f| f.category == cat && f.host == crate::family::HostKind::Wall)).map(|(i, t)| (i, t.clone())).collect();
+    if let Some((fam, ty)) = name.and_then(|n| n.split_once(':')) {
+        if let Some((id, _)) = of_cat.iter().find(|(_, t)| t.name.trim() == ty.trim() && d.family(t.family).is_some_and(|f| f.name.trim() == fam.trim())) {
+            return Ok(*id);
+        }
+    }
     let size = |d: &Document, t: &FamilyType| {
         let w = d.type_param(t, "Width").and_then(|v| v.as_f64());
         let h = d.type_param(t, "Height").and_then(|v| v.as_f64());
@@ -1772,8 +1820,9 @@ ENDSEC;\nEND-ISO-10303-21;\n";
         let (us, vs) = n.curtain_grid(&w).unwrap();
         assert_eq!(us.iter().map(|u| u.round()).collect::<Vec<f64>>(), vec![0.0, 1500.0, 3000.0]);
         assert_eq!(vs.iter().map(|v| v.round()).collect::<Vec<f64>>(), vec![0.0, 1200.0, 2400.0]);
-        // the parts are not also left over, and the door says why it waits
-        assert!(!report.skipped.iter().any(|s| s.contains("IFCMEMBER") || s.contains("IFCPLATE")), "{:?}", report.skipped);
-        assert!(report.skipped.iter().any(|s| s.contains("curtain wall doors")), "{:?}", report.skipped);
+        // the parts are not also left over, and the door stands in the cell it was in
+        assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+        let wid = n.iter().find_map(|(id, e)| matches!(e, Element::Wall(_)).then_some(id)).unwrap();
+        assert_eq!((n.curtain_doors(wid).len(), report.counts["doors"]), (1, 1));
     }
 }

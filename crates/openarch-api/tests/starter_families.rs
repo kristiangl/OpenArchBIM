@@ -131,13 +131,20 @@ fn every_starter_door_and_window_draws_in_every_view_schedules_and_exports() {
     let sch = call(&mut s, "schedule", json!({}));
     assert_eq!((sch["doors"]["count"].as_u64(), sch["windows"]["count"].as_u64()), (Some(doors as u64), Some(windows as u64)));
 
-    // IFC: an IfcDoor or IfcWindow each, and they come back (all but the curtain wall door, which the importer leaves
-    // as glass in its cell for now)
+    // IFC: an IfcDoor or IfcWindow each, and they all come back on the types they left on, the curtain wall door in
+    // its cell
     let text = s.doc.export_ifc("Starter families");
     let count = |k: &str| text.matches(k).count();
     assert_eq!((count("=IFCDOOR("), count("=IFCWINDOW(")), (doors, windows));
-    let (_, report) = openarch_model::Document::from_ifc(text.as_bytes()).unwrap();
-    assert_eq!((report.counts["doors"], report.counts["windows"]), (doors - 1, windows), "{report:?}");
-    assert!(report.skipped.len() == 1 && report.skipped[0].contains("Curtain Wall Door"), "{:?}", report.skipped);
+    let (back, report) = openarch_model::Document::from_ifc(text.as_bytes()).unwrap();
+    assert_eq!((report.counts["doors"], report.counts["windows"]), (doors, windows), "{report:?}");
+    assert!(report.skipped.is_empty(), "{:?}", report.skipped);
+    let types = |doc: &openarch_model::Document| doc.family_types().len();
+    assert_eq!(types(&back), types(&s.doc), "no new types: each lands on the one it left on");
+    let cw = back.iter().find_map(|(id, e)| matches!(e, openarch_model::element::Element::Wall(w) if back.curtain_of(w).is_some()).then_some(id)).unwrap();
+    let door = back.curtain_doors(cw);
+    assert_eq!(door.len(), 1);
+    let ty = back.family_type(door[0].3).unwrap();
+    assert_eq!(back.family(ty.family).unwrap().name, "Curtain Wall Door - Single Glazed");
     assert_eq!(seen_families.len(), 21);
 }

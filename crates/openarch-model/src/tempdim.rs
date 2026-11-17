@@ -253,6 +253,21 @@ impl Document {
             }
         };
         both(ow / 2.0, "Opening edge");
+        // the family's own reference planes across the host (any Is Reference but Not a Reference), by name: a door's
+        // frame and wall planes, a window's sash lines
+        if let (Some((fam, _)), Some(solved)) = (self.instance_family(i), self.instance_solved(id)) {
+            if let Ok(s) = solved.as_ref() {
+                let hand = if i.flip_hand { -1.0 } else { 1.0 };
+                for p in fam.body.planes.iter().filter(|p| p.axis == crate::famgeom::Axis::X && p.ref_kind != crate::famgeom::RefKind::NotReference) {
+                    if let Some(x) = s.planes.get(&p.id) {
+                        let v = hand * x;
+                        if !out.iter().any(|(o, _)| (o - v).abs() < 0.01) {
+                            out.push((v, p.name.clone()));
+                        }
+                    }
+                }
+            }
+        }
         out
     }
 
@@ -1062,6 +1077,20 @@ mod tests {
         let lines = d.dim_lines(door).unwrap();
         let labels: Vec<&str> = lines.own.iter().map(|l| l.label.as_str()).collect();
         assert!(labels.contains(&"Centre") && labels.contains(&"Opening edge"), "{labels:?}");
+        // the family's own reference planes come too, by name: the leaf's Left and Right, the Metroll frame's soffits
+        // 1.5 outside them (its Wall planes 15 further are the hole's edges, so they keep that name)
+        let from_centre = |lines: &DimLines, name: &str| {
+            let c = lines.own.iter().find(|l| l.label == "Centre").unwrap().pos;
+            lines.own.iter().filter(|l| l.label == name).map(|l| ((l.pos - c) * 10.0).round() / 10.0).collect::<Vec<_>>()
+        };
+        let (left, frame) = (from_centre(&lines, "Left"), from_centre(&lines, "Frame Left"));
+        assert_eq!((left.len(), frame.len(), from_centre(&lines, "Right").len()), (1, 1, 1), "{labels:?}");
+        assert_eq!((left[0].abs(), frame[0].abs(), left[0].signum() == frame[0].signum()), (410.0, 411.5, true));
+        // flipping the hand puts the family's left on the other side
+        d.patch_instance(door, &serde_json::json!({ "flip_hand": true })).unwrap();
+        let flipped = d.dim_lines(door).unwrap();
+        assert_eq!(from_centre(&flipped, "Frame Left"), vec![-frame[0]]);
+        d.patch_instance(door, &serde_json::json!({ "flip_hand": false })).unwrap();
         // the left edge of the hole and the inner face of the west wall
         let own = lines.own.iter().filter(|l| l.label == "Opening edge").min_by(|a, b| a.pos.total_cmp(&b.pos)).unwrap().clone();
         let tgt = lines.targets.iter().filter(|l| l.spec.element() == w[3]).max_by(|a, b| a.pos.total_cmp(&b.pos)).unwrap().clone();
