@@ -139,7 +139,7 @@ impl Ctx<'_> {
             return None;
         }
         let (a1, a2) = np.sketch_axes();
-        Some(Node { u: self.coord(&n.u, p[index(a1)]), v: self.coord(&n.v, p[index(a2)]) })
+        Some(Node { u: self.coord(&n.u, p[index(a1)]), v: self.coord(&n.v, p[index(a2)]), pin: n.pin })
     }
     /// Whether the change turns a sketch over (arcs then run the other way).
     fn flips(&self) -> bool {
@@ -166,6 +166,7 @@ impl Ctx<'_> {
                     let ang = (t2[index(a2)] - c2[index(a2)]).atan2(t2[index(a1)] - c2[index(a1)]).to_degrees();
                     Some(SegShape::Ellipse { centre: self.node(centre, np, w0)?, rx: *rx, ry: *ry, rotation_deg: (ang * 1e6).round() / 1e6, ccw: if flip { !ccw } else { *ccw } })
                 }
+                Some(SegShape::Arc { centre, ccw }) => Some(SegShape::Arc { centre: self.node(centre, np, w0)?, ccw: if flip { !ccw } else { *ccw } }),
             });
         }
         Some(Loop { nodes, bulges, closed: l.closed, shapes })
@@ -367,7 +368,7 @@ impl FamilyBody {
                     return Err("a control changes in the view it belongs to".into());
                 }
                 let c = &self.controls[k];
-                let nd = cx.node(&Node { u: c.u, v: c.v }, cx.n, 0.0).ok_or("a control could not be changed")?;
+                let nd = cx.node(&Node::new(c.u, c.v), cx.n, 0.0).ok_or("a control could not be changed")?;
                 self.controls[k].u = nd.u;
                 self.controls[k].v = nd.v;
             }
@@ -375,7 +376,7 @@ impl FamilyBody {
                 let k = self.connectors.iter().position(|c| c.id == i).ok_or_else(gone)?;
                 let (np, w0) = cx.plane(self, self.connectors[k].plane)?;
                 let c = &self.connectors[k];
-                let nd = cx.node(&Node { u: c.u, v: c.v }, np, w0).ok_or_else(|| format!("{} a connector {OFF_PLANE}", what(&x)))?;
+                let nd = cx.node(&Node::new(c.u, c.v), np, w0).ok_or_else(|| format!("{} a connector {OFF_PLANE}", what(&x)))?;
                 self.connectors[k].u = nd.u;
                 self.connectors[k].v = nd.v;
             }
@@ -386,7 +387,7 @@ impl FamilyBody {
                 let k = self.model_texts.iter().position(|t| t.id == i).ok_or_else(gone)?;
                 let (np, w0) = cx.plane(self, self.model_texts[k].plane)?;
                 let t = &self.model_texts[k];
-                let nd = cx.node(&Node { u: t.u, v: t.v }, np, w0).ok_or_else(|| format!("{} Model Text {OFF_PLANE}", what(&x)))?;
+                let nd = cx.node(&Node::new(t.u, t.v), np, w0).ok_or_else(|| format!("{} Model Text {OFF_PLANE}", what(&x)))?;
                 self.model_texts[k].u = nd.u;
                 self.model_texts[k].v = nd.v;
             }
@@ -506,7 +507,7 @@ impl FamilyBody {
         }
         let pts: Vec<[f64; 2]> = path.nodes.iter().map(|q| [cx.val(&q.u), cx.val(&q.v)]).collect();
         let out = offset_polyline(&pts, &path.bulges, path.closed, dist, toward)?;
-        let new_path = Loop { nodes: out.iter().map(|p| Node { u: Coord::at(round6(p[0])), v: Coord::at(round6(p[1])) }).collect(), bulges: path.bulges.clone(), closed: path.closed, shapes: vec![] };
+        let new_path = Loop { nodes: out.iter().map(|p| Node::new(Coord::at(round6(p[0])), Coord::at(round6(p[1])))).collect(), bulges: path.bulges.clone(), closed: path.closed, shapes: vec![] };
         let it = if copy { self.copy_item(it, &pos)? } else { it };
         match it {
             FamItem::Mline(i) => self.model_lines.iter_mut().find(|m| m.id == i).unwrap().path = new_path,
@@ -655,7 +656,7 @@ mod tests {
         }
     }
     fn line(pts: &[[f64; 2]], closed: bool) -> Loop {
-        Loop { nodes: pts.iter().map(|p| Node { u: Coord::at(p[0]), v: Coord::at(p[1]) }).collect(), bulges: vec![0.0; pts.len()], closed, shapes: vec![] }
+        Loop { nodes: pts.iter().map(|p| Node::new(Coord::at(p[0]), Coord::at(p[1]))).collect(), bulges: vec![0.0; pts.len()], closed, shapes: vec![] }
     }
     fn mline(b: &mut FamilyBody, pts: &[[f64; 2]]) -> u32 {
         let id = b.take_id();
@@ -695,7 +696,7 @@ mod tests {
         let mut b = FamilyBody::template();
         let r = b.add_offset_plane("Right", PLANE_LR, "300").unwrap();
         let id = b.take_id();
-        let path = Loop { nodes: vec![Node { u: Coord::on(r), v: Coord::at(0.0) }, Node { u: Coord::on(r), v: Coord::at(500.0) }], bulges: vec![0.0, 0.0], closed: false, shapes: vec![] };
+        let path = Loop { nodes: vec![Node::new(Coord::on(r), Coord::at(0.0)), Node::new(Coord::on(r), Coord::at(500.0))], bulges: vec![0.0, 0.0], closed: false, shapes: vec![] };
         b.model_lines.push(ModelLine { id, name: String::new(), plane: PLANE_LEVEL, path, subcategory: String::new(), vis: Visibility::default() });
         // up and down: still on the Right plane
         b.transform_items(&[FamItem::Mline(id)], SymView::Plan, FamXform::Move { du: 0.0, dv: 100.0 }, false, &mut env()).unwrap();

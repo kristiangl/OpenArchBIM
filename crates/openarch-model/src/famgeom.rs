@@ -209,11 +209,61 @@ impl Coord {
 pub struct Node {
     pub u: Coord,
     pub v: Coord,
+    /// Held on a reference line instead of by `u` and `v`: the point follows the line as it turns and grows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pin: Option<LinePin>,
 }
 
 impl Node {
     pub fn new(u: Coord, v: Coord) -> Node {
-        Node { u, v }
+        Node { u, v, pin: None }
+    }
+    /// A point held on reference line `line`, `at` 0 for its start and 1 for its end.
+    pub fn on_line(line: u32, at: f64) -> Node {
+        Node { u: Coord::at(0.0), v: Coord::at(0.0), pin: Some(LinePin { line, at }) }
+    }
+}
+
+/// Where on a reference line a sketch point is held: `at` 0 is its start, 1 its end.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub struct LinePin {
+    pub line: u32,
+    pub at: f64,
+}
+
+/// A reference line: a straight reference drawn in one view, from a start point locked to planes like any sketch
+/// point, turned by an angle and running for a length. The angle is its angular dimension, measured counter-clockwise
+/// from the view's horizontal; a number, an Angle parameter such as `[Swing Angle]` (a labelled angular dimension) or
+/// a formula. Sketch points held on its ends, and arcs centred on them, turn and grow with it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct RefLine {
+    pub id: u32,
+    #[serde(default)]
+    pub name: String,
+    pub view: SymView,
+    pub start: Node,
+    pub angle: String,
+    pub length: String,
+    #[serde(default)]
+    pub ref_kind: RefKind,
+    /// The radius the angular dimension is drawn at, when moved from the default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dim_at: Option<f64>,
+}
+
+/// Plane positions and reference line ends share one map: each line's ends sit at keys from here (six per line,
+/// x, y and z of its start then of its end), far above any id a body hands out.
+pub const LINE_KEY: u32 = 1 << 30;
+
+fn line_key(id: u32, k: u32) -> u32 {
+    LINE_KEY + id * 8 + k
+}
+
+fn axis_index(a: Axis) -> usize {
+    match a {
+        Axis::X => 0,
+        Axis::Y => 1,
+        Axis::Z => 2,
     }
 }
 
@@ -248,6 +298,14 @@ pub enum SegShape {
         ry: f64,
         #[serde(default)]
         rotation_deg: f64,
+        #[serde(default = "yes")]
+        ccw: bool,
+    },
+    /// A circular arc about `centre`, from the segment's first node round to where its last node lies, turning the
+    /// way `ccw` says. Its radius is the first node's distance from the centre. A swing arc centred on a reference
+    /// line's start this way follows the line's angle.
+    Arc {
+        centre: Node,
         #[serde(default = "yes")]
         ccw: bool,
     },
@@ -689,6 +747,8 @@ pub struct FamilyBody {
     pub model_texts: Vec<ModelText>,
     #[serde(default)]
     pub dims: Vec<DimDef>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub ref_lines: Vec<RefLine>,
     /// Lookup tables read by `size_lookup` in this family's formulas. They live with the body so they travel with it
     /// into the editor, the family file and the project.
     #[serde(default)]
@@ -737,7 +797,7 @@ impl FamilyBody {
     }
 
     pub fn take_id(&mut self) -> u32 {
-        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.model_lines.iter().map(|m| m.id)).chain(self.controls.iter().map(|c| c.id)).chain(self.connectors.iter().map(|c| c.id)).chain(self.model_texts.iter().map(|t| t.id)).chain(self.dims.iter().map(|d| d.id)).max().unwrap_or(0);
+        let used = self.planes.iter().map(|p| p.id).chain(self.forms.iter().map(|f| f.id)).chain(self.syms.iter().map(|s| s.id)).chain(self.nested.iter().map(|n| n.id)).chain(self.model_lines.iter().map(|m| m.id)).chain(self.controls.iter().map(|c| c.id)).chain(self.connectors.iter().map(|c| c.id)).chain(self.model_texts.iter().map(|t| t.id)).chain(self.dims.iter().map(|d| d.id)).chain(self.ref_lines.iter().map(|l| l.id)).max().unwrap_or(0);
         self.next_id = self.next_id.max(used) + 1;
         self.next_id
     }
@@ -798,7 +858,7 @@ impl FamilyBody {
             l.nodes.iter().any(on)
                 || l.shapes.iter().flatten().any(|s| match s {
                     SegShape::Spline { through } => through.iter().any(on),
-                    SegShape::Ellipse { centre, .. } => on(centre),
+                    SegShape::Ellipse { centre, .. } | SegShape::Arc { centre, .. } => on(centre),
                 })
         };
         let used_by_form = self.forms.iter().any(|f| {
@@ -814,7 +874,8 @@ impl FamilyBody {
             || self.model_lines.iter().any(|m| m.plane == id || in_loop(&m.path))
             || self.controls.iter().any(|c| c.u.plane == Some(id) || c.v.plane == Some(id))
             || self.connectors.iter().any(|c| c.plane == id || c.u.plane == Some(id) || c.v.plane == Some(id))
-            || self.model_texts.iter().any(|t| t.plane == id || t.u.plane == Some(id) || t.v.plane == Some(id));
+            || self.model_texts.iter().any(|t| t.plane == id || t.u.plane == Some(id) || t.v.plane == Some(id))
+            || self.ref_lines.iter().any(|l| on(&l.start));
         if used_by_plane || used_by_form || used_by_sym {
             return Err("something is locked to this reference plane".into());
         }
@@ -1236,6 +1297,11 @@ impl FamilyBody {
                 f(what, by);
             }
         }
+        for l in &mut self.ref_lines {
+            let what = if l.name.is_empty() { format!("reference line {}", l.id) } else { format!("reference line '{}'", l.name) };
+            f(format!("{what} (angle)"), &mut l.angle);
+            f(format!("{what} (length)"), &mut l.length);
+        }
         for fm in &mut self.forms {
             let what = label(fm);
             match &mut fm.shape {
@@ -1484,6 +1550,7 @@ pub struct SolvedConnector {
 #[derive(Debug, Clone, Default)]
 pub struct Solved {
     pub planes: BTreeMap<PlaneId, f64>,
+    pub ref_lines: Vec<SolvedRefLine>,
     /// Reporting parameters read from dimensions: name and measured distance.
     pub reports: Vec<(String, f64)>,
     pub forms: Vec<SolvedForm>,
@@ -1500,11 +1567,23 @@ impl Solved {
     }
 }
 
-/// A spline or ellipse segment with its points placed.
+/// A reference line worked out: its ends in its view's sketch axes, its angle (degrees) and length.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SolvedRefLine {
+    pub id: u32,
+    pub view: SymView,
+    pub a: Point,
+    pub b: Point,
+    pub angle: f64,
+    pub length: f64,
+}
+
+/// A spline, ellipse or centred arc segment with its points placed.
 #[derive(Debug, Clone)]
 pub enum PlacedShape {
     Spline(Vec<Point>),
     Ellipse { centre: Point, rx: f64, ry: f64, rotation_deg: f64, ccw: bool },
+    Arc { centre: Point, ccw: bool },
 }
 
 /// Points along the chain `l` (nodes already placed), arcs cut into short chords.
@@ -1527,6 +1606,25 @@ fn shape_points(p0: Point, p1: Point, sh: &PlacedShape, closed_alone: bool, tol:
                 v.pop();
             }
             v
+        }
+        PlacedShape::Arc { centre, ccw } => {
+            let r = p0.dist(centre);
+            let a0 = (p0.y - centre.y).atan2(p0.x - centre.x);
+            let a1 = (p1.y - centre.y).atan2(p1.x - centre.x);
+            let tau = std::f64::consts::TAU;
+            let mut sweep = (a1 - a0).rem_euclid(tau);
+            if !*ccw {
+                sweep -= tau;
+            }
+            if sweep.abs() < 1e-9 || r < 1e-9 {
+                return vec![p0];
+            }
+            let step = 2.0 * (1.0 - (tol / r.max(tol * 2.0)).min(0.5)).acos();
+            let k = ((sweep.abs() / step.max(0.02)).ceil() as usize).clamp(4, 720);
+            (0..k).map(|j| {
+                let a = a0 + sweep * j as f64 / k as f64;
+                Point::new(centre.x + r * a.cos(), centre.y + r * a.sin())
+            }).collect()
         }
         PlacedShape::Ellipse { centre, rx, ry, rotation_deg, ccw } => {
             // the parameter angle of a point on the ellipse
@@ -1629,6 +1727,22 @@ impl FamilyBody {
             }
             left = rest;
         }
+        // reference lines, in order: a line may start on the end of one drawn before it
+        for l in &self.ref_lines {
+            let what = || if l.name.is_empty() { format!("reference line {}", l.id) } else { format!("reference line '{}'", l.name) };
+            let normal = l.view.normal();
+            let axes = normal.sketch_axes();
+            let s = self.node_point(&pos, &l.start, axes).map_err(|e| format!("{}: {e}", what()))?;
+            let angle = eval_num(&l.angle, env).map_err(|e| format!("{} angle: {e}", what()))?.to_radians();
+            let length = eval_num(&l.length, env).map_err(|e| format!("{} length: {e}", what()))?;
+            let e = Point::new(s.x + length * angle.cos(), s.y + length * angle.sin());
+            for (k, p) in [s, e].into_iter().enumerate() {
+                let xyz = normal.point(p.x, p.y, 0.0);
+                for (i, v) in xyz.into_iter().enumerate() {
+                    pos.insert(line_key(l.id, k as u32 * 3 + i as u32), v);
+                }
+            }
+        }
         Ok(pos)
     }
 
@@ -1645,8 +1759,34 @@ impl FamilyBody {
         }
     }
 
+    /// A sketch node in the sketch axes `axes`: on its planes, or where its reference line holds it.
+    fn node_point(&self, pos: &BTreeMap<PlaneId, f64>, n: &Node, axes: (Axis, Axis)) -> Result<Point, String> {
+        let Some(pin) = n.pin else { return Ok(Point::new(self.coord(pos, &n.u, axes.0)?, self.coord(pos, &n.v, axes.1)?)) };
+        let end = |k: u32| (0..3).map(|i| pos.get(&line_key(pin.line, k * 3 + i)).copied()).collect::<Option<Vec<f64>>>();
+        let (Some(a), Some(b)) = (end(0), end(1)) else { return Err(format!("a sketch point is held on reference line {} that is missing", pin.line)) };
+        let q: Vec<f64> = (0..3).map(|i| a[i] + (b[i] - a[i]) * pin.at).collect();
+        Ok(Point::new(q[axis_index(axes.0)], q[axis_index(axes.1)]))
+    }
+
     fn place(&self, pos: &BTreeMap<PlaneId, f64>, l: &Loop, axes: (Axis, Axis)) -> Result<Vec<Point>, String> {
-        l.nodes.iter().map(|n| Ok(Point::new(self.coord(pos, &n.u, axes.0)?, self.coord(pos, &n.v, axes.1)?))).collect()
+        l.nodes.iter().map(|n| self.node_point(pos, n, axes)).collect()
+    }
+
+    /// The reference lines worked out from `pos` (which `solve_planes` filled with their ends).
+    pub fn solved_ref_lines(&self, pos: &BTreeMap<PlaneId, f64>) -> Vec<SolvedRefLine> {
+        let mut out = Vec::new();
+        for l in &self.ref_lines {
+            let axes = l.view.normal().sketch_axes();
+            let get = |k: u32| pos.get(&line_key(l.id, k)).copied();
+            let p = |k: u32| -> Option<Point> {
+                let v = [get(k * 3)?, get(k * 3 + 1)?, get(k * 3 + 2)?];
+                Some(Point::new(v[axis_index(axes.0)], v[axis_index(axes.1)]))
+            };
+            if let (Some(a), Some(b)) = (p(0), p(1)) {
+                out.push(SolvedRefLine { id: l.id, view: l.view, a, b, angle: (b.y - a.y).atan2(b.x - a.x).to_degrees(), length: a.dist(&b) });
+            }
+        }
+        out
     }
 
     /// The loop as points: its nodes placed, arcs, splines and ellipses cut into short chords.
@@ -1655,7 +1795,7 @@ impl FamilyBody {
         if l.shapes.iter().all(|s| s.is_none()) {
             return Ok(tessellate_loop(&pts, l, TOL));
         }
-        let pt = |n: &Node| -> Result<Point, String> { Ok(Point::new(self.coord(pos, &n.u, axes.0)?, self.coord(pos, &n.v, axes.1)?)) };
+        let pt = |n: &Node| -> Result<Point, String> { self.node_point(pos, n, axes) };
         let mut placed = Vec::with_capacity(l.shapes.len());
         for s in &l.shapes {
             placed.push(match s {
@@ -1667,6 +1807,7 @@ impl FamilyBody {
                     }
                     Some(PlacedShape::Ellipse { centre: pt(centre)?, rx: *rx, ry: *ry, rotation_deg: *rotation_deg, ccw: *ccw })
                 }
+                Some(SegShape::Arc { centre, ccw }) => Some(PlacedShape::Arc { centre: pt(centre)?, ccw: *ccw }),
             });
         }
         Ok(tessellate_shaped(&pts, &placed, l, TOL))
@@ -1765,7 +1906,7 @@ impl FamilyBody {
     pub fn solve_with(&self, env: &mut Env, nested: &mut NestedResolver) -> Result<Solved, String> {
         let _tables = self.tables_in_reach();
         let planes = self.solve_planes(env)?;
-        let mut out = Solved { planes: planes.clone(), ..Default::default() };
+        let mut out = Solved { planes: planes.clone(), ref_lines: self.solved_ref_lines(&planes), ..Default::default() };
         for d in &self.dims {
             if let (Some(name), Some(a), Some(b)) = (&d.reports_to, planes.get(&d.a), planes.get(&d.b)) {
                 out.reports.push((name.clone(), (b - a).abs()));

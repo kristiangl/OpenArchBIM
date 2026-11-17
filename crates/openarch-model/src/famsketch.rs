@@ -125,6 +125,11 @@ pub fn curves_from_loops(loops: &[Loop], planes: &BTreeMap<PlaneId, f64>) -> Res
                     let (t0, t1) = (crate::sketch::ellipse_param(&e, a).unwrap_or(0.0), crate::sketch::ellipse_param(&e, b).unwrap_or(0.0));
                     curves.push(Curve::Ellipse { centre: c, rx, ry, rotation_deg, t0_deg: Some(t0), t1_deg: Some(t1), ccw });
                 }
+                // an arc about a node: in a form's sketch it is an ordinary arc where it stands now
+                Some(SegShape::Arc { centre, ccw }) => {
+                    let c = node_pos(&centre, planes).ok_or_else(missing)?;
+                    curves.push(Curve::Arc { start: a, end: b, centre: c, ccw });
+                }
                 None => {
                     let bulge = l.bulges.get(i).copied().unwrap_or(0.0);
                     if bulge.abs() > 1e-9 {

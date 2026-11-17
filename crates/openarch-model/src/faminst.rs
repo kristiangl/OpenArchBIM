@@ -572,6 +572,65 @@ mod tests {
     }
 
     #[test]
+    fn a_swing_angle_turns_a_reference_line_and_what_is_held_on_it() {
+        // a hinge line at the left jamb on the face, turned by Swing Angle and as long as the door is wide;
+        // the leaf runs along it and the swing arc goes from the closed leaf's end round its start to its end
+        let mut fam = hatch_family();
+        fam.body.syms.clear();
+        let left = fam.body.planes.iter().find(|p| p.name == "Left").unwrap().id;
+        let right = fam.body.planes.iter().find(|p| p.name == "Right").unwrap().id;
+        let line = fam.body.take_id();
+        fam.body.ref_lines.push(RefLine { id: line, name: "Hinge".into(), view: SymView::Plan, start: Node::new(Coord::on(left), Coord::on(PLANE_FB)), angle: "[Swing Angle]".into(), length: "[Width]".into(), ref_kind: RefKind::Weak, dim_at: None });
+        let sym = |path: Loop| SymElement { id: 0, view: SymView::Plan, path, filled: false, masking: false, subcategory: "Plan Swing".into(), vis: Visibility::default() };
+        fam.body.add_sym(sym(Loop { nodes: vec![Node::on_line(line, 0.0), Node::on_line(line, 1.0)], bulges: vec![], closed: false, shapes: vec![] }));
+        let arc = Loop { nodes: vec![Node::new(Coord::on(right), Coord::on(PLANE_FB)), Node::on_line(line, 1.0)], bulges: vec![0.0], closed: false, shapes: vec![Some(SegShape::Arc { centre: Node::on_line(line, 0.0), ccw: true })] };
+        fam.body.add_sym(sym(arc));
+        fam.params.push(ParamDef { name: "Swing Angle".into(), param_kind: ParamKind::Angle, instance: true, default: ParamValue::Number(90.0), ..fam.params[0].clone() });
+        let mut d = Document::new_project();
+        let (fid, types) = d.add_family(fam, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let at = |deg: f64| {
+            let s = d.family_preview(fid, Some(types[0]), &BTreeMap::from([("Swing Angle".to_string(), ParamValue::Number(deg))])).unwrap();
+            assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+            (s.ref_lines[0].clone(), s.syms[0].points.clone(), s.syms[1].points.clone())
+        };
+        let close = |p: Point, x: f64, y: f64| (p.x - x).abs() < 0.01 && (p.y - y).abs() < 0.01;
+        let (l, leaf, arc) = at(90.0);
+        assert!(close(l.a, -450.0, 0.0) && close(l.b, -450.0, 900.0) && (l.angle - 90.0).abs() < 1e-9 && (l.length - 900.0).abs() < 1e-9, "{l:?}");
+        assert!(close(leaf[0], -450.0, 0.0) && close(leaf[1], -450.0, 900.0), "{leaf:?}");
+        assert!(close(arc[0], 450.0, 0.0) && close(*arc.last().unwrap(), -450.0, 900.0), "{arc:?}");
+        assert!(arc.iter().all(|p| (p.dist(&Point::new(-450.0, 0.0)) - 900.0).abs() < 0.01), "every point of the arc is 900 from the hinge");
+        // 45 degrees: the leaf, its end and the arc's end turn with the line, the arc stays round the hinge
+        let (_, leaf, arc) = at(45.0);
+        let r = 900.0 / 2f64.sqrt();
+        assert!(close(leaf[1], -450.0 + r, r) && close(*arc.last().unwrap(), -450.0 + r, r), "{leaf:?}");
+        assert!(arc.len() < 40 && arc.iter().all(|p| (p.dist(&Point::new(-450.0, 0.0)) - 900.0).abs() < 0.01));
+        // placed: an instance's own Swing Angle turns its plan swing
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        d.patch_instance(inst, &json!({ "values": { "Swing Angle": 30.0 } })).unwrap();
+        let solved = d.instance_solved(inst).unwrap();
+        let s = solved.as_ref().as_ref().unwrap();
+        let end = s.syms[0].points[1];
+        assert!(close(end, -450.0 + 900.0 * 30f64.to_radians().cos(), 900.0 * 30f64.to_radians().sin()), "{end:?}");
+        // a file round trip keeps the line and the pins; a point without a pin writes none
+        let back: FamilyBody = serde_json::from_str(&serde_json::to_string(&s_body(&d, fid)).unwrap()).unwrap();
+        assert_eq!(back.ref_lines, s_body(&d, fid).ref_lines);
+        assert_eq!(back.syms[0].path.nodes[1].pin, Some(LinePin { line, at: 1.0 }));
+        assert!(!serde_json::to_string(&Node::new(Coord::at(1.0), Coord::at(2.0))).unwrap().contains("pin"));
+        // the plane the line starts on cannot be deleted from under it
+        let mut b = s_body(&d, fid);
+        assert!(b.remove_plane(left).is_err());
+        // a renamed parameter reaches the line's angle
+        b.rename_param("Swing Angle", "Open Angle");
+        assert_eq!(b.ref_lines[0].angle, "[Open Angle]");
+    }
+
+    fn s_body(d: &Document, fid: Id) -> FamilyBody {
+        d.family(fid).unwrap().body.clone()
+    }
+
+    #[test]
     fn a_family_type_parameter_swaps_the_nested_panel_family() {
         // two panel families of the Doors category: a plain leaf 900 wide and a glazed one 500 wide
         let leaf = |name: &str| {

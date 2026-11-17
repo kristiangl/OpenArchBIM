@@ -232,8 +232,11 @@ const FamModel = (() => {
 
   const newId = () => {
     const b = S.body;
-    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.model_lines || []).map((x) => x.id), ...(b.controls || []).map((x) => x.id), ...(b.connectors || []).map((x) => x.id), ...(b.model_texts || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id));
+    return 1 + Math.max(0, ...b.planes.map((x) => x.id), ...b.forms.map((x) => x.id), ...b.syms.map((x) => x.id), ...(b.nested || []).map((x) => x.id), ...(b.model_lines || []).map((x) => x.id), ...(b.controls || []).map((x) => x.id), ...(b.connectors || []).map((x) => x.id), ...(b.model_texts || []).map((x) => x.id), ...(b.dims || []).map((x) => x.id), ...(b.ref_lines || []).map((x) => x.id));
   };
+  const rlineById = (id) => (S.body.ref_lines || []).find((l) => l.id === id);
+  // the reference lines worked out, those shown in this view (Back shows Front's, Left shows Right's)
+  const viewRefLines = () => (S.pv.ref_lines || []).filter((l) => PREVIEW_KEY[l.view] === PREVIEW_KEY[S.view]);
   const planeById = (id) => S.body.planes.find((p) => p.id === id);
   const formById = (id) => S.body.forms.find((f) => f.id === id);
   const symById = (id) => S.body.syms.find((f) => f.id === id);
@@ -437,7 +440,7 @@ const FamModel = (() => {
 
   // ---- ribbon commands ----
   const TOOL_OF = {
-    "f-select": "select", "f-plane": "plane", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
+    "f-select": "select", "f-plane": "plane", "f-refline": "rline", "f-dim": "dim", "f-align": "align", "f-ext": "ext", "f-void": "void",
     "f-blend": "blend", "f-revolve": "revolve", "f-sweep": "sweep", "f-swblend": "swblend", "f-sym": "sym", "f-region": "region",
     "f-mline": "mline", "f-control": "control", "f-mtext": "mtext", "f-comp": "comp",
     "f-mv": "move", "f-cp": "copy", "f-ro": "rotate", "f-of": "offset",
@@ -731,6 +734,7 @@ const FamModel = (() => {
     const tips = {
       select: "Click to select. Drag a reference plane or a sketch point of a selected form to move it. Click a dimension's padlock to lock it, or its EQ to equalise. Delete removes the selection.",
       plane: "Click the start of the reference plane, then click its end (or drag). The line it follows sets the direction.",
+      rline: "Click the start of the reference line (it locks to the reference planes it sits on), then its end. Its angle is an angular dimension: label it with an Angle parameter in Properties. Symbolic lines drawn to its ends, and arcs about its start, turn with it.",
       dim: "Click two or more parallel reference planes, then click in empty space to place the dimension. Select it to label it with a parameter, lock it or equalise it (EQ).",
       ext: "Sketch the profile on the work plane. Points near a reference plane lock to it (Lock to planes in the options bar). Select the form to see a padlock on each edge that sits on a plane.",
       void: "Sketch the void. A void that cuts the host makes the opening in the wall.",
@@ -826,11 +830,12 @@ const FamModel = (() => {
     else if (s.kind === "mtext") mtextProps(r, mtextById(s.id));
     else if (s.kind === "comp") compProps(r, compById(s.id));
     else if (s.kind === "conn") connProps(r, connById(s.id));
+    else if (s.kind === "rline") rlineProps(r, rlineById(s.id));
     flex(r);
     ctxRefresh();
   }
 
-  const KIND_NAMES = { plane: "Reference Planes", form: "Forms", sym: "Symbolic Lines", mline: "Model Lines", ctrl: "Controls", conn: "Connectors", mtext: "Model Text", comp: "Components", dim: "Dimensions" };
+  const KIND_NAMES = { plane: "Reference Planes", form: "Forms", sym: "Symbolic Lines", mline: "Model Lines", ctrl: "Controls", conn: "Connectors", mtext: "Model Text", comp: "Components", dim: "Dimensions", rline: "Reference Lines" };
   function multiProps(r, items) {
     r.append(el("div", "famed-hint", `Multiple (${items.length})`));
     const counts = {};
@@ -1922,6 +1927,7 @@ const FamModel = (() => {
       ctx.strokeStyle = selected ? accent : "#2f8f5b"; ctx.lineWidth = selected ? 2.5 : 1.5; ctx.stroke();
     }
     drawModelItems(accent);
+    drawRefLines(accent);
     drawSketchOverlay(accent);
     // reference planes
     ctx.font = "11px system-ui, sans-serif";
@@ -2261,9 +2267,16 @@ const FamModel = (() => {
     return [];
   }
   function nodePos(n) {
+    if (n.pin) {
+      const l = (S.pv.ref_lines || []).find((q) => q.id === n.pin.line);
+      if (!l) return null;
+      return { u: l.a[0] + (l.b[0] - l.a[0]) * n.pin.at, v: l.a[1] + (l.b[1] - l.a[1]) * n.pin.at };
+    }
     const co = (c) => (c.plane ? (pos(c.plane) ?? 0) + (c.off || 0) : c.off || 0);
     return { u: co(n.u), v: co(n.v) };
   }
+  // a sketch node from a snapped point: held on a reference line's end when it snapped to one
+  const ndOf = (p) => (p.pin ? { u: { off: 0 }, v: { off: 0 }, pin: { ...p.pin } } : { u: coordOf(p.u), v: coordOf(p.v) });
 
   function drawDraft(V) {
     const { ctx } = S;
@@ -2289,6 +2302,14 @@ const FamModel = (() => {
     if (!d || !S.mouse) return;
     ctx.strokeStyle = css("--accent"); ctx.lineWidth = 1.5; ctx.setLineDash([4, 3]);
     const m = snapPoint(S.mouse.x, S.mouse.y);
+    if (d.kind === "rline") {
+      const { ang, len } = lineEndOf(d.a, S.mouse.x, S.mouse.y), t = (ang * Math.PI) / 180;
+      const a = P(d.a.pt), b = P({ u: d.a.pt.u + len * Math.cos(t), v: d.a.pt.v + len * Math.sin(t) });
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.setLineDash([]);
+      ctx.fillStyle = css("--accent"); ctx.beginPath(); ctx.arc(a.x, a.y, 3.5, 0, Math.PI * 2); ctx.fill();
+      ctx.font = "11px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom"; ctx.fillText(`${ang}°  ${len}`, b.x + 8, b.y - 4);
+      return;
+    }
     if (d.kind === "plane") {
       const a = P(d.a), dx = S.mouse.x - a.x, dy = S.mouse.y - a.y;
       ctx.beginPath();
@@ -2560,6 +2581,16 @@ const FamModel = (() => {
       if (at === undefined) continue;
       if (p.axis === V.h) { const d = Math.abs(w2s(at, 0).x - sx); if (d < bu) { bu = d; out.u = tie(p, at); out.pt.u = at; out.snap = true; } }
       else { const d = Math.abs(w2s(0, at).y - sy); if (d < bv) { bv = d; out.v = tie(p, at); out.pt.v = at; out.snap = true; } }
+    }
+    // the ends of a reference line win: a point there is held on the line and turns with it
+    if (S.tool !== "rline") {
+      let best = 10;
+      for (const l of viewRefLines()) {
+        for (const [at, q] of [[0, l.a], [1, l.b]]) {
+          const sp = w2s(q[0], q[1]), d = Math.hypot(sp.x - sx, sp.y - sy);
+          if (d < best) { best = d; out.pt = { u: q[0], v: q[1] }; out.u = { plane: null, off: q[0] }; out.v = { plane: null, off: q[1] }; out.pin = { line: l.id, at }; out.snap = true; }
+        }
+      }
     }
     return out;
   }
@@ -2865,6 +2896,8 @@ const FamModel = (() => {
   }
   function hitItem(sx, sy) {
     const w = s2w(sx, sy);
+    const rl = hitRefLine(sx, sy);
+    if (rl != null) return { kind: "rline", id: rl };
     for (const c of S.pv.controls || []) {
       if (c.view !== S.view || !c.present) continue;
       const p = w2s(c.at[0], c.at[1]);
@@ -2947,6 +2980,9 @@ const FamModel = (() => {
         if (!dh) { S.drag = { box: true, x: m.x, y: m.y, mode: add ? "add" : "remove" }; return; }
       }
       if (dh) { await clickDim(dh); return; }
+      // a reference line (or its angle) is picked before a plane it may lie along
+      const rl = hitRefLine(m.x, m.y);
+      if (rl != null) { S.sel = { kind: "rline", id: rl }; props(); render(); return; }
       const pl = hitPlane(m.x, m.y);
       if (pl) {
         // temporary dimensions sit near where the plane was picked
@@ -3023,6 +3059,12 @@ const FamModel = (() => {
       const pl = hitPlane(m.x, m.y);
       if (!pl) { S.msg = "Click a reference plane."; status(); return; }
       await finishPick(pl);
+      return;
+    }
+    if (t === "rline") {
+      if (S.view === "3d") { S.msg = "Draw reference lines in a plan or elevation view."; status(); return; }
+      if (S.draft && S.draft.kind === "rline") { await finishRefLine(m); return; }
+      S.draft = { kind: "rline", a: lineStart(m.x, m.y) };
       return;
     }
     if (t === "plane") {
@@ -3201,9 +3243,16 @@ const FamModel = (() => {
   // Move a sketch node; the other nodes of the loop that shared its u or v follow, so a rectangle stays one
   function moveNode(h, sp) {
     const n = h.loop.nodes[h.i];
+    if (n.pin || sp.pin) {
+      // a point held on a reference line lets go when dragged off it, and one dragged onto a line's end is held there
+      delete n.pin;
+      if (sp.pin) { n.pin = { ...sp.pin }; n.u = { off: 0 }; n.v = { off: 0 }; } else { n.u = coordOf(sp.u); n.v = coordOf(sp.v); }
+      return;
+    }
     const same = (a, b) => (a.plane || null) === (b.plane || null) && (a.off || 0) === (b.off || 0);
     const ou = { ...n.u }, ov = { ...n.v };
     for (const o of h.loop.nodes) {
+      if (o.pin) continue;
       if (same(o.u, ou)) o.u = coordOf(sp.u);
       if (same(o.v, ov)) o.v = coordOf(sp.v);
     }
@@ -3243,6 +3292,101 @@ const FamModel = (() => {
   }
 
   // The second point of a reference plane: the stroke from the first decides which way it runs, like a grid.
+  // where a reference line starts: on the planes it snaps to, locked to them
+  function lineStart(sx, sy) {
+    const keep = S.lockNew;
+    S.lockNew = true;
+    try { return snapPoint(sx, sy); } finally { S.lockNew = keep; }
+  }
+  const lineEndOf = (a, sx, sy) => {
+    const e = snapPoint(sx, sy).pt;
+    let ang = (Math.atan2(e.v - a.pt.v, e.u - a.pt.u) * 180) / Math.PI;
+    // Shift keeps any angle; otherwise it settles on whole degrees, and on the axes and 45s when near them
+    if (!S.shift) { ang = Math.round(ang); for (const k of [-180, -135, -90, -45, 0, 45, 90, 135, 180]) if (Math.abs(ang - k) <= 2) ang = k; }
+    return { ang: ang === -180 ? 180 : ang, len: Math.round(Math.hypot(e.u - a.pt.u, e.v - a.pt.v)) };
+  };
+  async function finishRefLine(m) {
+    const a = S.draft.a, { ang, len } = lineEndOf(a, m.x, m.y);
+    if (len < 1) { S.msg = "Click the end of the line, away from its start."; status(); return; }
+    S.draft = null;
+    const view = S.view;
+    await change((b) => {
+      const id = newId();
+      const n = (b.ref_lines || []).length + 1;
+      (b.ref_lines = b.ref_lines || []).push({ id, name: `Reference Line ${n}`, view, start: { u: coordOf(a.u), v: coordOf(a.v) }, angle: String(ang), length: String(len), ref_kind: "weak" });
+      S.sel = { kind: "rline", id };
+    });
+    S.msg = "Label its angle with an Angle parameter in Properties to turn it, and what is drawn on it, by that parameter."; status();
+  }
+  // Reference lines in this view, and the angular dimension of each that is selected or labelled: an arc from the
+  // view's horizontal at the start round to the line, with its value (and label)
+  function drawRefLines(accent) {
+    const ctx = S.ctx;
+    ctx.font = "11px system-ui, sans-serif";
+    S.angleHits = [];
+    for (const l of viewRefLines()) {
+      const def = rlineById(l.id);
+      const selected = selHas("rline", l.id);
+      const a = w2s(l.a[0], l.a[1]), b = w2s(l.b[0], l.b[1]);
+      ctx.strokeStyle = selected ? accent : "#2f9e44"; ctx.lineWidth = selected ? 2.5 : 1.4;
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      ctx.fillStyle = ctx.strokeStyle;
+      for (const q of [a, b]) { ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill(); }
+      if (!def) continue;
+      const label = assocOf(def.angle, "angle");
+      const plain = /^\s*-?\d+(\.\d+)?\s*$/.test(def.angle);
+      if (!selected && plain) continue;
+      // the arc, in world terms so it follows the view's flip
+      const r = def.dim_at || Math.max(200, l.length * 0.45), th = (l.angle * Math.PI) / 180, steps = 32;
+      ctx.strokeStyle = selected ? accent : "#2a5db0"; ctx.lineWidth = 1;
+      ctx.beginPath();
+      for (let i = 0; i <= steps; i++) { const t = (th * i) / steps, q = w2s(l.a[0] + r * Math.cos(t), l.a[1] + r * Math.sin(t)); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }
+      ctx.stroke();
+      const mid = w2s(l.a[0] + (r + 40 / cam().k) * Math.cos(th / 2), l.a[1] + (r + 40 / cam().k) * Math.sin(th / 2));
+      const deg = `${Math.round(l.angle * 100) / 100}°`;
+      const text = label ? `${label} = ${deg}` : plain ? deg : `${def.angle} = ${deg}`;
+      ctx.fillStyle = ctx.strokeStyle; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, mid.x, mid.y);
+      const w = ctx.measureText(text).width;
+      S.angleHits.push({ id: l.id, x: mid.x - w / 2 - 3, y: mid.y - 9, w: w + 6, h: 18 });
+    }
+  }
+  function hitRefLine(sx, sy) {
+    const h = (S.angleHits || []).find((q) => sx >= q.x && sx <= q.x + q.w && sy >= q.y && sy <= q.y + q.h);
+    if (h) return h.id;
+    for (const l of viewRefLines()) {
+      const a = w2s(l.a[0], l.a[1]), b = w2s(l.b[0], l.b[1]);
+      const l2 = (b.x - a.x) ** 2 + (b.y - a.y) ** 2 || 1;
+      const t = Math.max(0, Math.min(1, ((sx - a.x) * (b.x - a.x) + (sy - a.y) * (b.y - a.y)) / l2));
+      if (Math.hypot(a.x + t * (b.x - a.x) - sx, a.y + t * (b.y - a.y) - sy) < 5) return l.id;
+    }
+    return null;
+  }
+  function rlineProps(r, l) {
+    if (!l) return;
+    const V = VIEWS[l.view] || VIEWS.plan;
+    const got = (S.pv.ref_lines || []).find((q) => q.id === l.id);
+    r.append(el("div", "famed-hint", `Reference line, ${V.label} views. Its angle is measured counter-clockwise from the view's horizontal, about its start. Symbolic lines drawn to its ends, and arcs centred on its start, turn and grow with it.`));
+    const set = (fn) => change((b) => { fn(rlineById(l.id)); });
+    r.append(field("Name", textIn(l.name || "", (v) => set((x) => { x.name = v; }))));
+    r.append(el("div", "famed-h", "Start"));
+    coordRow(r, "Horizontal", l.start.u, (v) => set((x) => { x.start.u = v; }), V.h);
+    coordRow(r, "Vertical", l.start.v, (v) => set((x) => { x.start.v = v; }), V.v);
+    r.append(el("div", "famed-h", "Angular dimension"));
+    const angIn = textIn(l.angle, (v) => set((x) => { x.angle = v.trim() || "0"; }), { list: S.params.filter((p) => p.param_kind === "angle").map((p) => `[${p.name}]`) });
+    r.append(assocRow("Angle", "angle", assocOf(l.angle, "angle"), angIn, (name, add) => change((b) => {
+      if (add) S.params.push(add);
+      const x = rlineById(l.id);
+      x.angle = name ? `[${name}]` : String(got ? Math.round(got.angle * 100) / 100 : 0);
+    }), null, got ? Math.round(got.angle * 100) / 100 : 90));
+    if (got) r.append(el("div", "famed-hint", `Now ${Math.round(got.angle * 100) / 100}°. A formula works too, such as 180 - [Swing Angle] for a leaf hung on the other side.`));
+    const lenIn = textIn(l.length, (v) => set((x) => { x.length = v.trim() || "0"; }), { list: lengthParams() });
+    r.append(assocRow("Length", "length", assocOf(l.length, "length"), lenIn, (name, add) => change((b) => {
+      if (add) S.params.push(add);
+      const x = rlineById(l.id);
+      x.length = name ? `[${name}]` : String(got ? Math.round(got.length) : 1000);
+    }), null, got ? Math.round(got.length) : 1000));
+    r.append(field("Dimension radius", textIn(l.dim_at ? String(l.dim_at) : "", (v) => set((x) => { const n = Number(v); x.dim_at = v.trim() && n > 0 ? n : null; }))));
+  }
   async function finishPlane(m) {
     const dr = S.draft;
     const dx = m.x - dr.down.x, dy = m.y - dr.down.y;
@@ -4201,7 +4345,7 @@ const FamModel = (() => {
     if (k > 1 && q[k - 1].pt.u === q[k - 2].pt.u && q[k - 1].pt.v === q[k - 2].pt.v) q.pop(); // a double click adds its point twice
     if (S.tool === "sym" || S.tool === "mline") {
       if (d.pts.length < 2) return;
-      await addSym({ nodes: d.pts.map((p) => ({ u: coordOf(p.u), v: coordOf(p.v) })), bulges: [], closed: false }, false);
+      await addSym({ nodes: d.pts.map(ndOf), bulges: [], closed: false }, false);
       return;
     }
     if (d.pts.length < 3) { S.msg = "A polygon needs three points."; status(); return; }
@@ -4239,7 +4383,22 @@ const FamModel = (() => {
     const [A, B, M] = d.pts;
     const a = arcFrom3(A.pt, B.pt, M.pt);
     if (!a || Math.hypot(A.pt.u - B.pt.u, A.pt.v - B.pt.v) < 1) { S.msg = "Those three points do not make an arc."; status(); return; }
-    await addSym({ nodes: [A, B].map((p) => ({ u: coordOf(p.u), v: coordOf(p.v) })), bulges: [a.bulge], closed: false }, false);
+    // an arc with an end on a reference line's end, the other as far from the line's start, keeps its centre on the
+    // start: a swing arc then follows the line's angle
+    const swing = arcAboutLine(A, B);
+    const shapes = swing ? [{ type: "arc", centre: { u: { off: 0 }, v: { off: 0 }, pin: { line: swing, at: 0 } }, ccw: a.bulge > 0 }] : undefined;
+    await addSym({ nodes: [A, B].map(ndOf), bulges: [a.bulge], closed: false, ...(shapes ? { shapes } : {}) }, false);
+    if (swing) { S.msg = "The arc is centred on the reference line's start and follows its angle."; status(); }
+  }
+  function arcAboutLine(A, B) {
+    for (const end of [A, B]) {
+      if (!end.pin || end.pin.at !== 1) continue;
+      const l = (S.pv.ref_lines || []).find((q) => q.id === end.pin.line);
+      if (!l) continue;
+      const other = end === A ? B : A;
+      if (Math.abs(Math.hypot(other.pt.u - l.a[0], other.pt.v - l.a[1]) - l.length) <= Math.max(1, l.length * 0.01)) return l.id;
+    }
+    return null;
   }
   async function finishRegion(sp) {
     const d = S.draft; S.draft = null;
@@ -4386,9 +4545,9 @@ const FamModel = (() => {
     if (s.kind === "multi") {
       // geometry first, in one step, then dimensions, then the planes nothing holds any more
       const items = s.items, of = (k) => new Set(items.filter((x) => x.kind === k).map((x) => x.id));
-      const forms = of("form"), syms = of("sym"), mlines = of("mline"), ctrls = of("ctrl"), comps = of("comp"), mtexts = of("mtext"), conns = of("conn");
+      const forms = of("form"), syms = of("sym"), mlines = of("mline"), ctrls = of("ctrl"), comps = of("comp"), mtexts = of("mtext"), conns = of("conn"), rlines = of("rline");
       S.sel = null;
-      if (forms.size || syms.size || mlines.size || ctrls.size || comps.size || mtexts.size || conns.size) {
+      if (forms.size || syms.size || mlines.size || ctrls.size || comps.size || mtexts.size || conns.size || rlines.size) {
         await change((b) => {
           b.forms = b.forms.filter((f) => !forms.has(f.id));
           b.forms.forEach((f) => { f.cut_by = (f.cut_by || []).filter((x) => !forms.has(x)); });
@@ -4398,6 +4557,7 @@ const FamModel = (() => {
           b.nested = (b.nested || []).filter((y) => !comps.has(y.id));
           b.model_texts = (b.model_texts || []).filter((y) => !mtexts.has(y.id));
           b.connectors = (b.connectors || []).filter((y) => !conns.has(y.id));
+          b.ref_lines = (b.ref_lines || []).filter((y) => !rlines.has(y.id));
         });
       }
       for (const id of of("dim")) if (dimById(id)) await edit("remove_dim", { dim: id }, true);
@@ -4430,6 +4590,11 @@ const FamModel = (() => {
       else if (s.kind === "comp") b.nested = (b.nested || []).filter((y) => y.id !== s.id);
       else if (s.kind === "mtext") b.model_texts = (b.model_texts || []).filter((y) => y.id !== s.id);
       else if (s.kind === "conn") b.connectors = (b.connectors || []).filter((y) => y.id !== s.id);
+      else if (s.kind === "rline") {
+        const held = (l) => (l.nodes || []).some((n) => n.pin && n.pin.line === s.id) || (l.shapes || []).some((x) => x && x.centre && x.centre.pin && x.centre.pin.line === s.id);
+        if (b.syms.some((y) => held(y.path)) || (b.model_lines || []).some((y) => held(y.path))) throw new Error("Lines are held on this reference line. Delete them first, or drag their points off it.");
+        b.ref_lines = (b.ref_lines || []).filter((y) => y.id !== s.id);
+      }
       S.sel = null;
     });
   }
