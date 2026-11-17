@@ -1,0 +1,555 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Door Panel - Flush Vision Panel",
+    "category": "doors",
+    "host": "none",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Set by the door",
+        "locked": false,
+        "default": 820.0
+      },
+      {
+        "name": "Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Set by the door",
+        "locked": false,
+        "default": 2040.0
+      },
+      {
+        "name": "Thickness",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Set by the door",
+        "locked": false,
+        "default": 40.0
+      },
+      {
+        "name": "Door Material",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Glass",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Glass"
+      },
+      {
+        "name": "Glass Thickness",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 6.0
+      },
+      {
+        "name": "Vision Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 150.0
+      },
+      {
+        "name": "Vision Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 600.0
+      },
+      {
+        "name": "Vision Sill Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "From the bottom of the leaf",
+        "locked": false,
+        "default": 1000.0
+      },
+      {
+        "name": "Vision Offset",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The vision panel's centre from the leaf's centre, positive to the right",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Flush door leaf with a glazed vision panel."
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Ref. Level",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 11,
+          "name": "Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "-[Width] / 2"
+          },
+          "ref_kind": "left"
+        },
+        {
+          "id": 12,
+          "name": "Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "[Width] / 2"
+          },
+          "ref_kind": "right"
+        },
+        {
+          "id": 13,
+          "name": "Top",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Height]"
+          },
+          "ref_kind": "top"
+        },
+        {
+          "id": 14,
+          "name": "Vision Centre",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "[Vision Offset]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 15,
+          "name": "Vision Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 14,
+            "by": "-[Vision Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 16,
+          "name": "Vision Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 14,
+            "by": "[Vision Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 17,
+          "name": "Vision Sill",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Vision Sill Height]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 18,
+          "name": "Vision Head",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 17,
+            "by": "[Vision Height]"
+          },
+          "ref_kind": "weak"
+        }
+      ],
+      "forms": [
+        {
+          "id": 19,
+          "name": "Leaf",
+          "shape": {
+            "type": "extrusion",
+            "plane": 2,
+            "start": "-[Thickness] / 2",
+            "end": "[Thickness] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 11,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 3,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 12,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 3,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 12,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 13,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 11,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 13,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              },
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 15,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 17,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 16,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 17,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 16,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 18,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 15,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 18,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "",
+          "material_param": "Door Material",
+          "subcategory": "Panel",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": false,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 20,
+          "name": "Vision Glass",
+          "shape": {
+            "type": "extrusion",
+            "plane": 2,
+            "start": "-[Glass Thickness] / 2",
+            "end": "[Glass Thickness] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 15,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 17,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 16,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 17,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 16,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 18,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 15,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 18,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "Glass",
+          "material_param": "Glass",
+          "subcategory": "Glass",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": false,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "syms": [],
+      "nested": [],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": false,
+      "next_id": 20
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true,
+      "subcategories": [
+        "Panel",
+        "Glass"
+      ]
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "150 x 600",
+      "values": {}
+    },
+    {
+      "name": "300 x 900",
+      "values": {
+        "Vision Height": 900.0,
+        "Vision Sill Height": 800.0,
+        "Vision Width": 300.0
+      }
+    }
+  ]
+}

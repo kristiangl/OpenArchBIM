@@ -1,0 +1,281 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Door Panel - Flush",
+    "category": "doors",
+    "host": "none",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Set by the door",
+        "locked": false,
+        "default": 820.0
+      },
+      {
+        "name": "Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Set by the door",
+        "locked": false,
+        "default": 2040.0
+      },
+      {
+        "name": "Thickness",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Set by the door",
+        "locked": false,
+        "default": 40.0
+      },
+      {
+        "name": "Door Material",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Flush door leaf."
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Ref. Level",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 11,
+          "name": "Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "-[Width] / 2"
+          },
+          "ref_kind": "left"
+        },
+        {
+          "id": 12,
+          "name": "Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "[Width] / 2"
+          },
+          "ref_kind": "right"
+        },
+        {
+          "id": 13,
+          "name": "Top",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Height]"
+          },
+          "ref_kind": "top"
+        }
+      ],
+      "forms": [
+        {
+          "id": 14,
+          "name": "Leaf",
+          "shape": {
+            "type": "extrusion",
+            "plane": 2,
+            "start": "-[Thickness] / 2",
+            "end": "[Thickness] / 2",
+            "start_lock": null,
+            "end_lock": null,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 11,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 3,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 12,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 3,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 12,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 13,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 11,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 13,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "",
+          "material_param": "Door Material",
+          "subcategory": "Panel",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": false,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "syms": [],
+      "nested": [],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": false,
+      "next_id": 14
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true,
+      "subcategories": [
+        "Panel"
+      ]
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "Flush",
+      "values": {}
+    }
+  ]
+}

@@ -474,6 +474,50 @@ mod tests {
     }
 
     #[test]
+    fn a_door_swaps_between_the_starter_panels_with_its_door_panel_type() {
+        // a door from the template nests a panel at its centre, sized by the door, picked by Door Panel Type
+        let mut d = Document::new_project();
+        let fid = d.new_family_from("Panel Test", crate::famtemplate::Template::Door).unwrap();
+        let mut body = d.family(fid).unwrap().body.clone();
+        let nid = body.take_id();
+        let params = BTreeMap::from([("Width".to_string(), "[Width]".to_string()), ("Height".to_string(), "[Height]".to_string()), ("Thickness".to_string(), "[Thickness]".to_string())]);
+        body.nested.push(Nested { id: nid, family: "Door Panel - Flush".into(), type_name: "Flush".into(), type_param: Some("Door Panel Type".into()), name: "Panel".into(), origin: [Coord::on(PLANE_LR), Coord::on(PLANE_FB), Coord::on(PLANE_LEVEL)], rotation_deg: 0.0, work_plane: None, flip: false, mirror: false, params, vis: Visibility::default() });
+        d.set_family_def(fid, None, Some(body)).unwrap();
+        let tid = d.family_types().into_iter().find(|(_, t)| t.family == fid).unwrap().0;
+        let choices = d.family_type_choices(Some(FamilyCategory::Doors));
+        let vol = |f: &crate::famgeom::SolvedForm| -> f64 {
+            f.solid.tris.iter().map(|t| {
+                let [a, b, c] = *t;
+                (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+            }).sum::<f64>().abs()
+        };
+        // (choice, the glazed opening's width and height): the leaf is 820 x 2040 x 40 less it, the glass 6 thick
+        for (choice, gw, gh) in [
+            ("Door Panel - Flush : Flush", 0.0, 0.0),
+            ("Door Panel - Flush Vision Panel : 150 x 600", 150.0, 600.0),
+            ("Door Panel - Flush Vision Panel : 300 x 900", 300.0, 900.0),
+            ("Door Panel - Glazed : Full Glazed", 820.0 - 220.0, 2040.0 - 110.0 - 200.0),
+            ("Door Panel - Glazed : Half Glazed", 600.0, 2040.0 - 110.0 - 1000.0),
+            ("Door Panel - Glazed : Aluminium Framed", 820.0 - 120.0, 2040.0 - 60.0 - 100.0),
+        ] {
+            assert!(choices.contains(&choice.to_string()), "{choice} in {choices:?}");
+            let values = BTreeMap::from([("Door Panel Type".to_string(), ParamValue::Text(choice.into()))]);
+            let s = d.family_preview(fid, Some(tid), &values).unwrap();
+            assert!(s.warnings.is_empty(), "{choice}: {:?}", s.warnings);
+            let mine: Vec<_> = s.forms.iter().filter(|f| f.owner == Some(nid)).collect();
+            let leaf = mine.iter().find(|f| f.subcategory == "Panel").unwrap();
+            let b = tri_box(leaf);
+            let r = |v: f64| v.round();
+            assert_eq!([r(b[0][0]), r(b[1][0]), r(b[0][1]), r(b[1][1]), r(b[0][2]), r(b[1][2])], [-410.0, 410.0, -20.0, 20.0, 0.0, 2040.0], "{choice}");
+            assert!((vol(leaf) - (820.0 * 2040.0 - gw * gh) * 40.0).abs() < 1.0, "{choice}: {}", vol(leaf));
+            let glass: f64 = mine.iter().filter(|f| f.subcategory == "Glass").map(|f| vol(f)).sum();
+            assert!((glass - gw * gh * 6.0).abs() < 1.0, "{choice}: {glass}");
+            // the door draws the open leaf in plan; the closed panel shows in elevation and 3D only
+            assert!(mine.iter().all(|f| !f.vis.plan && f.vis.front_back && f.vis.three_d), "{choice}");
+        }
+    }
+
+    #[test]
     fn a_raked_head_cuts_its_own_shape_in_the_wall() {
         let mut fam = hatch_family();
         fam.body.forms.retain(|f| !f.void);

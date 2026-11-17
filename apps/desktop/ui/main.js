@@ -1619,7 +1619,11 @@ Plan.callbacks.tool = (t) => { if (t !== "select") app.browserSel = null; clearS
 Plan.callbacks.prompt = (t) => setPrompt(t);
 
 // ---- doors and windows -----------------------------------------------------------
-const familyTypes = (category) => app.info.family_types.filter((t) => t.category === category);
+// doors and windows are the wall-hosted families of their category: the panels they nest are left out
+const familyTypes = (category) => {
+  const fams = new Map((app.info.families || []).map((f) => [f.id, f]));
+  return app.info.family_types.filter((t) => t.category === category && (!["Doors", "Windows"].includes(category) || fams.get(t.family_id)?.host === "wall"));
+};
 const placeCategory = (tool) => (tool === "door" ? "Doors" : "Windows");
 const placeTypeId = (tool) => (tool === "door" ? app.doorTypeId : tool === "hosted" || tool === "component" ? app.componentTypeId : app.windowTypeId);
 
