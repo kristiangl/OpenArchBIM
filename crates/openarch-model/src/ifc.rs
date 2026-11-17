@@ -1254,7 +1254,7 @@ mod tests {
         let door = types.iter().find(|(_, f)| cat(&d, *f) == Some(FamilyCategory::Doors)).unwrap().0;
         d.place_on_wall(door, a, Point::new(1500.0, 0.0)).unwrap();
         // a free standing component (the ceiling-hosted starters need a ceiling)
-        let comp = types.iter().find(|(_, f)| !matches!(cat(&d, *f), Some(FamilyCategory::Doors | FamilyCategory::Windows) | None) && d.family(*f).is_some_and(|f| f.host == crate::family::HostKind::None)).map(|t| t.0);
+        let comp = types.iter().find(|(_, f)| !matches!(cat(&d, *f), Some(FamilyCategory::Doors | FamilyCategory::Windows | FamilyCategory::Profiles) | None) && d.family(*f).is_some_and(|f| f.host == crate::family::HostKind::None)).map(|t| t.0);
         if let Some(c) = comp {
             d.place_free(c, lvl, Point::new(2000.0, 2000.0), 0.0, 0.0).unwrap();
         }

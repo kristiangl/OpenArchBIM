@@ -429,6 +429,51 @@ mod tests {
     }
 
     #[test]
+    fn the_starter_profiles_sweep_to_their_supplier_sizes() {
+        // each bundled profile swept 1000 along x on the level: profile x goes across (world y), profile y up (z)
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let names: Vec<String> = d.families().into_iter().filter(|(_, f)| f.category == FamilyCategory::Profiles).map(|(_, f)| f.name.clone()).collect();
+        assert_eq!(names.len(), 5, "{names:?}");
+        let mut sweep = |family: &str, type_name: &str| {
+            let mut b = FamilyBody::template();
+            let n = |x: f64| Node::new(Coord::from(PLANE_LR, x), Coord::on(PLANE_FB));
+            let path = Loop { nodes: vec![n(-500.0), n(500.0)], bulges: vec![], closed: false, shapes: vec![] };
+            let pu = crate::famgeom::ProfileUse { family: family.into(), type_name: type_name.into(), type_param: None, params: BTreeMap::new() };
+            b.add_form(form(FormShape::Sweep { plane: PLANE_LEVEL, path, profile: vec![], profile_angle: 0.0, flip: false, profile_family: Some(pu) }, false, "Frame/Mullion"));
+            let mut rail = desk_family();
+            rail.name = format!("Rail {family} {type_name}");
+            rail.body = b;
+            let (_, rt) = d.add_family(rail, vec![("t".into(), BTreeMap::new())]).unwrap();
+            let inst = d.place_free(rt[0], lvl, Point::new(0., 0.), 0.0, 0.0).unwrap();
+            let solved = d.instance_solved(inst).unwrap();
+            let s = solved.as_ref().as_ref().unwrap();
+            assert!(s.warnings.is_empty(), "{family} {type_name}: {:?}", s.warnings);
+            let f = &s.forms[0];
+            let bx = tri_box(f);
+            // the volume of the closed solid over its length is the profile's area
+            let vol: f64 = f.solid.tris.iter().map(|t| {
+                let [a, b, c] = *t;
+                (a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0]) + a[2] * (b[0] * c[1] - b[1] * c[0])) / 6.0
+            }).sum();
+            let r = |v: f64| (v * 10.0).round() / 10.0;
+            ([r(bx[0][1]), r(bx[1][1]), r(bx[0][2]), r(bx[1][2])], r(vol.abs() / 1000.0))
+        };
+        // Metroll Square Bend 95: soffit at 0, legs 40 back, stop rib 15 proud; 133 across (95 + 2 x 19)
+        let (bx, area) = sweep("Metal Door Frame - Square Bend", "95");
+        assert_eq!(bx, [-40.0, 15.0, -66.5, 66.5]);
+        // 1.1 steel round lips 2 x 10, returns 2 x 19, legs 2 x 40, soffit 80, rib 2 x 15 + 53: about 301 long
+        assert!((area - 301.0 * 1.1).abs() < 15.0, "{area}");
+        assert_eq!(sweep("Metal Door Frame - Square Bend", "114").0, [-40.0, 15.0, -76.0, 76.0]);
+        assert_eq!(sweep("Metal Door Frame - Square Bend Slider", "114").0, [-40.0, 0.0, -73.0, 73.0]);
+        // timber 138 x 30 less its 38 x 12 rebate
+        let (bx, area) = sweep("Timber Door Jamb - Rebated", "138 x 30");
+        assert_eq!((bx, area), ([-30.0, 0.0, -69.0, 69.0], 138.0 * 30.0 - 38.0 * 12.0));
+        assert_eq!(sweep("Aluminium Window Frame", "Awning"), ([0.0, 30.0, -26.0, 26.0], 52.0 * 30.0));
+        assert_eq!(sweep("Aluminium Sliding Door Frame", "Stacking Door").0, [0.0, 45.0, -81.0, 81.0]);
+    }
+
+    #[test]
     fn a_raked_head_cuts_its_own_shape_in_the_wall() {
         let mut fam = hatch_family();
         fam.body.forms.retain(|f| !f.void);

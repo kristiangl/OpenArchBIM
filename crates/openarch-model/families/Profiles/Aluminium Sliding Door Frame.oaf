@@ -1,0 +1,264 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Aluminium Sliding Door Frame",
+    "category": "profiles",
+    "host": "none",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Frame Depth",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Across the wall",
+        "locked": false,
+        "default": 100.0
+      },
+      {
+        "name": "Frame Face",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The sightline: into the opening from the outer edge",
+        "locked": false,
+        "default": 45.0
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Aluminium sliding, stacking or bifold door outer frame as an outline. Origin on the frame's outer edge at its centre across the wall. Wideline stacking frame 162 deep with the fly screen track, bifold outer frame 100."
+      },
+      {
+        "name": "Manufacturer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Ref. Level",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 11,
+          "name": "Inner Edge",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "[Frame Face]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 12,
+          "name": "Exterior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Frame Depth] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 13,
+          "name": "Interior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Frame Depth] / 2"
+          },
+          "ref_kind": "weak"
+        }
+      ],
+      "forms": [],
+      "syms": [
+        {
+          "id": 14,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 12,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 12,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [],
+            "closed": true
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "nested": [],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": false,
+      "next_id": 14
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "Sliding Door",
+      "values": {
+        "Frame Depth": 100.0
+      }
+    },
+    {
+      "name": "Stacking Door",
+      "values": {
+        "Frame Depth": 162.0
+      }
+    },
+    {
+      "name": "Bifold Door",
+      "values": {
+        "Frame Depth": 100.0
+      }
+    }
+  ]
+}

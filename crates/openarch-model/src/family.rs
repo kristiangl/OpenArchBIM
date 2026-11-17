@@ -767,5 +767,27 @@ pub fn starter_families() -> Vec<StarterFamily> {
     ]
     .into_iter()
     .chain(crate::ceiling::starter_ceiling_families())
+    .chain(bundled_families())
     .collect()
+}
+
+/// The starter families shipped as family files (door-window-spec.md step 3), opened and changed in the family
+/// editor like any other.
+const BUNDLED: [(&str, &str); 5] = [
+    ("Metal Door Frame - Square Bend", include_str!("../families/Profiles/Metal Door Frame - Square Bend.oaf")),
+    ("Metal Door Frame - Square Bend Slider", include_str!("../families/Profiles/Metal Door Frame - Square Bend Slider.oaf")),
+    ("Timber Door Jamb - Rebated", include_str!("../families/Profiles/Timber Door Jamb - Rebated.oaf")),
+    ("Aluminium Window Frame", include_str!("../families/Profiles/Aluminium Window Frame.oaf")),
+    ("Aluminium Sliding Door Frame", include_str!("../families/Profiles/Aluminium Sliding Door Frame.oaf")),
+];
+
+/// The bundled family files read into starter families, with their types.
+pub fn bundled_families() -> Vec<StarterFamily> {
+    BUNDLED
+        .iter()
+        .map(|(name, text)| {
+            let file: crate::faminst::FamilyFile = serde_json::from_str(text).unwrap_or_else(|e| panic!("bundled family {name}: {e}"));
+            StarterFamily { family: file.family, types: file.types.into_iter().map(|t| (t.name, t.values)).collect() }
+        })
+        .collect()
 }

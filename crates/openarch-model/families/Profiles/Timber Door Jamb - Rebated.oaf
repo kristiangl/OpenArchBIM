@@ -1,0 +1,328 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Timber Door Jamb - Rebated",
+    "category": "profiles",
+    "host": "none",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Jamb Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Across the wall",
+        "locked": false,
+        "default": 119.0
+      },
+      {
+        "name": "Jamb Thickness",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 30.0
+      },
+      {
+        "name": "Rebate Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Across the wall: the door's thickness and a little",
+        "locked": false,
+        "default": 38.0
+      },
+      {
+        "name": "Rebate Depth",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Into the jamb from the stop face",
+        "locked": false,
+        "default": 12.0
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Rebated timber door jamb (retail Meranti sizes). Origin on the stop face at the wall centreline; the rebate is on the interior side."
+      },
+      {
+        "name": "Manufacturer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Ref. Level",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 11,
+          "name": "Back",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "-[Jamb Thickness]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 12,
+          "name": "Rebate Face",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "-[Rebate Depth]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 13,
+          "name": "Exterior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Jamb Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 14,
+          "name": "Interior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Jamb Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 15,
+          "name": "Rebate Line",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Jamb Width] / 2 + [Rebate Width]"
+          },
+          "ref_kind": "weak"
+        }
+      ],
+      "forms": [],
+      "syms": [
+        {
+          "id": 16,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 14,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 12,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 14,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 12,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 15,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 15,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [],
+            "closed": true
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "nested": [],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": false,
+      "next_id": 16
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "119 x 30",
+      "values": {
+        "Jamb Width": 119.0
+      }
+    },
+    {
+      "name": "138 x 30",
+      "values": {
+        "Jamb Width": 138.0
+      }
+    }
+  ]
+}

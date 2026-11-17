@@ -1,0 +1,557 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Metal Door Frame - Square Bend",
+    "category": "profiles",
+    "host": "none",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Back Opening",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The wall thickness the frame fits round, between its back lips",
+        "locked": false,
+        "default": 95.0
+      },
+      {
+        "name": "Frame Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Across the wall, architrave face to architrave face",
+        "locked": false,
+        "default": 133.0
+      },
+      {
+        "name": "Leg Depth",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The architrave legs on the wall faces, from the soffit back",
+        "locked": false,
+        "default": 40.0
+      },
+      {
+        "name": "Stop Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Back Opening] - 42",
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "The stop rib across the soffit",
+        "locked": false,
+        "default": 53.0
+      },
+      {
+        "name": "Stop Depth",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "How far the stop rib stands proud of the soffit",
+        "locked": false,
+        "default": 15.0
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Metroll Square Bend pressed metal door frame, jamb and head. Origin on the soffit at the wall centreline; the frame is ordered 3 wider per leaf than the door."
+      },
+      {
+        "name": "Manufacturer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Ref. Level",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 11,
+          "name": "Back",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "-[Leg Depth]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 12,
+          "name": "Exterior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Frame Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 13,
+          "name": "Interior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Frame Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 14,
+          "name": "Exterior Wall Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Back Opening] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 15,
+          "name": "Interior Wall Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Back Opening] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 16,
+          "name": "Stop Face",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "[Stop Depth]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 17,
+          "name": "Stop Exterior",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Stop Width] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 18,
+          "name": "Stop Interior",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Stop Width] / 2"
+          },
+          "ref_kind": "weak"
+        }
+      ],
+      "forms": [],
+      "syms": [
+        {
+          "id": 19,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 10.0
+                },
+                "v": {
+                  "plane": 14,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 14,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 12,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 12,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 17,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 16,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 17,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 16,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 18,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 18,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 15,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 10.0
+                },
+                "v": {
+                  "plane": 15,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 10.0
+                },
+                "v": {
+                  "plane": 15,
+                  "off": -1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 1.1
+                },
+                "v": {
+                  "plane": 15,
+                  "off": -1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 1.1
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -1.1
+                },
+                "v": {
+                  "plane": 13,
+                  "off": 1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -1.1
+                },
+                "v": {
+                  "plane": 18,
+                  "off": 1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 16,
+                  "off": -1.1
+                },
+                "v": {
+                  "plane": 18,
+                  "off": 1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 16,
+                  "off": -1.1
+                },
+                "v": {
+                  "plane": 17,
+                  "off": -1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -1.1
+                },
+                "v": {
+                  "plane": 17,
+                  "off": -1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -1.1
+                },
+                "v": {
+                  "plane": 12,
+                  "off": -1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 1.1
+                },
+                "v": {
+                  "plane": 12,
+                  "off": -1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 1.1
+                },
+                "v": {
+                  "plane": 14,
+                  "off": 1.1
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 10.0
+                },
+                "v": {
+                  "plane": 14,
+                  "off": 1.1
+                }
+              }
+            ],
+            "bulges": [],
+            "closed": true
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "nested": [],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": false,
+      "next_id": 19
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "95",
+      "values": {
+        "Back Opening": 95.0,
+        "Frame Width": 133.0
+      }
+    },
+    {
+      "name": "114",
+      "values": {
+        "Back Opening": 114.0,
+        "Frame Width": 152.0
+      }
+    }
+  ]
+}
