@@ -18,6 +18,8 @@ const FamModel = (() => {
   const VIEW_TITLE = { plan: "Floor Plan: Ref. Level", front: "Elevation: Front", back: "Elevation: Back", left: "Elevation: Left", right: "Elevation: Right", "3d": "3D View: View 1" };
   const KINDS = [["length", "Length"], ["number", "Number"], ["integer", "Integer"], ["angle", "Angle"], ["yes_no", "Yes/No"], ["text", "Text"], ["material", "Material"], ["family_type", "Family Type"]];
   const SUBS = ["Frame/Mullion", "Panel", "Glass", "Plan Swing"];
+  // the family's own subcategories (a door or window template lists them), else the usual few
+  const subs = () => (S && S.settings && (S.settings.subcategories || []).length ? S.settings.subcategories : SUBS);
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
   const num = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
@@ -78,15 +80,15 @@ const FamModel = (() => {
     openModal("New Family - Select Template", (body, foot, close) => {
       const name = el("input"); name.type = "text"; name.value = "New Family";
       const cat = el("select");
-      [["generic_models", "Generic Model (free standing)"], ["doors", "Door (hosted in a wall)"], ["windows", "Window (hosted in a wall)"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; cat.append(o); });
+      [["generic_models", "Generic Model (free standing)"], ["door", "Door (hosted in a wall)"], ["window", "Window (hosted in a wall)"], ["curtain_wall_door", "Curtain Wall Door (fills a curtain wall panel)"], ["profiles", "Profile (for sweeps)"]].forEach(([v, t]) => { const o = el("option", "", t); o.value = v; cat.append(o); });
       const r1 = el("div", "famed-row"), r2 = el("div", "famed-row");
       r1.append(el("span", "", "Name"), name); r2.append(el("span", "", "Template"), cat);
       const msg = el("div", "modal-msg");
       body.append(r1, r2, msg);
       foot.append(button("Cancel", close), button("Create", async () => {
         try {
-          const host = cat.value === "generic_models" ? "none" : "wall";
-          const r = await Backend.call("new_family", { name: name.value, category: cat.value, host });
+          const tpl = ["door", "window", "curtain_wall_door"].includes(cat.value);
+          const r = await Backend.call("new_family", tpl ? { name: name.value, template: cat.value } : { name: name.value, category: cat.value, host: "none" });
           close(); if (closeList) closeList();
           await refresh();
           open(r.id);
@@ -1037,7 +1039,7 @@ const FamModel = (() => {
         }
       }
     }
-    r.append(field("Subcategory", textIn(f.subcategory || "", (v) => change((b) => { formById(f.id).subcategory = v; }, true), { list: SUBS })));
+    r.append(field("Subcategory", textIn(f.subcategory || "", (v) => change((b) => { formById(f.id).subcategory = v; }, true), { list: subs() })));
     graphicsRows(r, f, (b) => formById(f.id));
   }
 
@@ -1136,7 +1138,7 @@ const FamModel = (() => {
   function symProps(r, y) {
     if (!y) return;
     r.append(el("div", "famed-hint", `Symbolic geometry, ${y.view} views only`));
-    r.append(field("Subcategory", textIn(y.subcategory || "", (v) => change((b) => { symById(y.id).subcategory = v; }, true), { list: SUBS })));
+    r.append(field("Subcategory", textIn(y.subcategory || "", (v) => change((b) => { symById(y.id).subcategory = v; }, true), { list: subs() })));
     r.append(field("Filled", checkIn(y.filled, (v) => change((b) => { symById(y.id).filled = v; }, true))));
     r.append(field("Masking", checkIn(y.masking, (v) => change((b) => { symById(y.id).masking = v; }, true))));
     graphicsRows(r, y, (b) => symById(y.id));
@@ -1147,7 +1149,7 @@ const FamModel = (() => {
     const wp = planeById(m.plane);
     r.append(el("div", "famed-hint", `Model line on ${wp ? wp.name : "a missing plane"}. It is 3D and shows in every view its visibility settings allow.`));
     r.append(field("Name", textIn(m.name || "", (v) => change((b) => { mlineById(m.id).name = v; }))));
-    r.append(field("Subcategory", textIn(m.subcategory || "", (v) => change((b) => { mlineById(m.id).subcategory = v; }), { list: ["Model Lines", ...SUBS] })));
+    r.append(field("Subcategory", textIn(m.subcategory || "", (v) => change((b) => { mlineById(m.id).subcategory = v; }), { list: ["Model Lines", ...subs()] })));
     graphicsRows(r, m, (b) => mlineById(m.id));
   }
   // A coordinate as text: a number, or a reference plane and an offset from it
@@ -1180,7 +1182,7 @@ const FamModel = (() => {
     coordRow(r, "Vertical", t.v, (v) => change((b) => { mtextById(t.id).v = v; }), tax[1]);
     const mp = t.material_param && S.params.find((p) => p.name === t.material_param && p.param_kind === "material") ? t.material_param : null;
     r.append(assocRow("Material", "material", mp, matIn(t.material || "", (v) => set((x) => { x.material = v; })), (name, add) => change((b) => { if (add) S.params.push(add); mtextById(t.id).material_param = name; })));
-    r.append(field("Subcategory", textIn(t.subcategory || "", (v) => set((x) => { x.subcategory = v; }), { list: SUBS })));
+    r.append(field("Subcategory", textIn(t.subcategory || "", (v) => set((x) => { x.subcategory = v; }), { list: subs() })));
     graphicsRows(r, t, (b) => mtextById(t.id));
   }
   // A sweep's Profile family (door-window-spec.md section 5): a loaded Profile family and type in place of the
@@ -1878,6 +1880,11 @@ const FamModel = (() => {
       const b = hostWallBox(), p = w2s(VIEWS[S.view].flip ? b.x1 : b.x0, b.y1);
       ctx.fillStyle = "#8a8a8a"; ctx.font = "11px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
       ctx.fillText(`Placeholder wall ${Math.round(hostWallT() * 10) / 10}`, p.x + 4, p.y - 3);
+      // the family's +y side goes to the wall's exterior when it is placed (unflipped)
+      const ex = w2s(VIEWS[S.view].flip ? b.x0 : b.x1, b.y1), ix = w2s(VIEWS[S.view].flip ? b.x0 : b.x1, b.y0);
+      ctx.textAlign = "right";
+      ctx.fillText("Exterior", ex.x - 4, ex.y - 3);
+      ctx.textBaseline = "top"; ctx.fillText("Interior", ix.x - 4, ix.y + 3);
     }
   }
   // The wall as boxes for the 3D view: either side of the opening, below it and above it.

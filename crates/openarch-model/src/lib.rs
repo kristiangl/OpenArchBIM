@@ -19,6 +19,7 @@ pub mod famgeom;
 pub mod famnest;
 pub mod famsketch;
 pub mod famtext;
+pub mod famtemplate;
 pub mod famdoor;
 pub mod faminst;
 pub mod famview;

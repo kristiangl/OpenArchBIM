@@ -433,14 +433,15 @@ impl ObjectStyles {
                     s.subcategories.insert("Hidden Lines".into(), hidden());
                 }
                 "Doors" => {
-                    for n in ["Frame/Mullion", "Glass", "Panel", "Plan Swing", "Elevation Swing", "Opening"] {
-                        s.subcategories.insert(n.into(), sub(1, if n == "Panel" { Some(2) } else { None }, SOLID));
+                    // the Door template's subcategories (door-window-spec.md section 1); the elevation swing is dashed
+                    for n in ["Frame/Mullion", "Glass", "Panel", "Plan Swing", "Elevation Swing", "Opening", "Trim"] {
+                        s.subcategories.insert(n.into(), sub(1, if n == "Panel" { Some(2) } else { None }, if n == "Elevation Swing" { "Dash" } else { SOLID }));
                     }
                     s.subcategories.insert("Hidden Lines".into(), hidden());
                 }
                 "Windows" => {
-                    for n in ["Frame/Mullion", "Glass", "Sash", "Elevation Swing"] {
-                        s.subcategories.insert(n.into(), sub(1, if n == "Frame/Mullion" { Some(2) } else { None }, SOLID));
+                    for n in ["Frame/Mullion", "Glass", "Sash", "Opening", "Sill/Head", "Plan Swing", "Elevation Swing", "Trim"] {
+                        s.subcategories.insert(n.into(), sub(1, if n == "Frame/Mullion" { Some(2) } else { None }, if n == "Elevation Swing" { "Dash" } else { SOLID }));
                     }
                     s.subcategories.insert("Hidden Lines".into(), hidden());
                 }

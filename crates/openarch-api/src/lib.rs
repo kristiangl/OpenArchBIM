@@ -830,6 +830,11 @@ impl Session {
             }
             "new_family" => {
                 let name = p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
+                // the Door, Window and Curtain Wall Door templates; anything else starts from Generic Model
+                if let Some(t) = p.get("template").filter(|v| !v.is_null()) {
+                    let t: openarch_model::famtemplate::Template = serde_json::from_value(t.clone()).map_err(|e| format!("bad template: {e}"))?;
+                    return Ok(json!({ "id": self.doc.new_family_from(name, t)? }));
+                }
                 let category = serde_json::from_value(p.get("category").cloned().unwrap_or(json!("generic_models"))).map_err(|e| format!("bad category: {e}"))?;
                 let host = serde_json::from_value(p.get("host").cloned().unwrap_or(json!("none"))).map_err(|e| format!("bad host: {e}"))?;
                 Ok(json!({ "id": self.doc.new_family(name, category, host)? }))
