@@ -807,12 +807,12 @@ impl Session {
             "place_instance" => {
                 let flag = |k: &str| p.get(k).and_then(|v| v.as_bool()).unwrap_or(false);
                 let id = self.doc.place_on_wall_flipped(id_of(p, "type_id")?, id_of(p, "host_id")?, point_of(p.get("point").ok_or("missing point")?)?, flag("flip_hand"), flag("flip_facing"))?;
-                Ok(json!({ "id": id, "warning": self.doc.frame_fit(id) }))
+                Ok(json!({ "id": id }))
             }
             "place_in_elevation" => {
                 // a door or window from a click in an elevation or section: { view_id, type_id, u, z, flip_hand? }
                 let id = self.doc.place_in_elevation(id_of(p, "view_id")?, id_of(p, "type_id")?, num_of(p, "u")?, num_of(p, "z")?, p.get("flip_hand").and_then(|v| v.as_bool()).unwrap_or(false))?;
-                Ok(json!({ "id": id, "warning": self.doc.frame_fit(id) }))
+                Ok(json!({ "id": id }))
             }
             "add_catalog_type" => {
                 let name = p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?;
@@ -3911,7 +3911,7 @@ mod tests {
         let wt = info["wall_types"][0]["id"].as_u64().unwrap();
         let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [12000, 0], "height_mm": 2700}))["id"].as_u64().unwrap();
         let ty = |label: &str| info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == label).unwrap()["id"].as_u64().unwrap();
-        let (narrow, wide) = (ty("Single-Flush: 720 x 2040"), ty("Single-Flush: 820 x 2040"));
+        let (narrow, wide) = (ty("Single Flush Door - Metal Frame: 720 x 2040"), ty("Single Flush Door - Metal Frame: 820 x 2040"));
         let mut doors = vec![];
         for (k, t) in [narrow, wide, wide, narrow, wide].into_iter().enumerate() {
             let d = call(&mut s, "place_instance", json!({"type_id": t, "host_id": w, "point": [1000.0 + 2000.0 * k as f64, 0]}))["id"].as_u64().unwrap();
@@ -3966,7 +3966,7 @@ mod tests {
         def["itemize"] = json!(true);
         call(&mut s, "set_schedule", json!({"id": id, "def": def}));
         let t = call(&mut s, "schedule_table", json!({"id": id}));
-        assert_eq!(t["rows"][0]["cells"][2]["type"], json!({"name": "Single-Flush: 820 x 2040", "instances": 3}), "a type's cell says what an edit changes");
+        assert_eq!(t["rows"][0]["cells"][2]["type"], json!({"name": "Single Flush Door - Metal Frame: 820 x 2040", "instances": 3}), "a type's cell says what an edit changes");
         let cell = &t["rows"][0]["cells"][0];
         assert_eq!(cell["row"]["path"], "mark");
         let target = &cell["targets"][0];
@@ -4010,7 +4010,7 @@ mod tests {
         let wt = info["wall_types"][0]["id"].as_u64().unwrap();
         let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [10000, 0], "height_mm": 3000}))["id"].as_u64().unwrap();
         let ty = |label: &str| info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == label).unwrap()["id"].as_u64().unwrap();
-        let (narrow, wide) = (ty("Single-Flush: 720 x 2040"), ty("Single-Flush: 820 x 2040"));
+        let (narrow, wide) = (ty("Single Flush Door - Metal Frame: 720 x 2040"), ty("Single Flush Door - Metal Frame: 820 x 2040"));
         for (k, t) in [narrow, wide].into_iter().enumerate() {
             let d = call(&mut s, "place_instance", json!({"type_id": t, "host_id": w, "point": [2000.0 + 4000.0 * k as f64, 0]}))["id"].as_u64().unwrap();
             call(&mut s, "patch_instance", json!({"id": d, "patch": {"mark": format!("D{}", k + 1)}}));
@@ -4099,7 +4099,7 @@ mod tests {
         let info = call(&mut s, "doc_info", json!({}));
         let (l0, l1) = (info["levels"][0]["id"].as_u64().unwrap(), info["levels"][1]["id"].as_u64().unwrap());
         let wt = info["wall_types"][0]["id"].as_u64().unwrap();
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         // three doors on the ground floor, two upstairs
         for (lvl, n) in [(l0, 3), (l1, 2)] {
             let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [10000, 0], "height_mm": 2700}))["id"].as_u64().unwrap();
@@ -4149,7 +4149,7 @@ mod tests {
         // 6 m x 3 m x 0.2 m
         let solid = total(&mut s);
         assert!((solid - 3.6).abs() < 0.05, "{solid}");
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "place_instance", json!({"type_id": door, "host_id": w, "point": [3000, 0]}));
         // the door opening removes about 0.82 x 2.04 x 0.2 m
         let with_door = total(&mut s);
@@ -4184,7 +4184,7 @@ mod tests {
         mesh_ids.dedup();
         assert_eq!(mesh_ids, { let mut v = ids.clone(); v.sort(); v });
         // a door placed on the outside of the circle
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"].as_str().unwrap().starts_with("Single-Flush")).unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"].as_str().unwrap().starts_with("Single Flush Door - Metal Frame")).unwrap()["id"].as_u64().unwrap();
         let placed = call(&mut s, "place_instance", json!({"type_id": door, "host_id": ids[0], "point": [0, 4300]}));
         assert!(placed["id"].as_u64().is_some());
         // one undo for the door, one for the whole circle
@@ -4567,7 +4567,7 @@ mod tests {
         assert_eq!(seg(&mut s, d3, 0)["text"], "Gap");
         // a family type's parameter takes a global's value, follows it, and cannot be typed while it does
         let info = call(&mut s, "doc_info", json!({}));
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         let sdw = call(&mut s, "add_global_param", json!({"name": "Standard Door Width", "kind": "length", "value": 900}))["id"].as_u64().unwrap();
         let props = call(&mut s, "describe_type", json!({"id": door}));
         assert!(props.to_string().contains("\"associate\""), "type rows offer the association");
@@ -4963,8 +4963,9 @@ mod tests {
         let (mut s, lvl, wt, _view) = setup();
         let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
         let info = call(&mut s, "doc_info", json!({}));
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
-        let d = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [1500, 200], "flip_hand": true }))["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        // placed from the wall's right, where the family's interior lies unflipped
+        let d = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [1500, -200], "flip_hand": true }))["id"].as_u64().unwrap();
         let rows = |s: &mut Session, id: u64| -> Vec<Value> {
             let d = call(s, "describe", json!({ "id": id }));
             d["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect()
@@ -5162,7 +5163,7 @@ mod tests {
         let (mut s, lvl, wt, _view) = setup();
         let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
         let info = call(&mut s, "doc_info", json!({}));
-        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed Window: 1210 x 1200").unwrap()["id"].as_u64().unwrap();
         let i = call(&mut s, "place_instance", json!({ "type_id": win, "host_id": w, "point": [4000, -50] }))["id"].as_u64().unwrap();
         let sill = |s: &mut Session| call(s, "describe", json!({ "id": i }));
         let before = sill(&mut s).to_string();
@@ -5188,7 +5189,7 @@ mod tests {
         let info = call(&mut s, "doc_info", json!({}));
         let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan").unwrap()["id"].clone();
         let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [4000, 0], "height_mm": 3000 }))["id"].as_u64().unwrap();
-        let t = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap().clone();
+        let t = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed Window: 1210 x 1200").unwrap().clone();
         let i = call(&mut s, "place_instance", json!({ "type_id": t["id"], "host_id": w, "point": [2000, 0] }))["id"].as_u64().unwrap();
         let ins = |s: &mut Session| call(s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().iter().find(|x| x["id"] == i).unwrap().clone();
         assert_eq!(ins(&mut s)["display"], "cut");
@@ -5250,12 +5251,12 @@ mod tests {
         call(&mut s, "pin", json!({ "ids": [w], "pinned": false }));
         // a window arrayed past the end of its wall gives the hosting error, and nothing is made
         let long = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [4000, 5000], "height_mm": 2700 }))["id"].as_u64().unwrap();
-        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed Window: 1210 x 1200").unwrap()["id"].as_u64().unwrap();
         let i = call(&mut s, "place_instance", json!({ "type_id": win, "host_id": long, "point": [1000, 5000] }))["id"].as_u64().unwrap();
         let n = |s: &mut Session| call(s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().len();
         // each insert names its family and type and the frame it is drawn in, for CAD blocks
         let ins = call(&mut s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().iter().find(|x| x["id"] == i).unwrap().clone();
-        assert_eq!(ins["name"], "Fixed - 1200 x 1200");
+        assert_eq!(ins["name"], "Fixed Window - 1210 x 1200");
         assert_eq!((ins["at"][0].as_f64().unwrap(), ins["at"][1].as_f64().unwrap(), ins["dir"][0].as_f64().unwrap()), (1000.0, 5000.0, 1.0));
         let before = n(&mut s);
         assert!(s.handle("array", &json!({ "ids": [i], "kind": "linear", "dx": 1500, "dy": 0, "count": 4 })).is_err());
@@ -5275,7 +5276,7 @@ mod tests {
         let (mut s, lvl, wt, _view) = setup();
         let info = call(&mut s, "doc_info", json!({}));
         let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == lvl).unwrap()["id"].clone();
-        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed Window: 1210 x 1200").unwrap()["id"].as_u64().unwrap();
         let wall = |s: &mut Session, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
         let a = wall(&mut s, [0, 0], [4000, 0]);
         let b = wall(&mut s, [4000, 0], [4000, 3000]);
@@ -5501,7 +5502,7 @@ mod tests {
         let info = call(&mut s, "doc_info", json!({}));
         let l2 = info["levels"][1]["id"].as_u64().unwrap();
         let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan" && v["level_id"] == lvl).unwrap()["id"].clone();
-        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap()["id"].as_u64().unwrap();
+        let win = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed Window: 1210 x 1200").unwrap()["id"].as_u64().unwrap();
         let wall = |s: &mut Session, l: u64, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": l, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
         let groups = |s: &mut Session| call(s, "doc_info", json!({}))["groups"].as_array().unwrap().clone();
         let inst = |s: &mut Session, id: u64| groups(s).into_iter().find(|g| g["id"] == id).unwrap();
@@ -5668,7 +5669,7 @@ mod tests {
         let info = call(&mut s, "doc_info", json!({}));
         let sf = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Storefront").unwrap()["id"].as_u64().unwrap();
         let w = call(&mut s, "add_wall", json!({ "type_id": sf, "level_id": lvl, "start": [0, 0], "end": [3600, 0], "height_mm": 3000 }))["id"].as_u64().unwrap();
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         // the panel's types run from the system panels through the basic walls to the doors
         let p0 = part_id(w, CurtainRef::Panel { i: 1, j: 0 });
         let d = call(&mut s, "describe", json!({ "id": p0 }));
@@ -5829,7 +5830,7 @@ mod tests {
         let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
         let info = call(&mut s, "doc_info", json!({}));
         let find = |name: &str| info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == name).unwrap()["id"].as_u64().unwrap();
-        let (door, win) = (find("Single-Flush: 820 x 2040"), find("Fixed: 1200 x 1200"));
+        let (door, win) = (find("Single Flush Door - Metal Frame: 820 x 2040"), find("Fixed Window: 1210 x 1200"));
         let d1 = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [1500, 200] }))["id"].as_u64().unwrap();
         call(&mut s, "place_instance", json!({ "type_id": win, "host_id": w, "point": [4000, -50] }));
         assert!(s.handle("place_instance", &json!({ "type_id": door, "host_id": w, "point": [1600, 0] })).unwrap_err().contains("overlaps"));
@@ -5840,7 +5841,8 @@ mod tests {
         let inserts = plan["inserts"].as_array().unwrap();
         assert_eq!(inserts.len(), 2);
         let dr = inserts.iter().find(|i| i["category"] == "Doors").unwrap();
-        assert_eq!(dr["parts"].as_array().unwrap().iter().filter(|p| p["sub"] == "Plan Swing").count(), 1);
+        // the open leaf and its swing arc
+        assert_eq!(dr["parts"].as_array().unwrap().iter().filter(|p| p["sub"] == "Plan Swing").count(), 2);
         assert_eq!(dr["display"], "cut");
 
         // hiding the Doors category hides the symbol but the opening stays
@@ -5870,9 +5872,9 @@ mod tests {
         // quantities: wall area is net of the openings, door and window schedules list the instances
         let sch = call(&mut s, "schedule", json!({}));
         let area: f64 = sch["walls"]["rows"][0][4].as_str().unwrap().parse().unwrap();
-        // the door's hole follows its frame (reveal plus the frame's material)
+        // the door's hole is its frame's rough opening; the window's its stud opening, the 1210 x 1200 frame + 60
         let (dw, dh, _) = match s.doc.get(d1) { Some(Element::FamilyInstance(i)) => s.doc.instance_opening_size(i), _ => panic!() };
-        let expect = 6.0 * 2.7 - dw * dh / 1e6 - 1.2 * 1.2;
+        let expect = 6.0 * 2.7 - dw * dh / 1e6 - 1.27 * 1.26;
         assert!((area - expect).abs() < 0.011, "{area} vs {expect}");
         assert_eq!(sch["doors"]["count"], 1);
         assert_eq!(sch["doors"]["rows"][0][0], "D01");
@@ -5921,7 +5923,7 @@ mod tests {
 
         // subcategories: the door's swing arc has its own style
         let info = call(&mut s, "doc_info", json!({}));
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "place_instance", json!({"type_id": door, "host_id": w, "point": [1500, 200]}));
         call(&mut s, "patch_object_styles", json!({"patch": {"model": {"Doors": {"subcategories": {"Plan Swing": {"color": [0, 128, 0], "projection_weight": 2}}}}}}));
         let plan = call(&mut s, "plan", json!({"view_id": view}));
@@ -5979,46 +5981,34 @@ mod tests {
     }
 
     #[test]
-    fn framed_door_symbol_changes_with_detail_level() {
+    fn a_door_symbol_changes_with_detail_level() {
         let (mut s, lvl, _wt, view) = setup();
         let info = call(&mut s, "doc_info", json!({}));
         let stud = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"] == "Internal Stud 90").unwrap()["id"].as_u64().unwrap();
         let w = call(&mut s, "add_wall", json!({ "type_id": stud, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         let placed = call(&mut s, "place_instance", json!({"type_id": door, "host_id": w, "point": [2000, 200]}));
-        assert!(placed["warning"].is_null(), "a 112 back opening covers a 116 stud wall: {placed}");
-        let id = placed["id"].as_u64().unwrap();
-        // the door is a stored body: its frame comes through as parts, cut at Fine, outlined at Medium
-        let frame_parts = |s: &mut Session, level: &str| -> Vec<bool> {
+        assert!(placed.get("warning").is_none(), "nothing picks or checks a frame in code: {placed}");
+        // the door's own body draws it: the frame swept round the opening is cut at every level, the open leaf a
+        // line at Coarse and Medium and its section (a closed outline) at Fine, the swing arc throughout
+        let parts = |s: &mut Session, level: &str| -> Vec<Value> {
             call(s, "patch_view", json!({"id": view, "patch": {"settings": {"detail_level": level}}}));
-            let plan = call(s, "plan", json!({"view_id": view}));
-            plan["inserts"][0]["parts"].as_array().unwrap().iter().filter(|p| p["sub"] == "Frame/Mullion").map(|p| p["cut"].as_bool().unwrap()).collect()
+            call(s, "plan", json!({"view_id": view}))["inserts"][0]["parts"].as_array().unwrap().clone()
         };
-        assert!(frame_parts(&mut s, "coarse").is_empty());
-        assert_eq!(frame_parts(&mut s, "medium"), vec![false, false], "one outline per jamb, not cut");
-        let fine = frame_parts(&mut s, "fine");
-        assert!(!fine.is_empty() && fine.iter().all(|c| *c), "the frame's material is cut at Fine: {fine:?}");
-        // the leaf and swing are there at every level
-        let swings = |plan: &Value| plan["inserts"][0]["parts"].as_array().unwrap().iter().filter(|p| p["sub"] == "Plan Swing").count();
-        let plan = call(&mut s, "plan", json!({"view_id": view}));
-        assert_eq!(swings(&plan), 1);
+        let summary = |p: &[Value]| {
+            let frame: Vec<bool> = p.iter().filter(|x| x["sub"] == "Frame/Mullion").map(|x| x["cut"].as_bool().unwrap()).collect();
+            let swing = p.iter().filter(|x| x["sub"] == "Plan Swing").count();
+            let leaf = p.iter().filter(|x| x["sub"] == "Plan Swing" && x["rings"][0].as_array().is_some_and(|r| r.len() == 5)).count();
+            (frame.len(), frame.iter().all(|c| *c), swing, leaf)
+        };
+        assert_eq!(summary(&parts(&mut s, "coarse")), (2, true, 2, 0));
+        assert_eq!(summary(&parts(&mut s, "medium")), (2, true, 2, 0));
+        let fine = summary(&parts(&mut s, "fine"));
+        assert_eq!(fine, (2, true, 2, 1));
         // a category override on Doors beats the view's level
         call(&mut s, "patch_view", json!({"id": view, "patch": {"settings": {"detail_level": "coarse", "overrides": {"model": {"Doors": {"detail_level": "fine"}}}}}}));
-        assert_eq!(frame_parts(&mut s, "coarse"), fine);
-        // a shallow back opening is reported in Properties, and Frame Type is a drop-down
-        call(&mut s, "patch_instance", json!({"id": id, "patch": {"values": {"Jamb Depth": 92.0}}}));
-        let d = call(&mut s, "describe", json!({"id": id}));
-        let rows: Vec<Value> = d["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
-        assert!(rows.iter().any(|r| r["label"] == "Frame Fit"));
-        let ft = rows.iter().find(|r| r["label"] == "Frame Type").unwrap();
-        assert_eq!(ft["kind"], "select");
-        assert_eq!(ft["options"].as_array().unwrap().len(), 2);
-        // the catalogue lists real sizes and adds a type
-        let fam = info["families"].as_array().unwrap().iter().find(|f| f["name"] == "Single-Flush").unwrap();
-        assert!(fam["catalog"].as_array().unwrap().iter().any(|n| n == "1020 x 2340"));
-        call(&mut s, "add_catalog_type", json!({"family_id": fam["id"], "name": "1020 x 2340"}));
-        assert!(s.handle("add_catalog_type", &json!({"family_id": fam["id"], "name": "1020 x 2340"})).is_err());
-        assert!(s.handle("add_catalog_type", &json!({"family_id": fam["id"], "name": "999 x 999"})).is_err());
+        let plan = call(&mut s, "plan", json!({"view_id": view}));
+        assert_eq!(summary(plan["inserts"][0]["parts"].as_array().unwrap()), fine);
     }
 
     #[test]
@@ -6038,7 +6028,7 @@ mod tests {
         assert!(faces.iter().find(|d| d["key"] == "up").unwrap()["value"].as_f64().unwrap() < 3500.0);
         // a door: dimensions while placing (no edit) and once placed (editable), with no Distance from Start row
         let info = call(&mut s, "doc_info", json!({}));
-        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
         let pre = call(&mut s, "temp_dimensions", json!({ "type_id": door, "host_id": w, "point": [2000, 100] }))["dims"].as_array().unwrap().clone();
         assert!(pre.iter().any(|d| d["key"] == "left") && pre.iter().all(|d| d["edit"].is_null()));
         let d = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [2000, 100] }))["id"].as_u64().unwrap();

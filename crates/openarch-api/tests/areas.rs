@@ -124,7 +124,7 @@ fn rentable_rules_follow_the_area_types_each_side_and_the_glass() {
     assert!((area_of(&mut m.s, right) - 3.884 * 4.884).abs() < 0.001, "{}", area_of(&mut m.s, right));
     // a floor-length window in the south wall: the boundary goes to the glass, at the middle of the wall
     let info = call(&mut m.s, "doc_info", json!({}));
-    let ty = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 2400 x 2100").unwrap()["id"].clone();
+    let ty = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed Window: 1810 x 2050").unwrap()["id"].clone();
     call(&mut m.s, "place_instance", json!({ "type_id": ty, "host_id": walls[0], "point": [6000, 0] }));
     assert!((area_of(&mut m.s, right) - 3.884 * 4.942).abs() < 0.001, "{}", area_of(&mut m.s, right));
     // rules off: the line sits at its offset from the wall centre, toward the exterior

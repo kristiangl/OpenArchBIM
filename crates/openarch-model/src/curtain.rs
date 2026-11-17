@@ -1429,8 +1429,6 @@ impl Document {
         own.panels.retain(|p| p.door.is_none());
         w.curtain_lines = (own != CurtainLines::default()).then_some(own);
         // the doors as they are to be
-        let (l, r) = self.wall_extents(&w);
-        let frame = crate::family::frame_for_wall(l + r, self.wall_core(&w).0);
         let mut changes: Vec<(Id, Option<FamilyInstance>)> = doors.iter().filter(|d| !kept.iter().any(|p| p.door.is_some_and(|k| k.0 == d.0))).map(|d| (d.0, None)).collect();
         for p in &kept {
             let (id, type_id) = p.door.unwrap();
@@ -1441,11 +1439,6 @@ impl Document {
                     let mut i = FamilyInstance::new(type_id, w.base_level);
                     i.host = host;
                     if let Some(fam) = self.family_type(type_id).and_then(|t| self.family(t.family)) {
-                        // built-in doors take the frame that suits the wall
-                        if fam.param("Frame Type").is_some() && fam.param("Jamb Depth").is_some() {
-                            i.values.insert("Frame Type".into(), crate::family::ParamValue::Text(frame.0.into()));
-                            i.values.insert("Jamb Depth".into(), crate::family::ParamValue::Number(frame.1));
-                        }
                         i.ifc.export_as = fam.category.ifc_class().to_string();
                         i.ifc.predefined_type = fam.category.ifc_predefined().to_string();
                     }
@@ -2022,7 +2015,7 @@ mod tests {
         let panel_at = |d: &Document, i: usize, j: usize| d.curtain_solids(w).into_iter().filter(|s| s.at == CurtainRef::Panel { i, j }).collect::<Vec<_>>();
 
         // a door in the first bay's lower panel: sized by the panel inside its mullions
-        let door_type = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single-Flush" && t.name == "820 x 2040").unwrap().0;
+        let door_type = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single Flush Door - Metal Frame" && t.name == "820 x 2040").unwrap().0;
         assert!(d.set_curtain_panel(w, 0, 0, PanelChoice::Door(door_type)).is_err(), "pinned");
         d.set_curtain_panel_pinned(w, 0, 0, false).unwrap();
         d.set_curtain_panel(w, 0, 0, PanelChoice::Door(door_type)).unwrap();
@@ -2098,7 +2091,7 @@ mod tests {
         let lvl = d.levels()[0].0;
         let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
         let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 3000.0).unwrap();
-        let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single-Flush" && t.name == "820 x 2040").unwrap().0;
+        let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single Flush Door - Metal Frame" && t.name == "820 x 2040").unwrap().0;
         d.set_curtain_panel_pinned(w, 1, 0, false).unwrap();
         d.set_curtain_panel(w, 1, 0, PanelChoice::Door(door)).unwrap();
         let (panels, mullions) = d.curtain_schedule();

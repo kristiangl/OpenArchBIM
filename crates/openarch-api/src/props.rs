@@ -536,9 +536,6 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
             add("Constraints", boolean("Moves With Nearby Elements", "moves_with_nearby", i.moves_with_nearby, true));
         }
     }
-    if let Some(msg) = d.frame_fit(id) {
-        add("Construction", ro("Frame Fit", msg));
-    }
     // instance parameters edit; type parameters show their value for context
     // a door in a curtain wall's cell takes its size and sill from the cell
     let cell_set = |p: &openarch_model::family::ParamDef| i.host.is_some_and(|h| h.v_mm.is_some()) && matches!(p.name.as_str(), "Width" | "Height" | "Sill Height");

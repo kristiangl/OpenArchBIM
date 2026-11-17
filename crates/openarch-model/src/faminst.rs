@@ -1232,12 +1232,13 @@ mod tests {
     #[test]
     fn a_shipped_family_can_be_copied_and_the_copy_edited_alone() {
         let mut d = Document::new_project();
-        let src = d.families().into_iter().find(|(_, f)| f.name == "Single-Flush").unwrap().0;
-        assert!(d.duplicate_family(src, "Single-Flush").unwrap_err().contains("already exists"));
+        let src = d.families().into_iter().find(|(_, f)| f.name == "Single Flush Door - Metal Frame").unwrap().0;
+        assert!(d.duplicate_family(src, "Single Flush Door - Metal Frame").unwrap_err().contains("already exists"));
         assert!(d.duplicate_family(src, "  ").is_err());
         let copy = d.duplicate_family(src, "Cottage Door").unwrap();
         let (a, b) = (d.family(src).unwrap().clone(), d.family(copy).unwrap().clone());
-        assert!(a.built_in && !b.built_in);
+        // the bundled families are ordinary families, as is the copy
+        assert!(!a.built_in && !b.built_in);
         assert_eq!((a.body.planes.len(), a.params.len()), (b.body.planes.len(), b.params.len()));
         let (na, nb) = (d.family_types().iter().filter(|(_, t)| t.family == src).count(), d.family_types().iter().filter(|(_, t)| t.family == copy).count());
         assert_eq!(na, nb);

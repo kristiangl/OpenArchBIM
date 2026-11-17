@@ -1319,8 +1319,8 @@ async function refresh(force = false) {
   await Hide.load();
   syncGroups();
   const pick = (cur, cat, label) => (cur && info.family_types.some((t) => t.id === cur) ? cur : (info.family_types.find((t) => t.label === label) || info.family_types.find((t) => t.category === cat) || {}).id || null);
-  app.doorTypeId = pick(app.doorTypeId, "Doors", "Single-Flush: 820 x 2040");
-  app.windowTypeId = pick(app.windowTypeId, "Windows", "Fixed: 1200 x 1200");
+  app.doorTypeId = pick(app.doorTypeId, "Doors", "Single Flush Door - Metal Frame: 820 x 2040");
+  app.windowTypeId = pick(app.windowTypeId, "Windows", "Fixed Window: 1210 x 1200");
   if (!app.wallTypeId || !info.wall_types.some((t) => t.id === app.wallTypeId)) app.wallTypeId = (info.wall_types.find((t) => t.name === "Brick Veneer") || info.wall_types[0]).id;
   if (!app.floorTypeId || !info.floor_types.some((t) => t.id === app.floorTypeId)) app.floorTypeId = info.floor_types[0].id;
   if (!app.roofTypeId || !info.roof_types.some((t) => t.id === app.roofTypeId)) app.roofTypeId = info.roof_types[0].id;

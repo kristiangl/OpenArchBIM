@@ -1432,7 +1432,7 @@ mod tests {
         let w = d.add_wall(t, l, p(0.0, 0.0), p(6000.0, 0.0), 2700.0).unwrap();
         let other = d.add_wall(t, l, p(0.0, -3000.0), p(6000.0, -3000.0), 2700.0).unwrap();
         let door = d.family_types().iter().find(|(_, t)| t.name.contains("820 x 2040")).unwrap().0;
-        let window = d.family_types().iter().find(|(_, t)| t.name.contains("1200 x 1200")).unwrap().0;
+        let window = d.family_types().iter().find(|(_, t)| t.name.contains("1210 x 1200")).unwrap().0;
         d.place_on_wall(door, w, p(1500.0, 0.0)).unwrap();
         d.place_on_wall(window, w, p(4000.0, 0.0)).unwrap();
         d.place_on_wall(door, other, p(1500.0, -3000.0)).unwrap();

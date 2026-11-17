@@ -20,7 +20,7 @@ fn model() -> M {
     let wt = info["wall_types"][0]["id"].clone();
     let walls: Vec<u64> = [([0, 0], [6000, 0]), ([6000, 0], [6000, 4000]), ([6000, 4000], [0, 4000]), ([0, 4000], [0, 0])].iter()
         .map(|(a, b)| call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": l1, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap()).collect();
-    let ty = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single-Flush: 820 x 2040").unwrap()["id"].clone();
+    let ty = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].clone();
     let door = call(&mut s, "place_instance", json!({ "type_id": ty, "host_id": walls[0], "point": [2000, 0] }))["id"].as_u64().unwrap();
     M { s, l1, l2, p1, p2, walls, door }
 }

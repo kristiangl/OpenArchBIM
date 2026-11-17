@@ -1292,7 +1292,7 @@ mod tests {
         d.add_wall(brick, lvl, Point::new(-1000.0, 0.0), Point::new(5000.0, 0.0), 3000.0).unwrap();
         // a storefront standing in the brick wall, a door in one cell and the panel above it solid
         let w = d.add_wall(sf, lvl, Point::new(0.0, 0.0), Point::new(3600.0, 0.0), 2700.0).unwrap();
-        let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single-Flush" && t.name == "820 x 2040").unwrap().0;
+        let door = d.family_types().into_iter().find(|(_, t)| d.family(t.family).unwrap().name == "Single Flush Door - Metal Frame" && t.name == "820 x 2040").unwrap().0;
         d.set_curtain_panel_pinned(w, 1, 0, false).unwrap();
         d.set_curtain_panel(w, 1, 0, PanelChoice::Door(door)).unwrap();
         d.set_curtain_panel_pinned(w, 1, 1, false).unwrap();

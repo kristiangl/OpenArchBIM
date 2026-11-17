@@ -165,7 +165,8 @@ pub enum HostKind {
     Face,
 }
 
-/// How the family draws in a plan view.
+/// The plan symbol older files name, which code used to draw for families without a body. Nothing draws it now
+/// (door-window-spec.md step 4): a family draws only its body.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PlanSymbol {
@@ -301,10 +302,6 @@ impl ParamDef {
     fn choice(name: &str, instance: bool, group: &str, choices: &[&str]) -> ParamDef {
         ParamDef { choices: choices.iter().map(|c| c.to_string()).collect(), ..ParamDef::new(name, ParamKind::Text, instance, group, ParamValue::Text(choices[0].to_string())) }
     }
-    /// A type parameter worked out from others by a formula. It cannot be set.
-    fn formula(name: &str, group: &str, formula: &str) -> ParamDef {
-        ParamDef { formula: Some(formula.into()), reporting: true, ..ParamDef::new(name, ParamKind::Length, false, group, ParamValue::Number(0.0)) }
-    }
 }
 
 /// The yes/no and choice settings of the Family Category and Parameters dialog that are not a
@@ -363,19 +360,21 @@ pub struct Family {
     pub category: FamilyCategory,
     #[serde(default)]
     pub host: HostKind,
+    /// Read from older files and kept; not drawn.
     #[serde(default)]
     pub plan_symbol: PlanSymbol,
     #[serde(default)]
     pub params: Vec<ParamDef>,
-    /// Shipped with OpenArch BIM rather than loaded from a file.
+    /// Made by code and shipped with OpenArch BIM. Only older projects' doors and windows carry it, and nothing
+    /// treats them differently now: the starter families are bundled family files like any other.
     #[serde(default)]
     pub built_in: bool,
     /// The sizes the family is made in (the type catalogue). Only these can
     /// be added as types with "Add from catalogue"; a type can still be edited freely.
     #[serde(default)]
     pub catalog: Vec<CatalogRow>,
-    /// The family's geometry. Empty for families drawn by code (older files and custom
-    /// parameter-only families); see `famgeom`.
+    /// The family's geometry; see `famgeom`. Empty for a family with nothing drawn, which shows only its
+    /// footprint in plan and nothing in 3D.
     #[serde(default)]
     pub body: crate::famgeom::FamilyBody,
     #[serde(default)]
@@ -548,240 +547,27 @@ pub struct Opening {
     pub z1: f64,
 }
 
-// ---- built-in families ------------------------------------------------------
+// ---- starter families ------------------------------------------------------
 
-use ParamKind as K;
-use ParamValue as V;
-
-fn len(x: f64) -> ParamValue {
-    V::Number(x)
-}
-fn txt(s: &str) -> ParamValue {
-    V::Text(s.into())
-}
-
-/// Parameters shared by every door and window family.
-fn common_params(sill_default: f64) -> Vec<ParamDef> {
-    vec![
-        ParamDef::new("Sill Height", K::Length, true, "Constraints", len(sill_default)),
-        ParamDef::new("Width", K::Length, false, "Dimensions", len(820.0)),
-        ParamDef::new("Height", K::Length, false, "Dimensions", len(2040.0)),
-        ParamDef::new("Rough Width", K::Length, false, "Dimensions", len(820.0)),
-        ParamDef::new("Rough Height", K::Length, false, "Dimensions", len(2040.0)),
-        ParamDef::new("Frame Width", K::Length, false, "Construction", len(70.0)),
-        ParamDef::new("Frame Depth", K::Length, false, "Construction", len(90.0)),
-        ParamDef::new("Wall Closure", K::Text, false, "Construction", txt("By host")),
-        ParamDef::new("Construction Type", K::Text, false, "Construction", txt("")),
-        ParamDef::new("Trim Projection Ext", K::Length, false, "Dimensions", len(0.0)),
-        ParamDef::new("Trim Projection Int", K::Length, false, "Dimensions", len(0.0)),
-        ParamDef::new("Trim Width", K::Length, false, "Dimensions", len(0.0)),
-        ParamDef::new("Material", K::Material, false, "Materials and Finishes", txt("")),
-        ParamDef::new("Frame Material", K::Material, false, "Materials and Finishes", txt("")),
-        ParamDef::new("Finish", K::Text, false, "Materials and Finishes", txt("")),
-        ParamDef::new("Keynote", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Model", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Manufacturer", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Type Comments", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("URL", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Description", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Assembly Description", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Assembly Code", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Type Mark", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Fire Rating", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Cost", K::Number, false, "Identity Data", V::Number(0.0)),
-        ParamDef::new("OmniClass Number", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("OmniClass Title", K::Text, false, "Identity Data", txt("")),
-        ParamDef::new("Operation", K::Text, false, "IFC Parameters", txt("")),
-        // thermal values matter for NCC energy provisions; stored now, used by analysis later
-        ParamDef::new("Heat Transfer Coefficient (U)", K::Number, false, "Analytical Properties", V::Number(0.0)),
-        ParamDef::new("Thermal Resistance (R)", K::Number, false, "Analytical Properties", V::Number(0.0)),
-        ParamDef::new("Solar Heat Gain Coefficient", K::Number, false, "Analytical Properties", V::Number(0.0)),
-        ParamDef::new("Visual Light Transmittance", K::Number, false, "Analytical Properties", V::Number(0.0)),
-    ]
-}
-
-fn door_params() -> Vec<ParamDef> {
-    let mut p = common_params(0.0);
-    p.push(ParamDef::new("Thickness", K::Length, false, "Dimensions", len(40.0)));
-    p.push(ParamDef::new("Function", K::Text, false, "Construction", txt("Interior")));
-    p
-}
-
-fn window_params() -> Vec<ParamDef> {
-    let mut p = common_params(900.0);
-    // windows are sized by the opening; the frame sits inside it
-    for d in &mut p {
-        match d.name.as_str() {
-            "Width" | "Rough Width" => d.default = len(1200.0),
-            "Height" | "Rough Height" => d.default = len(1200.0),
-            _ => {}
-        }
-    }
-    p.push(ParamDef::new("Glazing Thickness", K::Length, false, "Dimensions", len(6.0)));
-    p.push(ParamDef::new("Window Inset", K::Length, false, "Dimensions", len(0.0)));
-    p.push(ParamDef::new("Glass Material", K::Material, false, "Materials and Finishes", txt("")));
-    p.push(ParamDef::new("Sash Material", K::Material, false, "Materials and Finishes", txt("")));
-    p.push(ParamDef::new("Default Sill Height", K::Length, false, "Constraints", len(900.0)));
-    p
-}
-
-/// Built-in doors come with a frame. Internal and thin walls get the pressed metal
-/// frame most used in Australia: a double rebate section (a centre rib with a recess
-/// for the leaf on each side) with the architrave pressed into the profile. Thick
-/// external walls get a timber jamb built into the opening, rebated, with no
-/// architrave. Which one a door has is the instance's `Frame Type`, chosen from the
-/// wall at placement and editable afterwards. Custom families carry none of this and
-/// behave like the standard families.
-///
-/// The leaf is sized by `Width` (all leaves together) and `Height`. The reveal (the
-/// clear opening the leaf sits in) and the hole in the wall follow by formula from
-/// the frame's own parameters. Defaults come from supplier brochures and still need
-/// checking against the catalogue Lawrence buys from.
-fn framed_door_params() -> Vec<ParamDef> {
-    let mut p = door_params();
-    p.retain(|d| !matches!(d.name.as_str(), "Frame Width" | "Frame Depth" | "Rough Width" | "Rough Height"));
-    for d in &mut p {
-        if d.name == "Thickness" {
-            d.default = len(35.0);
-        }
-        if d.name == "Wall Closure" {
-            d.default = txt("By host");
-        }
-    }
-    p.push(ParamDef::choice("Frame Type", true, "Frame", &["Pressed Metal", "Timber"]));
-    // depth of the frame across the wall: the back opening of a metal frame, the width of a timber jamb
-    p.push(ParamDef::new("Jamb Depth", K::Length, true, "Frame", len(112.0)));
-    p.push(ParamDef::choice("Rebate Style", false, "Frame (Pressed Metal)", &["Double Rebate"]));
-    p.push(ParamDef::new("Steel Gauge", K::Length, false, "Frame (Pressed Metal)", len(1.2)));
-    p.push(ParamDef::new("Rib Width", K::Length, false, "Frame (Pressed Metal)", len(34.0)));
-    p.push(ParamDef::new("Rib Height", K::Length, false, "Frame (Pressed Metal)", len(9.0)));
-    p.push(ParamDef::new("Architrave Width", K::Length, false, "Frame (Pressed Metal)", len(40.0)));
-    p.push(ParamDef::new("Architrave Projection", K::Length, false, "Frame (Pressed Metal)", len(14.0)));
-    p.push(ParamDef::new("Jamb Thickness", K::Length, false, "Frame (Timber)", len(42.0)));
-    p.push(ParamDef::new("Stop Width", K::Length, false, "Frame (Timber)", len(38.0)));
-    p.push(ParamDef::new("Stop Height", K::Length, false, "Frame (Timber)", len(12.0)));
-    p.push(ParamDef::new("Stop Offset", K::Length, false, "Frame (Timber)", len(20.0)));
-    p.push(ParamDef::new("Frame Clearance Width", K::Length, false, "Frame", len(4.0)));
-    p.push(ParamDef::new("Frame Clearance Height", K::Length, false, "Frame", len(15.0)));
-    p.push(ParamDef::new("Leaf Bottom Gap", K::Length, false, "Frame", len(20.0)));
-    p.push(ParamDef::formula("Reveal Width", "Dimensions", "[Width] + [Frame Clearance Width]"));
-    p.push(ParamDef::formula("Reveal Height", "Dimensions", "[Height] + [Frame Clearance Height]"));
-    // the hole in the wall: the reveal plus the frame's material each side
-    p.push(ParamDef::formula("Rough Width", "Dimensions", "[Reveal Width] + 2 * if([Frame Type] == \"Timber\", [Jamb Thickness], [Steel Gauge])"));
-    p.push(ParamDef::formula("Rough Height", "Dimensions", "[Reveal Height] + if([Frame Type] == \"Timber\", [Jamb Thickness], [Steel Gauge])"));
-    p
-}
-
-/// Back openings pressed metal frames are made in, mm (the depth that fits over the
-/// wall: stud walls, 110 mm masonry, 190 mm block).
-pub const METAL_BACK_OPENINGS: [f64; 3] = [92.0, 112.0, 192.0];
-/// Widths timber jambs are cut in, mm.
-pub const TIMBER_JAMBS: [f64; 3] = [138.0, 163.0, 185.0];
-/// Walls at or above this finished thickness get a timber jamb instead of a pressed
-/// metal frame.
-pub const TIMBER_FRAME_FROM: f64 = 195.0;
-/// How near a wall's thickness a standard back opening must be to be used as is.
-const BACK_OPENING_SNAP: f64 = 4.0;
-
-/// The frame a door gets in a wall: its type and depth across the wall.
-/// `thickness` is the finished wall, `core` the structural core inside it.
-pub fn frame_for_wall(thickness: f64, core: f64) -> (&'static str, f64) {
-    if thickness >= TIMBER_FRAME_FROM {
-        let want = core + 26.0; // the core and its lining
-        let jamb = TIMBER_JAMBS.iter().copied().find(|j| *j >= want - 1e-6).unwrap_or(TIMBER_JAMBS[TIMBER_JAMBS.len() - 1]);
-        ("Timber", jamb)
-    } else {
-        let near = METAL_BACK_OPENINGS.iter().copied().find(|b| (b - thickness).abs() <= BACK_OPENING_SNAP);
-        ("Pressed Metal", near.unwrap_or(thickness))
-    }
-}
-
-/// Sizes framed door sets are made in: leaf widths, then the two common leaf
-/// heights. Doubles are two equal leaves.
-const FRAMED_SINGLE_WIDTHS: [f64; 9] = [520.0, 620.0, 720.0, 770.0, 820.0, 870.0, 920.0, 970.0, 1020.0];
-const FRAMED_DOUBLE_LEAVES: [f64; 4] = [520.0, 620.0, 720.0, 820.0];
-const FRAMED_LEAF_HEIGHTS: [f64; 2] = [2040.0, 2340.0];
-
-fn framed_catalog(double: bool) -> Vec<CatalogRow> {
-    let mut rows = vec![];
-    let sizes: Vec<f64> = if double { FRAMED_DOUBLE_LEAVES.iter().map(|w| w * 2.0).collect() } else { FRAMED_SINGLE_WIDTHS.to_vec() };
-    for w in sizes {
-        for h in FRAMED_LEAF_HEIGHTS {
-            let name = if double { format!("2 x {:.0} x {:.0}", w / 2.0, h) } else { format!("{w:.0} x {h:.0}") };
-            let mut values = BTreeMap::new();
-            values.insert("Width".to_string(), len(w));
-            values.insert("Height".to_string(), len(h));
-            values.insert("Frame Clearance Width".to_string(), len(if double { 8.0 } else { 4.0 }));
-            rows.push(CatalogRow { name, values });
-        }
-    }
-    rows
-}
-
-/// A starter family with its types: `(name, width, height, sill)`.
+/// A starter family with its types.
 pub struct StarterFamily {
     pub family: Family,
     pub types: Vec<(String, BTreeMap<String, ParamValue>)>,
 }
 
-fn sized(w: f64, h: f64, extra: &[(&str, ParamValue)]) -> BTreeMap<String, ParamValue> {
-    let mut m = BTreeMap::new();
-    m.insert("Width".to_string(), len(w));
-    m.insert("Height".to_string(), len(h));
-    m.insert("Rough Width".to_string(), len(w));
-    m.insert("Rough Height".to_string(), len(h));
-    for (k, v) in extra {
-        m.insert((*k).to_string(), v.clone());
-    }
-    m
-}
-
-/// The Australian starter set of door and window families.
+/// The starter families every new project has: the ceiling-hosted starters and the bundled family files (the
+/// door and window profiles, panels, doors and windows).
 pub fn starter_families() -> Vec<StarterFamily> {
-    let door = |name: &str, symbol: PlanSymbol, types: Vec<(String, BTreeMap<String, ParamValue>)>| StarterFamily {
-        family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: door_params(), built_in: true, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body: if symbol == PlanSymbol::Sliding { crate::famdoor::sliding_door_body() } else { Default::default() } },
-        types,
-    };
-    let window = |name: &str, types: Vec<(String, BTreeMap<String, ParamValue>)>| StarterFamily {
-        family: Family { name: name.into(), category: FamilyCategory::Windows, host: HostKind::Wall, plan_symbol: PlanSymbol::Window, params: window_params(), built_in: true, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body: crate::famdoor::window_body() },
-        types,
-    };
-    let ext = |w: f64, h: f64| (format!("{w:.0} x {h:.0} Exterior"), sized(w, h, &[("Function", txt("Exterior"))]));
-    let wt = |w: f64, h: f64, sill: f64| (format!("{w:.0} x {h:.0}"), sized(w, h, &[("Default Sill Height", len(sill))]));
-    // framed sets start with the sizes most used (820 and 920 singles, 2 x 820 doubles)
-    let framed = |name: &str, symbol: PlanSymbol, double: bool, first: &[&str]| {
-        let catalog = framed_catalog(double);
-        let types = catalog.iter().filter(|r| first.contains(&r.name.as_str())).map(|r| (r.name.clone(), r.values.clone())).collect();
-        StarterFamily {
-            family: Family { name: name.into(), category: FamilyCategory::Doors, host: HostKind::Wall, plan_symbol: symbol, params: framed_door_params(), built_in: true, catalog, settings: Default::default(), source_path: None, loaded_at: None, body: crate::famdoor::flush_door_body(double) },
-            types,
-        }
-    };
-    vec![
-        framed("Single-Flush", PlanSymbol::SingleSwing, false, &["720 x 2040", "820 x 2040", "920 x 2040", "820 x 2340"]),
-        framed("Double-Flush", PlanSymbol::DoubleSwing, true, &["2 x 720 x 2040", "2 x 820 x 2040"]),
-        door("Sliding-Glass", PlanSymbol::Sliding, vec![ext(1800.0, 2100.0), ext(2400.0, 2100.0), ext(3000.0, 2100.0)]),
-        window("Fixed", vec![wt(600.0, 1200.0, 900.0), wt(1200.0, 1200.0, 900.0), wt(1800.0, 1200.0, 900.0), wt(2400.0, 2100.0, 0.0)]),
-        window("Awning", vec![wt(600.0, 600.0, 1500.0), wt(900.0, 600.0, 1500.0), wt(1200.0, 900.0, 1200.0), wt(1800.0, 900.0, 1200.0)]),
-        window("Sliding", vec![wt(1200.0, 1200.0, 900.0), wt(1800.0, 1200.0, 900.0), wt(2400.0, 1200.0, 900.0)]),
-    ]
-    .into_iter()
-    .chain(crate::ceiling::starter_ceiling_families())
-    .chain(bundled_families())
-    .collect()
+    crate::ceiling::starter_ceiling_families()
+        .into_iter()
+        .chain(bundled_families())
+        .collect()
 }
 
 /// The starter families shipped as family files (door-window-spec.md step 3), opened and changed in the family
-/// editor like any other.
+/// editor like any other: the doors and windows first, then the panels and profiles they use.
 const BUNDLED: [(&str, &str); 29] = [
-    ("Metal Door Frame - Square Bend", include_str!("../families/Profiles/Metal Door Frame - Square Bend.oaf")),
-    ("Metal Door Frame - Square Bend Slider", include_str!("../families/Profiles/Metal Door Frame - Square Bend Slider.oaf")),
-    ("Timber Door Jamb - Rebated", include_str!("../families/Profiles/Timber Door Jamb - Rebated.oaf")),
-    ("Aluminium Window Frame", include_str!("../families/Profiles/Aluminium Window Frame.oaf")),
-    ("Aluminium Sliding Door Frame", include_str!("../families/Profiles/Aluminium Sliding Door Frame.oaf")),
-    ("Door Panel - Flush", include_str!("../families/Panels/Door Panel - Flush.oaf")),
-    ("Door Panel - Flush Vision Panel", include_str!("../families/Panels/Door Panel - Flush Vision Panel.oaf")),
-    ("Door Panel - Glazed", include_str!("../families/Panels/Door Panel - Glazed.oaf")),    ("Single Flush Door - Metal Frame", include_str!("../families/Doors/Single Flush Door - Metal Frame.oaf")),
+    ("Single Flush Door - Metal Frame", include_str!("../families/Doors/Single Flush Door - Metal Frame.oaf")),
     ("Single Flush Door - Timber Frame", include_str!("../families/Doors/Single Flush Door - Timber Frame.oaf")),
     ("Double Flush Door - Metal Frame", include_str!("../families/Doors/Double Flush Door - Metal Frame.oaf")),
     ("Double Flush Door - Timber Frame", include_str!("../families/Doors/Double Flush Door - Timber Frame.oaf")),
@@ -802,6 +588,14 @@ const BUNDLED: [(&str, &str); 29] = [
     ("Double Hung Window", include_str!("../families/Windows/Double Hung Window.oaf")),
     ("Casement Window", include_str!("../families/Windows/Casement Window.oaf")),
     ("Louvre Window", include_str!("../families/Windows/Louvre Window.oaf")),
+    ("Door Panel - Flush", include_str!("../families/Panels/Door Panel - Flush.oaf")),
+    ("Door Panel - Flush Vision Panel", include_str!("../families/Panels/Door Panel - Flush Vision Panel.oaf")),
+    ("Door Panel - Glazed", include_str!("../families/Panels/Door Panel - Glazed.oaf")),
+    ("Metal Door Frame - Square Bend", include_str!("../families/Profiles/Metal Door Frame - Square Bend.oaf")),
+    ("Metal Door Frame - Square Bend Slider", include_str!("../families/Profiles/Metal Door Frame - Square Bend Slider.oaf")),
+    ("Timber Door Jamb - Rebated", include_str!("../families/Profiles/Timber Door Jamb - Rebated.oaf")),
+    ("Aluminium Window Frame", include_str!("../families/Profiles/Aluminium Window Frame.oaf")),
+    ("Aluminium Sliding Door Frame", include_str!("../families/Profiles/Aluminium Sliding Door Frame.oaf")),
 ];
 
 /// The bundled family files read into starter families, with their types.

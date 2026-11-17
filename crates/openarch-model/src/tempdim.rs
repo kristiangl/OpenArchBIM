@@ -253,10 +253,6 @@ impl Document {
             }
         };
         both(ow / 2.0, "Opening edge");
-        if let Some(f) = self.door_frame(id) {
-            both(f.reveal_w / 2.0, "Reveal");
-            both(f.outer_half(), "Frame edge");
-        }
         out
     }
 
@@ -1059,19 +1055,13 @@ mod tests {
     }
 
     #[test]
-    fn a_door_can_be_dimensioned_from_its_frame_edge_to_a_layer_of_a_crossing_wall() {
+    fn a_door_can_be_dimensioned_from_its_opening_edge_to_a_layer_of_a_crossing_wall() {
         let (mut d, w) = room();
         let t = door_type(&d);
         let door = d.place_on_wall(t, w[0], p(2000.0, 0.0)).unwrap();
         let lines = d.dim_lines(door).unwrap();
         let labels: Vec<&str> = lines.own.iter().map(|l| l.label.as_str()).collect();
-        assert!(labels.contains(&"Centre") && labels.contains(&"Opening edge") && labels.contains(&"Reveal"), "{labels:?}");
-        // a metal frame stands proud of the hole with its architrave, so it has an edge of its own
-        let lvl = d.levels()[0].0;
-        let stud = d.wall_types().iter().find(|(_, t)| t.name == "Internal Stud 90").unwrap().0;
-        let sw = d.add_wall(stud, lvl, p(0.0, 9000.0), p(6000.0, 9000.0), 2700.0).unwrap();
-        let metal = d.place_on_wall(t, sw, p(2000.0, 9000.0)).unwrap();
-        assert!(d.dim_lines(metal).unwrap().own.iter().any(|l| l.label == "Frame edge"));
+        assert!(labels.contains(&"Centre") && labels.contains(&"Opening edge"), "{labels:?}");
         // the left edge of the hole and the inner face of the west wall
         let own = lines.own.iter().filter(|l| l.label == "Opening edge").min_by(|a, b| a.pos.total_cmp(&b.pos)).unwrap().clone();
         let tgt = lines.targets.iter().filter(|l| l.spec.element() == w[3]).max_by(|a, b| a.pos.total_cmp(&b.pos)).unwrap().clone();
@@ -1080,7 +1070,7 @@ mod tests {
         let dims = d.temp_dimensions_pinned(door, TempDimSettings::default(), &BTreeMap::new(), &m);
         let left = dims.iter().find(|x| x.key == "left").unwrap();
         assert!((left.value - (own.pos - tgt.pos)).abs() < 1e-6, "{} vs {}", left.value, own.pos - tgt.pos);
-        // typing a value moves the door so the frame edge is that far from the wall layer
+        // typing a value moves the door so the opening edge is that far from the wall layer
         d.apply_temp_dimension(left.edit.as_ref().unwrap(), left.value, 500.0).unwrap();
         let after = d.temp_dimensions_pinned(door, TempDimSettings::default(), &BTreeMap::new(), &m);
         assert!((after.iter().find(|x| x.key == "left").unwrap().value - 500.0).abs() < 1e-6);

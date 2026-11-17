@@ -5,7 +5,6 @@ use crate::doc::Document;
 use crate::element::{Floor, Wall};
 use crate::roof::Roof;
 use crate::family::{FamilyCategory, Opening};
-use crate::hosting::InstanceFrame;
 use crate::geom::{signed_area, triangulate_region, Point};
 use crate::layers::WallLayers;
 use crate::view::Color;
@@ -219,50 +218,6 @@ pub fn wall_layer_meshes(doc: &Document, id: u64, w: &Wall, wl: &WallLayers) -> 
 
 /// A box in an instance's own coordinates: along `x0..x1`, across `y0..y1`
 /// (left positive), elevations `z0..z1`.
-fn local_box(out: &mut Vec<f32>, f: &InstanceFrame, x: (f64, f64), y: (f64, f64), z: (f64, f64)) {
-    if x.1 - x.0 < 1e-6 || y.1 - y.0 < 1e-6 || z.1 - z.0 < 1e-6 {
-        return;
-    }
-    let poly = [f.world(x.0, y.0), f.world(x.1, y.0), f.world(x.1, y.1), f.world(x.0, y.1)];
-    prism(out, &poly, &[[0, 1, 2], [0, 2, 3]], z.0, z.1);
-}
-
-/// A framed door: the frame section swept up both jambs and across the head,
-/// and the leaf (or pair) closed against the stop.
-fn framed_door_mesh(sf: &crate::frame::DoorFrame, f: &InstanceFrame) -> Vec<f32> {
-    let mut out = Vec::new();
-    let swing = if f.flip_facing { -1.0 } else { 1.0 };
-    let ym = f.y_mid() + sf.shift;
-    let r2 = sf.reveal_w / 2.0;
-    let yr = |b0: f64, b1: f64| {
-        let (y0, y1) = (ym + swing * b0, ym + swing * b1);
-        (y0.min(y1), y0.max(y1))
-    };
-    let (z_floor, z_head) = (f.z0, f.z0 + sf.reveal_h);
-    let a_max = sf.reach();
-    for [a0, a1, b0, b1] in sf.section() {
-        let y = yr(b0, b1);
-        // jambs stand on the floor up to the underside of the head
-        local_box(&mut out, f, (-(r2 + a1), -(r2 + a0)), y, (z_floor, z_head + a0.min(0.0)));
-        local_box(&mut out, f, (r2 + a0, r2 + a1), y, (z_floor, z_head + a0.min(0.0)));
-        // the head: the same section turned so that `a` runs up
-        local_box(&mut out, f, (-(r2 + a_max), r2 + a_max), y, (z_head + a0, z_head + a1));
-    }
-    // leaves
-    let (y0, y1) = yr(sf.leaf_b0(), sf.leaf_b0() + sf.leaf_t);
-    let (zl0, zl1) = (z_floor + sf.bottom_gap, z_floor + sf.bottom_gap + sf.leaf_h);
-    let edge = r2 - sf.side_gap;
-    if sf.leaves == 2 {
-        local_box(&mut out, f, (-edge, -sf.side_gap / 2.0), (y0, y1), (zl0, zl1));
-        local_box(&mut out, f, (sf.side_gap / 2.0, edge), (y0, y1), (zl0, zl1));
-    } else {
-        local_box(&mut out, f, (-edge, edge), (y0, y1), (zl0, zl1));
-    }
-    out
-}
-
-/// Meshes for a hosted door or window: `(frame_and_leaf, glass)`. The leaf is
-/// drawn closed, in the middle of the wall.
 pub fn instance_meshes(doc: &Document, id: u64) -> Option<(FamilyCategory, Vec<f32>, Vec<f32>)> {
     let crate::element::Element::FamilyInstance(inst) = doc.get(id)? else { return None };
     let (fam, _) = doc.instance_family(inst)?;
@@ -288,33 +243,8 @@ pub fn instance_meshes(doc: &Document, id: u64) -> Option<(FamilyCategory, Vec<f
         }
         return Some((cat, solid, glass));
     }
-    if let Some(sf) = doc.door_frame(id) {
-        return Some((cat, framed_door_mesh(&sf, &f), Vec::new()));
-    }
-    let num = |n: &str, d: f64| doc.instance_param(inst, n).and_then(|v| v.as_f64()).unwrap_or(d);
-    let fw = num("Frame Width", 70.0).min(f.width / 4.0);
-    let (hw, ym) = (f.width / 2.0, f.y_mid());
-    let depth = num("Frame Depth", 90.0).min(f.wall_left + f.wall_right);
-    let (y0, y1) = (ym - depth / 2.0, ym + depth / 2.0);
-    let mut frame = Vec::new();
-    let mut glass = Vec::new();
-    // frame: two jambs and a head (windows also get a sill)
-    local_box(&mut frame, &f, (-hw, -hw + fw), (y0, y1), (f.z0, f.z1));
-    local_box(&mut frame, &f, (hw - fw, hw), (y0, y1), (f.z0, f.z1));
-    local_box(&mut frame, &f, (-hw + fw, hw - fw), (y0, y1), (f.z1 - fw, f.z1));
-    match cat {
-        FamilyCategory::Doors => {
-            let t = num("Thickness", 40.0);
-            local_box(&mut frame, &f, (-hw + fw, hw - fw), (ym - t / 2.0, ym + t / 2.0), (f.z0, f.z1 - fw));
-        }
-        FamilyCategory::Windows => {
-            local_box(&mut frame, &f, (-hw + fw, hw - fw), (y0, y1), (f.z0, f.z0 + fw));
-            let g = num("Glazing Thickness", 6.0);
-            local_box(&mut glass, &f, (-hw + fw, hw - fw), (ym - g / 2.0, ym + g / 2.0), (f.z0 + fw, f.z1 - fw));
-        }
-        _ => {}
-    }
-    Some((cat, frame, glass))
+    // a family without a body draws nothing
+    Some((cat, Vec::new(), Vec::new()))
 }
 
 pub fn floor_mesh(doc: &Document, f: &Floor) -> Option<Vec<f32>> {

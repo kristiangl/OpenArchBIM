@@ -1171,13 +1171,14 @@ impl Document {
             for (v, label) in self.opening_offsets(iid) {
                 add(iid, format!("o:{:.1}", v), &label, true, uc + wproj * v, f.z0, f.z1);
             }
-            let (ow, _, _) = match self.get(iid) {
-                Some(Element::FamilyInstance(fi)) => self.instance_opening_size(fi),
-                _ => (f.width, f.height, 0.0),
+            let ((ow, _, _), height) = match self.get(iid) {
+                Some(Element::FamilyInstance(fi)) => (self.instance_opening_size(fi), self.instance_param(fi, "Height").and_then(|v| v.as_f64())),
+                _ => ((f.width, f.height, 0.0), None),
             };
             let half = ow * wproj.abs() / 2.0;
-            add(iid, "sill".into(), "Sill", false, f.z0, uc - half, uc + half);
-            add(iid, "head".into(), "Head", false, f.z1, uc - half, uc + half);
+            // the family's sill (its origin level) and head, which its hole may stand outside (a window's stud opening)
+            add(iid, "sill".into(), "Sill", false, f.z_ref, uc - half, uc + half);
+            add(iid, "head".into(), "Head", false, height.map_or(f.z1, |h| f.z_ref + h), uc - half, uc + half);
         }
         for (id, e) in self.iter() {
             let Element::Floor(fl) = e else { continue };

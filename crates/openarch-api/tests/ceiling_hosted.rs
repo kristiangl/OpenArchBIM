@@ -119,6 +119,6 @@ fn other_categories_host_too_and_placing_is_checked() {
     assert!(m.s.handle("place_on_ceiling", &json!({ "type_id": t, "level_id": m.level, "point": [9000, 1000] })).is_err());
     // a ceiling family is not placed free standing, and a door is not hosted by a ceiling
     assert!(m.s.handle("place_free_instance", &json!({ "type_id": t, "level_id": m.level, "point": [2000, 2000] })).is_err());
-    let door = type_of(&m.info, "Single-Flush");
+    let door = type_of(&m.info, "Single Flush Door - Metal Frame");
     assert!(m.s.handle("place_on_ceiling", &json!({ "type_id": door, "level_id": m.level, "point": [2000, 2000] })).is_err());
 }

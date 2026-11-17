@@ -2,7 +2,6 @@
 
 use crate::doc::{apply_patch, Document};
 use crate::element::*;
-use crate::frame::FrameKind;
 use crate::family::*;
 use crate::geom::Point;
 
@@ -65,10 +64,6 @@ impl InstanceFrame {
     }
 }
 
-/// How much shallower or deeper than the wall a frame's throat may be before it is
-/// reported (mm). Placeholder tolerances until Lawrence's supplier confirms.
-const FRAME_FIT_SHALLOW: f64 = 5.0;
-const FRAME_FIT_DEEP: f64 = 12.0;
 
 impl Document {
     pub fn families(&self) -> Vec<(Id, &Family)> {
@@ -451,40 +446,6 @@ impl Document {
 
     // ---- placing and editing ---------------------------------------------
 
-    /// Add the starter door and window families if the project has none (older
-    /// project files). Not an undo step.
-    pub fn ensure_starter_families(&mut self) {
-        let have: Vec<String> = self.families().iter().map(|(_, f)| f.name.clone()).collect();
-        // built-in families saved before they had frame parameters or a stored body take
-        // the current definition (their types and placed doors stay)
-        let upgrades: Vec<(Id, crate::family::Family)> = starter_families()
-            .into_iter()
-            .filter_map(|sf| {
-                let (id, old) = self.families().into_iter().find(|(_, f)| f.name == sf.family.name)?;
-                let frame_params_missing = sf.family.param("Frame Type").is_some() && old.param("Frame Type").is_none();
-                let body_missing = old.body.is_empty() && !sf.family.body.is_empty();
-                // the first stored bodies (14 Oct) built frames from separate extrusions, the head apart from the jambs
-                let has_sweep = |b: &crate::famgeom::FamilyBody| b.forms.iter().any(|f| matches!(f.shape, crate::famgeom::FormShape::Sweep { .. }));
-                let extruded_frame = |b: &crate::famgeom::FamilyBody| {
-                    b.forms.iter().any(|f| f.name.ends_with("Jambs") || (f.name == "Frame" && matches!(f.shape, crate::famgeom::FormShape::Extrusion { .. })))
-                };
-                let pieces_frame = has_sweep(&sf.family.body) && !old.body.is_empty() && !has_sweep(&old.body) && extruded_frame(&old.body);
-                (old.built_in && (frame_params_missing || body_missing || pieces_frame)).then(|| (id, sf.family))
-            })
-            .collect();
-        if upgrades.is_empty() && starter_families().iter().all(|sf| have.contains(&sf.family.name)) {
-            return;
-        }
-        let _ = self.transact("Load starter families", |tx| {
-            for (id, fam) in upgrades {
-                let _ = tx.update(id, Element::Family(fam));
-            }
-            tx.add_starter_families(&have);
-            Ok(())
-        });
-        self.clear_history();
-    }
-
     /// Add a type from the family's catalogue (Edit Type > Add from catalogue).
     pub fn add_catalog_type(&mut self, family: Id, row_name: &str) -> Result<Id, String> {
         let fam = self.family(family).ok_or("not a family")?;
@@ -493,30 +454,6 @@ impl Document {
             return Err(format!("the family already has a type named '{}'", row.name));
         }
         self.transact("Add type from catalogue", |tx| Ok(tx.add(Element::FamilyType(FamilyType { family, name: row.name, values: row.values, globals: Default::default() }))))
-    }
-
-    /// How a door's frame suits the wall it sits in, or `None` if it does. A metal
-    /// frame's back opening must match the wall's thickness; a timber jamb must at
-    /// least cover the core it is built into.
-    pub fn frame_fit(&self, id: Id) -> Option<String> {
-        let frame = self.door_frame(id)?;
-        let Some(Element::FamilyInstance(inst)) = self.get(id) else { return None };
-        let Some(Element::Wall(w)) = self.get(inst.host?.wall) else { return None };
-        let (l, r) = self.wall_extents(w);
-        let (thick, (core, _)) = (l + r, self.wall_core(w));
-        let (kind, suits) = frame_for_wall(thick, core);
-        match frame.kind {
-            FrameKind::PressedMetal => {
-                if frame.depth + FRAME_FIT_SHALLOW < thick {
-                    Some(format!("The {:.0} mm back opening is shallower than the {thick:.0} mm wall.{}", frame.depth, if kind == "Timber" { " A timber frame suits a wall this thick.".to_string() } else { format!(" Use {suits:.0}.") }))
-                } else if frame.depth - thick > FRAME_FIT_DEEP {
-                    Some(format!("The {:.0} mm back opening is much deeper than the {thick:.0} mm wall. {suits:.0} suits this wall.", frame.depth))
-                } else {
-                    None
-                }
-            }
-            FrameKind::Timber => (frame.depth + FRAME_FIT_SHALLOW < core).then(|| format!("The {:.0} mm jamb is narrower than the {core:.0} mm wall core.", frame.depth)),
-        }
     }
 
     /// Place a door or window in a wall. `point` is where the user clicked: the
@@ -552,20 +489,15 @@ impl Document {
         if let Some(s) = sill {
             inst.values.insert("Sill Height".into(), ParamValue::Number(s));
         }
-        // built-in doors take the frame that suits the wall
-        if fam.param("Frame Type").is_some() && fam.param("Jamb Depth").is_some() {
-            let (l, r) = self.wall_extents(&w);
-            let (kind, depth) = frame_for_wall(l + r, self.wall_core(&w).0);
-            inst.values.insert("Frame Type".into(), ParamValue::Text(kind.into()));
-            inst.values.insert("Jamb Depth".into(), ParamValue::Number(depth));
-        }
         let (width, _, _) = self.instance_opening_size(&inst);
         if width > len {
             return Err("the wall is shorter than the opening".into());
         }
         let u = along.clamp(width / 2.0, len - width / 2.0);
         inst.host = Some(HostRef { wall, u_mm: u, v_mm: None });
-        inst.flip_facing = (across < 0.0) != flip_facing;
+        // the family's interior side (-y, where a door swings) faces the side clicked on: placed from inside a room,
+        // a door opens into it
+        inst.flip_facing = (across > 0.0) != flip_facing;
         inst.flip_hand = flip_hand;
         inst.ifc.export_as = fam.category.ifc_class().to_string();
         inst.ifc.predefined_type = fam.category.ifc_predefined().to_string();
@@ -862,7 +794,7 @@ mod tests {
         let mut cw = Wall::new(wt, lvl, p(5000., 0.), p(0., 5000.), 2700.);
         cw.curve = Some(Curve::Arc { start: p(5000., 0.), end: p(0., 5000.), centre: p(0., 0.), ccw: true });
         let w = d.add_wall_with(cw).unwrap();
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         // click on the outside of the arc half way round
         let c = 5000.0 * std::f64::consts::FRAC_1_SQRT_2;
         let id = d.place_on_wall(t, w, p(c * 1.05, c * 1.05)).unwrap();
@@ -890,36 +822,38 @@ mod tests {
     fn a_door_cuts_an_opening_and_faces_the_cursor() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         let id = d.place_on_wall(t, w, p(2000., -300.)).unwrap();
         let Some(Element::FamilyInstance(i)) = d.get(id) else { panic!() };
-        assert!(i.flip_facing, "cursor on the right of the wall");
+        // the cursor is on the wall's right, where the family's interior side lies unflipped
+        assert!(!i.flip_facing, "cursor on the right of the wall");
         assert_eq!(i.host.unwrap().u_mm, 2000.0);
         assert!(!i.ifc.guid.is_empty());
         let ops = d.wall_openings(w);
         assert_eq!(ops.len(), 1);
-        // a 200 mm wall gets a timber frame: the hole is the 824 x 2055 reveal plus a 42 mm jamb each side and above
-        assert_eq!((ops[0].u0, ops[0].u1, ops[0].z0, ops[0].z1), (1546.0, 2454.0, 0.0, 2097.0));
-        assert_eq!(d.wall_opening_area(w), 908.0 * 2097.0);
+        // the Metroll frame's rough opening: 3 of clearance and 15 behind each soffit, 1.5 + 15 at the head
+        assert_eq!((ops[0].u0, ops[0].u1, ops[0].z0, ops[0].z1), (1573.5, 2426.5, 0.0, 2056.5));
+        assert_eq!(d.wall_opening_area(w), 853.0 * 2056.5);
     }
 
     #[test]
     fn windows_take_the_type_sill_and_door_position_is_clamped_into_the_wall() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Fixed", "1200 x 1200");
+        let t = type_named(&d, "Fixed Window", "1210 x 1200");
         let id = d.place_on_wall(t, w, p(-500., 100.)).unwrap();
         let Some(Element::FamilyInstance(i)) = d.get(id) else { panic!() };
-        assert_eq!(i.host.unwrap().u_mm, 600.0, "clamped so the window stays on the wall");
+        // the hole is the stud opening, 30 round the 1210 x 1200 frame
+        assert_eq!(i.host.unwrap().u_mm, 635.0, "clamped so the window stays on the wall");
         let o = d.wall_openings(w)[0];
-        assert_eq!((o.z0, o.z1), (900.0, 2100.0));
+        assert_eq!((o.z0, o.z1), (870.0, 2130.0));
     }
 
     #[test]
     fn overlaps_and_oversize_are_refused() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         d.place_on_wall(t, w, p(2000., 0.)).unwrap();
         assert!(d.place_on_wall(t, w, p(2300., 0.)).unwrap_err().contains("overlaps"));
         assert!(d.place_on_wall(t, w, p(3000., 0.)).is_ok());
@@ -933,8 +867,8 @@ mod tests {
     fn plan_pieces_break_at_the_cut_plane_only_when_the_opening_spans_it() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let win = type_named(&d, "Fixed", "1200 x 1200"); // 900..2100
-        let door = type_named(&d, "Single-Flush", "820 x 2040");
+        let win = type_named(&d, "Fixed Window", "1210 x 1200"); // hole 870..2130
+        let door = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         d.place_on_wall(win, w, p(1500., 0.)).unwrap();
         d.place_on_wall(door, w, p(4000., 0.)).unwrap();
         let o = d.wall_outlines()[&w];
@@ -943,17 +877,17 @@ mod tests {
         assert_eq!(d.wall_plan_pieces(w, &o, Some(600.0)).len(), 2, "only the door spans 600");
         assert_eq!(d.wall_plan_pieces(w, &o, Some(2200.0)).len(), 1, "both below 2200");
         let pieces = d.wall_plan_pieces(w, &o, Some(1200.0));
-        // the first piece ends where the window starts
+        // the first piece ends where the window's hole starts
         let xs: Vec<f64> = pieces[0].iter().map(|q| q.x).collect();
-        assert!((xs.iter().cloned().fold(f64::MIN, f64::max) - 900.0).abs() < 1e-6);
+        assert!((xs.iter().cloned().fold(f64::MIN, f64::max) - 865.0).abs() < 1e-6);
     }
 
     #[test]
     fn wall_mesh_with_openings_has_every_face_pointing_out() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let win = type_named(&d, "Fixed", "1200 x 1200");
-        let door = type_named(&d, "Single-Flush", "820 x 2040");
+        let win = type_named(&d, "Fixed Window", "1210 x 1200");
+        let door = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         d.place_on_wall(win, w, p(1500., 0.)).unwrap();
         d.place_on_wall(door, w, p(4000., 0.)).unwrap();
         let Some(Element::Wall(wall)) = d.get(w).cloned() else { panic!() };
@@ -977,7 +911,7 @@ mod tests {
     fn deleting_a_wall_deletes_what_it_hosts_in_one_undo_step() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         d.place_on_wall(t, w, p(2000., 0.)).unwrap();
         d.delete(&[w]).unwrap();
         assert!(d.instances().is_empty());
@@ -990,7 +924,7 @@ mod tests {
     fn a_wall_edit_that_would_orphan_an_opening_is_refused() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         d.place_on_wall(t, w, p(2000., 0.)).unwrap();
         assert!(d.set_wall_height(w, 1800.).unwrap_err().contains("no longer fit"));
         assert!(d.patch_wall(w, &json!({ "end": { "x": 2200.0, "y": 0.0 } })).is_err());
@@ -1001,38 +935,39 @@ mod tests {
     fn instance_and_type_edits_go_through_patches() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let win = type_named(&d, "Awning", "900 x 600"); // sill 1500
+        let win = type_named(&d, "Awning Window", "850 x 600"); // sill 1500
         let id = d.place_on_wall(win, w, p(3000., 0.)).unwrap();
         d.patch_instance(id, &json!({ "mark": "W01", "flip_hand": true, "values": { "Sill Height": 1200.0 } })).unwrap();
+        // the stud opening, 30 below the sill and above the head
         let o = d.wall_openings(w)[0];
-        assert_eq!((o.z0, o.z1), (1200.0, 1800.0));
+        assert_eq!((o.z0, o.z1), (1170.0, 1830.0));
         assert!(d.patch_instance(id, &json!({ "values": { "Width": 1000.0 } })).unwrap_err().contains("type parameter"));
         assert!(d.patch_instance(id, &json!({ "values": { "Sill Height": 2400.0 } })).is_err(), "head above the wall");
         // widen the type: placed instances follow
-        d.patch_family_type(win, &json!({ "values": { "Width": 1500.0, "Rough Width": 1500.0 } })).unwrap();
+        d.patch_family_type(win, &json!({ "values": { "Width": 1500.0 } })).unwrap();
         let o = d.wall_openings(w)[0];
-        assert_eq!(o.u1 - o.u0, 1500.0);
+        assert_eq!(o.u1 - o.u0, 1560.0);
         // a type too wide for the wall is refused
-        assert!(d.patch_family_type(win, &json!({ "values": { "Rough Width": 9000.0 } })).is_err());
+        assert!(d.patch_family_type(win, &json!({ "values": { "Width": 9000.0 } })).is_err());
         // duplicate keeps the values under a new name
         let dup = d.duplicate_family_type(win, "1500 x 600 custom").unwrap();
         assert_eq!(d.family_type(dup).unwrap().values.get("Width"), Some(&ParamValue::Number(1500.0)));
         assert!(d.duplicate_family_type(win, "1500 x 600 custom").is_err());
         d.undo();
         d.undo();
-        assert_eq!(d.wall_openings(w)[0].u1 - d.wall_openings(w)[0].u0, 900.0);
+        assert_eq!(d.wall_openings(w)[0].u1 - d.wall_openings(w)[0].u0, 910.0);
     }
 
     #[test]
     fn plan_symbol_swings_towards_the_cursor_side() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         let up = d.place_on_wall(t, w, p(1000., 300.)).unwrap();
         let down = d.place_on_wall(t, w, p(3000., -300.)).unwrap();
         let (a, b) = (crate::symbol::plan_symbol(&d, up, crate::view::DetailLevel::Medium).unwrap(), crate::symbol::plan_symbol(&d, down, crate::view::DetailLevel::Medium).unwrap());
-        // the swing is a Plan Swing part from the closed end round to the open tip; its radius is the leaf
-        let swing = |g: &crate::symbol::SymbolGeom| g.parts.iter().filter(|p| p.subcategory == "Plan Swing").map(|p| p.rings[0].clone()).collect::<Vec<_>>();
+        // the swing arc is a Plan Swing part from the closed end round to the open tip; its radius is the leaf
+        let swing = |g: &crate::symbol::SymbolGeom| g.parts.iter().filter(|p| p.subcategory == "Plan Swing" && p.rings[0].len() > 2).map(|p| p.rings[0].clone()).collect::<Vec<_>>();
         let (sa, sb) = (swing(&a), swing(&b));
         assert_eq!((sa.len(), sb.len()), (1, 1));
         let (ra, rb) = (&sa[0], &sb[0]);
@@ -1044,10 +979,10 @@ mod tests {
     }
 
     #[test]
-    fn families_survive_save_and_old_files_get_the_starter_set() {
+    fn families_survive_save_and_old_files_are_left_as_they_are() {
         let mut d = Document::new_project();
         let w = wall(&mut d);
-        let t = type_named(&d, "Single-Flush", "820 x 2040");
+        let t = type_named(&d, "Single Flush Door - Metal Frame", "820 x 2040");
         d.place_on_wall(t, w, p(2000., 0.)).unwrap();
         let dir = std::env::temp_dir().join(format!("openarch-fam-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -1056,7 +991,7 @@ mod tests {
         let o = Document::open(&path).unwrap();
         assert_eq!(o.instances().len(), 1);
         assert_eq!(o.wall_openings(w).len(), 1);
-        // an older project: no families at all
+        // an older project without families: opening it adds none (step 4 of door-window-spec.md)
         let mut old = Document::new_project();
         let ids: Vec<Id> = old.elements.iter().filter(|(_, e)| matches!(e, Element::Family(_) | Element::FamilyType(_))).map(|(i, _)| *i).collect();
         for i in ids {
@@ -1065,7 +1000,7 @@ mod tests {
         let p2 = dir.join("old.oab");
         old.save(&p2).unwrap();
         let reopened = Document::open(&p2).unwrap();
-        assert!(!reopened.families().is_empty());
+        assert!(reopened.families().is_empty());
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

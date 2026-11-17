@@ -1379,7 +1379,10 @@ fn read_ifc(d: &mut Document, bytes: &[u8], merge: bool) -> Result<IfcImport, St
                 Some(Element::Wall(w)) => w.base_level,
                 _ => continue,
             };
-            let sill = mm(z0 - elevation(wall_level)).max(0.0);
+            // the opening is the hole, which a family can start below its sill (a window's stud opening)
+            let probe = crate::family::FamilyInstance { host: Some(crate::family::HostRef { wall: host, u_mm: mid, v_mm: None }), ..crate::family::FamilyInstance::new(tid, wall_level) };
+            let below = d.instance_cut_box(&probe).map_or(0.0, |b| b[0][2]);
+            let sill = mm(z0 - elevation(wall_level)).max(0.0) - below;
             let flip = enumeration(o.args.get(11)).is_some_and(|op| op.contains("RIGHT"));
             let iid = match d.place_on_wall_at(tid, host, at, flip, false, (!is_door || sill > 1.0).then_some(sill)) {
                 Ok(i) => i,

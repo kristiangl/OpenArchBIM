@@ -138,7 +138,6 @@ impl Document {
             let e: Element = serde_json::from_str(&json).map_err(|e| format!("element {id}: {e}"))?;
             d.elements.insert(id as Id, e);
         }
-        d.ensure_starter_families(); // projects saved before doors and windows
         d.ensure_roof_defaults(); // projects saved before roofs
         d.ensure_style_defaults(); // projects saved before object styles
         d.ensure_site_defaults(); // projects saved before the base point, Site plan and elevations

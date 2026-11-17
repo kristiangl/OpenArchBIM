@@ -12,7 +12,7 @@ fn key(s: &mut Session, name: &str, fields: &[&str]) -> u64 {
 fn doors(s: &mut Session) -> [u64;2] {
     let info=call(s,"doc_info",json!({}));
     let wall=call(s,"add_wall",json!({"level_id":info["levels"][0]["id"],"type_id":info["wall_types"][0]["id"],"start":[0,0],"end":[10000,0],"height_mm":3000}))["id"].as_u64().unwrap();
-    let ty=info["family_types"].as_array().unwrap().iter().find(|t|t["label"]=="Single-Flush: 820 x 2040").unwrap()["id"].clone();
+    let ty=info["family_types"].as_array().unwrap().iter().find(|t|t["label"]=="Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].clone();
     [2000,6000].map(|x|call(s,"place_instance",json!({"type_id":ty,"host_id":wall,"point":[x,0]}))["id"].as_u64().unwrap())
 }
 fn assign(s:&mut Session,key:u64,ids:&[u64],row:Option<u64>) { call(s,"patch_element_keys",json!({"ids":ids,"patch":{"keys":{key.to_string():row}}})); }
@@ -21,17 +21,17 @@ fn prop(s:&mut Session,id:u64,name:&str)->Value { call(s,"describe",json!({"id":
 #[test]
 fn keys_propagate_lock_retain_values_and_undo_as_one_edit() {
     let mut s=Session::new();
-    let parameter=call(&mut s,"add_project_parameter",json!({"category":"Doors","name":"Hardware Set","unit":"text"}))["id"].as_u64().unwrap();
-    let k=key(&mut s,"Door Hardware",&["Hardware Set","Sill Height"]);
+    let parameter=call(&mut s,"add_project_parameter",json!({"category":"Doors","name":"Hardware Group","unit":"text"}))["id"].as_u64().unwrap();
+    let k=key(&mut s,"Door Hardware",&["Hardware Group","Sill Height"]);
     let a=call(&mut s,"add_key_row",json!({"id":k}))["row"].as_u64().unwrap();
-    call(&mut s,"patch_key_row",json!({"id":k,"row":a,"patch":{"name":"Office","values":{"Hardware Set":"H01","Sill Height":100}}}));
+    call(&mut s,"patch_key_row",json!({"id":k,"row":a,"patch":{"name":"Office","values":{"Hardware Group":"H01","Sill Height":100}}}));
     let ids=doors(&mut s); assign(&mut s,k,&ids,Some(a));
     assert_eq!(s.doc.project_parameter(parameter).unwrap().values[&ids[0]],"H01");
     assert_eq!(prop(&mut s,ids[0],"Sill Height")["raw"],100.0);
-    assert_eq!(prop(&mut s,ids[0],"Hardware Set")["kind"],"ro");
+    assert_eq!(prop(&mut s,ids[0],"Hardware Group")["kind"],"ro");
     assert!(s.handle("patch_instance",&json!({"id":ids[0],"patch":{"values":{"Sill Height":200}}})).is_err());
     assert!(s.doc.set_project_value(parameter,ids[0],json!("forbidden")).is_err());
-    call(&mut s,"patch_key_row",json!({"id":k,"row":a,"patch":{"values":{"Hardware Set":"H02","Sill Height":150}}}));
+    call(&mut s,"patch_key_row",json!({"id":k,"row":a,"patch":{"values":{"Hardware Group":"H02","Sill Height":150}}}));
     assert_eq!(prop(&mut s,ids[1],"Sill Height")["raw"],150.0);
     call(&mut s,"undo",json!({}));
     assert_eq!(prop(&mut s,ids[1],"Sill Height")["raw"],100.0);
@@ -39,11 +39,11 @@ fn keys_propagate_lock_retain_values_and_undo_as_one_edit() {
     call(&mut s,"redo",json!({}));
     assign(&mut s,k,&[ids[0]],None);
     assert_eq!(prop(&mut s,ids[0],"Sill Height")["raw"],150.0);
-    assert_eq!(prop(&mut s,ids[0],"Hardware Set")["kind"],"text");
+    assert_eq!(prop(&mut s,ids[0],"Hardware Group")["kind"],"text");
     s.doc.set_project_value(parameter,ids[0],json!("Manual")).unwrap();
     call(&mut s,"delete_key_rows",json!({"id":k,"rows":[a]}));
-    assert_eq!(prop(&mut s,ids[1],"Hardware Set")["value"],"H02");
-    assert_eq!(prop(&mut s,ids[1],"Hardware Set")["kind"],"text");
+    assert_eq!(prop(&mut s,ids[1],"Hardware Group")["value"],"H02");
+    assert_eq!(prop(&mut s,ids[1],"Hardware Group")["kind"],"text");
     let b=call(&mut s,"add_key_row",json!({"id":k}))["row"].as_u64().unwrap(); assert!(b>a);
     assert_eq!(s.doc.schedule(k).unwrap().key.as_ref().unwrap().assignments.len(),0);
 }
