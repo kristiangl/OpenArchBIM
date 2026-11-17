@@ -272,6 +272,9 @@ pub struct ParamDef {
     pub default: ParamValue,
 }
 
+/// The values of the Wall Closure parameter, By Host first.
+pub const WALL_CLOSURE: [&str; 5] = ["By Host", "Neither", "Interior", "Exterior", "Both"];
+
 /// A Family Type parameter's value split into its family and type ("Panel : Glazed" gives the family "Panel" and the
 /// type "Glazed"). A value without " : " is a type name alone, of whatever family the user already has.
 pub fn split_family_type(v: &str) -> (Option<&str>, &str) {
@@ -288,6 +291,11 @@ fn common() -> String {
 impl ParamDef {
     fn new(name: &str, kind: ParamKind, instance: bool, group: &str, default: ParamValue) -> ParamDef {
         ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: common(), tooltip: String::new(), locked: false, family_category: None, default }
+    }
+    /// Wall Closure: which of the wall's layers wrap into the opening (By Host takes the wall type's Wrapping at
+    /// Inserts). They wrap to the plane flagged Wall Closure, or round the core without one.
+    pub fn wall_closure() -> ParamDef {
+        ParamDef::choice("Wall Closure", false, "Construction", &WALL_CLOSURE)
     }
     /// A text parameter chosen from a list.
     fn choice(name: &str, instance: bool, group: &str, choices: &[&str]) -> ParamDef {

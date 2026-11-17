@@ -860,6 +860,20 @@ const FamModel = (() => {
       if (named.includes(v)) for (const q of b.planes) if (q.ref_kind === v && q.id !== p.id) q.ref_kind = "weak";
       planeById(p.id).ref_kind = v;
     }, true))));
+    // Wall Closure: a plane across the wall where the wall's wrapped layers stop at the opening (one per family)
+    if (hostWallOn() && p.axis === "y") {
+      r.append(field("Wall Closure", checkIn(!!p.wall_closure, (v) => change((b) => {
+        for (const q of b.planes) if (q.wall_closure) q.wall_closure = false;
+        planeById(p.id).wall_closure = v;
+      }))));
+      const hasParam = S.params.some((q) => q.name === "Wall Closure");
+      if (p.wall_closure && !hasParam) {
+        r.append(el("div", "famed-hint", "The wall's layers wrap to this plane when the Wall Closure parameter says which side wraps. This family has no such parameter yet."));
+        r.append(button("Add the Wall Closure parameter", () => change(() => {
+          S.params.push({ name: "Wall Closure", param_kind: "text", instance: false, group: "Construction", formula: null, reporting: false, shared_guid: null, choices: ["By Host", "Neither", "Interior", "Exterior", "Both"], discipline: "common", tooltip: "Which of the wall's layers wrap into the opening. By Host follows the wall type's Wrapping at Inserts.", locked: false, default: "By Host" });
+        })));
+      } else if (p.wall_closure) r.append(el("div", "famed-hint", "The wall's layers that wrap into the opening (set by the Wall Closure type parameter, or the wall type when it is By Host) stop at this plane."));
+    }
     const a = p.anchor;
     if (a.type === "origin") { r.append(el("div", "famed-hint", "This plane marks the origin.")); return; }
     const same = S.body.planes.filter((q) => q.axis === p.axis && q.id !== p.id).map((q) => [q.id, q.name]);

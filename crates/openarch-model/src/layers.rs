@@ -709,8 +709,47 @@ impl Document {
             return wl.layers.clone();
         };
         let blocked: Vec<(f64, f64)> = cut_z.map(|z| self.wall_cut_gaps(wall, z)).unwrap_or_default();
-        plan_layers(w, &t, self.wall_extents(w), wl, &blocked)
+        let closures: Vec<Closure> = match cut_z {
+            Some(z) => blocked.iter().map(|g| self.gap_closure(wall, w, *g, z)).collect(),
+            None => vec![],
+        };
+        plan_layers(w, &t, self.wall_extents(w), wl, &blocked, &closures)
     }
+
+    /// How the layers close at the gap `g` cut at height `z`: from the door or window that makes it (its Wall
+    /// Closure parameter, and its plane flagged Wall Closure as a distance across the wall from the location line,
+    /// positive to the left). A gap no family makes (an Edit Profile hole) is By Host, round the core.
+    fn gap_closure(&self, wall: Id, w: &crate::element::Wall, g: (f64, f64), z: f64) -> Closure {
+        let Some(o) = self.wall_openings(wall).into_iter().find(|o| o.z0 < z && z < o.z1 && o.u0 < g.1 && g.0 < o.u1) else { return Closure::default() };
+        let Some(Element::FamilyInstance(inst)) = self.get(o.instance) else { return Closure::default() };
+        let wrap = match self.instance_param(inst, "Wall Closure").as_ref().and_then(|v| v.as_text()) {
+            Some("Neither") => Some(Wrap::None),
+            Some("Interior") => Some(Wrap::Interior),
+            Some("Exterior") => Some(Wrap::Exterior),
+            Some("Both") => Some(Wrap::Both),
+            _ => None,
+        };
+        let to = (|| {
+            let (fam, _) = self.instance_family(inst)?;
+            let plane = fam.body.planes.iter().find(|p| p.wall_closure && p.axis == crate::famgeom::Axis::Y)?;
+            let solved = self.instance_solved(o.instance)?;
+            let y = *solved.as_ref().as_ref().ok()?.planes.get(&plane.id)?;
+            let f = self.instance_frame(o.instance)?;
+            let p = f.fam_world(0.0, y);
+            let (at, d) = w.path().at((g.0 + g.1) / 2.0);
+            Some((p.x - at.x) * -d.y + (p.y - at.y) * d.x)
+        })();
+        Closure { wrap, to }
+    }
+}
+
+/// How a wall's layers close at one opening: `wrap` overrides the wall type's Wrapping at Inserts when the family
+/// says (None is By Host), and `to` is where across the wall the wrapped layers stop (left of the location line
+/// positive); without it they wrap round the core.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct Closure {
+    pub wrap: Option<Wrap>,
+    pub to: Option<f64>,
 }
 
 /// The plan layers of wall `w` of type `t` (reaching `extents` left and right of its location
@@ -721,6 +760,7 @@ pub(crate) fn plan_layers(
     extents: (f64, f64),
     wl: &WallLayers,
     blocked: &[(f64, f64)],
+    closures: &[Closure],
 ) -> Vec<LayerGeom> {
     let mut layers = wl.layers.clone();
     let path = w.path();
@@ -790,6 +830,7 @@ pub(crate) fn plan_layers(
             1.0,
             t.wrap_ends,
             edges.first().map_or(len, |e| e.1 - e.0),
+            None,
         );
     }
     if wl.free[1] {
@@ -802,6 +843,7 @@ pub(crate) fn plan_layers(
             -1.0,
             t.wrap_ends,
             edges.last().map_or(len, |e| e.1 - e.0),
+            None,
         );
     }
     if !blocked.is_empty() {
@@ -827,10 +869,12 @@ pub(crate) fn plan_layers(
         }
         for (i, &(a, b)) in blocked.iter().enumerate() {
             let (before, after) = (edges[i].1 - edges[i].0, edges[i + 1].1 - edges[i + 1].0);
+            let c = closures.get(i).copied().unwrap_or_default();
+            let wrap = c.wrap.unwrap_or(t.wrap_inserts);
             let (fa, ea) = frame_at(a);
-            wrap_at(&mut layers, &fa, &bounds, ea, -1.0, t.wrap_inserts, before);
+            wrap_at(&mut layers, &fa, &bounds, ea, -1.0, wrap, before, c.to);
             let (fb, eb) = frame_at(b);
-            wrap_at(&mut layers, &fb, &bounds, eb, 1.0, t.wrap_inserts, after);
+            wrap_at(&mut layers, &fb, &bounds, eb, 1.0, wrap, after, c.to);
         }
     }
     layers
@@ -877,7 +921,7 @@ pub fn sample_plan_layers(
         layers,
         free: [true, true],
     };
-    plan_layers(&w, t, (left, right), &wl, opening.as_slice())
+    plan_layers(&w, t, (left, right), &wl, opening.as_slice(), &[])
 }
 
 /// Wrap the layers outside the core round a free boundary at `e` along the wall
@@ -893,15 +937,16 @@ fn wrap_at(
     inward: f64,
     wrap: Wrap,
     room: f64,
+    to: Option<f64>,
 ) {
     match wrap {
         Wrap::None => {}
         Wrap::Exterior | Wrap::Interior => {
-            wrap_side(layers, f, bounds, e, inward, wrap == Wrap::Exterior, room)
+            wrap_side(layers, f, bounds, e, inward, wrap == Wrap::Exterior, room, to)
         }
         Wrap::Both => {
-            wrap_side(layers, f, bounds, e, inward, true, room);
-            wrap_side(layers, f, bounds, e, inward, false, room);
+            wrap_side(layers, f, bounds, e, inward, true, room, to);
+            wrap_side(layers, f, bounds, e, inward, false, room, to);
         }
     }
 }
@@ -914,6 +959,7 @@ fn wrap_side(
     inward: f64,
     exterior: bool,
     room: f64,
+    to: Option<f64>,
 ) {
     let (Some(first), Some(last)) = (
         layers.iter().position(|l| l.core),
@@ -935,7 +981,13 @@ fn wrap_side(
     if depth <= 0.0 || room < depth + 1.0 {
         return;
     }
-    let far = if exterior { bounds[last + 1] } else { bounds[first] };
+    // the layers return across the core to its far face, or to the Wall Closure plane when it lies within the core
+    let (core_hi, core_lo) = (bounds[first], bounds[last + 1]);
+    let far = match to {
+        Some(y) => y.clamp(core_lo, core_hi),
+        None if exterior => core_lo,
+        None => core_hi,
+    };
     let x = |d: f64| e + inward * d;
     let mut done = 0.0;
     for &k in &side {
@@ -953,8 +1005,13 @@ fn wrap_side(
         layers[k].shapes = union_with(&layers[k].shapes, &ret);
         done = next;
     }
+    // the core steps back to make room for the returns, as far across as they reach
+    let (c0, c1) = if exterior { (far, core_hi) } else { (core_lo, far) };
     for k in first..=last {
-        layers[k].shapes = subtract_shapes(&layers[k].shapes, &[f.rect(e, x(depth), bounds[k + 1], bounds[k])]);
+        let (lo, hi) = (bounds[k + 1].max(c0), bounds[k].min(c1));
+        if hi > lo {
+            layers[k].shapes = subtract_shapes(&layers[k].shapes, &[f.rect(e, x(depth), lo, hi)]);
+        }
     }
 }
 
@@ -1190,6 +1247,56 @@ mod tests {
         let (w2, _) = brick_wall(&mut d2, Wrap::None, Wrap::None);
         let g2 = d2.wall_layer_geometry();
         assert!(!contains(&d2.wall_plan_layers(w2, &g2[&w2], None)[0].shapes, p(50., -50.)));
+    }
+
+    #[test]
+    fn wall_closure_stops_the_wrapped_layers_at_the_family_plane() {
+        use crate::famgeom::*;
+        use crate::family::{FamilyCategory, HostKind, ParamValue};
+        let mut d = Document::new_project();
+        let (w, _) = brick_wall(&mut d, Wrap::None, Wrap::None);
+        let fid = d.new_family("Hole", FamilyCategory::Doors, HostKind::Wall).unwrap();
+        let mut fam = d.family(fid).unwrap().clone();
+        assert!(fam.params.iter().any(|p| p.name == "Wall Closure" && p.default == ParamValue::Text("By Host".into())));
+        // a 900 wide opening through the wall, and a plane 70 to the interior of the centre flagged Wall Closure
+        let hole = vec![Loop::rect(Coord::from(PLANE_LR, -450.0), Coord::from(PLANE_LR, 450.0), Coord::on(PLANE_LEVEL), Coord::from(PLANE_LEVEL, 2100.0))];
+        let id = fam.body.take_id();
+        fam.body.forms.push(Form { id, name: "Opening".into(), shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_FB, start: "-300".into(), end: "300".into(), profile: hole }, void: true, cuts_host: true, opening: false, cut_by: vec![], material: String::new(), material_param: None, subcategory: String::new(), vis: Visibility::default() });
+        let closure = fam.body.add_offset_plane("Closure", PLANE_FB, "-70").unwrap();
+        fam.body.planes.iter_mut().find(|q| q.id == closure).unwrap().wall_closure = true;
+        d.set_family_def(fid, None, Some(fam.body.clone())).unwrap();
+        let t = d.family_types().into_iter().find(|(_, t)| t.family == fid).unwrap().0;
+        let inst = d.place_on_wall(t, w, p(2000., 0.)).unwrap();
+        let Some(Element::Wall(wall)) = d.get(w).cloned() else { panic!() };
+        let gap = d.wall_cut_gaps(w, 1200.0)[0];
+        assert_eq!(gap, (1550.0, 2450.0));
+        let to = d.gap_closure(w, &wall, gap, 1200.0).to.unwrap();
+        let layers = |d: &Document| {
+            let g = d.wall_layer_geometry();
+            d.wall_plan_layers(w, &g[&w], Some(1200.0))
+        };
+        // By Host, and the wall type wraps nothing: the plasterboard stops flush with the jamb
+        assert!(!contains(&layers(&d)[3].shapes, p(1545., -100.)));
+        // Interior: the plasterboard (13) returns into the jamb only as far as the closure plane
+        d.patch_family_type(t, &serde_json::json!({ "values": { "Wall Closure": "Interior" } })).unwrap();
+        let l = layers(&d);
+        let (inside, beyond) = (if to < 0.0 { to - 10.0 } else { to + 10.0 }, if to < 0.0 { to + 10.0 } else { to - 10.0 });
+        assert!((to.abs() - 70.0).abs() < 1e-6, "{to}");
+        assert!(contains(&l[3].shapes, p(1545., inside)) && !contains(&l[3].shapes, p(1545., beyond)), "to {to}");
+        // the frame steps back behind the return up to the plane and stays flush past it
+        assert!(!contains(&l[2].shapes, p(1545., inside)) && contains(&l[2].shapes, p(1545., beyond)));
+        // the same at the other jamb
+        assert!(contains(&l[3].shapes, p(2455., inside)));
+        // Neither: no wrapping even where the wall type wraps
+        let mut d2 = Document::new_project();
+        let (w2, _) = brick_wall(&mut d2, Wrap::None, Wrap::Both);
+        let fam2 = d.family(fid).unwrap().clone();
+        let (_, types2) = d2.add_family(fam2, vec![("t".into(), BTreeMap::from([("Wall Closure".to_string(), ParamValue::Text("Neither".into()))]))]).unwrap();
+        d2.place_on_wall(types2[0], w2, p(2000., 0.)).unwrap();
+        let g2 = d2.wall_layer_geometry();
+        let l2 = d2.wall_plan_layers(w2, &g2[&w2], Some(1200.0));
+        assert!(!contains(&l2[3].shapes, p(1545., -100.)) && !contains(&l2[0].shapes, p(1545., -50.)));
+        let _ = inst;
     }
 
     #[test]

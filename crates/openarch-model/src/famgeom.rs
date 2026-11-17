@@ -115,6 +115,10 @@ pub struct RefPlane {
     pub anchor: Anchor,
     #[serde(default)]
     pub ref_kind: RefKind,
+    /// Wall Closure: in a wall-hosted family, the wall's layers that wrap into the opening stop at this plane.
+    /// Only a plane across the wall (normal to y) can be it, and only one per family.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub wall_closure: bool,
 }
 
 /// A dimension drawn in one view across two or more parallel reference planes. It can show
@@ -792,7 +796,7 @@ impl FamilyBody {
 
     /// A new body with the three origin planes: Center (Left/Right), Center (Front/Back), Ref. Level.
     pub fn template() -> FamilyBody {
-        let mk = |id, name: &str, axis| RefPlane { id, name: name.into(), axis, anchor: Anchor::Origin, ref_kind: RefKind::Strong };
+        let mk = |id, name: &str, axis| RefPlane { id, name: name.into(), axis, anchor: Anchor::Origin, ref_kind: RefKind::Strong, wall_closure: false };
         FamilyBody {
             planes: vec![mk(PLANE_LR, "Center (Left/Right)", Axis::X), mk(PLANE_FB, "Center (Front/Back)", Axis::Y), mk(PLANE_LEVEL, "Ref. Level", Axis::Z)],
             next_id: 10,
@@ -835,7 +839,7 @@ impl FamilyBody {
             return Err(format!("a reference plane called '{name}' already exists or the name is empty"));
         }
         let id = self.take_id();
-        self.planes.push(RefPlane { id, name: name.into(), axis, anchor, ref_kind: RefKind::Weak });
+        self.planes.push(RefPlane { id, name: name.into(), axis, anchor, ref_kind: RefKind::Weak, wall_closure: false });
         Ok(id)
     }
 

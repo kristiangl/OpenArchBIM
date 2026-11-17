@@ -1083,6 +1083,10 @@ impl Document {
         if hosted {
             params.push(p("Sill Height", true, "Constraints", sill));
         }
+        // doors and windows say how the wall's layers close at their opening
+        if host == crate::family::HostKind::Wall && matches!(category, crate::family::FamilyCategory::Doors | crate::family::FamilyCategory::Windows) {
+            params.push(crate::family::ParamDef::wall_closure());
+        }
         let mut body = crate::famgeom::FamilyBody::template();
         body.cut_with_voids = hosted;
         let family = Family { name: name.into(), category, host, plan_symbol: PlanSymbol::None, params, built_in: false, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body };
