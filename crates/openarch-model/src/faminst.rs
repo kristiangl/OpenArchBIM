@@ -715,6 +715,72 @@ mod tests {
     }
 
     #[test]
+    fn the_starter_garage_entry_and_curtain_wall_doors() {
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let r = |v: f64| (v * 10.0).round() / 10.0;
+        let bx = |f: &crate::famgeom::SolvedForm| { let b = tri_box(f); [r(b[0][0]), r(b[1][0]), r(b[0][1]), r(b[1][1]), r(b[0][2]), r(b[1][2])] };
+        let preview = |d: &Document, fam: &str, ty: &str| {
+            let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == ty && d.family(t.family).unwrap().name == fam).map(|(i, t)| (t.family, i)).unwrap_or_else(|| panic!("{fam} {ty}"));
+            let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+            assert!(s.warnings.is_empty(), "{fam} {ty}: {:?}", s.warnings);
+            (tid, s)
+        };
+        let form = |s: &crate::famgeom::Solved, name: &str| s.forms.iter().find(|f| f.name == name).cloned().unwrap_or_else(|| panic!("{name}"));
+        // (family, type, hole, plan parts at Medium as (Plan Swing, Hidden Lines))
+        let placed = [
+            ("Garage Door - Sectional", "2400 x 2100", (2400.0, 2100.0), (1, 1)),
+            ("Garage Door - Roller", "2700 x 2100", (2700.0, 2100.0), (1, 1)),
+            ("Entry Door with Sidelight", "820 + 400 Sidelight", (1358.0, 2110.0), (2, 0)),
+        ];
+        for (x, (fam, ty, hole, parts)) in placed.into_iter().enumerate() {
+            let (tid, _) = preview(&d, fam, ty);
+            let w = d.add_wall(wt, lvl, Point::new(0., 5000.0 * x as f64), Point::new(6000., 5000.0 * x as f64), 2700.).unwrap();
+            let inst = d.place_on_wall(tid, w, Point::new(3000., 5000.0 * x as f64)).unwrap();
+            let ops = d.wall_openings(w);
+            assert_eq!((r(ops[0].u1 - ops[0].u0), r(ops[0].z1 - ops[0].z0)), hole, "{fam} hole");
+            assert!(d.instance_solved(inst).unwrap().as_ref().as_ref().unwrap().warnings.is_empty(), "{fam}");
+            let sym = crate::symbol::plan_symbol_at(&d, inst, crate::view::DetailLevel::Medium, Some(1200.0)).unwrap();
+            let count = |sub: &str| sym.parts.iter().filter(|p| p.subcategory == sub).count();
+            assert_eq!((count("Plan Swing"), count("Hidden Lines")), parts, "{fam} plan");
+            assert_eq!(count("Panel"), 0, "{fam} closed leaf in plan");
+            assert!(!crate::mesh::instance_meshes(&d, inst).unwrap().1.is_empty(), "{fam} 3D");
+        }
+        // garage doors stand behind the opening on the wall's interior face (the editor's 200 wall: -100), lapping
+        // it by 50; the sectional has three joints in elevation, the roller its drum box above the head
+        let (_, s) = preview(&d, "Garage Door - Sectional", "2400 x 2100");
+        assert_eq!(bx(&form(&s, "Door")), [-1250.0, 1250.0, -140.0, -100.0, 0.0, 2150.0]);
+        assert_eq!(s.syms.iter().filter(|y| y.view == SymView::Front && y.subcategory == "Panel").count(), 3);
+        let (_, s) = preview(&d, "Garage Door - Roller", "2400 x 2100");
+        assert_eq!(bx(&form(&s, "Door")), [-1250.0, 1250.0, -120.0, -100.0, 0.0, 2150.0]);
+        assert_eq!(bx(&form(&s, "Drum")), [-1250.0, 1250.0, -550.0, -100.0, 2100.0, 2550.0]);
+        // the entry frame: 38 members, 138 deep; the 820 leaf on the frame's interior face above the 20 threshold,
+        // and the sidelight 400 wide beside the mullion
+        let (_, s) = preview(&d, "Entry Door with Sidelight", "820 + 400 Sidelight");
+        assert_eq!(bx(&form(&s, "Frame")), [-669.0, 669.0, -69.0, 69.0, 0.0, 2100.0]);
+        assert_eq!(bx(&form(&s, "Sidelight Glass")), [231.0, 631.0, -3.0, 3.0, 20.0, 2062.0]);
+        let leaf = s.forms.iter().find(|f| f.owner.is_some() && f.subcategory == "Panel").unwrap();
+        assert_eq!(bx(leaf), [-629.0, 191.0, -69.0, -29.0, 20.0, 2060.0]);
+        // the curtain wall door: frame jambs and head round the cell, the leaf inside them
+        let (tid, s) = preview(&d, "Curtain Wall Door - Single Glazed", "Glazed");
+        assert_eq!(bx(&form(&s, "Frame")), [-500.0, 500.0, -50.0, 50.0, 0.0, 2400.0]);
+        let leaf = s.forms.iter().find(|f| f.owner.is_some() && f.subcategory == "Panel").unwrap();
+        assert_eq!(bx(leaf), [-452.0, 452.0, -50.0, -10.0, 0.0, 2352.0]);
+        // in a storefront's first cell it takes the cell's size
+        let sf = d.wall_types().into_iter().find(|(_, t)| t.name == "Storefront").unwrap().0;
+        let w = d.add_wall(sf, lvl, Point::new(0.0, -5000.0), Point::new(3600.0, -5000.0), 3000.0).unwrap();
+        d.set_curtain_panel_pinned(w, 0, 0, false).unwrap();
+        d.set_curtain_panel(w, 0, 0, crate::curtain::PanelChoice::Door(tid)).unwrap();
+        let door = d.curtain_doors(w)[0].0;
+        let f = d.instance_frame(door).unwrap();
+        assert!((f.width - 1125.0).abs() < 1.0 && (f.height - 2025.0).abs() < 1.0, "{} x {}", f.width, f.height);
+        let solved = d.instance_solved(door).unwrap();
+        let s = solved.as_ref().as_ref().unwrap();
+        assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+        assert_eq!(r(tri_box(s.forms.iter().find(|f| f.name == "Frame").unwrap())[1][2] - tri_box(s.forms.iter().find(|f| f.name == "Frame").unwrap())[0][2]), 2025.0);
+    }
+
+    #[test]
     fn a_raked_head_cuts_its_own_shape_in_the_wall() {
         let mut fam = hatch_family();
         fam.body.forms.retain(|f| !f.void);

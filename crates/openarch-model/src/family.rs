@@ -773,7 +773,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
 
 /// The starter families shipped as family files (door-window-spec.md step 3), opened and changed in the family
 /// editor like any other.
-const BUNDLED: [(&str, &str); 25] = [
+const BUNDLED: [(&str, &str); 29] = [
     ("Metal Door Frame - Square Bend", include_str!("../families/Profiles/Metal Door Frame - Square Bend.oaf")),
     ("Metal Door Frame - Square Bend Slider", include_str!("../families/Profiles/Metal Door Frame - Square Bend Slider.oaf")),
     ("Timber Door Jamb - Rebated", include_str!("../families/Profiles/Timber Door Jamb - Rebated.oaf")),
@@ -792,6 +792,10 @@ const BUNDLED: [(&str, &str); 25] = [
     ("Stacking Sliding Door - 4 Panel", include_str!("../families/Doors/Stacking Sliding Door - 4 Panel.oaf")),
     ("Bifold Door - 3 Panel", include_str!("../families/Doors/Bifold Door - 3 Panel.oaf")),
     ("Bifold Door - 4 Panel", include_str!("../families/Doors/Bifold Door - 4 Panel.oaf")),
+    ("Garage Door - Sectional", include_str!("../families/Doors/Garage Door - Sectional.oaf")),
+    ("Garage Door - Roller", include_str!("../families/Doors/Garage Door - Roller.oaf")),
+    ("Entry Door with Sidelight", include_str!("../families/Doors/Entry Door with Sidelight.oaf")),
+    ("Curtain Wall Door - Single Glazed", include_str!("../families/Doors/Curtain Wall Door - Single Glazed.oaf")),
     ("Fixed Window", include_str!("../families/Windows/Fixed Window.oaf")),
     ("Sliding Window", include_str!("../families/Windows/Sliding Window.oaf")),
     ("Awning Window", include_str!("../families/Windows/Awning Window.oaf")),

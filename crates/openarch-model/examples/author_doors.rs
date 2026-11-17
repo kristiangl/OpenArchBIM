@@ -396,6 +396,172 @@ fn cavity() -> Family {
     d.fam
 }
 
+impl D {
+    /// A leaf hinged at `hinge` (on the left) closing to `latch`, its interior face on `face`, `width` wide: in plan
+    /// the hinge line turned by Swing Angle to the interior with the open leaf (a line, or its section at Fine) and
+    /// the swing arc; in the front and back views dashed swing lines from `bottom` and `top` to `mid` at the latch.
+    fn hinged_leaf(&mut self, hinge: PlaneId, latch: PlaneId, face: PlaneId, width: &str, (bottom, mid, top): (PlaneId, PlaneId, PlaneId)) {
+        let h = self.line("Hinge", n(hinge, face), "-[Swing Angle]", width);
+        let tip = self.line("", Node::on_line(h, 1.0), "90 - [Swing Angle]", "[Thickness]");
+        let heel = self.line("", Node::on_line(h, 0.0), "90 - [Swing Angle]", "[Thickness]");
+        self.sym(SymView::Plan, vec![Node::on_line(h, 0.0), Node::on_line(h, 1.0)], vec![], "Plan Swing", vis(true, true, false));
+        self.sym(SymView::Plan, vec![Node::on_line(h, 0.0), Node::on_line(h, 1.0), Node::on_line(tip, 1.0), Node::on_line(heel, 1.0), Node::on_line(h, 0.0)], vec![], "Plan Swing", vis(false, false, true));
+        self.sym(SymView::Plan, vec![n(latch, face), Node::on_line(h, 1.0)], vec![Some(SegShape::Arc { centre: Node::on_line(h, 0.0), ccw: false })], "Plan Swing", Visibility::default());
+        for view in [SymView::Front, SymView::Back] {
+            self.sym(view, vec![n(hinge, bottom), n(latch, mid), n(hinge, top)], vec![], "Elevation Swing", vis(false, true, true));
+        }
+    }
+    fn solid(&mut self, name: &str, plane: PlaneId, start: &str, end: &str, rects: &[(PlaneId, PlaneId, PlaneId, PlaneId)], sub: &str, material: &str, v: Visibility) {
+        let profile = rects.iter().map(|&(l, r, b, t)| Loop::rect(Coord::on(l), Coord::on(r), Coord::on(b), Coord::on(t))).collect();
+        self.fam.body.add_form(Form {
+            id: 0,
+            name: name.into(),
+            shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane, start: start.into(), end: end.into(), profile },
+            void: false,
+            cuts_host: false,
+            cut_by: vec![],
+            opening: false,
+            material: if sub == "Glass" { "Glass".into() } else { String::new() },
+            material_param: Some(material.into()),
+            subcategory: sub.into(),
+            vis: v,
+        });
+    }
+}
+
+/// A garage door behind the opening on the wall's interior face, lapping it by Overlap at the sides and head; the
+/// wall's hole is Width by Height. Sectional: four panels (joint lines in elevation), shown open in plan as a dashed
+/// outline overhead. Roller: a curtain with its drum box above the head, dashed in plan.
+fn garage(roller: bool) -> Family {
+    let name = if roller { "Garage Door - Roller" } else { "Garage Door - Sectional" };
+    let mut d = D { fam: family_from(name, Template::Door).unwrap() };
+    let (left, right, top) = (d.plane("Left"), d.plane("Right"), d.plane("Top"));
+    let interior = d.plane("Interior");
+    d.set("Function", ParamValue::Text("Exterior".into()));
+    d.set("Opening Type", ParamValue::Text(if roller { "Roller" } else { "Sectional overhead" }.into()));
+    d.set("Door Material", ParamValue::Text("Steel".into()));
+    d.set("Frame Material", ParamValue::Text("Steel".into()));
+    d.set("Door Panel Type", ParamValue::Text(String::new()));
+    d.set("Width", ParamValue::Number(2400.0));
+    d.set("Height", ParamValue::Number(2100.0));
+    d.set("Thickness", ParamValue::Number(if roller { 20.0 } else { 40.0 }));
+    d.formula("Rough Width", "[Width]");
+    d.formula("Rough Height", "[Height]");
+    d.add_param(length("Overlap", "Construction", 50.0, "The door past the opening at the sides and head, behind the wall"));
+    let dl = d.off("Door Left", left, "-[Overlap]");
+    let dr = d.off("Door Right", right, "[Overlap]");
+    let dt = d.off("Door Top", top, "[Overlap]");
+    let back = d.off("Door Back", interior, "-[Thickness]");
+    let centre = d.off("Door Centre", interior, "-[Thickness] / 2");
+    d.solid("Door", interior, "-[Thickness]", "0", &[(dl, dr, PLANE_LEVEL, dt)], "Panel", "Door Material", Visibility { plan: false, ..Visibility::default() });
+    d.plan_leaf(dl, dr, centre, back, interior);
+    let hidden = Visibility::default();
+    if roller {
+        d.add_param(length("Drum Size", "Construction", 450.0, "The roll and its box, above the head behind the wall"));
+        let drum_top = d.off("Drum Top", top, "[Drum Size]");
+        let drum_back = d.off("Drum Back", interior, "-[Drum Size]");
+        d.solid("Drum", interior, "-[Drum Size]", "0", &[(dl, dr, top, drum_top)], "Panel", "Door Material", Visibility { plan: false, ..Visibility::default() });
+        d.closed(SymView::Plan, vec![n(dl, drum_back), n(dr, drum_back), n(dr, interior), n(dl, interior)], "Hidden Lines", hidden);
+    } else {
+        let open = d.off("Open Door Back", interior, "-[Height]");
+        d.closed(SymView::Plan, vec![n(dl, open), n(dr, open), n(dr, interior), n(dl, interior)], "Hidden Lines", hidden);
+        for k in 1..4 {
+            let j = d.off(&format!("Joint {k}"), PLANE_LEVEL, &format!("{k} * ([Height] + [Overlap]) / 4"));
+            for view in [SymView::Front, SymView::Back] {
+                d.sym(view, vec![n(dl, j), n(dr, j)], vec![], "Panel", vis(false, true, true));
+            }
+        }
+    }
+    d.fam
+}
+
+/// A timber entry frame (Wideline: 38 thick outer frame, 2100 high with its threshold) holding a hinged door and a
+/// fixed sidelight beside it, Width the whole frame. The door is a nested panel; the sidelight takes what is left.
+fn entry() -> Family {
+    let mut d = D { fam: family_from("Entry Door with Sidelight", Template::Door).unwrap() };
+    let (left, right, top) = (d.plane("Left"), d.plane("Right"), d.plane("Top"));
+    d.set("Function", ParamValue::Text("Exterior".into()));
+    d.set("Opening Type", ParamValue::Text("Hinged".into()));
+    d.set("Opening Type Sidelight Side 1", ParamValue::Text("Fixed".into()));
+    d.set("Frame Material", ParamValue::Text("Timber".into()));
+    d.set("Door Material", ParamValue::Text("Timber".into()));
+    d.set("Door Panel Type", ParamValue::Text("Door Panel - Glazed : Half Glazed".into()));
+    d.set("Width", ParamValue::Number(1338.0));
+    d.set("Height", ParamValue::Number(2100.0));
+    d.add_param(ParamDef { param_kind: ParamKind::Angle, instance: true, ..length("Swing Angle", "Graphics", 90.0, "How far the leaf is drawn open in plan") });
+    d.add_param(length("Door Width", "Dimensions", 820.0, "The door leaf"));
+    d.add_param(length("Door Height", "Dimensions", 2040.0, "The door leaf"));
+    d.add_param(length("Frame Face", "Construction", 38.0, "The frame's members"));
+    d.add_param(length("Frame Depth", "Construction", 138.0, "Across the wall"));
+    d.add_param(length("Frame Offset", "Construction", 0.0, "The frame's centre from the wall's centreline, positive to the exterior"));
+    d.add_param(length("Frame Clearance", "Construction", 2.0, "Round the leaf"));
+    d.add_param(length("Glass Thickness", "Construction", 6.0, ""));
+    d.add_param(ParamDef { formula: Some("[Width] - [Door Width] - 3 * [Frame Face] - 2 * [Frame Clearance]".into()), ..length("Sidelight Width", "Dimensions", 400.0, "What the frame leaves beside the door") });
+    d.add_param(ParamDef { formula: Some("[Height] - [Frame Face] - [Door Height] - [Frame Clearance]".into()), ..length("Threshold Height", "Construction", 20.0, "") });
+    d.add_param(ParamDef { param_kind: ParamKind::Material, default: ParamValue::Text("Glass".into()), group: "Materials and Finishes".into(), ..length("Glass", "Materials and Finishes", 0.0, "") });
+    d.formula("Rough Width", "[Width] + 20");
+    d.formula("Rough Height", "[Height] + 10");
+    let wl = d.off("Wall Left", left, "-10");
+    let wr = d.off("Wall Right", right, "10");
+    let wh = d.off("Wall Head", top, "10");
+    d.set_hole(wl, wr, wh);
+    let centre = d.off("Frame Centre", PLANE_FB, "[Frame Offset]");
+    let il = d.off("Frame Inner Left", left, "[Frame Face]");
+    let ih = d.off("Frame Inner Head", top, "-[Frame Face]");
+    let thr = d.off("Threshold", PLANE_LEVEL, "[Threshold Height]");
+    let door_l = d.off("Door Left", il, "[Frame Clearance]");
+    let door_r = d.off("Door Right", door_l, "[Door Width]");
+    let door_t = d.off("Door Top", thr, "[Door Height]");
+    let ml = d.off("Mullion Left", door_r, "[Frame Clearance]");
+    let mr = d.off("Mullion Right", ml, "[Frame Face]");
+    let sr = d.off("Sidelight Right", right, "-[Frame Face]");
+    let door_mid = d.off("Door Mid Height", thr, "[Door Height] / 2");
+    let door_c = d.fam.body.add_mid_plane("Door Centre", door_l, door_r).unwrap();
+    // the frame and mullion round the door's and the sidelight's openings; the sidelight's glass
+    d.solid("Frame", centre, "-[Frame Depth] / 2", "[Frame Depth] / 2", &[(left, right, PLANE_LEVEL, top), (il, ml, thr, ih), (mr, sr, thr, ih)], "Frame/Mullion", "Frame Material", Visibility::default());
+    d.solid("Sidelight Glass", centre, "-[Glass Thickness] / 2", "[Glass Thickness] / 2", &[(mr, sr, thr, ih)], "Glass", "Glass", Visibility::default());
+    // the leaf closes flush with the frame's interior face and swings in
+    let face = d.off("Leaf Interior Face", centre, "-[Frame Depth] / 2");
+    let leaf_mid = d.off("Leaf Centre", face, "[Thickness] / 2");
+    let id = d.fam.body.take_id();
+    let params = BTreeMap::from([("Width".to_string(), "[Door Width]".to_string()), ("Height".to_string(), "[Door Height]".to_string()), ("Thickness".to_string(), "[Thickness]".to_string())]);
+    d.fam.body.nested.push(Nested { id, family: "Door Panel - Glazed".into(), type_name: "Half Glazed".into(), type_param: Some("Door Panel Type".into()), name: "Leaf".into(), origin: [Coord::on(door_c), Coord::on(leaf_mid), Coord::on(thr)], rotation_deg: 0.0, work_plane: None, flip: false, mirror: false, params, vis: Visibility::default() });
+    d.hinged_leaf(door_l, door_r, face, "[Door Width]", (thr, door_mid, door_t));
+    d.fam
+}
+
+/// A glazed aluminium door for a curtain wall's cell: Width and Height are the cell (the curtain wall sets them).
+/// The frame's jambs and head are a sweep of the aluminium door frame profile; the leaf is a nested panel hinged on
+/// the left inside it, closing flush with its interior face.
+fn curtain_door() -> Family {
+    let mut d = D { fam: family_from("Curtain Wall Door - Single Glazed", Template::CurtainWallDoor).unwrap() };
+    let (left, right, top) = (d.plane("Left"), d.plane("Right"), d.plane("Top"));
+    d.set("Opening Type", ParamValue::Text("Hinged".into()));
+    d.set("Frame Material", ParamValue::Text("Aluminium".into()));
+    d.set("Door Material", ParamValue::Text("Aluminium".into()));
+    d.set("Door Panel Type", ParamValue::Text("Door Panel - Glazed : Aluminium Framed".into()));
+    d.set("Width", ParamValue::Number(1000.0));
+    d.set("Height", ParamValue::Number(2400.0));
+    d.add_param(ParamDef { param_kind: ParamKind::Angle, instance: true, ..length("Swing Angle", "Graphics", 90.0, "How far the leaf is drawn open in plan") });
+    d.add_param(length("Frame Depth", "Construction", 100.0, "Across the wall"));
+    d.add_param(length("Frame Face", "Construction", 45.0, "The frame's sightline"));
+    d.add_param(length("Frame Clearance", "Construction", 3.0, "Round the leaf"));
+    d.add_param(ParamDef { formula: Some("[Width] - 2 * [Frame Face] - 2 * [Frame Clearance]".into()), ..length("Leaf Width", "Dimensions", 904.0, "") });
+    d.add_param(ParamDef { formula: Some("[Height] - [Frame Face] - [Frame Clearance]".into()), ..length("Leaf Height", "Dimensions", 2352.0, "") });
+    let params = BTreeMap::from([("Frame Depth".to_string(), "[Frame Depth]".to_string()), ("Frame Face".to_string(), "[Frame Face]".to_string())]);
+    let pu = ProfileUse { family: "Aluminium Sliding Door Frame".into(), type_name: "Sliding Door".into(), type_param: None, params };
+    d.sweep(PLANE_FB, vec![n(right, PLANE_LEVEL), n(right, top), n(left, top), n(left, PLANE_LEVEL)], false, pu);
+    let ll = d.off("Leaf Left", left, "[Frame Face] + [Frame Clearance]");
+    let lr = d.off("Leaf Right", right, "-[Frame Face] - [Frame Clearance]");
+    let lt = d.off("Leaf Top", PLANE_LEVEL, "[Leaf Height]");
+    let mid = d.off("Leaf Mid Height", PLANE_LEVEL, "[Leaf Height] / 2");
+    let face = d.off("Leaf Interior Face", PLANE_FB, "-[Frame Depth] / 2");
+    let leaf_mid = d.off("Leaf Centre", face, "[Thickness] / 2");
+    d.nest_panel("Leaf", "Door Panel - Glazed : Aluminium Framed", [PLANE_LR, leaf_mid, PLANE_LEVEL], "[Leaf Width]", "[Leaf Height]");
+    d.hinged_leaf(ll, lr, face, "[Leaf Width]", (PLANE_LEVEL, mid, lt));
+    d.fam
+}
+
 fn file(fam: Family, types: Vec<(String, Vec<(&str, f64)>)>) -> FamilyFile {
     let types = types.into_iter().map(|(name, vals)| FamilyFileType { name, values: vals.into_iter().map(|(k, v)| (k.to_string(), ParamValue::Number(v))).collect::<BTreeMap<_, _>>() }).collect();
     FamilyFile { openarch_family: 1, family: fam, types, uses: vec![] }
@@ -447,6 +613,15 @@ fn main() {
     files.push(file(sliding("Stacking Sliding Door - 4 Panel", 4, "Stacking Door", 162.0, 38.0), t));
     files.push(file(bifold("Bifold Door - 3 Panel", 3), sizes(&[1810.0, 2350.0, 2650.0], 2095.0, &[], false)));
     files.push(file(bifold("Bifold Door - 4 Panel", 4), sizes(&[3010.0, 3370.0], 2095.0, &[], false)));
+    // no supplier figures found: common sizes (spec section 12)
+    for roller in [false, true] {
+        files.push(file(garage(roller), sizes(&[2400.0, 2700.0, 4800.0, 5400.0], 2100.0, &[], false)));
+    }
+    // Wideline entry frames: 620, 720 and 820 doors with a 400 sidelight, 38 frame members
+    let t = [620.0, 720.0, 820.0].iter().map(|&w| (format!("{w:.0} + 400 Sidelight"), vec![("Width", w + 400.0 + 3.0 * 38.0 + 4.0), ("Height", 2100.0), ("Door Width", w)])).collect();
+    files.push(file(entry(), t));
+    // the curtain wall sizes it to its cell
+    files.push(file(curtain_door(), vec![("Glazed".into(), vec![])]));
     for f in files {
         let path = dir.join(format!("{}.oaf", f.family.name));
         std::fs::write(&path, serde_json::to_string_pretty(&f).unwrap()).unwrap();
