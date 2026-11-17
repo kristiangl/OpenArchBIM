@@ -1,0 +1,1701 @@
+{
+  "openarch_family": 1,
+  "family": {
+    "name": "Cavity Sliding Door",
+    "category": "doors",
+    "host": "wall",
+    "plan_symbol": "none",
+    "params": [
+      {
+        "name": "Sill Height",
+        "param_kind": "length",
+        "instance": true,
+        "group": "Constraints",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 820.0
+      },
+      {
+        "name": "Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 2040.0
+      },
+      {
+        "name": "Thickness",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 40.0
+      },
+      {
+        "name": "Frame Clearance",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 3.0
+      },
+      {
+        "name": "Back Opening",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "Metroll slider frames are 95 only",
+        "locked": false,
+        "default": 95.0
+      },
+      {
+        "name": "Frame Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": "[Back Opening] + 38",
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 133.0
+      },
+      {
+        "name": "Wall Gap",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 15.0
+      },
+      {
+        "name": "Frame Material",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Steel"
+      },
+      {
+        "name": "Door Material",
+        "param_kind": "material",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Timber"
+      },
+      {
+        "name": "Function",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [
+          "Interior",
+          "Exterior"
+        ],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Interior"
+      },
+      {
+        "name": "Construction Type",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Rough Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "2 * [Width] + 50",
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 820.0
+      },
+      {
+        "name": "Rough Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Height] + [Frame Clearance] / 2 + [Wall Gap]",
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 2040.0
+      },
+      {
+        "name": "Wall Closure",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [
+          "By Host",
+          "Neither",
+          "Interior",
+          "Exterior",
+          "Both"
+        ],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "By Host"
+      },
+      {
+        "name": "Trim Projection Exterior",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Trim Projection Interior",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Trim Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Opening Width",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Width]",
+        "reporting": true,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Opening Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Dimensions",
+        "formula": "[Height]",
+        "reporting": true,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Outside Frame Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Inside Frame Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Outside Leaf Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Inside Leaf Finish",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Handle Height",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 1000.0
+      },
+      {
+        "name": "Handle Offset from Edge",
+        "param_kind": "length",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 60.0
+      },
+      {
+        "name": "Door Panel Type",
+        "param_kind": "family_type",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "family_category": "doors",
+        "default": "Door Panel - Flush : Flush"
+      },
+      {
+        "name": "Door Stop & Closer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Handle & Lockset",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Accessories",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Hardware Set",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Construction",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "U-value",
+        "param_kind": "number",
+        "instance": false,
+        "group": "Analytical Properties",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "SHGC",
+        "param_kind": "number",
+        "instance": false,
+        "group": "Analytical Properties",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      },
+      {
+        "name": "Glazing Type & Treatment",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Materials and Finishes",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Acoustic Rating",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Fire Rating",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "BAL Rating",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": "Cavity sliding"
+      },
+      {
+        "name": "Opening Type Middle Transom",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Sidelight Side 1",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Transom Side 1",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Sidelight Side 2",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Opening Type Transom Side 2",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Other",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Keynote",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Model",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Manufacturer",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Comments",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "URL",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Assembly Description",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Assembly Code",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Type Mark",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "OmniClass Number",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "OmniClass Title",
+        "param_kind": "text",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": ""
+      },
+      {
+        "name": "Cost",
+        "param_kind": "number",
+        "instance": false,
+        "group": "Identity Data",
+        "formula": null,
+        "reporting": false,
+        "shared_guid": null,
+        "choices": [],
+        "discipline": "common",
+        "tooltip": "",
+        "locked": false,
+        "default": 0.0
+      }
+    ],
+    "built_in": false,
+    "catalog": [],
+    "body": {
+      "planes": [
+        {
+          "id": 1,
+          "name": "Center (Left/Right)",
+          "axis": "x",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 2,
+          "name": "Center (Front/Back)",
+          "axis": "y",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 3,
+          "name": "Ref. Level",
+          "axis": "z",
+          "anchor": {
+            "type": "origin"
+          },
+          "ref_kind": "strong"
+        },
+        {
+          "id": 11,
+          "name": "Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "(-1)*([Width])/2"
+          },
+          "ref_kind": "left"
+        },
+        {
+          "id": 12,
+          "name": "Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 1,
+            "by": "(1)*([Width])/2"
+          },
+          "ref_kind": "right"
+        },
+        {
+          "id": 13,
+          "name": "Top",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Height]"
+          },
+          "ref_kind": "top"
+        },
+        {
+          "id": 14,
+          "name": "Exterior",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Host Thickness] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 15,
+          "name": "Interior",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Host Thickness] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 19,
+          "name": "Frame Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 11,
+            "by": "-[Frame Clearance] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 20,
+          "name": "Frame Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 12,
+            "by": "[Frame Clearance] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 21,
+          "name": "Frame Head",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 13,
+            "by": "[Frame Clearance] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 22,
+          "name": "Wall Left",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 19,
+            "by": "-[Wall Gap]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 23,
+          "name": "Wall Right",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 20,
+            "by": "[Wall Gap]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 24,
+          "name": "Wall Head",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 21,
+            "by": "[Wall Gap]"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 26,
+          "name": "Leaf Interior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "-[Thickness] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 27,
+          "name": "Leaf Exterior Face",
+          "axis": "y",
+          "anchor": {
+            "type": "offset",
+            "from": 2,
+            "by": "[Thickness] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 28,
+          "name": "Mid Height",
+          "axis": "z",
+          "anchor": {
+            "type": "offset",
+            "from": 3,
+            "by": "[Height] / 2"
+          },
+          "ref_kind": "weak"
+        },
+        {
+          "id": 29,
+          "name": "Pocket End",
+          "axis": "x",
+          "anchor": {
+            "type": "offset",
+            "from": 11,
+            "by": "-[Width]"
+          },
+          "ref_kind": "weak"
+        }
+      ],
+      "forms": [
+        {
+          "id": 18,
+          "name": "Opening",
+          "shape": {
+            "type": "extrusion",
+            "plane": 2,
+            "start": "-[Host Thickness] / 2",
+            "end": "[Host Thickness] / 2",
+            "start_lock": 15,
+            "end_lock": 14,
+            "profile": [
+              {
+                "nodes": [
+                  {
+                    "u": {
+                      "plane": 22,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 3,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 23,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 3,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 23,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 24,
+                      "off": 0.0
+                    }
+                  },
+                  {
+                    "u": {
+                      "plane": 22,
+                      "off": 0.0
+                    },
+                    "v": {
+                      "plane": 24,
+                      "off": 0.0
+                    }
+                  }
+                ],
+                "bulges": [],
+                "closed": true
+              }
+            ]
+          },
+          "void": true,
+          "cuts_host": true,
+          "opening": true,
+          "cut_by": [],
+          "material": "",
+          "material_param": null,
+          "subcategory": "Opening",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 25,
+          "name": "Frame",
+          "shape": {
+            "type": "sweep",
+            "plane": 2,
+            "path": {
+              "nodes": [
+                {
+                  "u": {
+                    "plane": 20,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 3,
+                    "off": 0.0
+                  }
+                },
+                {
+                  "u": {
+                    "plane": 20,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 21,
+                    "off": 0.0
+                  }
+                },
+                {
+                  "u": {
+                    "plane": 19,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 21,
+                    "off": 0.0
+                  }
+                },
+                {
+                  "u": {
+                    "plane": 19,
+                    "off": 0.0
+                  },
+                  "v": {
+                    "plane": 3,
+                    "off": 0.0
+                  }
+                }
+              ],
+              "bulges": [],
+              "closed": false
+            },
+            "profile": [],
+            "profile_angle": 0.0,
+            "flip": false,
+            "profile_family": {
+              "family": "Metal Door Frame - Square Bend Slider",
+              "type_name": "95",
+              "params": {
+                "Back Opening": "[Back Opening]",
+                "Frame Width": "[Frame Width]"
+              }
+            }
+          },
+          "void": false,
+          "cuts_host": false,
+          "opening": false,
+          "cut_by": [],
+          "material": "",
+          "material_param": "Frame Material",
+          "subcategory": "Frame/Mullion",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "syms": [
+        {
+          "id": 31,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 2,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 12,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 2,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Plan Swing",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": false,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 32,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 26,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 12,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 26,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 12,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 27,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 27,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0,
+              0.0,
+              0.0,
+              0.0
+            ],
+            "closed": true
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Plan Swing",
+          "vis": {
+            "coarse": false,
+            "medium": false,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 33,
+          "view": "plan",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 29,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 2,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 11,
+                  "off": 0.0
+                },
+                "v": {
+                  "plane": 2,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Hidden Lines",
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 34,
+          "view": "front",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 150.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -150.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Panel",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 35,
+          "view": "front",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -90.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 40.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -150.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -90.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": -40.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0,
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Panel",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 36,
+          "view": "back",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": 150.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -150.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 0.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Panel",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        },
+        {
+          "id": 37,
+          "view": "back",
+          "path": {
+            "nodes": [
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -90.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 40.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -150.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": 0.0
+                }
+              },
+              {
+                "u": {
+                  "plane": 1,
+                  "off": -90.0
+                },
+                "v": {
+                  "plane": 28,
+                  "off": -40.0
+                }
+              }
+            ],
+            "bulges": [
+              0.0,
+              0.0
+            ],
+            "closed": false
+          },
+          "filled": false,
+          "masking": false,
+          "subcategory": "Panel",
+          "vis": {
+            "coarse": false,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "nested": [
+        {
+          "id": 30,
+          "family": "Door Panel - Flush",
+          "type_name": "Flush",
+          "type_param": "Door Panel Type",
+          "name": "Leaf",
+          "origin": [
+            {
+              "plane": 1,
+              "off": 0.0
+            },
+            {
+              "plane": 2,
+              "off": 0.0
+            },
+            {
+              "plane": 3,
+              "off": 0.0
+            }
+          ],
+          "rotation_deg": 0.0,
+          "work_plane": null,
+          "flip": false,
+          "mirror": false,
+          "params": {
+            "Height": "[Height]",
+            "Thickness": "[Thickness]",
+            "Width": "[Width]"
+          },
+          "vis": {
+            "coarse": true,
+            "medium": true,
+            "fine": true,
+            "plan": true,
+            "front_back": true,
+            "left_right": true,
+            "visible": true,
+            "when": null,
+            "three_d": true,
+            "only_if_cut": false,
+            "only_above_cut": false
+          }
+        }
+      ],
+      "model_lines": [],
+      "controls": [],
+      "connectors": [],
+      "model_texts": [],
+      "dims": [
+        {
+          "id": 16,
+          "a": 11,
+          "b": 12,
+          "via": [
+            1
+          ],
+          "reports_to": null,
+          "view": "plan",
+          "label": "Width",
+          "seg_labels": [],
+          "eq": true,
+          "locked": false,
+          "at": null,
+          "drives": [
+            11,
+            12
+          ]
+        },
+        {
+          "id": 17,
+          "a": 3,
+          "b": 13,
+          "via": [],
+          "reports_to": null,
+          "view": "front",
+          "label": "Height",
+          "seg_labels": [],
+          "eq": false,
+          "locked": false,
+          "at": null,
+          "drives": [
+            13
+          ]
+        }
+      ],
+      "lookup_tables": [],
+      "always_vertical": false,
+      "cut_with_voids": true,
+      "next_id": 37
+    },
+    "settings": {
+      "can_host_rebar": false,
+      "part_type": "Normal",
+      "shared": false,
+      "room_calculation_point": false,
+      "room_point": [
+        0.0,
+        0.0,
+        0.0
+      ],
+      "room_from": null,
+      "room_to": null,
+      "room_bounding": null,
+      "maintain_annotation_orientation": false,
+      "dashed_above": true,
+      "subcategories": [
+        "Frame/Mullion",
+        "Panel",
+        "Glass",
+        "Opening",
+        "Plan Swing",
+        "Elevation Swing",
+        "Hidden Lines",
+        "Trim"
+      ]
+    },
+    "source_path": null,
+    "loaded_at": null
+  },
+  "types": [
+    {
+      "name": "620 x 2040",
+      "values": {
+        "Height": 2040.0,
+        "Width": 620.0
+      }
+    },
+    {
+      "name": "720 x 2040",
+      "values": {
+        "Height": 2040.0,
+        "Width": 720.0
+      }
+    },
+    {
+      "name": "770 x 2040",
+      "values": {
+        "Height": 2040.0,
+        "Width": 770.0
+      }
+    },
+    {
+      "name": "820 x 2040",
+      "values": {
+        "Height": 2040.0,
+        "Width": 820.0
+      }
+    },
+    {
+      "name": "870 x 2040",
+      "values": {
+        "Height": 2040.0,
+        "Width": 870.0
+      }
+    },
+    {
+      "name": "920 x 2040",
+      "values": {
+        "Height": 2040.0,
+        "Width": 920.0
+      }
+    }
+  ]
+}

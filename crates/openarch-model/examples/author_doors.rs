@@ -204,6 +204,198 @@ fn hinged(name: &str, frame: Frame, double: bool, panel: &str, function: &str) -
     d.fam
 }
 
+fn nf(u: PlaneId, du: f64, v: PlaneId, dv: f64) -> Node {
+    Node::new(Coord::from(u, du), Coord::from(v, dv))
+}
+
+impl D {
+    fn closed(&mut self, view: SymView, nodes: Vec<Node>, sub: &str, v: Visibility) {
+        let bulges = vec![0.0; nodes.len()];
+        self.fam.body.add_sym(SymElement { id: 0, view, path: Loop { nodes, bulges, closed: true, shapes: vec![] }, filled: false, masking: false, subcategory: sub.into(), vis: v });
+    }
+    /// A slide arrow in the front and back views on height `z`, from `x` + `from` to `x` + `to`.
+    fn arrow(&mut self, x: PlaneId, from: f64, to: f64, z: PlaneId) {
+        let s = (to - from).signum();
+        for view in [SymView::Front, SymView::Back] {
+            self.sym(view, vec![nf(x, from, z, 0.0), nf(x, to, z, 0.0)], vec![], "Panel", vis(false, true, true));
+            self.sym(view, vec![nf(x, to - s * 60.0, z, 40.0), nf(x, to, z, 0.0), nf(x, to - s * 60.0, z, -40.0)], vec![], "Panel", vis(false, true, true));
+        }
+    }
+    /// A leaf seen in plan: a line on `mid` from `l` to `r` at Coarse and Medium, its section between `int` and
+    /// `ext` at Fine.
+    fn plan_leaf(&mut self, l: PlaneId, r: PlaneId, mid: PlaneId, int: PlaneId, ext: PlaneId) {
+        self.sym(SymView::Plan, vec![n(l, mid), n(r, mid)], vec![], "Plan Swing", vis(true, true, false));
+        self.closed(SymView::Plan, vec![n(l, int), n(r, int), n(r, ext), n(l, ext)], "Plan Swing", vis(false, false, true));
+    }
+    fn nest_panel(&mut self, label: &str, panel: &str, origin: [PlaneId; 3], width: &str, height: &str) {
+        let (family, ty) = panel.split_once(" : ").unwrap();
+        let id = self.fam.body.take_id();
+        let params = BTreeMap::from([("Width".to_string(), width.to_string()), ("Height".to_string(), height.to_string()), ("Thickness".to_string(), "[Thickness]".to_string())]);
+        self.fam.body.nested.push(Nested { id, family: family.into(), type_name: ty.into(), type_param: Some("Door Panel Type".into()), name: label.into(), origin: origin.map(Coord::on), rotation_deg: 0.0, work_plane: None, flip: false, mirror: false, params, vis: Visibility::default() });
+    }
+    fn set_hole(&mut self, l: PlaneId, r: PlaneId, t: PlaneId) {
+        let opening = self.fam.body.forms.iter_mut().find(|f| f.name == "Opening").unwrap();
+        if let FormShape::Extrusion { profile, .. } = &mut opening.shape {
+            *profile = vec![Loop::rect(Coord::on(l), Coord::on(r), Coord::on(PLANE_LEVEL), Coord::on(t))];
+        }
+    }
+    fn sweep(&mut self, plane: PlaneId, nodes: Vec<Node>, closed: bool, pu: ProfileUse) {
+        self.fam.body.add_form(Form {
+            id: 0,
+            name: "Frame".into(),
+            shape: FormShape::Sweep { plane, path: Loop { nodes, bulges: vec![], closed, shapes: vec![] }, profile: vec![], profile_angle: 0.0, flip: false, profile_family: Some(pu) },
+            void: false,
+            cuts_host: false,
+            cut_by: vec![],
+            opening: false,
+            material: String::new(),
+            material_param: Some("Frame Material".into()),
+            subcategory: "Frame/Mullion".into(),
+            vis: Visibility::default(),
+        });
+    }
+}
+
+/// The planes inside an aluminium frame and the frame's centre across the wall.
+struct Inner {
+    centre: PlaneId,
+    left: PlaneId,
+    head: PlaneId,
+    sill: PlaneId,
+    mid: PlaneId,
+}
+
+/// An aluminium door frame (Width by Height is the frame size, as Wideline orders them): a closed sweep of the
+/// Aluminium Sliding Door Frame profile round Left, Top, Right and the level, on Frame Offset from the wall's
+/// centreline, and the wall's hole the stud opening, frame + 60 wide and + 40 high.
+fn alu_door(name: &str, profile_type: &str, depth: f64, opening_type: &str, panel_thickness: f64) -> (D, Inner) {
+    let mut d = D { fam: family_from(name, Template::Door).unwrap() };
+    let (left, right, top) = (d.plane("Left"), d.plane("Right"), d.plane("Top"));
+    d.set("Function", ParamValue::Text("Exterior".into()));
+    d.set("Opening Type", ParamValue::Text(opening_type.into()));
+    d.set("Frame Material", ParamValue::Text("Aluminium".into()));
+    d.set("Door Material", ParamValue::Text("Aluminium".into()));
+    d.set("Door Panel Type", ParamValue::Text("Door Panel - Glazed : Aluminium Framed".into()));
+    d.set("Thickness", ParamValue::Number(panel_thickness));
+    d.set("Width", ParamValue::Number(2410.0));
+    d.set("Height", ParamValue::Number(2100.0));
+    d.add_param(length("Frame Depth", "Construction", depth, "Across the wall"));
+    d.add_param(length("Frame Face", "Construction", 45.0, "The frame's sightline"));
+    d.add_param(length("Frame Offset", "Construction", 0.0, "The frame's centre from the wall's centreline, positive to the exterior"));
+    d.formula("Rough Width", "[Width] + 60");
+    d.formula("Rough Height", "[Height] + 40");
+    let wl = d.off("Wall Left", left, "-30");
+    let wr = d.off("Wall Right", right, "30");
+    let wh = d.off("Wall Head", top, "40");
+    d.set_hole(wl, wr, wh);
+    let centre = d.off("Frame Centre", PLANE_FB, "[Frame Offset]");
+    let params = BTreeMap::from([("Frame Depth".to_string(), "[Frame Depth]".to_string()), ("Frame Face".to_string(), "[Frame Face]".to_string())]);
+    let pu = ProfileUse { family: "Aluminium Sliding Door Frame".into(), type_name: profile_type.into(), type_param: None, params };
+    // round the frame with its inside on the path's left: up the right jamb, across the head, down the left, along the sill
+    d.sweep(centre, vec![n(right, PLANE_LEVEL), n(right, top), n(left, top), n(left, PLANE_LEVEL)], true, pu);
+    // the inside of the frame (Inner Right is there to dimension to; the panels work from Inner Left)
+    d.off("Inner Right", right, "-[Frame Face]");
+    let inner = Inner {
+        centre,
+        left: d.off("Inner Left", left, "[Frame Face]"),
+        head: d.off("Inner Head", top, "-[Frame Face]"),
+        sill: d.off("Inner Sill", PLANE_LEVEL, "[Frame Face]"),
+        mid: d.off("Mid Height", PLANE_LEVEL, "[Height] / 2"),
+    };
+    d.add_param(ParamDef { formula: Some("[Height] - 2 * [Frame Face]".into()), ..length("Panel Height", "Construction", 2010.0, "") });
+    (d, inner)
+}
+
+/// A sliding or stacking door of `panels` panels on as many tracks, the first (left, on the exterior track) fixed
+/// and the rest sliding left over it, each overlapping the next by Panel Overlap.
+fn sliding(name: &str, panels: usize, profile_type: &str, depth: f64, spacing: f64) -> Family {
+    let (mut d, inner) = alu_door(name, profile_type, depth, if panels == 2 { "Sliding" } else { "Stacking" }, 35.0);
+    d.add_param(length("Panel Overlap", "Construction", 40.0, "Where the panels meet"));
+    d.add_param(length("Track Spacing", "Construction", spacing, "Between the panels' centres across the frame"));
+    let nf_ = panels as f64;
+    d.add_param(ParamDef { formula: Some(format!("([Width] - 2 * [Frame Face] + {} * [Panel Overlap]) / {}", panels - 1, panels)), ..length("Panel Width", "Construction", 1000.0, "") });
+    let panel = "Door Panel - Glazed : Aluminium Framed";
+    for k in 0..panels {
+        let i = k + 1;
+        let track = d.off(&format!("Track {i}"), inner.centre, &format!("{} * [Track Spacing]", (nf_ - 1.0) / 2.0 - k as f64));
+        let int = d.off(&format!("Track {i} Interior Face"), track, "-[Thickness] / 2");
+        let ext = d.off(&format!("Track {i} Exterior Face"), track, "[Thickness] / 2");
+        let l = d.off(&format!("Panel {i} Left"), inner.left, &format!("{k} * ([Panel Width] - [Panel Overlap])"));
+        let r = d.off(&format!("Panel {i} Right"), l, "[Panel Width]");
+        let c = d.fam.body.add_mid_plane(&format!("Panel {i} Centre"), l, r).unwrap();
+        d.nest_panel(&format!("Panel {i}"), panel, [c, track, inner.sill], "[Panel Width]", "[Panel Height]");
+        d.plan_leaf(l, r, track, int, ext);
+        if k > 0 {
+            d.arrow(c, 150.0, -150.0, inner.mid);
+        }
+    }
+    d.fam
+}
+
+/// A bifold door of `panels` equal panels folding to the left and to the interior: in plan they zigzag on reference
+/// lines turned by Fold Angle; in elevation each panel has dashed swing lines to its folding edge.
+fn bifold(name: &str, panels: usize) -> Family {
+    let (mut d, inner) = alu_door(name, "Bifold Door", 100.0, "Bifold", 40.0);
+    d.set("Height", ParamValue::Number(2095.0));
+    d.add_param(ParamDef { param_kind: ParamKind::Angle, instance: true, ..length("Fold Angle", "Graphics", 30.0, "How far the panels are drawn folded in plan") });
+    d.add_param(ParamDef { formula: Some(format!("([Width] - 2 * [Frame Face]) / {panels}")), ..length("Panel Width", "Construction", 800.0, "") });
+    let panel = "Door Panel - Glazed : Aluminium Framed";
+    let edges: Vec<PlaneId> = (0..=panels).map(|k| if k == 0 { inner.left } else { d.off(&format!("Fold {k}"), inner.left, &format!("{k} * [Panel Width]")) }).collect();
+    let mut prev: Option<u32> = None;
+    for k in 0..panels {
+        let c = d.fam.body.add_mid_plane(&format!("Panel {} Centre", k + 1), edges[k], edges[k + 1]).unwrap();
+        d.nest_panel(&format!("Panel {}", k + 1), panel, [c, inner.centre, inner.sill], "[Panel Width]", "[Panel Height]");
+        let start = prev.map_or(n(inner.left, inner.centre), |p| Node::on_line(p, 1.0));
+        let angle = if k % 2 == 0 { "-[Fold Angle]" } else { "[Fold Angle]" };
+        let line = d.line(&format!("Panel {}", k + 1), start, angle, "[Panel Width]");
+        d.sym(SymView::Plan, vec![Node::on_line(line, 0.0), Node::on_line(line, 1.0)], vec![], "Plan Swing", Visibility::default());
+        prev = Some(line);
+        // swing lines from the panel's hinged edge to its folding edge
+        let (hinge, fold) = if k % 2 == 0 { (edges[k], edges[k + 1]) } else { (edges[k + 1], edges[k]) };
+        for view in [SymView::Front, SymView::Back] {
+            d.sym(view, vec![n(hinge, inner.sill), n(fold, inner.mid), n(hinge, inner.head)], vec![], "Elevation Swing", vis(false, true, true));
+        }
+    }
+    d.fam
+}
+
+/// A cavity sliding door: the leaf slides left into a pocket in the wall. Metroll's Square Bend slider frame round
+/// the opening; the wall is cut for the opening only, and the leaf in the pocket shows as a hidden line. Rough Width
+/// is the opening the builder leaves for the cavity unit: twice the leaf and the frame.
+fn cavity() -> Family {
+    let mut d = D { fam: family_from("Cavity Sliding Door", Template::Door).unwrap() };
+    let (left, right, top) = (d.plane("Left"), d.plane("Right"), d.plane("Top"));
+    d.set("Door Panel Type", ParamValue::Text("Door Panel - Flush : Flush".into()));
+    d.set("Opening Type", ParamValue::Text("Cavity sliding".into()));
+    d.set("Frame Material", ParamValue::Text("Steel".into()));
+    d.set("Door Material", ParamValue::Text("Timber".into()));
+    d.add_param(length("Frame Clearance", "Construction", 3.0, ""));
+    d.add_param(length("Back Opening", "Construction", 95.0, "Metroll slider frames are 95 only"));
+    d.add_param(ParamDef { formula: Some("[Back Opening] + 38".into()), ..length("Frame Width", "Construction", 133.0, "") });
+    d.add_param(length("Wall Gap", "Construction", 15.0, ""));
+    d.formula("Rough Width", "2 * [Width] + 50");
+    d.formula("Rough Height", "[Height] + [Frame Clearance] / 2 + [Wall Gap]");
+    let jl = d.off("Frame Left", left, "-[Frame Clearance] / 2");
+    let jr = d.off("Frame Right", right, "[Frame Clearance] / 2");
+    let jh = d.off("Frame Head", top, "[Frame Clearance] / 2");
+    let wl = d.off("Wall Left", jl, "-[Wall Gap]");
+    let wr = d.off("Wall Right", jr, "[Wall Gap]");
+    let wh = d.off("Wall Head", jh, "[Wall Gap]");
+    d.set_hole(wl, wr, wh);
+    let params = BTreeMap::from([("Back Opening".to_string(), "[Back Opening]".to_string()), ("Frame Width".to_string(), "[Frame Width]".to_string())]);
+    let pu = ProfileUse { family: "Metal Door Frame - Square Bend Slider".into(), type_name: "95".into(), type_param: None, params };
+    d.sweep(PLANE_FB, vec![n(jr, PLANE_LEVEL), n(jr, jh), n(jl, jh), n(jl, PLANE_LEVEL)], false, pu);
+    let int = d.off("Leaf Interior Face", PLANE_FB, "-[Thickness] / 2");
+    let ext = d.off("Leaf Exterior Face", PLANE_FB, "[Thickness] / 2");
+    let mid = d.off("Mid Height", PLANE_LEVEL, "[Height] / 2");
+    let pocket = d.off("Pocket End", left, "-[Width]");
+    d.nest_panel("Leaf", "Door Panel - Flush : Flush", [PLANE_LR, PLANE_FB, PLANE_LEVEL], "[Width]", "[Height]");
+    d.plan_leaf(left, right, PLANE_FB, int, ext);
+    d.sym(SymView::Plan, vec![n(pocket, PLANE_FB), n(left, PLANE_FB)], vec![], "Hidden Lines", Visibility::default());
+    d.arrow(PLANE_LR, 150.0, -150.0, mid);
+    d.fam
+}
+
 fn file(fam: Family, types: Vec<(String, Vec<(&str, f64)>)>) -> FamilyFile {
     let types = types.into_iter().map(|(name, vals)| FamilyFileType { name, values: vals.into_iter().map(|(k, v)| (k.to_string(), ParamValue::Number(v))).collect::<BTreeMap<_, _>>() }).collect();
     FamilyFile { openarch_family: 1, family: fam, types, uses: vec![] }
@@ -240,6 +432,21 @@ fn main() {
     let mut t = sizes(&[820.0, 870.0, 920.0], 2040.0, &[("Jamb Width", 138.0)], false);
     t.push(("820 x 2340".into(), vec![("Width", 820.0), ("Height", 2340.0), ("Jamb Width", 138.0)]));
     files.push(file(hinged("Glazed Hinged Door - Timber Frame", Frame::Timber, false, "Door Panel - Glazed : Full Glazed", "Exterior"), t));
+    // Metroll single slider leaves
+    files.push(file(cavity(), sizes(&[620.0, 720.0, 770.0, 820.0, 870.0, 920.0], 2040.0, &[], false)));
+    // Wideline frame sizes (spec section 12): ASDI sliding doors 2100 and 2400 high, ASSD stacking doors 2110 and
+    // 2410 (frame 162 deep with the fly screen track), bifolds 2095 high with leaves up to 900
+    let mut t = sizes(&[1570.0, 1810.0, 2170.0, 2410.0, 2650.0, 3010.0], 2100.0, &[], false);
+    t.extend(sizes(&[2410.0, 3010.0], 2400.0, &[], false));
+    files.push(file(sliding("Sliding Glass Door - 2 Panel", 2, "Sliding Door", 100.0, 40.0), t));
+    let mut t = sizes(&[2316.0, 2676.0, 3216.0, 3576.0], 2110.0, &[], false);
+    t.extend(sizes(&[3216.0], 2410.0, &[], false));
+    files.push(file(sliding("Stacking Sliding Door - 3 Panel", 3, "Stacking Door", 162.0, 38.0), t));
+    let mut t = sizes(&[4582.0, 5302.0], 2110.0, &[], false);
+    t.extend(sizes(&[4582.0], 2410.0, &[], false));
+    files.push(file(sliding("Stacking Sliding Door - 4 Panel", 4, "Stacking Door", 162.0, 38.0), t));
+    files.push(file(bifold("Bifold Door - 3 Panel", 3), sizes(&[1810.0, 2350.0, 2650.0], 2095.0, &[], false)));
+    files.push(file(bifold("Bifold Door - 4 Panel", 4), sizes(&[3010.0, 3370.0], 2095.0, &[], false)));
     for f in files {
         let path = dir.join(format!("{}.oaf", f.family.name));
         std::fs::write(&path, serde_json::to_string_pretty(&f).unwrap()).unwrap();

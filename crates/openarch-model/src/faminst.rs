@@ -582,6 +582,78 @@ mod tests {
     }
 
     #[test]
+    fn the_starter_sliding_stacking_bifold_and_cavity_doors() {
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let r = |v: f64| (v * 10.0).round() / 10.0;
+        // (family, type, wall hole, frame box [x0, x1, y0, y1, z0, z1], panels as [x0, x1, y0, y1], plan lines at Medium)
+        let pw2 = (2410.0 - 90.0 + 40.0) / 2.0;
+        let pw3 = (2676.0 - 90.0 + 80.0) / 3.0;
+        let pw4 = (4582.0 - 90.0 + 120.0) / 4.0;
+        let bw = (2350.0 - 90.0) / 3.0;
+        let cases: Vec<(&str, &str, (f64, f64), [f64; 6], Vec<[f64; 4]>, usize)> = vec![
+            // the aluminium frame is the Width by Height frame size; the hole the stud opening, + 60 and + 40
+            ("Sliding Glass Door - 2 Panel", "2410 x 2100", (2470.0, 2140.0), [-1205.0, 1205.0, -50.0, 50.0, 0.0, 2100.0],
+                // the left panel on the exterior track, fixed; the right on the interior, overlapping it by 40
+                vec![[-1160.0, -1160.0 + pw2, 2.5, 37.5], [1160.0 - pw2, 1160.0, -37.5, -2.5]], 2),
+            ("Stacking Sliding Door - 3 Panel", "2676 x 2110", (2736.0, 2150.0), [-1338.0, 1338.0, -81.0, 81.0, 0.0, 2110.0],
+                (0..3).map(|k| { let x0 = -1293.0 + k as f64 * (pw3 - 40.0); let y = 38.0 - 38.0 * k as f64; [x0, x0 + pw3, y - 17.5, y + 17.5] }).collect(), 3),
+            ("Stacking Sliding Door - 4 Panel", "4582 x 2110", (4642.0, 2150.0), [-2291.0, 2291.0, -81.0, 81.0, 0.0, 2110.0],
+                (0..4).map(|k| { let x0 = -2246.0 + k as f64 * (pw4 - 40.0); let y = 57.0 - 38.0 * k as f64; [x0, x0 + pw4, y - 17.5, y + 17.5] }).collect(), 4),
+            ("Bifold Door - 3 Panel", "2350 x 2095", (2410.0, 2135.0), [-1175.0, 1175.0, -50.0, 50.0, 0.0, 2095.0],
+                (0..3).map(|k| { let x0 = -1130.0 + k as f64 * bw; [x0, x0 + bw, -20.0, 20.0] }).collect(), 3),
+            // Metroll slider frame round the opening only: Rough Width (the cavity unit) is not the hole
+            ("Cavity Sliding Door", "820 x 2040", (853.0, 2056.5), [-451.5, 451.5, -66.5, 66.5, 0.0, 2081.5], vec![[-410.0, 410.0, -20.0, 20.0]], 2),
+        ];
+        for (x, (fam, ty, hole, frame, panels, lines)) in cases.into_iter().enumerate() {
+            let what = format!("{fam} {ty}");
+            let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == ty && d.family(t.family).unwrap().name == fam).map(|(i, t)| (t.family, i)).unwrap_or_else(|| panic!("{what}"));
+            let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+            assert!(s.warnings.is_empty(), "{what}: {:?}", s.warnings);
+            let fb = tri_box(s.forms.iter().find(|f| f.subcategory == "Frame/Mullion").unwrap());
+            assert_eq!([r(fb[0][0]), r(fb[1][0]), r(fb[0][1]), r(fb[1][1]), r(fb[0][2]), r(fb[1][2])], frame.map(r), "{what} frame");
+            let mut got: Vec<[f64; 4]> = s.forms.iter().filter(|f| f.owner.is_some() && f.subcategory == "Panel").map(|f| { let b = tri_box(f); [r(b[0][0]), r(b[1][0]), r(b[0][1]), r(b[1][1])] }).collect();
+            got.sort_by(|a, b| a[0].partial_cmp(&b[0]).unwrap());
+            assert_eq!(got, panels.iter().map(|p| p.map(r)).collect::<Vec<_>>(), "{what} panels");
+            let w = d.add_wall(wt, lvl, Point::new(0., 5000.0 * x as f64), Point::new(8000., 5000.0 * x as f64), 2700.).unwrap();
+            let inst = d.place_on_wall(tid, w, Point::new(4000., 5000.0 * x as f64)).unwrap();
+            let ops = d.wall_openings(w);
+            assert_eq!((r(ops[0].u1 - ops[0].u0), r(ops[0].z1 - ops[0].z0)), hole, "{what} hole");
+            assert!(d.instance_solved(inst).unwrap().as_ref().as_ref().unwrap().warnings.is_empty(), "{what}");
+            let count = |detail| {
+                let sym = crate::symbol::plan_symbol_at(&d, inst, detail, Some(1200.0)).unwrap();
+                assert!(sym.parts.iter().any(|p| p.subcategory == "Frame/Mullion" && p.cut), "{what} frame cut");
+                assert!(!sym.parts.iter().any(|p| p.subcategory == "Panel"), "{what} closed panels");
+                let leaf: Vec<_> = sym.parts.iter().filter(|p| p.subcategory == "Plan Swing" || p.subcategory == "Hidden Lines").collect();
+                (leaf.len(), leaf.iter().filter(|p| p.closed).count())
+            };
+            assert_eq!(count(crate::view::DetailLevel::Medium), (lines, 0), "{what} Medium");
+            if !fam.starts_with("Bifold") {
+                // the panels' sections at Fine (the cavity door's hidden pocket line stays a line)
+                assert_eq!(count(crate::view::DetailLevel::Fine), (lines, panels.len()), "{what} Fine");
+            }
+            let (_, solid, glass) = crate::mesh::instance_meshes(&d, inst).unwrap();
+            assert!(!solid.is_empty() && glass.is_empty() == fam.starts_with("Cavity"), "{what} 3D");
+            // the sliding panels have their arrows in elevation (a shaft and a head each), the fixed one none
+            let arrows = s.syms.iter().filter(|y| y.view == SymView::Front && y.subcategory == "Panel").count();
+            let sliding = if fam.starts_with("Bifold") { 0 } else if fam.starts_with("Cavity") { 1 } else { panels.len() - 1 };
+            assert_eq!(arrows, sliding * 2, "{what} arrows");
+        }
+        // the bifold's panels zigzag in plan: three lines of a panel's width, turned 30 degrees each way in turn
+        let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == "2350 x 2095" && d.family(t.family).unwrap().name == "Bifold Door - 3 Panel").map(|(i, t)| (t.family, i)).unwrap();
+        let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+        let ends: Vec<Point> = s.syms.iter().filter(|y| y.view == SymView::Plan && y.subcategory == "Plan Swing").map(|y| y.points[1]).collect();
+        let (c, sn) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+        let want = [(-1130.0 + bw * c, -bw * sn), (-1130.0 + 2.0 * bw * c, 0.0), (-1130.0 + 3.0 * bw * c, -bw * sn)];
+        assert!(ends.len() == 3 && ends.iter().zip(want).all(|(p, (x, y))| (p.x - x).abs() < 0.01 && (p.y - y).abs() < 0.01), "{ends:?}");
+        // the cavity door's leaf in its pocket, a hidden line from a leaf's width left of the opening to it
+        let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == "820 x 2040" && d.family(t.family).unwrap().name == "Cavity Sliding Door").map(|(i, t)| (t.family, i)).unwrap();
+        let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+        let pocket = s.syms.iter().find(|y| y.subcategory == "Hidden Lines").unwrap();
+        assert_eq!((r(pocket.points[0].x), r(pocket.points[1].x)), (-1230.0, -410.0));
+    }
+
+    #[test]
     fn a_raked_head_cuts_its_own_shape_in_the_wall() {
         let mut fam = hatch_family();
         fam.body.forms.retain(|f| !f.void);
