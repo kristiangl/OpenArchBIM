@@ -47,9 +47,37 @@ impl Document {
     /// The outline less the doors and windows cut in it, along the wall and up from its base.
     pub fn wall_profile_solid(&self, id: Id, w: &Wall) -> Option<Vec<Shape>> {
         let shapes = self.wall_profile_shapes(w)?;
+        Some(self.less_openings(&shapes, &self.wall_openings(id), w))
+    }
+
+    /// `shapes` (along the wall, up from its base) less the holes `openings` make, each in its own shape.
+    pub fn less_openings(&self, shapes: &[Shape], openings: &[crate::family::Opening], w: &Wall) -> Vec<Shape> {
         let (z0, _) = self.wall_extent(w);
-        let holes: Vec<Ring> = self.wall_openings(id).iter().map(|o| vec![Point::new(o.u0, o.z0 - z0), Point::new(o.u1, o.z0 - z0), Point::new(o.u1, o.z1 - z0), Point::new(o.u0, o.z1 - z0)]).collect();
-        Some(crate::layers::subtract_shapes(&shapes, &holes))
+        let holes: Vec<Ring> = openings.iter().map(|o| self.opening_ring(o).into_iter().map(|p| Point::new(p.x, p.y - z0)).collect()).collect();
+        crate::layers::subtract_shapes(shapes, &holes)
+    }
+
+    /// A straight wall's face as an outline when a plain box will not do: its edited profile, or its rectangle when
+    /// a door or window in it has a shaped head; less its openings, along the wall and up from its base. None for a
+    /// curved wall, and for a wall whose openings are all rectangles in a plain outline.
+    pub fn wall_face_solid(&self, id: Id, w: &Wall) -> Option<Vec<Shape>> {
+        if w.curve.is_some() {
+            return None;
+        }
+        let openings = self.wall_openings(id);
+        let shapes = match self.wall_profile_shapes(w) {
+            Some(s) => s,
+            None if openings.iter().any(|o| self.opening_shape(o).is_some()) => vec![self.wall_rect(w)],
+            None => return None,
+        };
+        Some(self.less_openings(&shapes, &openings, w))
+    }
+
+    /// The whole of a wall's face, end to end and base to top, along it and up from its base.
+    pub fn wall_rect(&self, w: &Wall) -> Shape {
+        let (z0, z1) = self.wall_extent(w);
+        let len = w.length();
+        vec![vec![Point::new(0.0, 0.0), Point::new(len, 0.0), Point::new(len, z1 - z0), Point::new(0.0, z1 - z0)]]
     }
 
     /// The heights a wall reaches: its outline's when it has one, else its base and top.
@@ -98,7 +126,14 @@ impl Document {
     /// Where a plan cut at `cut` opens a wall: its doors and windows spanning that height and the gaps in its outline,
     /// sorted and merged.
     pub fn wall_cut_gaps(&self, id: Id, cut: f64) -> Vec<(f64, f64)> {
-        let mut all: Vec<(f64, f64)> = self.wall_openings(id).into_iter().filter(|o| o.z0 < cut && cut < o.z1).map(|o| (o.u0, o.u1)).collect();
+        let mut all: Vec<(f64, f64)> = vec![];
+        for o in self.wall_openings(id).into_iter().filter(|o| o.z0 < cut && cut < o.z1) {
+            match self.opening_shape(&o) {
+                // a shaped head: as wide as the outline is at the cut
+                Some(r) => all.extend(row(&[vec![r]], cut)),
+                None => all.push((o.u0, o.u1)),
+            }
+        }
         if let Some(Element::Wall(w)) = self.get(id) {
             all.extend(self.wall_profile_gaps(w, cut));
         }

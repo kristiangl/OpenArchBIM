@@ -164,6 +164,33 @@ impl Solved {
         }
         b
     }
+
+    /// The outline of the hole the host-cutting voids make, seen from the front: one counter-clockwise ring in
+    /// (x along the host, z up), family coordinates. `None` when the hole is just their box (`host_cut_bounds`), or
+    /// when the voids leave more than one piece, which the box stands in for.
+    pub fn host_cut_outline(&self) -> Option<Vec<Point>> {
+        let cutting: Vec<u32> = self.present().filter(|f| f.cuts_host).map(|f| f.id).collect();
+        let rings: Vec<Vec<Point>> = self.project(Axis::Y).into_iter().filter(|p| p.void && cutting.contains(&p.form)).filter_map(|p| p.shape.into_iter().next()).collect();
+        let shapes = union_rings(rings.iter());
+        let [shape] = shapes.as_slice() else { return None };
+        let mut outer = shape.first()?.clone();
+        if outer.len() < 3 {
+            return None;
+        }
+        let (mut lo, mut hi) = ([f64::INFINITY; 2], [f64::NEG_INFINITY; 2]);
+        for p in &outer {
+            lo = [lo[0].min(p.x), lo[1].min(p.y)];
+            hi = [hi[0].max(p.x), hi[1].max(p.y)];
+        }
+        let boxed = (hi[0] - lo[0]) * (hi[1] - lo[1]);
+        if boxed - signed_area(&outer).abs() < 1.0 + boxed * 1e-6 {
+            return None;
+        }
+        if signed_area(&outer) < 0.0 {
+            outer.reverse();
+        }
+        Some(outer)
+    }
 }
 
 impl Solid {

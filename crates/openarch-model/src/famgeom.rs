@@ -401,6 +401,10 @@ pub enum FormShape {
         /// Mirrors the profile across the path.
         #[serde(default)]
         flip: bool,
+        /// A Profile family to sweep in place of `profile`: its closed lines in plan, x across the path (to its
+        /// left) and y along the work plane's normal, its origin on the path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        profile_family: Option<ProfileUse>,
     },
     /// A sweep whose profile changes along the path: `profile` at the start, `profile_end` at the end,
     /// blended in between by distance along the path. The two profiles have to tessellate to the same
@@ -415,6 +419,20 @@ pub enum FormShape {
         #[serde(default)]
         flip: bool,
     },
+}
+
+/// A Profile family a sweep uses: the family by its name in the project and the type, with the profile's own
+/// parameters set from this family's (as a nested component's are).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ProfileUse {
+    pub family: String,
+    #[serde(default)]
+    pub type_name: String,
+    /// A Text parameter of this family naming the type to use; wins over `type_name` when set and non-empty.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub type_param: Option<String>,
+    #[serde(default)]
+    pub params: BTreeMap<String, String>,
 }
 
 impl FormShape {
@@ -681,9 +699,17 @@ pub struct FamilyBody {
     /// Voids cut solids in the project that the instance overlaps (Cut with Voids When Loaded).
     #[serde(default)]
     pub cut_with_voids: bool,
+    /// Thickness of the placeholder host wall the family editor shows a wall-hosted family in (mm). It stands in
+    /// for `Host Thickness` while the family is authored and is never part of a placed instance. `None` is the
+    /// default generic 200 wall.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub placeholder_wall: Option<f64>,
     #[serde(default)]
     next_id: u32,
 }
+
+/// The placeholder wall's thickness when the family has not set one (a generic 200 wall).
+pub const PLACEHOLDER_WALL_MM: f64 = 200.0;
 
 /// The three origin planes every family starts with.
 pub const PLANE_LR: PlaneId = 1;
@@ -703,6 +729,11 @@ impl FamilyBody {
             next_id: 10,
             ..Default::default()
         }
+    }
+
+    /// The placeholder host wall's thickness in mm (section 1 of door-window-spec.md).
+    pub fn placeholder_wall_mm(&self) -> f64 {
+        self.placeholder_wall.filter(|t| t.is_finite() && *t > 0.0).unwrap_or(PLACEHOLDER_WALL_MM)
     }
 
     pub fn take_id(&mut self) -> u32 {
@@ -1212,7 +1243,14 @@ impl FamilyBody {
                     f(format!("{what} (start)"), start);
                     f(format!("{what} (end)"), end);
                 }
-                FormShape::Sweep { profile, .. } => profile_exprs(profile, &what, f),
+                FormShape::Sweep { profile, profile_family, .. } => {
+                    profile_exprs(profile, &what, f);
+                    if let Some(pu) = profile_family {
+                        for v in pu.params.values_mut() {
+                            f(format!("{what} (profile '{}')", pu.family), v);
+                        }
+                    }
+                }
                 FormShape::SweptBlend { profile, profile_end, .. } => {
                     profile_exprs(profile, &what, f);
                     profile_exprs(profile_end, &what, f);
@@ -1742,7 +1780,20 @@ impl FamilyBody {
                 },
                 None => f.material.clone(),
             };
-            let solid = self.solve_form(&planes, f, env).map_err(|e| format!("{}: {e}", label(f)))?;
+            // a sweep using a Profile family takes the profile's closed plan lines; when the profile cannot be
+            // had (no project behind the body, or the family missing) the sweep is left out with a warning
+            let given = match &f.shape {
+                FormShape::Sweep { profile_family: Some(pu), .. } => match self.profile_family_rings(pu, f.id, env, nested) {
+                    Ok(Some(r)) => Some(r),
+                    Ok(None) => Some(vec![]),
+                    Err(e) => {
+                        out.warnings.push(format!("{}: {e}", label(f)));
+                        Some(vec![])
+                    }
+                },
+                _ => None,
+            };
+            let solid = self.solve_form(&planes, f, env, given).map_err(|e| format!("{}: {e}", label(f)))?;
             let span = match &f.shape {
                 FormShape::Extrusion { plane, start, end, start_lock, end_lock, .. } | FormShape::Blend { plane, start, end, start_lock, end_lock, .. } => {
                     let wp = self.plane(*plane).ok_or("the work plane is missing")?;
@@ -1896,9 +1947,14 @@ impl FamilyBody {
                     Err(e) => note(format!("{k}: {e}")),
                 }
             }
-            let type_name = match n.type_param.as_deref().map(|p| env(p)) {
-                Some(Ok(openarch_params::Value::Text(t))) if !t.trim().is_empty() => t,
-                _ => n.type_name.clone(),
+            // a type parameter can swap the type, and a Family Type one ("Family : Type") the family too
+            let (family, type_name) = chosen_type(n.type_param.as_deref(), env, &n.family, &n.type_name);
+            let swapped;
+            let n = if family == n.family {
+                n
+            } else {
+                swapped = Nested { family, ..n.clone() };
+                &swapped
             };
             match nested(n, &values, &type_name) {
                 Ok(None) => {}
@@ -1914,7 +1970,65 @@ impl FamilyBody {
         Ok(out)
     }
 
-    fn solve_form(&self, pos: &BTreeMap<PlaneId, f64>, f: &Form, env: &mut Env) -> Result<Solid, String> {
+    /// The closed plan lines of the Profile family a sweep uses, solved with its type and the values its parameter
+    /// expressions come to. `Ok(None)` when there is no project to get the profile from.
+    fn profile_family_rings(&self, pu: &ProfileUse, id: u32, env: &mut Env, nested: &mut NestedResolver) -> Result<Option<Vec<Vec<Point>>>, String> {
+        let mut values = BTreeMap::new();
+        for (k, src) in &pu.params {
+            if src.trim().is_empty() {
+                continue;
+            }
+            let v = openarch_params::expr::parse(src.trim()).map_err(|e| format!("'{src}': {e:?}")).and_then(|ex| openarch_params::expr::eval(&ex, env).map_err(|e| format!("'{src}': {e:?}")));
+            values.insert(k.clone(), v.map_err(|e| format!("profile parameter {k}: {e}"))?);
+        }
+        let (family, type_name) = chosen_type(pu.type_param.as_deref(), env, &pu.family, &pu.type_name);
+        let n = Nested {
+            id,
+            family: family.clone(),
+            type_name: type_name.clone(),
+            type_param: None,
+            name: String::new(),
+            origin: [Coord::on(PLANE_LR), Coord::on(PLANE_FB), Coord::on(PLANE_LEVEL)],
+            rotation_deg: 0.0,
+            work_plane: None,
+            flip: false,
+            mirror: false,
+            params: pu.params.clone(),
+            vis: Visibility::default(),
+        };
+        let Some(r) = nested(&n, &values, &type_name)? else { return Ok(None) };
+        let rings: Vec<Vec<Point>> = r.solved.syms.iter().filter(|s| s.view == SymView::Plan && s.closed && s.vis.present && s.points.len() >= 3).map(|s| s.points.clone()).collect();
+        if rings.is_empty() {
+            return Err(format!("the profile '{family}' has no closed lines in plan"));
+        }
+        Ok(Some(rings))
+    }
+
+    /// Whether solving the body needs the project: it holds components, or sweeps that use Profile families.
+    pub fn needs_project(&self) -> bool {
+        !self.nested.is_empty() || self.forms.iter().any(|f| matches!(&f.shape, FormShape::Sweep { profile_family: Some(_), .. }))
+    }
+
+    /// Every family the body uses by name: its components and its sweeps' Profile families.
+    pub fn used_families(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.nested.iter().map(|n| n.family.clone()).chain(self.profile_families()).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    /// The Profile families the body's sweeps use, by name.
+    pub fn profile_families(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.forms.iter().filter_map(|f| match &f.shape {
+            FormShape::Sweep { profile_family: Some(pu), .. } => Some(pu.family.clone()),
+            _ => None,
+        }).collect();
+        out.sort();
+        out.dedup();
+        out
+    }
+
+    fn solve_form(&self, pos: &BTreeMap<PlaneId, f64>, f: &Form, env: &mut Env, given: Option<Vec<Vec<Point>>>) -> Result<Solid, String> {
         let wp = self.plane(f.shape.plane()).ok_or("the work plane is missing")?;
         let normal = wp.axis;
         let axes = normal.sketch_axes();
@@ -1956,7 +2070,11 @@ impl FamilyBody {
                     return Err("a sweep needs a path of at least two points".into());
                 }
                 let route = self.ring(pos, path, axes)?;
-                let rings = profile_rings(profile, env)?;
+                let rings = match given {
+                    Some(r) if r.is_empty() => return Ok(Solid { axis: None, parts: vec![], tris: vec![] }),
+                    Some(r) => r,
+                    None => profile_rings(profile, env)?,
+                };
                 if rings.is_empty() {
                     return Err("a sweep needs a closed profile".into());
                 }
@@ -2532,7 +2650,7 @@ mod tests {
         Form {
             id: 0,
             name: "Sweep".into(),
-            shape: FormShape::Sweep { plane, path, profile, profile_angle: 0.0, flip },
+            shape: FormShape::Sweep { plane, path, profile, profile_angle: 0.0, flip, profile_family: None },
             void: false,
             cuts_host: true,
             cut_by: vec![], opening: false,
@@ -3045,5 +3163,17 @@ mod tests {
         assert!(b.param_users("Width").is_empty());
         let s = b.solve(&mut params(&[("Overall", 800.0), ("Height", 2100.0)])).unwrap();
         assert!((volume(&s.form(form).unwrap().solid.tris) - 800.0 * 2100.0 * 100.0).abs() < 1.0);
+    }
+}
+
+/// The family and type a component or profile uses: its own, unless `type_param` names a parameter set to a type
+/// name (the same family) or to "Family : Type" (a Family Type parameter, which swaps the family as well).
+fn chosen_type(type_param: Option<&str>, env: &mut Env, family: &str, type_name: &str) -> (String, String) {
+    match type_param.map(|p| env(p)) {
+        Some(Ok(openarch_params::Value::Text(v))) if !v.trim().is_empty() => match crate::family::split_family_type(&v) {
+            (Some(f), t) => (f.to_string(), t.to_string()),
+            (None, t) => (family.to_string(), t.to_string()),
+        },
+        _ => (family.to_string(), type_name.to_string()),
     }
 }

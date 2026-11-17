@@ -322,6 +322,9 @@ impl Document {
     pub fn place_free(&mut self, type_id: Id, level: Id, point: Point, rotation_deg: f64, offset_mm: f64) -> Result<Id, String> {
         let ft = self.family_type(type_id).ok_or("unknown family type")?.clone();
         let fam = self.family(ft.family).ok_or("type has no family")?;
+        if fam.category == FamilyCategory::Profiles {
+            return Err(format!("{} is a profile: sweeps use it, it is not placed", fam.name));
+        }
         match fam.host {
             HostKind::None | HostKind::Face => {}
             HostKind::Wall => return Err(format!("{} is hosted in walls: click a wall to place it", fam.name)),
@@ -377,9 +380,33 @@ impl Document {
         out
     }
 
+    /// The hole an opening makes where its family's opening sketch is not a plain rectangle (an arched or raked
+    /// head): a counter-clockwise ring along the wall from its start and at absolute heights. `None` for a
+    /// rectangle, which `u0..u1` by `z0..z1` describe.
+    pub fn opening_shape(&self, o: &Opening) -> Option<Vec<Point>> {
+        let Some(Element::FamilyInstance(i)) = self.get(o.instance) else { return None };
+        let h = i.host?;
+        if self.curtain_door_cell(i).is_some() {
+            return None;
+        }
+        let outline = self.instance_cut_outline(o.instance)?;
+        let f = self.instance_frame(o.instance)?;
+        let hand = if i.flip_hand { -1.0 } else { 1.0 };
+        let mut ring: Vec<Point> = outline.iter().map(|p| Point::new(h.u_mm + hand * p.x, f.z_ref + p.y)).collect();
+        if crate::geom::signed_area(&ring) < 0.0 {
+            ring.reverse();
+        }
+        Some(ring)
+    }
+
+    /// The hole an opening makes, along the wall and at absolute heights: its shape, or its rectangle.
+    pub fn opening_ring(&self, o: &Opening) -> Vec<Point> {
+        self.opening_shape(o).unwrap_or_else(|| vec![Point::new(o.u0, o.z0), Point::new(o.u1, o.z0), Point::new(o.u1, o.z1), Point::new(o.u0, o.z1)])
+    }
+
     /// Area (mm2) of the wall face taken up by openings.
     pub fn wall_opening_area(&self, wall: Id) -> f64 {
-        self.wall_openings(wall).iter().map(|o| (o.u1 - o.u0) * (o.z1 - o.z0)).sum()
+        self.wall_openings(wall).iter().map(|o| self.opening_shape(o).map_or((o.u1 - o.u0) * (o.z1 - o.z0), |r| crate::geom::signed_area(&r).abs())).sum()
     }
 
     /// Plan outline of a wall as separate pieces, broken where openings that
@@ -721,7 +748,7 @@ impl Document {
             }
             let ok = match p.param_kind {
                 ParamKind::YesNo => v.as_bool().is_some(),
-                ParamKind::Text | ParamKind::Material => v.as_text().is_some(),
+                ParamKind::Text | ParamKind::Material | ParamKind::FamilyType => v.as_text().is_some(),
                 _ => v.as_f64().is_some(),
             };
             if !ok {

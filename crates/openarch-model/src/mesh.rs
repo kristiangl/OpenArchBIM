@@ -92,12 +92,12 @@ pub fn wall_mesh(doc: &Document, w: &Wall, outline: &[Point; 4], openings: &[Ope
     if w.curve.is_some() {
         return None; // curved walls are meshed layer by layer
     }
-    if let Some(shapes) = doc.wall_profile_shapes(w) {
-        // an edited profile, less its doors and windows, across the whole wall
+    // an edited profile, or a door or window with a shaped head: the outline less the openings, across the wall
+    let face = doc.wall_profile_shapes(w).or_else(|| openings.iter().any(|o| doc.opening_shape(o).is_some()).then(|| vec![doc.wall_rect(w)]));
+    if let Some(shapes) = face {
         let z0 = doc.wall_extent(w).0;
-        let holes: Vec<crate::layers::Ring> = openings.iter().map(|o| vec![Point::new(o.u0, o.z0 - z0), Point::new(o.u1, o.z0 - z0), Point::new(o.u1, o.z1 - z0), Point::new(o.u0, o.z1 - z0)]).collect();
         let mut out = vec![];
-        profile_prism(&mut out, w, z0, outline, &crate::layers::subtract_shapes(&shapes, &holes));
+        profile_prism(&mut out, w, z0, outline, &doc.less_openings(&shapes, openings, w));
         return Some(out);
     }
     let o = outline;
@@ -155,8 +155,8 @@ pub fn wall_layer_meshes(doc: &Document, id: u64, w: &Wall, wl: &WallLayers) -> 
     if z1 <= z0 || wl.layers.is_empty() {
         return vec![];
     }
-    if let (Some(shapes), None) = (doc.wall_profile_solid(id, w), &w.curve) {
-        // an edited profile: the outline across each layer, its ends where the layer's ends are
+    if let Some(shapes) = doc.wall_face_solid(id, w) {
+        // an edited profile (or a shaped opening): the outline across each layer, its ends where the layer's ends are
         let mut out = vec![];
         for l in wl.layers.iter().filter(|l| !l.is_void) {
             let mut verts = vec![];

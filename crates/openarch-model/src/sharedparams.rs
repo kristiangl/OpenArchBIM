@@ -75,6 +75,7 @@ pub fn datatype_of(kind: ParamKind) -> &'static str {
         ParamKind::Volume => "VOLUME",
         ParamKind::YesNo => "YESNO",
         ParamKind::Material => "MATERIAL",
+        ParamKind::FamilyType => "FAMILYTYPE",
     }
 }
 

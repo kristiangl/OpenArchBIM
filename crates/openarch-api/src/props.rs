@@ -460,6 +460,18 @@ fn with_global(d: &Document, mut row: Value, owner: Id, p: &ParamDef, editable_h
     row
 }
 
+/// A Family Type parameter's row: every type of the loaded families of its category, as "Family : Type", plus
+/// <None> and the value it has when that family is no longer loaded.
+fn family_type_select(d: &Document, owner: &str, p: &ParamDef, cur: &str) -> Value {
+    // the family that holds the parameter cannot be its own panel
+    let mut names: Vec<String> = d.family_type_choices(p.family_category).into_iter().filter(|n| openarch_model::family::split_family_type(n).0 != Some(owner)).collect();
+    if !cur.is_empty() && !names.iter().any(|n| n == cur) {
+        names.push(cur.to_string());
+    }
+    let none = std::iter::once(("<None>".to_string(), json!({ "values": { p.name.clone(): "" } }), cur.is_empty()));
+    select(&p.name, none.chain(names.iter().map(|n| (n.clone(), json!({ "values": { p.name.clone(): n } }), n == cur))).collect())
+}
+
 fn param_row(d: &Document, i: &FamilyInstance, p: &ParamDef, ro_only: bool) -> Value {
     let v = d.instance_param(i, &p.name).unwrap_or_else(|| p.default.clone());
     let editable = p.instance && !p.reporting && !ro_only;
@@ -470,6 +482,7 @@ fn param_row(d: &Document, i: &FamilyInstance, p: &ParamDef, ro_only: bool) -> V
         (ParamValue::Text(t), _) if editable && !p.choices.is_empty() => {
             select(&p.name, p.choices.iter().map(|c| (c.clone(), json!({ "values": { p.name.clone(): c } }), c == t)).collect())
         }
+        (ParamValue::Text(t), ParamKind::FamilyType) if editable => family_type_select(d, d.instance_family(i).map_or("", |(f, _)| f.name.as_str()), p, t),
         (ParamValue::Text(t), _) if editable => text(&p.name, &path, t),
         (other, _) => ro(&p.name, other.display()),
     };
@@ -598,6 +611,7 @@ pub fn type_props(d: &Document, id: Id, t: &FamilyType) -> Res {
         let row = match v {
             ParamValue::Bool(b) => boolean(&p.name, &path, b, true),
             ParamValue::Number(n) => num(&p.name, &path, n, true),
+            ParamValue::Text(s) if p.param_kind == ParamKind::FamilyType => family_type_select(d, &fam.name, p, &s),
             ParamValue::Text(s) => text(&p.name, &path, &s),
         };
         let row = with_global(d, row, id, p, true);

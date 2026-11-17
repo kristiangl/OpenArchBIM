@@ -160,7 +160,7 @@ pub fn flush_door_body(double: bool) -> FamilyBody {
         let profile: Vec<ProfileLoop> = narrow.iter().chain(full.iter()).map(|(a0, a1, b0, b1)| ProfileLoop::rect(a0, a1, b0, b1)).collect();
         let node = |x: PlaneId, z: PlaneId| Node::new(Coord::on(x), Coord::on(z));
         let path = Loop { nodes: vec![node(reveal_l, level), node(reveal_l, head), node(reveal_r, head), node(reveal_r, level)], bulges: vec![], closed: false, shapes: vec![] };
-        b.form(&format!("{kind} Frame"), FormShape::Sweep { plane: centre, path, profile, profile_angle: 0.0, flip: false }, false, "Frame/Mullion", fine_only);
+        b.form(&format!("{kind} Frame"), FormShape::Sweep { plane: centre, path, profile, profile_angle: 0.0, flip: false, profile_family: None }, false, "Frame/Mullion", fine_only);
         // the envelope at Medium detail
         let (y_out, a_in, a_out) = if kind == "Metal" { ("([Jamb Depth]/2 + [Architrave Projection])", "-[Rib Height]", "[Architrave Width]") } else { ("[Jamb Depth]/2", "-[Stop Height]", "[Jamb Thickness]") };
         let (ya, yb) = (b.plane("", centre, &neg(y_out)), b.plane("", centre, y_out));
@@ -244,7 +244,7 @@ fn frame_in_opening(b: &mut B, sill: bool) -> (PlaneId, PlaneId, PlaneId, PlaneI
     let nodes = vec![node(left, level), node(left, top), node(right, top), node(right, level)];
     let path = Loop { nodes, bulges: vec![], closed: sill, shapes: vec![] };
     let profile = vec![ProfileLoop::rect(&format!("-({fw})"), "0", "0", depth)];
-    b.form("Frame", FormShape::Sweep { plane: back, path, profile, profile_angle: 0.0, flip: false }, false, "Frame/Mullion", vis(None, true, true, true, false));
+    b.form("Frame", FormShape::Sweep { plane: back, path, profile, profile_angle: 0.0, flip: false, profile_family: None }, false, "Frame/Mullion", vis(None, true, true, true, false));
     // the hole in the wall
     let rough_top = top;
     b.form(

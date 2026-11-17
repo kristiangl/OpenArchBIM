@@ -16,7 +16,7 @@ const FamModel = (() => {
   // Back and Left look the other way: the same projection with the horizontal axis running right to left
   const PREVIEW_KEY = { plan: "plan", front: "front", back: "front", left: "left", right: "left" };
   const VIEW_TITLE = { plan: "Floor Plan: Ref. Level", front: "Elevation: Front", back: "Elevation: Back", left: "Elevation: Left", right: "Elevation: Right", "3d": "3D View: View 1" };
-  const KINDS = [["length", "Length"], ["number", "Number"], ["integer", "Integer"], ["angle", "Angle"], ["yes_no", "Yes/No"], ["text", "Text"], ["material", "Material"]];
+  const KINDS = [["length", "Length"], ["number", "Number"], ["integer", "Integer"], ["angle", "Angle"], ["yes_no", "Yes/No"], ["text", "Text"], ["material", "Material"], ["family_type", "Family Type"]];
   const SUBS = ["Frame/Mullion", "Panel", "Glass", "Plan Swing"];
   const clone = (o) => JSON.parse(JSON.stringify(o));
   const el = (tag, cls, text) => { const e = document.createElement(tag); if (cls) e.className = cls; if (text !== undefined) e.textContent = text; return e; };
@@ -524,7 +524,7 @@ const FamModel = (() => {
       if (S.tool === "mline") bar.append(el("span", "fe-opt", "Work plane"), planeSel());
     }
     if (S.tool === "comp") {
-      const fams = S.comps || [];
+      const fams = (S.comps || []).filter((x) => x.category !== "profiles"); // profiles are swept, not placed
       if (!fams.length) bar.append(el("span", "fe-opt", "No other families in the project to place. Load one into the project first."));
       else {
         const pick = fams.find((f) => f.name === (S.compPick && S.compPick.family)) || fams[0];
@@ -805,7 +805,17 @@ const FamModel = (() => {
     } else if (!s) {
       r.append(el("div", "famed-hint", `Family: ${S.def.name}`));
       r.append(button("Family Category and Parameters...", () => categoryDialog()));
+      if (S.def.category === "profiles") r.append(el("div", "famed-hint", "A profile: draw its outline in Ref. Level as closed symbolic lines, locked to reference planes and sized by parameters. A sweep in another family takes it: x runs across the sweep's path, y up its work plane, and the origin sits on the path."));
       for (const g of settingRows(currentSettings(), (w) => applyFamilySettings(w))) r.append(g);
+      if (hostWallOn()) {
+        r.append(el("div", "famed-h", "Placeholder wall"));
+        r.append(el("div", "famed-hint", "The wall this family is shown in while it is edited. Its thickness is Host Thickness here; a placed family reads the wall it is placed in."));
+        r.append(field("Thickness", textIn(String(hostWallT()), (v) => {
+          const t = Number(v);
+          if (!(t >= 10 && t <= 2000)) { S.msg = "The placeholder wall's thickness must be between 10 and 2000 mm."; status(); props(); return; }
+          change((b) => { b.placeholder_wall = t === 200 ? null : t; });
+        })));
+      }
     } else if (s.kind === "multi") multiProps(r, s.items);
     else if (s.kind === "dim") dimProps(r, dimById(s.id));
     else if (s.kind === "plane") planeProps(r, planeById(s.id));
@@ -869,15 +879,16 @@ const FamModel = (() => {
   }
 
   // ---- Associate Family Parameter: a property row that a family parameter can drive ----
-  const KIND_NAME = { length: "Length", number: "Number", integer: "Integer", angle: "Angle", yes_no: "Yes/No", material: "Material", text: "Text" };
+  const KIND_NAME = { length: "Length", number: "Number", integer: "Integer", angle: "Angle", yes_no: "Yes/No", material: "Material", text: "Text", family_type: "Family Type" };
   // The family parameter a value names on its own (`Width` or `[Width]`), or null when it is a number or a formula
-  function assocOf(v, kind) {
+  function assocOf(v, kind, ok) {
     const m = /^\s*\[?([^\[\]]+?)\]?\s*$/.exec(String(v ?? ""));
-    const p = m && S.params.find((q) => q.name === m[1] && q.param_kind === kind && !q.reporting);
+    const p = m && S.params.find((q) => q.name === m[1] && q.param_kind === kind && !q.reporting && (!ok || ok(q)));
     return p ? p.name : null;
   }
   // A row whose value can be driven by a parameter. `apply(name, newParam)` makes the change; name is null to let go.
-  function assocRow(label, kind, cur, ctrl, apply, note, seed) {
+  // `more` narrows the parameters offered ({ ok: (param) => bool, preset: fields a new one starts with }).
+  function assocRow(label, kind, cur, ctrl, apply, note, seed, more) {
     const r = el("div", "famed-row");
     r.append(el("span", "", label));
     const box = el("span", "fe-assocbox");
@@ -886,12 +897,12 @@ const FamModel = (() => {
     else box.append(ctrl);
     const b = el("button", "fe-assoc" + (cur ? " on" : ""), "=");
     b.title = cur ? `Associated with ${cur}. Click to change.` : "Associate Family Parameter";
-    b.onclick = () => assocDialog(kind, cur, apply, seed);
+    b.onclick = () => assocDialog(kind, cur, apply, seed, more);
     box.append(b);
     r.append(box);
     return r;
   }
-  function assocDialog(kind, cur, apply, seed) {
+  function assocDialog(kind, cur, apply, seed, more) {
     openModal("Associate Family Parameter", (body, foot, close) => {
       body.append(el("div", "famed-hint", `Family parameters of type ${KIND_NAME[kind]}. Pick the one that drives this property, or <none>.`));
       let sel = cur || "";
@@ -900,7 +911,7 @@ const FamModel = (() => {
       const ok = () => { close(); apply(sel || null); };
       const draw = () => {
         list.replaceChildren();
-        const items = [["", "<none>"], ...S.params.filter((p) => p.param_kind === kind && !p.reporting).map((p) => [p.name, `${p.name}   (${p.instance ? "instance" : "type"})`])];
+        const items = [["", "<none>"], ...S.params.filter((p) => p.param_kind === kind && !p.reporting && (!more || !more.ok || more.ok(p))).map((p) => [p.name, `${p.name}   (${p.instance ? "instance" : "type"})`])];
         for (const [v, t] of items) {
           const row = el("div", "fe-assocrow" + (v === sel ? " sel" : ""), t);
           row.onclick = () => { sel = v; draw(); };
@@ -909,9 +920,9 @@ const FamModel = (() => {
         }
       };
       draw();
-      const group = { length: "Dimensions", yes_no: "Graphics", material: "Materials and Finishes", text: "Identity Data" }[kind] || "Other";
+      const group = { length: "Dimensions", yes_no: "Graphics", material: "Materials and Finishes", text: "Identity Data", family_type: "Construction" }[kind] || "Other";
       foot.append(
-        button("New Parameter...", () => paramProps({ kinds: [[kind, KIND_NAME[kind]]], group, value: seed }, (param) => { close(); apply(param.name, param); })),
+        button("New Parameter...", () => paramProps({ kinds: [[kind, KIND_NAME[kind]]], group, value: seed, ...((more && more.preset) || {}) }, (param) => { close(); apply(param.name, param); })),
         button("Cancel", close),
         button("OK", ok, true),
       );
@@ -965,8 +976,11 @@ const FamModel = (() => {
     if (sh.type === "sweep" || sh.type === "swept_blend") {
       r.append(field("Work plane", selIn(S.body.planes.filter((p) => p.axis === planeById(sh.plane).axis).map((p) => [p.id, p.name]), sh.plane, (v) => change((b) => { formById(f.id).shape.plane = Number(v); }))));
       r.append(el("div", "famed-h", sh.type === "swept_blend" ? "Start profile" : "Profile"));
-      r.append(el("div", "famed-hint", "Measured from the first point of the path. Across is to the left of the path, Up follows the work plane normal."));
-      sweepProfile(r, f, "profile");
+      if (sh.type === "sweep") profileFamRows(r, f);
+      if (!sh.profile_family) {
+        r.append(el("div", "famed-hint", "Measured from the first point of the path. Across is to the left of the path, Up follows the work plane normal."));
+        sweepProfile(r, f, "profile");
+      }
       if (sh.type === "swept_blend") {
         r.append(el("div", "famed-h", "End profile"));
         r.append(el("div", "famed-hint", "Measured from the last point of the path. It needs the same kind and number of points as the start profile."));
@@ -1143,6 +1157,57 @@ const FamModel = (() => {
     r.append(field("Subcategory", textIn(t.subcategory || "", (v) => set((x) => { x.subcategory = v; }), { list: SUBS })));
     graphicsRows(r, t, (b) => mtextById(t.id));
   }
+  // A sweep's Profile family (door-window-spec.md section 5): a loaded Profile family and type in place of the
+  // sketched profile, its parameters set from this family's as a component's are. Its closed plan lines are the
+  // profile: x across the path (to its left), y up the work plane's normal, its origin on the path.
+  function profileFamRows(r, f) {
+    const pu = f.shape.profile_family || null;
+    const profs = (S.comps || []).filter((x) => x.category === "profiles");
+    const set = (fn) => change((b) => { fn(formById(f.id).shape); });
+    const names = [["", "Sketched here"], ...profs.map((x) => [x.name, x.name])];
+    if (pu && !profs.some((x) => x.name === pu.family)) names.push([pu.family, `${pu.family} (not loaded)`]);
+    r.append(field("Profile family", selIn(names, pu ? pu.family : "", (v) => set((sh) => {
+      if (!v) { sh.profile_family = null; return; }
+      const p2 = profs.find((x) => x.name === v);
+      sh.profile_family = { family: v, type_name: (p2 && p2.types[0]) || "", type_param: null, params: {} };
+    }))));
+    if (!profs.length && !pu) { r.append(el("div", "famed-hint", "Load a Profile family into the project to sweep it here.")); return; }
+    if (!pu) return;
+    const fam = profs.find((x) => x.name === pu.family);
+    if (!fam) { r.append(el("div", "famed-hint", `"${pu.family}" is not in the project, so this sweep is not drawn.`)); return; }
+    r.append(el("div", "famed-hint", "Its closed lines in plan are swept: across is to the left of the path, up follows the work plane normal."));
+    r.append(typeRow(fam, pu.family, pu.type_param, pu.type_name, selIn(fam.types.map((t) => [t, t]), pu.type_name, (v) => set((sh) => { sh.profile_family.type_name = v; })), (name, add) => change((b) => { if (add) S.params.push(add); formById(f.id).shape.profile_family.type_param = name; })));
+    if (fam.params.length) r.append(el("div", "famed-hint", "Blank keeps the profile's own value."));
+    for (const p of fam.params) {
+      const kind = p.kind, cur = (pu.params || {})[p.name] || "", lit = kind === "text" || kind === "material" || kind === "family_type";
+      const apply = (name, add) => change((b) => {
+        if (add) S.params.push(add);
+        const q = formById(f.id).shape.profile_family; q.params = q.params || {};
+        if (name) q.params[p.name] = `[${name}]`; else delete q.params[p.name];
+      });
+      const store = (v) => set((sh) => { const q = sh.profile_family; q.params = q.params || {}; if (!String(v).trim()) delete q.params[p.name]; else q.params[p.name] = lit ? litStore(v) : v; });
+      const ctrl = kind === "yes_no" ? selIn([["", "(its own)"], ["true", "Yes"], ["false", "No"]], cur.trim(), store) : textIn(lit ? litShow(cur) : cur, store, { list: kind === "length" ? lengthParams() : [] });
+      const assocKind = KIND_NAME[kind] ? kind : null;
+      if (assocKind) r.append(assocRow(p.name + (p.instance ? "" : " (type)"), assocKind, assocOf(cur, assocKind), ctrl, apply));
+      else r.append(field(p.name, ctrl));
+    }
+  }
+  // The Type row of a component or a sweep's profile. A Family Type parameter of the family's category can drive
+  // it, and then swaps the family as well as the type; families made before that kind existed use a Text one.
+  function typeRow(fam, family, typeParam, typeName, ctrl, apply) {
+    const cat = fam ? fam.category : null;
+    const ok = (p) => !cat || p.family_category === cat;
+    const held = typeParam && S.params.find((p) => p.name === typeParam && (p.param_kind === "text" || (p.param_kind === "family_type" && ok(p))));
+    const first = typeName || (fam && fam.types[0]) || "";
+    return assocRow("Type", "family_type", held ? held.name : null, ctrl, apply, null, `${family} : ${first}`, { ok, preset: { family_category: cat } });
+  }
+  // What a Family Type parameter of `cat` can be set to: every type of the loaded families of that category
+  function familyTypeChoices(cat, cur) {
+    const out = [["", "<None>"]];
+    for (const f of S.comps || []) if (!cat || f.category === cat) for (const t of f.types) out.push([`${f.name} : ${t}`, `${f.name} : ${t}`]);
+    if (cur && !out.some(([v]) => v === cur)) out.push([cur, `${cur} (not loaded)`]);
+    return out;
+  }
   // A component's text-like values are stored as expressions: a [Parameter] or a quoted string
   const litShow = (v) => { const m = /^\s*"(.*)"\s*$/.exec(v || ""); return m ? m[1] : v || ""; };
   const litStore = (v) => (/^\s*\[[^\[\]]+\]\s*$/.test(v) ? v : JSON.stringify(v));
@@ -1156,9 +1221,8 @@ const FamModel = (() => {
     const names = fams.map((f) => [f.name, f.name]);
     if (!fam) names.unshift([n.family, n.family]);
     r.append(field("Family", selIn(names, n.family, (v) => set((x) => { x.family = v; const f2 = fams.find((f) => f.name === v); x.type_name = f2 && f2.types[0] || ""; x.params = {}; x.type_param = null; }))));
-    const tp = n.type_param && S.params.find((p) => p.name === n.type_param && p.param_kind === "text") ? n.type_param : null;
     const types = (fam ? fam.types : []).map((t) => [t, t]);
-    r.append(assocRow("Type", "text", tp, selIn(types, n.type_name, (v) => set((x) => { x.type_name = v; })), (name, add) => change((b) => { if (add) S.params.push(add); compById(n.id).type_param = name; })));
+    r.append(typeRow(fam, n.family, n.type_param, n.type_name, selIn(types, n.type_name, (v) => set((x) => { x.type_name = v; })), (name, add) => change((b) => { if (add) S.params.push(add); compById(n.id).type_param = name; })));
     const wps = [["", "(none)"], ...S.body.planes.map((p) => [String(p.id), p.name])];
     r.append(field("Work plane", selIn(wps, n.work_plane ? String(n.work_plane) : "", (v) => set((x) => { x.work_plane = v ? Number(v) : null; }))));
     r.append(el("div", "famed-h", "Position"));
@@ -1174,7 +1238,7 @@ const FamModel = (() => {
     for (const p of ps) {
       const kind = p.kind;
       const cur = (n.params || {})[p.name] || "";
-      const lit = kind === "text" || kind === "material";
+      const lit = kind === "text" || kind === "material" || kind === "family_type";
       const apply = (name, add) => change((b) => {
         if (add) S.params.push(add);
         const c = compById(n.id); c.params = c.params || {};
@@ -1223,10 +1287,11 @@ const FamModel = (() => {
     const t = S.types.find((x) => x.id === S.typeId);
     for (const p of S.params) {
       if (p.formula || p.reporting) continue;
-      if (!["length", "number", "integer", "angle", "yes_no", "text"].includes(p.param_kind)) continue;
+      if (!["length", "number", "integer", "angle", "yes_no", "text", "family_type"].includes(p.param_kind)) continue;
       const cur = S.values[p.name] ?? (t && t.values[p.name] !== undefined ? t.values[p.name] : p.default);
       let inp;
       if (p.param_kind === "yes_no") inp = checkIn(cur, (c) => setFlex(p, c));
+      else if (p.param_kind === "family_type") inp = selIn(familyTypeChoices(p.family_category, cur), cur || "", (v) => setFlex(p, v));
       else if (p.choices && p.choices.length) inp = selIn(p.choices.map((c) => [c, c]), cur, (v) => setFlex(p, v));
       else { inp = textIn(String(cur), (v) => setFlex(p, p.param_kind === "text" ? v : num(v))); }
       r.append(field(p.name + (p.instance ? " (inst.)" : ""), inp));
@@ -1313,6 +1378,7 @@ const FamModel = (() => {
         if (p.param_kind === "yes_no") inp = checkIn(cur0, (v) => setValue(p, v));
         else if (p.choices && p.choices.length) inp = selIn(p.choices.map((x) => [x, x]), cur0, (v) => setValue(p, v));
         else if (p.param_kind === "material") inp = matIn(cur0 || "", (v) => setValue(p, v));
+        else if (p.param_kind === "family_type") inp = selIn(familyTypeChoices(p.family_category, cur0), cur0 || "", (v) => setValue(p, v));
         else inp = textIn(showValue(cur0), (v) => setValue(p, p.param_kind === "text" ? v : num(v)));
         if (p.locked) inp.disabled = true;
         c.append(inp);
@@ -1678,6 +1744,7 @@ const FamModel = (() => {
     if (!S.pv || !S.pv.views) return null;
     let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
     for (const pc of S.pv.views[PREVIEW_KEY[v]] || []) for (const ring of pc.rings) for (const [x, y] of ring) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
+    for (const ring of hostWallRings(PREVIEW_KEY[v])) for (const [x, y] of ring) { x0 = Math.min(x0, x); x1 = Math.max(x1, x); y0 = Math.min(y0, y); y1 = Math.max(y1, y); }
     if (!Number.isFinite(x0)) return null;
     const ext = [Math.min(x0, -50), Math.min(y0, -50), Math.max(x1, 50), Math.max(y1, 50)];
     return VIEWS[v].flip ? [-ext[2], ext[1], -ext[0], ext[3]] : ext;
@@ -1687,6 +1754,135 @@ const FamModel = (() => {
   const w2s = (u, v) => { const c = cam(); return { x: c.ox + flipOf() * u * c.k, y: c.oy - v * c.k }; };
   const s2w = (x, y) => { const c = cam(); return { u: (flipOf() * (x - c.ox)) / c.k, v: (c.oy - y) / c.k }; };
   const viewPlanes = () => { const V = VIEWS[S.view]; return S.body.planes.filter((p) => p.axis === V.h || p.axis === V.v); };
+
+  // ---------------------------------------------------------------- placeholder host wall
+  // A wall-hosted family is shown in a length of generic wall (door-window-spec.md section 1). The wall's thickness
+  // is the body's `placeholder_wall` (default 200), which the solver also gives the family as Host Thickness. The
+  // wall runs along x, centred on Center (Front/Back), and is cut by the family's opening (the preview's cut box, or
+  // its outline when the opening is arched or raked).
+  // It is only drawn: it cannot be picked and is not part of the family when loaded.
+  const HOST_WALL_ID = "host-wall";
+  const hostWallOn = () => !!(S && S.def && S.def.host === "wall");
+  const hostWallT = () => { const t = Number(S.body.placeholder_wall); return t > 0 ? t : 200; };
+  function hostWallBox() {
+    if (!hostWallOn() || !S.pv) return null;
+    const cb = S.pv.cut_box; // [[x0, y0, z0], [x1, y1, z1]] or null
+    const win = S.def.category === "windows"; // a window's level is its sill, so the wall carries on below it
+    const half = Math.max(1500, cb ? Math.max(-cb[0][0], cb[1][0]) + 900 : 0);
+    const z0 = Math.min(win ? -900 : 0, cb ? cb[0][2] - (win ? 600 : 0) : 0);
+    const z1 = Math.max(win ? 2100 : 2700, cb ? cb[1][2] + 600 : 0);
+    const t = hostWallT();
+    const hole = cb && cb[1][0] > cb[0][0] && cb[1][2] > cb[0][2] ? { x0: Math.max(cb[0][0], -half), x1: Math.min(cb[1][0], half), z0: Math.max(cb[0][2], z0), z1: Math.min(cb[1][2], z1) } : null;
+    // an arched or raked opening: its outline seen from the front (x, z), as the project's wall will be cut
+    if (hole && Array.isArray(S.pv.cut_outline) && S.pv.cut_outline.length >= 3) hole.outline = S.pv.cut_outline;
+    return { x0: -half, x1: half, y0: -t / 2, y1: t / 2, z0, z1, hole };
+  }
+  // Where the opening's outline is open on the upright line at x: sorted [z0, z1] stretches.
+  function outlineColumn(ring, x) {
+    const zs = [];
+    for (let i = 0; i < ring.length; i++) {
+      const a = ring[i], b = ring[(i + 1) % ring.length];
+      if ((a[0] <= x) !== (b[0] <= x)) zs.push(a[1] + (x - a[0]) / (b[0] - a[0]) * (b[1] - a[1]));
+    }
+    zs.sort((p, q) => p - q);
+    const out = [];
+    for (let i = 0; i + 1 < zs.length; i += 2) out.push([zs[i], zs[i + 1]]);
+    return out;
+  }
+  // The wall within the hole's width as upright strips between the outline's corners: in each strip the wall
+  // below, between and above the opening, each a four-cornered piece [[x, z] x4] counter-clockwise.
+  function outlineStrips(b) {
+    const h = b.hole, ring = h.outline;
+    const xs = [...new Set([h.x0, h.x1, ...ring.map((p) => p[0])])].filter((x) => x >= h.x0 && x <= h.x1).sort((p, q) => p - q);
+    const out = [];
+    for (let i = 0; i + 1 < xs.length; i++) {
+      const xa = xs[i], xb = xs[i + 1], e = Math.min(0.01, (xb - xa) / 4);
+      if (xb - xa < 0.01) continue;
+      // the outline's edges are straight within the strip: read the stretches just inside each side, then run
+      // them out to the sides
+      const ca = outlineColumn(ring, xa + e), cb = outlineColumn(ring, xb - e);
+      if (ca.length !== cb.length) continue;
+      const k = e / (xb - xa - 2 * e);
+      const sa = ca.map((s, j) => [s[0] - (cb[j][0] - s[0]) * k, s[1] - (cb[j][1] - s[1]) * k]);
+      const sb = cb.map((s, j) => [s[0] + (s[0] - ca[j][0]) * k, s[1] + (s[1] - ca[j][1]) * k]);
+      const lows = [[b.z0, b.z0]], highs = [];
+      sa.forEach((s, k) => { highs.push([s[0], sb[k][0]]); lows.push([s[1], sb[k][1]]); });
+      highs.push([b.z1, b.z1]);
+      lows.forEach((lo, k) => {
+        const hi = highs[k];
+        if (hi[0] - lo[0] > 0.5 || hi[1] - lo[1] > 0.5) out.push([[xa, lo[0]], [xb, lo[1]], [xb, hi[1]], [xa, hi[0]]]);
+      });
+    }
+    return out;
+  }
+  // The wall as rings in one of the preview's projections (plan: x, y; front: x, z; left: y, z).
+  function hostWallRings(key) {
+    const b = hostWallBox();
+    if (!b) return [];
+    const rect = (u0, v0, u1, v1) => [[u0, v0], [u1, v0], [u1, v1], [u0, v1]];
+    const h = b.hole;
+    if (key === "plan") return h ? [rect(b.x0, b.y0, h.x0, b.y1), rect(h.x1, b.y0, b.x1, b.y1)] : [rect(b.x0, b.y0, b.x1, b.y1)];
+    if (key === "front") return h ? [rect(b.x0, b.z0, b.x1, b.z1), h.outline ? h.outline.map((p) => [p[0], p[1]]) : rect(h.x0, h.z0, h.x1, h.z1)] : [rect(b.x0, b.z0, b.x1, b.z1)];
+    // left and right are a section through the wall on Center (Left/Right): the wall below, between and above
+    // where the opening is open there
+    if (h && h.x0 <= 0 && h.x1 >= 0) {
+      const open = h.outline ? outlineColumn(h.outline, 0) : [[h.z0, h.z1]];
+      const zs = [b.z0, ...open.flat(), b.z1], out = [];
+      for (let i = 0; i + 1 < zs.length; i += 2) if (zs[i + 1] - zs[i] > 0.5) out.push(rect(b.y0, zs[i], b.y1, zs[i + 1]));
+      return out;
+    }
+    return [rect(b.y0, b.z0, b.y1, b.z1)];
+  }
+  function drawHostWall() {
+    const key = PREVIEW_KEY[S.view], rings = hostWallRings(key);
+    if (!rings.length) return;
+    const { ctx } = S;
+    const cut = key !== "front"; // the plan and the side views cut through the wall; the elevations see its face
+    ctx.beginPath();
+    for (const ring of rings) { ring.forEach(([x, y], i) => { const p = w2s(x, y); i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y); }); ctx.closePath(); }
+    ctx.fillStyle = cut ? "rgba(140,140,140,0.22)" : "rgba(140,140,140,0.10)";
+    ctx.fill("evenodd");
+    ctx.strokeStyle = "#9a9a9a"; ctx.lineWidth = cut ? 1.4 : 1; ctx.stroke();
+    // the wall's thickness, beside its left end in plan
+    if (key === "plan") {
+      const b = hostWallBox(), p = w2s(VIEWS[S.view].flip ? b.x1 : b.x0, b.y1);
+      ctx.fillStyle = "#8a8a8a"; ctx.font = "11px system-ui, sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+      ctx.fillText(`Placeholder wall ${Math.round(hostWallT() * 10) / 10}`, p.x + 4, p.y - 3);
+    }
+  }
+  // The wall as boxes for the 3D view: either side of the opening, below it and above it.
+  function hostWallMeshes() {
+    const b = hostWallBox();
+    if (!b) return [];
+    const boxes = [];
+    const h = b.hole;
+    if (!h) boxes.push([b.x0, b.z0, b.x1, b.z1]);
+    else {
+      if (h.x0 > b.x0) boxes.push([b.x0, b.z0, h.x0, b.z1]);
+      if (h.x1 < b.x1) boxes.push([h.x1, b.z0, b.x1, b.z1]);
+      if (!h.outline) {
+        if (h.z0 > b.z0) boxes.push([h.x0, b.z0, h.x1, h.z0]);
+        if (h.z1 < b.z1) boxes.push([h.x0, h.z1, h.x1, b.z1]);
+      }
+    }
+    // every piece is four corners in (x, z), counter-clockwise, pushed through the wall's thickness
+    const pieces = boxes.map(([x0, z0, x1, z1]) => [[x0, z0], [x1, z0], [x1, z1], [x0, z1]]);
+    if (h && h.outline) pieces.push(...outlineStrips(b));
+    const verts = [];
+    const quad = (a, bb, c, d, n) => { for (const q of [a, bb, c, a, c, d]) verts.push(q[0] / 1000, q[1] / 1000, q[2] / 1000, ...n); };
+    const [y0, y1] = [b.y0, b.y1];
+    for (const p of pieces) {
+      const f = p.map(([x, z]) => [x, y0, z]), k = p.map(([x, z]) => [x, y1, z]);
+      quad(f[0], f[1], f[2], f[3], [0, -1, 0]);
+      quad(k[3], k[2], k[1], k[0], [0, 1, 0]);
+      for (let i = 0; i < 4; i++) {
+        const s = p[i], e = p[(i + 1) % 4], dx = e[0] - s[0], dz = e[1] - s[1], l = Math.hypot(dx, dz);
+        if (l < 1e-6) continue;
+        quad([s[0], y1, s[1]], [e[0], y1, e[1]], [e[0], y0, e[1]], [s[0], y0, s[1]], [dz / l, 0, -dx / l]);
+      }
+    }
+    return [{ id: HOST_WALL_ID, kind: "Form", verts, color: [200, 200, 200], transparency: 55 }];
+  }
 
   // ---------------------------------------------------------------- drawing
   function render() {
@@ -1700,6 +1896,7 @@ const FamModel = (() => {
     const V = VIEWS[S.view];
     const accent = css("--accent"), text = css("--text"), muted = css("--muted");
     const c = cam();
+    drawHostWall();
     // geometry
     for (const pass of ["solid", "void"]) {
       for (const pc of S.pv.views[PREVIEW_KEY[S.view]] || []) {
@@ -2164,13 +2361,15 @@ const FamModel = (() => {
         const l = Math.hypot(nx, ny, nz) || 1; nx /= l; ny /= l; nz /= l;
         for (const k of [a, b, c]) verts.push(t[k] / 1000, t[k + 1] / 1000, t[k + 2] / 1000, nx, ny, nz);
       }
-      out.push({ id: f.id, kind: f.sub === "Glass" ? "Glass" : "Form", verts, color: f.void ? [214, 120, 190] : null });
+      // voids are see-through so the solids they cut stay visible inside them
+      out.push({ id: f.id, kind: f.sub === "Glass" ? "Glass" : "Form", verts, color: f.void ? [214, 120, 190] : null, transparency: f.void ? 70 : undefined });
     }
-    return out;
+    return out.concat(hostWallMeshes());
   }
   const selFormIds = () => S.pv.forms.filter((f) => isSel("form", f.id)).map((f) => f.id);
   function pick3D(id, additive) {
     if (!S) return;
+    if (id === HOST_WALL_ID) id = null; // the placeholder wall cannot be picked
     const hit = id == null ? null : ownerOf(id) != null ? { kind: "comp", id: ownerOf(id) } : mtextById(id) ? { kind: "mtext", id } : { kind: "form", id };
     if (additive) { if (hit) { const cur = selItems(); setSel(cur.some((x) => x.kind === hit.kind && x.id === hit.id) ? cur.filter((x) => !(x.kind === hit.kind && x.id === hit.id)) : [...cur, hit]); } }
     else S.sel = hit;
@@ -3849,13 +4048,13 @@ const FamModel = (() => {
     openModal(opts.initial ? "Modify Parameter" : "Parameter Properties", (body, foot, close) => {
       const msg = el("div", "modal-msg");
       const ini = opts.initial;
-      const st = ini ? { name: ini.name, kind: ini.param_kind, instance: !!ini.instance, group: ini.group || "Other", reporting: !!ini.reporting, tooltip: ini.tooltip || "", discipline: ini.discipline || "common", guid: ini.shared_guid || null } : { name: opts.name || "", kind: opts.kinds && opts.kinds[0] ? opts.kinds[0][0] : "length", instance: false, group: opts.group || "Dimensions", reporting: false, tooltip: "", discipline: "common", guid: null };
+      const st = ini ? { name: ini.name, kind: ini.param_kind, instance: !!ini.instance, group: ini.group || "Other", reporting: !!ini.reporting, tooltip: ini.tooltip || "", discipline: ini.discipline || "common", guid: ini.shared_guid || null, family_category: ini.family_category || null } : { name: opts.name || "", kind: opts.kinds && opts.kinds[0] ? opts.kinds[0][0] : "length", instance: false, group: opts.group || "Dimensions", reporting: false, tooltip: "", discipline: "common", guid: null, family_category: opts.family_category || null };
       let shared = !!st.guid;
       const canShare = !opts.canReport && !st.reporting; // a dimension's own parameter cannot be shared (its value is read, not typed)
       function draw() {
         body.replaceChildren();
         const row = (l, n) => { body.append(field(l, n)); return n; };
-        const fam = row("Parameter type", selIn([["family", "Family parameter"], ...(canShare ? [["shared", "Shared parameter"]] : [])], shared ? "shared" : "family", (v) => { shared = v === "shared"; if (!shared) st.guid = null; draw(); }));
+        const fam = row("Parameter type", selIn([["family", "Family parameter"], ...(canShare && st.kind !== "family_type" ? [["shared", "Shared parameter"]] : [])], shared ? "shared" : "family", (v) => { shared = v === "shared"; if (!shared) st.guid = null; draw(); }));
         if (ini && ini.shared_guid) fam.disabled = true;
         if (shared) {
           const bar = el("span");
@@ -3869,7 +4068,14 @@ const FamModel = (() => {
         }
         const nm = row("Name", textIn(st.name, (v) => { st.name = v; }));
         row("Discipline", selIn([["common", "Common"]], st.discipline, (v) => { st.discipline = v; }));
-        const ty = row("Type of parameter", selIn(opts.kinds || KINDS, st.kind, (v) => { st.kind = v; }));
+        const ty = row("Type of parameter", selIn(opts.kinds || KINDS, st.kind, (v) => { st.kind = v; if (v === "family_type") { shared = false; st.guid = null; } draw(); }));
+        // a Family Type parameter names types of one category's families
+        if (st.kind === "family_type") {
+          const cats = (S.def.categories || []).map((c) => [c.id, c.label]);
+          if (!st.family_category && cats.length) st.family_category = cats[0][0];
+          const cs = row("Category", selIn(cats, st.family_category, (v) => { st.family_category = v; }));
+          if (opts.family_category) cs.disabled = true;
+        }
         if (shared) { nm.disabled = true; ty.disabled = true; }
         if (ini && opts.lockKind) ty.disabled = true;
         row("Group parameter under", textIn(st.group, (v) => { st.group = v; }, { list: ["Dimensions", "Constraints", "Construction", "Materials and Finishes", "Identity Data"] }));
@@ -3905,9 +4111,11 @@ const FamModel = (() => {
         if ((opts.names || S.params.map((p) => p.name)).some((n) => n.toLowerCase() === name.toLowerCase() && !(ini && n === ini.name))) { msg.textContent = `A parameter called '${name}' already exists.`; return; }
         if (/[\[\]]/.test(name)) { msg.textContent = "A parameter name cannot contain [ or ]."; return; }
         close();
-        const dflt = (k) => (k === "yes_no" ? opts.value === true : ["text", "material"].includes(k) ? "" : opts.value || 0);
-        if (ini) done({ ...ini, name, param_kind: st.kind, instance: st.instance, group: st.group, discipline: st.discipline, tooltip: st.tooltip, shared_guid: st.guid, default: st.kind === ini.param_kind ? ini.default : dflt(st.kind) });
-        else done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: st.guid, choices: [], discipline: st.discipline, tooltip: st.tooltip, locked: false, default: dflt(st.kind) });
+        const dflt = (k) => (k === "yes_no" ? opts.value === true : k === "family_type" ? (typeof opts.value === "string" ? opts.value : "") : ["text", "material"].includes(k) ? "" : opts.value || 0);
+        if (st.kind === "family_type" && !st.family_category) { msg.textContent = "Choose the category whose families it names."; return; }
+        const fc = st.kind === "family_type" ? st.family_category : null;
+        if (ini) done({ ...ini, name, param_kind: st.kind, instance: st.instance, group: st.group, discipline: st.discipline, tooltip: st.tooltip, shared_guid: st.guid, family_category: fc, default: st.kind === ini.param_kind && fc === (ini.family_category || null) ? ini.default : dflt(st.kind) });
+        else done({ name, param_kind: st.kind, instance: st.instance, group: st.group, formula: null, reporting: st.reporting, shared_guid: st.guid, choices: [], discipline: st.discipline, tooltip: st.tooltip, locked: false, family_category: fc, default: dflt(st.kind) });
       };
       foot.append(button("Cancel", close), button("OK", ok, true));
     });

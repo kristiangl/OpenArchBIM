@@ -51,6 +51,8 @@ pub enum FamilyCategory {
     Hardscape,
     Signage,
     Mass,
+    /// A closed outline drawn on reference planes, used by sweeps (door frames, fascias, reveals). Never placed.
+    Profiles,
 }
 
 impl FamilyCategory {
@@ -89,6 +91,7 @@ impl FamilyCategory {
             FamilyCategory::Hardscape => "Hardscape",
             FamilyCategory::Signage => "Signage",
             FamilyCategory::Mass => "Mass",
+            FamilyCategory::Profiles => "Profiles",
         }
     }
     /// Every category in the order the family editor lists them.
@@ -97,7 +100,7 @@ impl FamilyCategory {
         &[
             GenericModels, Doors, Windows, Furniture, FurnitureSystems, Casework, PlumbingFixtures, LightingFixtures, LightingDevices, ElectricalFixtures, ElectricalEquipment, FireAlarmDevices,
             CommunicationDevices, DataDevices, SecurityDevices, MechanicalEquipment, MechanicalControlDevices, AirTerminals, FireProtection, SpecialtyEquipment, FoodServiceEquipment, Columns,
-            StructuralColumns, StructuralFraming, StructuralFoundations, Planting, Entourage, Parking, Site, Hardscape, Signage, Mass,
+            StructuralColumns, StructuralFraming, StructuralFoundations, Planting, Entourage, Parking, Site, Hardscape, Signage, Mass, Profiles,
         ]
     }
     /// The discipline filter the category belongs under in the Family Category dialog.
@@ -143,7 +146,7 @@ impl FamilyCategory {
             FamilyCategory::AirTerminals => "IfcAirTerminal",
             FamilyCategory::FireProtection => "IfcFireSuppressionTerminal",
             FamilyCategory::Hardscape => "IfcSlab",
-            FamilyCategory::SpecialtyEquipment | FamilyCategory::FoodServiceEquipment | FamilyCategory::Entourage | FamilyCategory::Parking | FamilyCategory::Signage | FamilyCategory::Mass => "IfcBuildingElementProxy",
+            FamilyCategory::SpecialtyEquipment | FamilyCategory::FoodServiceEquipment | FamilyCategory::Entourage | FamilyCategory::Parking | FamilyCategory::Signage | FamilyCategory::Mass | FamilyCategory::Profiles => "IfcBuildingElementProxy",
         }
     }
 }
@@ -188,6 +191,9 @@ pub enum ParamKind {
     Volume,
     YesNo,
     Material,
+    /// Names a type of a loaded family of one category, as "Family : Type"; a nested component or a sweep's
+    /// profile whose type follows it swaps to that family and type.
+    FamilyType,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -259,8 +265,20 @@ pub struct ParamDef {
     /// Locked in the Family Types dialog: its value is not changed by flexing or typing there.
     #[serde(default)]
     pub locked: bool,
+    /// For Family Type parameters: the category whose families it can name.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub family_category: Option<FamilyCategory>,
     /// Value when a type or instance does not set one.
     pub default: ParamValue,
+}
+
+/// A Family Type parameter's value split into its family and type ("Panel : Glazed" gives the family "Panel" and the
+/// type "Glazed"). A value without " : " is a type name alone, of whatever family the user already has.
+pub fn split_family_type(v: &str) -> (Option<&str>, &str) {
+    match v.split_once(" : ") {
+        Some((f, t)) if !f.trim().is_empty() => (Some(f.trim()), t.trim()),
+        _ => (None, v.trim()),
+    }
 }
 
 fn common() -> String {
@@ -269,7 +287,7 @@ fn common() -> String {
 
 impl ParamDef {
     fn new(name: &str, kind: ParamKind, instance: bool, group: &str, default: ParamValue) -> ParamDef {
-        ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: common(), tooltip: String::new(), locked: false, default }
+        ParamDef { name: name.into(), param_kind: kind, instance, group: group.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: common(), tooltip: String::new(), locked: false, family_category: None, default }
     }
     /// A text parameter chosen from a list.
     fn choice(name: &str, instance: bool, group: &str, choices: &[&str]) -> ParamDef {
@@ -362,6 +380,31 @@ pub struct CatalogRow {
 }
 
 impl Family {
+    /// Every family this one uses by name: its body's components and sweep profiles, and the families its Family
+    /// Type parameters name, as defaults or in `types` (the values of its types).
+    pub fn used_families<'a>(&self, types: impl IntoIterator<Item = &'a BTreeMap<String, ParamValue>>) -> Vec<String> {
+        let mut out = self.body.used_families();
+        let ft: Vec<&ParamDef> = self.params.iter().filter(|p| p.param_kind == ParamKind::FamilyType).collect();
+        if !ft.is_empty() {
+            let mut add = |v: Option<&ParamValue>| {
+                if let Some((Some(f), _)) = v.and_then(|v| v.as_text()).map(split_family_type) {
+                    out.push(f.to_string());
+                }
+            };
+            for p in &ft {
+                add(Some(&p.default));
+            }
+            for t in types {
+                for p in &ft {
+                    add(t.get(&p.name));
+                }
+            }
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
+
     pub fn param(&self, name: &str) -> Option<&ParamDef> {
         self.params.iter().find(|p| p.name == name)
     }

@@ -951,8 +951,8 @@ impl Session {
                         if seen.contains(&n) {
                             continue;
                         }
-                        if let Some((_, f)) = all.iter().find(|(_, f)| f.name == n) {
-                            todo.extend(f.body.nested.iter().map(|x| x.family.clone()));
+                        if let Some((fid, _)) = all.iter().find(|(_, f)| f.name == n) {
+                            todo.extend(self.doc.family_uses(*fid));
                         }
                         seen.push(n);
                     }
@@ -1821,7 +1821,7 @@ impl Session {
                     Some(v) if v.is_number() => ParamValue::Number(v.as_f64().unwrap_or(0.0)),
                     _ => match kind {
                         ParamKind::YesNo => ParamValue::Bool(false),
-                        ParamKind::Text | ParamKind::Material => ParamValue::Text(String::new()),
+                        ParamKind::Text | ParamKind::Material | ParamKind::FamilyType => ParamValue::Text(String::new()),
                         ParamKind::Length => ParamValue::Number(1000.0),
                         _ => ParamValue::Number(0.0),
                     },
@@ -3790,6 +3790,7 @@ fn family_preview_json(solved: Result<openarch_model::famgeom::Solved, String>) 
         "connectors": s.connectors.iter().map(|c| json!({ "id": c.id, "name": c.name, "kind": c.kind, "origin": c.origin, "direction": c.direction, "numbers": c.numbers })).collect::<Vec<_>>(),
         "views": { "plan": view(Axis::Z), "front": view(Axis::Y), "left": view(Axis::X) },
         "cut_box": s.host_cut_bounds(),
+        "cut_outline": s.host_cut_outline().map(|r| r.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>()),
         "reports": s.reports.iter().map(|(n, v)| json!({ "name": n, "value": v })).collect::<Vec<_>>(),
         "warnings": s.warnings,
     })

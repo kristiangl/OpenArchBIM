@@ -478,6 +478,31 @@ fn rect(u0: f64, u1: f64, z0: f64, z1: f64) -> Vec<[f64; 2]> {
     vec![[u0, z0], [u1, z0], [u1, z1], [u0, z1]]
 }
 
+/// The hole a door or window leaves in a piece of wall the plane cuts: `(a, b)` its stretch of the plane, `z0..z1`
+/// its heights and its shape (along the wall, absolute heights) when its head is not square. `cut` is the piece's
+/// stretch of the plane, `along` where that stretch starts and ends along the wall, `heights` what the wall reaches.
+/// A shaped hole cut across the wall is as tall as its outline is there; seen along the wall it is its outline.
+fn opening_hole(o: &(f64, f64, f64, f64, Option<Vec<Point>>), cut: (f64, f64), along: (f64, f64), heights: (f64, f64)) -> Vec<Vec<[f64; 2]>> {
+    let (a, b, z0, z1, shape) = o;
+    let (u0, u1) = (a.max(cut.0), b.min(cut.1));
+    if u1 - u0 <= 0.5 {
+        return vec![];
+    }
+    let (lo, hi) = heights;
+    let spans = |v: Vec<(f64, f64)>| v.into_iter().filter_map(|(v0, v1): (f64, f64)| (v1.min(hi) - v0.max(lo) > 0.5).then(|| rect(u0, u1, v0.max(lo), v1.min(hi)))).collect();
+    let Some(ring) = shape else { return spans(vec![(*z0, *z1)]) };
+    let (a0, a1) = along;
+    if (a1 - a0).abs() < 1.0 {
+        return spans(crate::wallprofile::column(&[vec![ring.clone()]], (a0 + a1) / 2.0));
+    }
+    let to_u = |x: f64| cut.0 + (x - a0) / (a1 - a0) * (cut.1 - cut.0);
+    let r = crate::site::clip_x(ring, a0.min(a1), a0.max(a1));
+    if r.len() < 3 {
+        return vec![];
+    }
+    vec![r.iter().map(|p| [to_u(p.x), p.y.clamp(lo, hi)]).collect()]
+}
+
 impl Document {
     pub fn sections(&self) -> Vec<(Id, &Section)> {
         self.iter().filter_map(|(id, e)| if let Element::Section(s) = e { Some((id, s)) } else { None }).collect()
@@ -976,7 +1001,8 @@ impl Document {
             }
             let (z0, z1) = self.wall_extent(w);
             // openings of the doors and windows in this wall, as stretches of the plane
-            let mut openings: Vec<(f64, f64, f64, f64)> = vec![];
+            let mut openings: Vec<(f64, f64, f64, f64, Option<Vec<Point>>)> = vec![];
+            let wall_openings = if w.curve.is_none() { self.wall_openings(id) } else { vec![] };
             for (iid, i) in self.instances() {
                 let Some(h) = i.host else { continue };
                 if h.wall != id || hidden(iid) {
@@ -991,8 +1017,10 @@ impl Document {
                     Point::new(c.x + f.dir.x * hw + f.left.x * pad, c.y + f.dir.y * hw + f.left.y * pad),
                     Point::new(c.x - f.dir.x * hw + f.left.x * pad, c.y - f.dir.y * hw + f.left.y * pad),
                 ];
+                // an arched or raked head keeps its outline, along the wall and at absolute heights
+                let shape = wall_openings.iter().find(|o| o.instance == iid).and_then(|o| self.opening_shape(o));
                 for cut in sl.cuts(&[&ring], sl.plane + PLANE_EPS) {
-                    openings.push((cut.u0, cut.u1, f.z0, f.z1));
+                    openings.push((cut.u0, cut.u1, f.z0, f.z1, shape.clone()));
                 }
             }
             // an edited profile: where the plane crosses the wall, what the outline reaches; where it runs along the
@@ -1008,13 +1036,7 @@ impl Document {
                         if (a1 - a0).abs() < 1.0 {
                             for (h0, h1) in self.wall_profile_column(w, (a0 + a1) / 2.0).unwrap_or_default() {
                                 // the doors and windows the plane passes through, inside this piece
-                                let holes = openings
-                                    .iter()
-                                    .filter_map(|&(a, b, v0, v1)| {
-                                        let (u0, u1, v0, v1) = (a.max(cut.u0), b.min(cut.u1), v0.max(h0), v1.min(h1));
-                                        (u1 - u0 > 0.5 && v1 - v0 > 0.5).then(|| rect(u0, u1, v0, v1))
-                                    })
-                                    .collect();
+                                let holes = openings.iter().flat_map(|o| opening_hole(o, (cut.u0, cut.u1), (a0, a1), (h0, h1))).collect();
                                 out.push(item(vec![rect(cut.u0, cut.u1, h0, h1)], holes));
                             }
                         } else {
@@ -1029,13 +1051,7 @@ impl Document {
                         }
                         continue;
                     }
-                    let holes: Vec<Vec<[f64; 2]>> = openings
-                        .iter()
-                        .filter_map(|&(a, b, h0, h1)| {
-                            let (u0, u1, v0, v1) = (a.max(cut.u0), b.min(cut.u1), h0.max(z0), h1.min(z1));
-                            (u1 - u0 > 0.5 && v1 - v0 > 0.5).then(|| rect(u0, u1, v0, v1))
-                        })
-                        .collect();
+                    let holes: Vec<Vec<[f64; 2]>> = openings.iter().flat_map(|o| opening_hole(o, (cut.u0, cut.u1), (along(cut.p0), along(cut.p1)), (z0, z1))).collect();
                     out.push(ElevItem { id, category: "Walls", depth, polys: vec![rect(cut.u0, cut.u1, z0, z1)], fill, cut: true, material: material.map(str::to_string), holes, ..Default::default() });
                 }
             };

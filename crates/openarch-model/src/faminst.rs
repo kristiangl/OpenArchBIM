@@ -113,7 +113,7 @@ impl Document {
     /// values its associations give it, then placed in this body. `stack` holds the families being
     /// solved, so a family that holds itself (directly or through another) is stopped.
     pub(crate) fn solve_family_body(&self, name: &str, body: &crate::famgeom::FamilyBody, env: &mut crate::famgeom::Env, stack: &mut Vec<String>) -> Result<Solved, String> {
-        if body.nested.is_empty() {
+        if !body.needs_project() {
             return body.solve(env);
         }
         stack.push(name.to_string());
@@ -195,6 +195,13 @@ impl Document {
         }
         fam.body.opening_box(&mut self.body_env(inst)).ok().flatten()
     }
+
+    /// The outline of the hole a placed instance cuts, seen from the front, in family coordinates (x along, z up):
+    /// `None` when the hole is a plain rectangle.
+    pub fn instance_cut_outline(&self, id: Id) -> Option<Vec<crate::geom::Point>> {
+        let solved = self.instance_solved(id)?;
+        solved.as_ref().as_ref().ok()?.host_cut_outline()
+    }
 }
 
 impl Document {
@@ -251,7 +258,7 @@ mod tests {
             subcategory: "Plan Swing".into(),
             vis: Visibility::default(),
         });
-        let p = |name: &str, kind, instance, default| ParamDef { name: name.into(), param_kind: kind, instance, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default };
+        let p = |name: &str, kind, instance, default| ParamDef { name: name.into(), param_kind: kind, instance, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default };
         Family {
             name: "Hatch".into(),
             category: FamilyCategory::Doors,
@@ -285,7 +292,7 @@ mod tests {
         assert!(file.family.source_path.is_none(), "a file never carries the project's path");
         file.types[0].values.insert("Width".into(), ParamValue::Number(1000.0));
         file.types.push(FamilyFileType { name: "1200".into(), values: BTreeMap::from([("Width".to_string(), ParamValue::Number(1200.0))]) });
-        file.family.params.push(ParamDef { name: "Note".into(), param_kind: ParamKind::Text, instance: false, group: "Identity Data".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default: ParamValue::Text(String::new()) });
+        file.family.params.push(ParamDef { name: "Note".into(), param_kind: ParamKind::Text, instance: false, group: "Identity Data".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default: ParamValue::Text(String::new()) });
         let src = Some(("C:/families/Hatch.oaf".to_string(), Some("2026-10-20".to_string())));
         assert!(d.import_family_with(file.clone(), ImportMode::Refuse, src.clone()).is_err(), "same name is refused");
         // keep the project's values: type "800" stays 800, "1200" is added
@@ -325,6 +332,7 @@ mod tests {
         let ops = d.wall_openings(w);
         assert_eq!(ops.len(), 1);
         assert!((ops[0].u0 - 2550.0).abs() < 1e-6 && (ops[0].u1 - 3450.0).abs() < 1e-6 && ops[0].z1 > 2099.0);
+        assert!(d.opening_shape(&ops[0]).is_none(), "a square opening is its box");
         // plan: the leaf cut at 1200 is 900 x 40, and the symbolic line comes through
         let sym = crate::symbol::plan_symbol_at(&d, id, crate::view::DetailLevel::Medium, Some(1200.0)).unwrap();
         let leaf = sym.parts.iter().find(|p| p.subcategory == "Panel").unwrap();
@@ -343,6 +351,120 @@ mod tests {
         // undo brings the old size back
         d.undo();
         assert_eq!(d.wall_openings(w)[0].u1 - d.wall_openings(w)[0].u0, 900.0);
+    }
+
+    /// A Profile family: a Face wide by Depth deep rectangle in plan from the origin.
+    fn jamb_profile() -> Family {
+        let mut b = FamilyBody::template();
+        let face = b.add_offset_plane("Face", PLANE_LR, "[Face]").unwrap();
+        let back = b.add_offset_plane("Back", PLANE_FB, "[Depth]").unwrap();
+        b.add_sym(SymElement {
+            id: 0,
+            view: SymView::Plan,
+            path: Loop::rect(Coord::on(PLANE_LR), Coord::on(face), Coord::on(PLANE_FB), Coord::on(back)),
+            filled: false,
+            masking: false,
+            subcategory: String::new(),
+            vis: Visibility::default(),
+        });
+        let p = |name: &str, default: f64| ParamDef { name: name.into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default: ParamValue::Number(default) };
+        Family { name: "Jamb".into(), category: FamilyCategory::Profiles, host: HostKind::None, plan_symbol: PlanSymbol::None, params: vec![p("Face", 100.0), p("Depth", 40.0)], built_in: false, catalog: vec![], settings: Default::default(), source_path: None, loaded_at: None, body: b }
+    }
+
+    #[test]
+    fn a_sweep_takes_its_shape_from_a_profile_family_which_travels_with_the_file() {
+        // a rail along x on the level, swept with the Jamb profile, its Depth set from the rail's Frame Depth
+        let mut b = FamilyBody::template();
+        let n = |x: f64| Node::new(Coord::from(PLANE_LR, x), Coord::on(PLANE_FB));
+        let path = Loop { nodes: vec![n(-500.0), n(500.0)], bulges: vec![], closed: false, shapes: vec![] };
+        let pu = crate::famgeom::ProfileUse { family: "Jamb".into(), type_name: "t".into(), type_param: None, params: BTreeMap::from([("Depth".to_string(), "[Frame Depth]".to_string())]) };
+        b.add_form(form(FormShape::Sweep { plane: PLANE_LEVEL, path, profile: vec![], profile_angle: 0.0, flip: false, profile_family: Some(pu) }, false, "Frame/Mullion"));
+        let mut rail = desk_family();
+        rail.name = "Rail".into();
+        rail.body = b;
+        rail.params.push(ParamDef { name: "Frame Depth".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default: ParamValue::Number(55.0) });
+        assert_eq!(rail.body.used_families(), vec!["Jamb".to_string()]);
+        // without the profile in the project the sweep is left out with a warning, and the rest still solves
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let (rid, rtypes) = d.add_family(rail.clone(), vec![("t".into(), BTreeMap::new())]).unwrap();
+        let inst = d.place_free(rtypes[0], lvl, Point::new(0., 0.), 0.0, 0.0).unwrap();
+        {
+            let solved = d.instance_solved(inst).unwrap();
+            let s = solved.as_ref().as_ref().unwrap();
+            assert!(s.forms[0].solid.tris.is_empty() && s.warnings.iter().any(|w| w.contains("Jamb")), "{:?}", s.warnings);
+        }
+        // with it: 1000 long, 100 across (Face) and 55 up (Depth from Frame Depth)
+        let (_, ptypes) = d.add_family(jamb_profile(), vec![("t".into(), BTreeMap::new())]).unwrap();
+        let size = |d: &Document| {
+            let solved = d.instance_solved(inst).unwrap();
+            let bx = tri_box(&solved.as_ref().as_ref().unwrap().forms[0]);
+            [bx[1][0] - bx[0][0], bx[1][1] - bx[0][1], bx[1][2] - bx[0][2]].map(|v| (v * 10.0).round() / 10.0)
+        };
+        assert_eq!(size(&d), [1000.0, 100.0, 55.0]);
+        // the profile's own type values follow an edit
+        d.patch_family_type(ptypes[0], &json!({ "values": { "Face": 70.0 } })).unwrap();
+        assert_eq!(size(&d), [1000.0, 70.0, 55.0]);
+        // a profile is never placed
+        assert!(d.place_free(ptypes[0], lvl, Point::new(0., 0.), 0.0, 0.0).unwrap_err().contains("profile"));
+        // the rail's file carries the profile, and loading it into another project brings the profile in
+        let file = d.export_family(rid).unwrap();
+        assert_eq!(file.uses.iter().map(|u| u.family.name.as_str()).collect::<Vec<_>>(), vec!["Jamb"]);
+        let text = serde_json::to_string(&file).unwrap();
+        let mut d2 = Document::new_project();
+        d2.import_family(serde_json::from_str(&text).unwrap()).unwrap();
+        let jamb = d2.families().into_iter().find(|(_, f)| f.name == "Jamb").map(|(_, f)| f.clone()).expect("the profile came with the file");
+        assert_eq!(jamb.category, FamilyCategory::Profiles);
+        // a file without uses still reads
+        let old: FamilyFile = serde_json::from_value(json!({ "openarch_family": 1, "family": serde_json::to_value(&jamb).unwrap() })).unwrap();
+        assert!(old.uses.is_empty());
+        // a project that has its own Jamb keeps it
+        let mut d3 = Document::new_project();
+        let mut mine = jamb_profile();
+        mine.params[0].default = ParamValue::Number(10.0);
+        d3.add_family(mine, vec![("t".into(), BTreeMap::new())]).unwrap();
+        d3.import_family(serde_json::from_str(&text).unwrap()).unwrap();
+        let kept = d3.families().into_iter().find(|(_, f)| f.name == "Jamb").map(|(_, f)| f.params[0].default.clone()).unwrap();
+        assert_eq!(kept, ParamValue::Number(10.0));
+    }
+
+    #[test]
+    fn a_raked_head_cuts_its_own_shape_in_the_wall() {
+        let mut fam = hatch_family();
+        fam.body.forms.retain(|f| !f.void);
+        // 600 wide, 1800 high on the left rising to 2100 on the right
+        let n = |x: f64, z: f64| Node::new(Coord::from(PLANE_LR, x), Coord::from(PLANE_LEVEL, z));
+        let hole = vec![Loop::polygon(vec![n(-300.0, 0.0), n(300.0, 0.0), n(300.0, 2100.0), n(-300.0, 1800.0)])];
+        let id = fam.body.take_id();
+        fam.body.forms.push(Form { id, name: "Opening 1".into(), shape: FormShape::Extrusion { start_lock: None, end_lock: None, plane: PLANE_FB, start: "0".into(), end: "1".into(), profile: hole }, void: true, cuts_host: true, opening: true, cut_by: vec![], material: String::new(), material_param: None, subcategory: String::new(), vis: Visibility::default() });
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let (_, types) = d.add_family(fam, vec![("t".into(), BTreeMap::new())]).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        let Some(Element::FamilyInstance(i)) = d.get(inst) else { panic!() };
+        // the box still sets the size and the sill
+        assert_eq!(d.instance_opening_size(i), (600.0, 2100.0, 0.0));
+        let ops = d.wall_openings(w);
+        let ring = d.opening_shape(&ops[0]).expect("a raked head is not a rectangle");
+        assert!((crate::geom::signed_area(&ring) - (600.0 * 1800.0 + 600.0 * 300.0 / 2.0)).abs() < 1.0);
+        // a plan cut half way up the rake opens only the high half
+        let gaps = d.wall_cut_gaps(w, 1950.0);
+        assert!(gaps.len() == 1 && (gaps[0].0 - 3000.0).abs() < 1.0 && (gaps[0].1 - 3300.0).abs() < 1.0, "{gaps:?}");
+        assert_eq!(d.wall_cut_gaps(w, 1000.0), vec![(2700.0, 3300.0)]);
+        // the wall's face is its rectangle less the shape, and 3D builds from it
+        let Some(Element::Wall(wall)) = d.get(w).cloned() else { panic!() };
+        let face = d.wall_face_solid(w, &wall).expect("a shaped opening makes the wall an outline");
+        let area: f64 = face.iter().flat_map(|s| s.iter()).map(|r| crate::geom::signed_area(r)).sum();
+        assert!((area - (6000.0 * 2700.0 - 1_170_000.0)).abs() < 1.0, "{area}");
+        if let Some(wl) = d.wall_layer_geometry().remove(&w) {
+            assert!(!crate::mesh::wall_layer_meshes(&d, w, &wall, &wl).is_empty());
+        }
+        assert!((d.wall_opening_area(w) - 1_170_000.0).abs() < 1.0);
+        // flipped hand, the rake runs the other way
+        d.flip_instances(&[inst]).unwrap();
+        let gaps = d.wall_cut_gaps(w, 1950.0);
+        assert!(gaps.len() == 1 && (gaps[0].0 - 2700.0).abs() < 1.0 && (gaps[0].1 - 3000.0).abs() < 1.0, "{gaps:?}");
     }
 
     #[test]
@@ -447,6 +569,60 @@ mod tests {
         let s = d.family_preview(fid, None, &none).unwrap();
         assert!(s.warnings.iter().any(|w| w.contains("Nothing")), "{:?}", s.warnings);
         assert!(!s.forms.is_empty());
+    }
+
+    #[test]
+    fn a_family_type_parameter_swaps_the_nested_panel_family() {
+        // two panel families of the Doors category: a plain leaf 900 wide and a glazed one 500 wide
+        let leaf = |name: &str| {
+            let mut f = hatch_family();
+            f.name = name.into();
+            f.host = HostKind::None;
+            f
+        };
+        let mut frame = hatch_family();
+        frame.name = "Frame".into();
+        frame.params.push(ParamDef { name: "Door Panel Type".into(), param_kind: ParamKind::FamilyType, family_category: Some(FamilyCategory::Doors), default: ParamValue::Text("Leaf : t".into()), ..frame.params[0].clone() });
+        let nid = frame.body.take_id();
+        frame.body.nested.push(Nested { id: nid, family: "Leaf".into(), type_name: "t".into(), type_param: Some("Door Panel Type".into()), name: String::new(), origin: [Coord::at(0.0), Coord::at(0.0), Coord::at(0.0)], rotation_deg: 0.0, work_plane: None, flip: false, mirror: false, params: BTreeMap::new(), vis: Visibility::default() });
+        let mut d = Document::new_project();
+        d.add_family(leaf("Leaf"), vec![("t".into(), BTreeMap::new())]).unwrap();
+        d.add_family(leaf("Glazed Leaf"), vec![("t".into(), BTreeMap::from([("Width".to_string(), ParamValue::Number(500.0))]))]).unwrap();
+        let glazed = BTreeMap::from([("Door Panel Type".to_string(), ParamValue::Text("Glazed Leaf : t".into()))]);
+        let (fid, types) = d.add_family(frame, vec![("Solid".into(), BTreeMap::new()), ("Glazed".into(), glazed)]).unwrap();
+        let none = BTreeMap::new();
+        let width = |d: &Document, t: Id| {
+            let s = d.family_preview(fid, Some(t), &none).unwrap();
+            assert!(s.warnings.is_empty(), "{:?}", s.warnings);
+            let b = tri_box(s.forms.iter().find(|f| f.owner == Some(nid) && !f.void).unwrap());
+            (b[1][0] - b[0][0]).round()
+        };
+        assert_eq!((width(&d, types[0]), width(&d, types[1])), (900.0, 500.0));
+        // the choices are every type of the loaded Doors families, as "Family : Type"
+        let choices = d.family_type_choices(Some(FamilyCategory::Doors));
+        assert!(choices.contains(&"Glazed Leaf : t".to_string()) && choices.contains(&"Frame : Glazed".to_string()));
+        assert!(d.family_type_choices(Some(FamilyCategory::Furniture)).is_empty());
+        // a type is switched in the project like any text value
+        d.patch_family_type(types[1], &json!({ "values": { "Door Panel Type": "Leaf : t" } })).unwrap();
+        assert_eq!(width(&d, types[1]), 900.0);
+        d.patch_family_type(types[1], &json!({ "values": { "Door Panel Type": "Glazed Leaf : t" } })).unwrap();
+        // a value naming a family that is not loaded is reported and the rest still solves
+        let missing = BTreeMap::from([("Door Panel Type".to_string(), ParamValue::Text("Louvre Leaf : t".into()))]);
+        let s = d.family_preview(fid, Some(types[0]), &missing).unwrap();
+        assert!(s.warnings.iter().any(|w| w.contains("Louvre Leaf")) && s.forms.iter().any(|f| f.owner.is_none()), "{:?}", s.warnings);
+        // the frame's file carries both panels, the one its component names and the one a type picks
+        let file = d.export_family(fid).unwrap();
+        let mut names: Vec<&str> = file.uses.iter().map(|u| u.family.name.as_str()).collect();
+        names.sort();
+        assert_eq!(names, vec!["Glazed Leaf", "Leaf"]);
+        let mut d2 = Document::new_project();
+        d2.import_family(serde_json::from_str(&serde_json::to_string(&file).unwrap()).unwrap()).unwrap();
+        assert!(d2.families().iter().any(|(_, f)| f.name == "Glazed Leaf"));
+        // the parameter keeps its category through a file
+        let back: ParamDef = serde_json::from_value(serde_json::to_value(&file.family.params[3]).unwrap()).unwrap();
+        assert_eq!((back.param_kind, back.family_category), (ParamKind::FamilyType, Some(FamilyCategory::Doors)));
+        // a value without " : " is still a type name of the component's own family
+        assert_eq!(crate::family::split_family_type("t"), (None, "t"));
     }
 
     #[test]
@@ -573,7 +749,7 @@ mod tests {
     #[test]
     fn a_lookup_table_sets_a_parameter_and_follows_the_type() {
         let mut fam = hatch_family();
-        let p = |name: &str, default| ParamDef { name: name.into(), param_kind: ParamKind::Number, instance: false, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default };
+        let p = |name: &str, default| ParamDef { name: name.into(), param_kind: ParamKind::Number, instance: false, group: "Dimensions".into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default };
         fam.params.push(p("Pick", ParamValue::Number(2.0)));
         fam.params.iter_mut().find(|q| q.name == "Width").unwrap().formula = Some("size_lookup(Sizes, \"Width\", 800, [Pick])".into());
         fam.body.lookup_tables.push(openarch_params::lookup::LookupTable::from_csv("Sizes", "Name,Pick##number,Width##length##meters\nA,1,0.7\nB,2,1.0\nC,3,1.2\n").unwrap());
@@ -639,7 +815,7 @@ mod tests {
         let (fid, types) = d.add_family(hatch_family(), vec![("900 x 2100".into(), BTreeMap::new())]).unwrap();
         let mut fam = d.family(fid).unwrap().clone();
         let (left, right) = (fam.body.plane_named("Left").unwrap(), fam.body.plane_named("Right").unwrap());
-        fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, default: ParamValue::Number(0.0) });
+        fam.params.push(ParamDef { name: "Clear Width".into(), param_kind: ParamKind::Length, instance: false, group: "Dimensions".into(), formula: None, reporting: true, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default: ParamValue::Number(0.0) });
         fam.body.dims.push(DimDef { a: left, b: right, reports_to: Some("Clear Width".into()), ..Default::default() });
         d.set_family_def(fid, Some(fam.params.clone()), Some(fam.body.clone())).unwrap();
         let id = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
@@ -661,6 +837,39 @@ mod tests {
         assert!(d.family_preview(fid, None, &BTreeMap::new()).is_ok());
         d.set_family_def(fid, None, Some(loopy)).unwrap();
         assert!(d.family_preview(fid, None, &BTreeMap::new()).is_err());
+    }
+
+    #[test]
+    fn the_editor_reads_host_thickness_from_the_placeholder_wall() {
+        let mut d = Document::new_project();
+        let fid = d.new_family("Test Door", FamilyCategory::Doors, HostKind::Wall).unwrap();
+        let mut body = d.family(fid).unwrap().body.clone();
+        let ext = body.add_offset_plane("Exterior", PLANE_FB, "[Host Thickness]/2").unwrap();
+        let core = body.add_offset_plane("Core", PLANE_FB, "-[Host Core Thickness]/2").unwrap();
+        d.set_family_def(fid, None, Some(body.clone())).unwrap();
+        // the default generic 200 wall
+        let s = d.family_preview(fid, None, &BTreeMap::new()).unwrap();
+        assert_eq!((s.planes[&ext], s.planes[&core]), (100.0, -100.0));
+        // the author changes the placeholder; it is saved with the body and read back
+        body.placeholder_wall = Some(270.0);
+        d.set_family_def(fid, None, Some(body.clone())).unwrap();
+        assert_eq!(d.family_preview(fid, None, &BTreeMap::new()).unwrap().planes[&ext], 135.0);
+        let back: FamilyBody = serde_json::from_value(serde_json::to_value(&body).unwrap()).unwrap();
+        assert_eq!(back.placeholder_wall_mm(), 270.0);
+        // a body saved before the placeholder existed reads as 200, and a nonsense value falls back to it
+        assert!(serde_json::to_value(FamilyBody::template()).unwrap().get("placeholder_wall").is_none());
+        body.placeholder_wall = Some(-5.0);
+        assert_eq!(body.placeholder_wall_mm(), PLACEHOLDER_WALL_MM);
+        // a placed instance measures the real wall, not the placeholder
+        let types: Vec<Id> = d.family_types().into_iter().filter(|(_, t)| t.family == fid).map(|(i, _)| i).collect();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        let Some(Element::FamilyInstance(i)) = d.get(inst) else { panic!() };
+        let Some(Element::Wall(wall)) = d.get(w) else { panic!() };
+        let (l, r) = d.wall_extents(wall);
+        assert_eq!(d.host_value(i, "Host Thickness"), Some(l + r));
+        assert_ne!(l + r, 270.0);
     }
 
     #[test]
@@ -721,6 +930,10 @@ pub struct FamilyFile {
     pub family: crate::family::Family,
     #[serde(default)]
     pub types: Vec<FamilyFileType>,
+    /// The families this one uses (its components and the Profile families its sweeps take), and the ones
+    /// those use, so the file brings them along. Loading adds any the project does not have yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub uses: Vec<FamilyFile>,
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
@@ -764,15 +977,19 @@ impl Document {
             discipline: "common".into(),
             tooltip: String::new(),
             locked: false,
+            family_category: None,
             default: ParamValue::Number(default),
         };
+        // a profile is a sketch on planes, never placed: no host and no size parameters to start with
+        let profile = category == crate::family::FamilyCategory::Profiles;
+        let host = if profile { crate::family::HostKind::None } else { host };
         let hosted = host == crate::family::HostKind::Wall;
         let (w, h, sill) = match category {
             crate::family::FamilyCategory::Windows => (1200.0, 1200.0, 900.0),
             crate::family::FamilyCategory::Doors => (820.0, 2040.0, 0.0),
             _ => (600.0, 600.0, 0.0),
         };
-        let mut params = vec![p("Width", false, "Dimensions", w), p("Height", false, "Dimensions", h)];
+        let mut params = if profile { vec![] } else { vec![p("Width", false, "Dimensions", w), p("Height", false, "Dimensions", h)] };
         if hosted {
             params.push(p("Sill Height", true, "Constraints", sill));
         }
@@ -897,9 +1114,11 @@ impl Document {
     }
 
     /// The family as it stands for one type, with `overrides` laid over the type's values (the
-    /// "flex"). Host values take plain defaults: a 100 mm wall with its core centred.
+    /// "flex"). Host values come from the editor's placeholder wall: a single-layer wall of the body's
+    /// placeholder thickness, its core the whole wall, centred.
     pub fn family_preview(&self, family: Id, type_id: Option<Id>, overrides: &std::collections::BTreeMap<String, ParamValue>) -> Result<Solved, String> {
         let fam = self.family(family).ok_or("no such family")?;
+        let host_t = fam.body.placeholder_wall_mm();
         let base = match type_id {
             Some(t) => self.family_type(t).ok_or("no such type")?.clone(),
             None => self.family_types().into_iter().find(|(_, t)| t.family == family).map(|(_, t)| t.clone()).unwrap_or(crate::family::FamilyType { family, name: String::new(), values: Default::default(), globals: Default::default() }),
@@ -910,8 +1129,7 @@ impl Document {
         }
         let mut env = |n: &str| -> Result<Value, EvalError> {
             match n {
-                "Host Thickness" => return Ok(Value::Num(100.0)),
-                "Host Core Thickness" => return Ok(Value::Num(100.0)),
+                "Host Thickness" | "Host Core Thickness" => return Ok(Value::Num(host_t)),
                 "Host Core Offset" => return Ok(Value::Num(0.0)),
                 _ if fam.body.reports(n) => return Err(EvalError::UnknownName(n.to_string())),
                 _ => {}
@@ -938,10 +1156,10 @@ impl Document {
             t.values.insert(k.clone(), v.clone());
         }
         let reporting: Vec<String> = body.dims.iter().filter_map(|d| d.reports_to.clone()).collect();
+        let host_t = body.placeholder_wall_mm();
         let mut env = |n: &str| -> Result<Value, EvalError> {
             match n {
-                "Host Thickness" => return Ok(Value::Num(100.0)),
-                "Host Core Thickness" => return Ok(Value::Num(100.0)),
+                "Host Thickness" | "Host Core Thickness" => return Ok(Value::Num(host_t)),
                 "Host Core Offset" => return Ok(Value::Num(0.0)),
                 _ if reporting.iter().any(|r| r == n) => return Err(EvalError::UnknownName(n.to_string())),
                 _ => {}
@@ -986,7 +1204,7 @@ impl Document {
         if let Some(s) = settings {
             f.settings = s;
         }
-        let types = self
+        let types: Vec<FamilyFileType> = self
             .family_types()
             .into_iter()
             .filter(|(_, t)| t.family == family)
@@ -998,7 +1216,47 @@ impl Document {
                 FamilyFileType { name: t.name.clone(), values: v }
             })
             .collect();
-        Ok(FamilyFile { openarch_family: 1, family: f, types })
+        let mut uses = vec![];
+        let mut seen = vec![f.name.clone()];
+        let names = f.used_families(types.iter().map(|t| &t.values));
+        self.used_family_files(names, &mut seen, &mut uses);
+        Ok(FamilyFile { openarch_family: 1, family: f, types, uses })
+    }
+
+    /// What a Family Type parameter of `category` can be set to: "Family : Type" for every type of every loaded
+    /// family of that category, sorted.
+    pub fn family_type_choices(&self, category: Option<crate::family::FamilyCategory>) -> Vec<String> {
+        let fams: Vec<(Id, &crate::family::Family)> = self.families().into_iter().filter(|(_, f)| category.is_none_or(|c| f.category == c)).collect();
+        let mut out: Vec<String> = self.family_types().into_iter().filter_map(|(_, t)| fams.iter().find(|(id, _)| *id == t.family).map(|(_, f)| format!("{} : {}", f.name, t.name))).collect();
+        out.sort();
+        out
+    }
+
+    /// Every family the family `id` uses by name: components, sweep profiles, and those its Family Type
+    /// parameters name in any of its types.
+    pub fn family_uses(&self, id: Id) -> Vec<String> {
+        let Some(f) = self.family(id) else { return vec![] };
+        let types: Vec<&crate::family::FamilyType> = self.family_types().into_iter().filter(|(_, t)| t.family == id).map(|(_, t)| t).collect();
+        f.used_families(types.into_iter().map(|t| &t.values))
+    }
+
+    /// The files of the families `names`, and of those they use, each once and flat; `seen` holds the names
+    /// done (so two families that hold each other end).
+    fn used_family_files(&self, names: Vec<String>, seen: &mut Vec<String>, out: &mut Vec<FamilyFile>) {
+        for name in names {
+            if seen.contains(&name) {
+                continue;
+            }
+            seen.push(name.clone());
+            let Some((id, fam)) = self.families().into_iter().find(|(_, f)| f.name == name) else { continue };
+            let mut f = fam.clone();
+            f.built_in = false;
+            f.source_path = None;
+            f.loaded_at = None;
+            let types = self.family_types().into_iter().filter(|(_, t)| t.family == id).map(|(_, t)| FamilyFileType { name: t.name.clone(), values: t.values.clone() }).collect();
+            out.push(FamilyFile { openarch_family: 1, family: f, types, uses: vec![] });
+            self.used_family_files(self.family_uses(id), seen, out);
+        }
     }
 
     /// Record where a family's file sits. One undo step; nothing else about the family changes.
@@ -1040,7 +1298,16 @@ impl Document {
         if file.openarch_family != 1 {
             return Err("this is not an OpenArch BIM family file".into());
         }
-        let FamilyFile { family: mut nf, types, .. } = file;
+        let FamilyFile { family: mut nf, types, uses, .. } = file;
+        if mode == ImportMode::Refuse && self.families().iter().any(|(_, f)| f.name == nf.name) {
+            return Err(format!("a family called '{}' already exists", nf.name));
+        }
+        // the families it uses come first, where the project has none of that name (its own copy wins)
+        for u in uses {
+            if u.family.name != nf.name && !self.families().iter().any(|(_, f)| f.name == u.family.name) {
+                self.import_family_with(FamilyFile { uses: vec![], ..u }, ImportMode::Refuse, None)?;
+            }
+        }
         let types = if types.is_empty() { vec![FamilyFileType { name: "Type 1".into(), values: Default::default() }] } else { types };
         nf.built_in = false;
         let (path, at) = source.map_or((None, None), |(p, a)| (Some(p), a));
