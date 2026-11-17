@@ -79,7 +79,7 @@ pub fn basis(origin: [f64; 3], plane: Option<Axis>, work_plane_based: bool, flip
 }
 
 fn and(a: &SolvedVis, b: &SolvedVis) -> SolvedVis {
-    SolvedVis { coarse: a.coarse && b.coarse, medium: a.medium && b.medium, fine: a.fine && b.fine, plan: a.plan && b.plan, front_back: a.front_back && b.front_back, left_right: a.left_right && b.left_right, present: a.present && b.present }
+    SolvedVis { coarse: a.coarse && b.coarse, medium: a.medium && b.medium, fine: a.fine && b.fine, plan: a.plan && b.plan, front_back: a.front_back && b.front_back, left_right: a.left_right && b.left_right, present: a.present && b.present, three_d: a.three_d && b.three_d, only_if_cut: a.only_if_cut || b.only_if_cut, only_above_cut: a.only_above_cut || b.only_above_cut }
 }
 
 /// The direction a view looks along, in the family's axes.

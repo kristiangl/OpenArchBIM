@@ -572,6 +572,37 @@ mod tests {
     }
 
     #[test]
+    fn pieces_show_only_if_cut_only_above_the_cut_plane_or_not_in_3d() {
+        let mut fam = hatch_family();
+        let sym = |id: u32, vis: Visibility| SymElement { id, view: SymView::Plan, path: Loop { nodes: vec![Node::new(Coord::at(0.0), Coord::at(-500.0)), Node::new(Coord::at(0.0), Coord::at(-600.0))], bulges: vec![], closed: false, shapes: vec![] }, filled: false, masking: false, subcategory: format!("S{id}"), vis };
+        fam.body.syms.push(sym(901, Visibility { only_if_cut: true, ..Visibility::default() }));
+        fam.body.syms.push(sym(902, Visibility { only_above_cut: true, ..Visibility::default() }));
+        let solid = fam.body.forms.iter().position(|f| !f.void).unwrap();
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        let w = d.add_wall(wt, lvl, Point::new(0., 0.), Point::new(6000., 0.), 2700.).unwrap();
+        let (fid, types) = d.add_family(fam.clone(), vec![("t".into(), BTreeMap::new())]).unwrap();
+        let inst = d.place_on_wall(types[0], w, Point::new(3000., 0.)).unwrap();
+        use crate::symbol::{plan_symbol_look, PlanLook};
+        let subs = |d: &Document, look| -> Vec<String> { plan_symbol_look(d, inst, crate::view::DetailLevel::Medium, look).unwrap().parts.iter().map(|p| p.subcategory.clone()).filter(|s| s.starts_with('S')).collect() };
+        assert_eq!(subs(&d, PlanLook::Cut(1200.0)), vec!["S901"]);
+        assert!(subs(&d, PlanLook::Below).is_empty());
+        assert_eq!(subs(&d, PlanLook::Above), vec!["S902"]);
+        // a solid kept out of 3D views is still cut in plan
+        let tris = |d: &Document| crate::mesh::instance_meshes(d, inst).unwrap().1.len();
+        let before = tris(&d);
+        fam.body.forms[solid].vis.three_d = false;
+        d.set_family_def(fid, None, Some(fam.body.clone())).unwrap();
+        assert!(tris(&d) < before);
+        assert!(plan_symbol_look(&d, inst, crate::view::DetailLevel::Medium, PlanLook::Cut(1200.0)).unwrap().parts.iter().any(|p| p.cut));
+        // files written before these settings read as before
+        let old: Visibility = serde_json::from_str(r#"{"plan": false}"#).unwrap();
+        assert!(old.three_d && !old.only_if_cut && !old.only_above_cut && !old.plan);
+        let st: FamilySettings = serde_json::from_str("{}").unwrap();
+        assert!(st.dashed_above);
+    }
+
+    #[test]
     fn a_swing_angle_turns_a_reference_line_and_what_is_held_on_it() {
         // a hinge line at the left jamb on the face, turned by Swing Angle and as long as the door is wide;
         // the leaf runs along it and the swing arc goes from the closed leaf's end round its start to its end

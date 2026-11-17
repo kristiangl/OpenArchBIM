@@ -325,6 +325,14 @@ pub struct FamilySettings {
     pub room_bounding: Option<bool>,
     #[serde(default)]
     pub maintain_annotation_orientation: bool,
+    /// Show dashed when above the cut plane: an instance wholly above a plan's cut plane draws with the Overhead
+    /// line style. Off, it draws as seen, and its "Show only if above the cut plane" lines are the overhead drawing.
+    #[serde(default = "yes")]
+    pub dashed_above: bool,
+}
+
+fn yes() -> bool {
+    true
 }
 
 fn normal_part() -> String {
@@ -333,7 +341,7 @@ fn normal_part() -> String {
 
 impl Default for FamilySettings {
     fn default() -> Self {
-        FamilySettings { can_host_rebar: false, part_type: normal_part(), shared: false, room_calculation_point: false, room_point: [0.0; 3], room_from: None, room_to: None, room_bounding: None, maintain_annotation_orientation: false }
+        FamilySettings { can_host_rebar: false, part_type: normal_part(), shared: false, room_calculation_point: false, room_point: [0.0; 3], room_from: None, room_to: None, room_bounding: None, maintain_annotation_orientation: false, dashed_above: true }
     }
 }
 

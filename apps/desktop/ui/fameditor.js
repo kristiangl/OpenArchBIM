@@ -950,10 +950,17 @@ const FamModel = (() => {
   function visDialog(key) {
     openModal("Family Element Visibility Settings", (body, foot, close) => {
       const v = { ...(key(S.body).vis || {}) };
-      const get = (k) => v[k] !== false;
+      const get = (k) => (k === "only_if_cut" || k === "only_above_cut" ? !!v[k] : v[k] !== false);
+      const item = key(S.body);
+      // symbolic lines and regions draw in one kind of view, so only plan ones have the cut plane options
+      const isSym = S.body.syms.includes(item);
       body.append(el("div", "famed-h", "Display in views"));
       const mk = (k, t) => { const l = el("label", "fe-vis", t); l.prepend(checkIn(get(k), (c) => { v[k] = c; })); return l; };
-      body.append(mk("plan", "Plan/RCP"), mk("front_back", "Front/Back"), mk("left_right", "Left/Right"));
+      if (!isSym) body.append(mk("three_d", "3D views"));
+      body.append(mk("plan", "Plan/RCP"));
+      if (!isSym || item.view === "plan") body.append(mk("only_if_cut", "Show only if instance is cut"));
+      if (isSym && item.view === "plan") body.append(mk("only_above_cut", "Show only if above the cut plane"));
+      if (!isSym || item.view !== "plan") body.append(mk("front_back", "Front/Back"), mk("left_right", "Left/Right"));
       body.append(el("div", "famed-h", "Detail levels"));
       body.append(mk("coarse", "Coarse"), mk("medium", "Medium"), mk("fine", "Fine"));
       body.append(el("div", "famed-h", "Condition"));
@@ -1579,6 +1586,7 @@ const FamModel = (() => {
     can_host_rebar: !!S.settings.can_host_rebar, part_type: S.settings.part_type || "Normal", shared: !!S.settings.shared,
     room_calculation_point: !!S.settings.room_calculation_point, room_point: [...(S.settings.room_point || [0, 0, 0])],room_from:S.settings.room_from? [...S.settings.room_from]:null,room_to:S.settings.room_to?[...S.settings.room_to]:null,room_bounding:S.settings.room_bounding??null,
     maintain_annotation_orientation: !!S.settings.maintain_annotation_orientation,
+    dashed_above: S.settings.dashed_above !== false,
   });
 
   // The rows of Family Parameters, for the dialog and for the Properties palette. `w` is a working copy that
@@ -1603,6 +1611,9 @@ const FamModel = (() => {
     row("Room Bounding",selIn([["auto","Category default"],["yes","Yes"],["no","No"]],w.room_bounding==null?"auto":w.room_bounding?"yes":"no",v=>{w.room_bounding=v==="auto"?null:v==="yes";go();}));
     if(w.room_calculation_point&&w.host==="wall"){for(const [key,label,y]of [["room_from","From point (x, y, z mm)",-300],["room_to","To point (x, y, z mm)",300]]){const use=checkIn(!!w[key],v=>{w[key]=v?[0,y,0]:null;go();});row("Custom "+label,use);if(w[key]){const pt=el("div","famed-pt");for(let i=0;i<3;i++){const t=el("input");t.type="text";t.value=String(w[key][i]);t.onchange=()=>{w[key][i]=num(t.value);go();};pt.append(t);}row(label,pt);}}}
     row("Maintain Annotation Orientation", checkIn(w.maintain_annotation_orientation, (v) => { w.maintain_annotation_orientation = v; go(); }));
+    const dashed = field("Show dashed when above the cut plane", checkIn(w.dashed_above, (v) => { w.dashed_above = v; go(); }));
+    dashed.title = "A placed copy wholly above a plan's cut plane draws in the Overhead line style. Turn it off to draw your own overhead lines with Show only if above the cut plane.";
+    rows.push(dashed);
     return rows;
   }
 
@@ -1615,10 +1626,10 @@ const FamModel = (() => {
     }
     const before = snapshot();
     const o = currentSettings();
-    const same = ["always_vertical", "cut_with_voids", "can_host_rebar", "part_type", "shared", "room_calculation_point", "maintain_annotation_orientation"].every((k) => o[k] === w[k]) && JSON.stringify([o.room_point,o.room_from,o.room_to,o.room_bounding]) === JSON.stringify([w.room_point,w.room_from,w.room_to,w.room_bounding]);
+    const same = ["always_vertical", "cut_with_voids", "can_host_rebar", "part_type", "shared", "room_calculation_point", "maintain_annotation_orientation", "dashed_above"].every((k) => o[k] === w[k]) && JSON.stringify([o.room_point,o.room_from,o.room_to,o.room_bounding]) === JSON.stringify([w.room_point,w.room_from,w.room_to,w.room_bounding]);
     if (same) { props(); return true; }
     S.body.always_vertical = w.always_vertical; S.body.cut_with_voids = w.cut_with_voids;
-    S.settings = { ...S.settings, can_host_rebar: w.can_host_rebar, part_type: w.part_type, shared: w.shared, room_calculation_point: w.room_calculation_point, room_point: w.room_point,room_from:w.room_from,room_to:w.room_to,room_bounding:w.room_bounding, maintain_annotation_orientation: w.maintain_annotation_orientation };
+    S.settings = { ...S.settings, can_host_rebar: w.can_host_rebar, part_type: w.part_type, shared: w.shared, room_calculation_point: w.room_calculation_point, room_point: w.room_point,room_from:w.room_from,room_to:w.room_to,room_bounding:w.room_bounding, maintain_annotation_orientation: w.maintain_annotation_orientation, dashed_above: w.dashed_above };
     S.undo.push(before); S.redo = []; touch(); S.msg = "";
     props(); status(); render();
     return true;

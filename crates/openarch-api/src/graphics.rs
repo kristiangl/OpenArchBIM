@@ -58,7 +58,12 @@ pub fn style_for(d: &Document, settings: &ViewSettings, category: &str, sub: Opt
     let underlay = display == "underlay";
     let os = d.object_styles().map(|(_, s)| s);
     let base = os.and_then(|s| s.resolve(category, sub));
-    let beyond = (display == "beyond").then(|| os.and_then(|s| s.resolve("Lines", Some("<Beyond>")))).flatten();
+    // seen beyond the view's bottom, or overhead (above its cut plane): drawn in those line styles
+    let beyond = match display {
+        "beyond" => os.and_then(|s| s.resolve("Lines", Some("<Beyond>"))),
+        "overhead" => os.and_then(|s| s.resolve("Lines", Some("<Overhead>"))),
+        _ => None,
+    };
 
     let mut line_color: Color = base.map_or(FALLBACK_INK, |b| b.color);
     let mut line_weight: u8 = base.map_or(if cut { 3 } else { 1 }, |b| b.weight(cut));

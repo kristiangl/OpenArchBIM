@@ -2841,14 +2841,20 @@ impl Session {
                     let Some(frame) = d.instance_frame(id) else { continue };
                     // a reflected ceiling plan looks up from its cut plane
                     let looked_at = if view.view_kind == openarch_model::view::ViewKind::CeilingPlan { range.classify_up(frame.z0, frame.z1) } else { range.classify_category(fam.category.label(), frame.z0, frame.z1) };
+                    let ceiling = view.view_kind == openarch_model::view::ViewKind::CeilingPlan;
+                    // wholly above a floor plan's cut plane (a high window, a wall cupboard): the family says whether
+                    // that draws dashed in the Overhead style
+                    let above = !ceiling && frame.z0 > range.cut;
                     let display = match looked_at {
                         PlanDisplay::Hidden if in_underlay(inst.level) => "underlay",
                         PlanDisplay::Hidden => continue,
                         PlanDisplay::Cut => "cut",
+                        PlanDisplay::Projection if above && fam.settings.dashed_above => "overhead",
                         PlanDisplay::Projection => "projection",
                         PlanDisplay::Beyond => "beyond",
                     };
-                    let Some(sym) = symbol::plan_symbol_at(d, id, door_detail, (display == "cut").then_some(range.cut)) else { continue };
+                    let look = if display == "cut" { symbol::PlanLook::Cut(range.cut) } else if above { symbol::PlanLook::Above } else { symbol::PlanLook::Below };
+                    let Some(sym) = symbol::plan_symbol_look(d, id, door_detail, look) else { continue };
                     let cat = fam.category.label();
                     let hint = Hint::default();
                     let eo_held = d.graphics_of(view, &id);
@@ -5169,6 +5175,31 @@ mod tests {
         // pinned elements refuse, and an element with no height to change says so
         call(&mut s, "pin", json!({ "ids": [w] }));
         assert!(s.handle("move_vertical", &json!({ "ids": [w], "dz": 100 })).unwrap_err().contains("pinned"));
+    }
+
+    #[test]
+    fn a_window_above_the_cut_plane_draws_overhead_unless_the_family_says_not() {
+        let (mut s, lvl, wt, _view) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let fp = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "floor_plan").unwrap()["id"].clone();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [4000, 0], "height_mm": 3000 }))["id"].as_u64().unwrap();
+        let t = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Fixed: 1200 x 1200").unwrap().clone();
+        let i = call(&mut s, "place_instance", json!({ "type_id": t["id"], "host_id": w, "point": [2000, 0] }))["id"].as_u64().unwrap();
+        let ins = |s: &mut Session| call(s, "plan", json!({ "view_id": fp }))["inserts"].as_array().unwrap().iter().find(|x| x["id"] == i).unwrap().clone();
+        assert_eq!(ins(&mut s)["display"], "cut");
+        // a high window, its sill above the 1200 cut plane: dashed in the Overhead line style
+        call(&mut s, "patch_instance", json!({ "id": i, "patch": { "values": { "Sill Height": 1500.0 } } }));
+        let high = ins(&mut s);
+        assert_eq!(high["display"], "overhead");
+        assert_eq!(high["style"]["line"]["pattern"], "Dash", "{}", high["style"]);
+        // the family can turn that off, and then it draws as seen
+        let fid = t["family_id"].as_u64().unwrap();
+        let def = call(&mut s, "family_def", json!({ "id": fid }));
+        let mut settings = def["settings"].clone();
+        assert_eq!(settings["dashed_above"], true);
+        settings["dashed_above"] = json!(false);
+        call(&mut s, "set_family_def", json!({ "id": fid, "settings": settings }));
+        assert_eq!(ins(&mut s)["display"], "projection");
     }
 
     #[test]

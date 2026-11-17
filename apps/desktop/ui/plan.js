@@ -1348,7 +1348,7 @@ const Plan = (() => {
       }
       ctx.restore();
     };
-    const order = { underlay: 0, beyond: 1, projection: 2, cut: 3 };
+    const order = { underlay: 0, beyond: 1, overhead: 2, projection: 2, cut: 3 };
 
     // imported CAD drawings set to Background, under the model
     Cad.draw(ctx, data, toScreen, cam.s, sel, tag, false, thin);

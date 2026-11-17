@@ -406,11 +406,20 @@ pub struct Visibility {
     /// A Yes/No parameter or an expression (`Frame Type == "Timber"`); shown only while true.
     #[serde(default)]
     pub when: Option<String>,
+    /// Display in 3D views.
+    #[serde(default = "yes")]
+    pub three_d: bool,
+    /// Plan/RCP: shown only where the view's cut plane passes through the instance.
+    #[serde(default)]
+    pub only_if_cut: bool,
+    /// Plan: shown only when the whole instance is above the view's cut plane (custom overhead lines).
+    #[serde(default)]
+    pub only_above_cut: bool,
 }
 
 impl Default for Visibility {
     fn default() -> Self {
-        Visibility { coarse: true, medium: true, fine: true, plan: true, front_back: true, left_right: true, visible: true, when: None }
+        Visibility { coarse: true, medium: true, fine: true, plan: true, front_back: true, left_right: true, visible: true, when: None, three_d: true, only_if_cut: false, only_above_cut: false }
     }
 }
 
@@ -1480,6 +1489,9 @@ pub struct SolvedVis {
     pub left_right: bool,
     /// False when the `when` condition fails: the piece is not there at all.
     pub present: bool,
+    pub three_d: bool,
+    pub only_if_cut: bool,
+    pub only_above_cut: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1894,7 +1906,7 @@ impl FamilyBody {
                 Some(w) if !w.trim().is_empty() => eval_bool(w, env).map_err(|e| format!("visibility: {e}"))?,
                 _ => true,
             };
-        Ok(SolvedVis { coarse: v.coarse, medium: v.medium, fine: v.fine, plan: v.plan, front_back: v.front_back, left_right: v.left_right, present })
+        Ok(SolvedVis { coarse: v.coarse, medium: v.medium, fine: v.fine, plan: v.plan, front_back: v.front_back, left_right: v.left_right, present, three_d: v.three_d, only_if_cut: v.only_if_cut, only_above_cut: v.only_above_cut })
     }
 
     /// Work out the whole body for one set of parameter values.

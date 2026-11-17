@@ -271,7 +271,7 @@ pub fn instance_meshes(doc: &Document, id: u64) -> Option<(FamilyCategory, Vec<f
     if let Some(solved) = doc.instance_solved(id) {
         let s = solved.as_ref().as_ref().ok()?;
         let (mut solid, mut glass) = (Vec::new(), Vec::new());
-        for form in s.forms.iter().filter(|x| !x.void && x.vis.present) {
+        for form in s.forms.iter().filter(|x| !x.void && x.vis.present && x.vis.three_d) {
             let out = if form.subcategory == "Glass" { &mut glass } else { &mut solid };
             for t in &form.solid.tris {
                 let mut p = t.map(|v| f.fam_point(v));

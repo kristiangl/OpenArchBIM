@@ -57,11 +57,25 @@ pub fn plan_symbol(doc: &Document, id: Id, detail: DetailLevel) -> Option<Symbol
 /// Like `plan_symbol`, for a view that cuts at `cut_z` (an elevation in mm), or `None` when the instance is
 /// below the cut plane and is only seen.
 pub fn plan_symbol_at(doc: &Document, id: Id, detail: DetailLevel, cut_z: Option<f64>) -> Option<SymbolGeom> {
+    plan_symbol_look(doc, id, detail, cut_z.map_or(PlanLook::Below, PlanLook::Cut))
+}
+
+/// Where a plan's cut plane is against an instance: through it (at this height), above it, or below it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PlanLook {
+    Cut(f64),
+    Below,
+    Above,
+}
+
+/// `plan_symbol_at`, knowing whether the instance is above the cut plane: pieces set to show only if the instance
+/// is cut, or only if it is above the cut plane, follow it.
+pub fn plan_symbol_look(doc: &Document, id: Id, detail: DetailLevel, look: PlanLook) -> Option<SymbolGeom> {
     let Element::FamilyInstance(inst) = doc.get(id)? else { return None };
     let (fam, _) = doc.instance_family(inst)?;
     let f = doc.instance_frame(id)?;
     if !fam.body.is_empty() {
-        return body_symbol(doc, id, &f, detail, cut_z);
+        return body_symbol(doc, id, &f, detail, look);
     }
     let num = |n: &str, d: f64| doc.instance_param(inst, n).and_then(|v| v.as_f64()).unwrap_or(d);
     let (hw, ym) = (f.width / 2.0, f.y_mid());
@@ -137,7 +151,11 @@ pub fn plan_symbol_at(doc: &Document, id: Id, detail: DetailLevel, cut_z: Option
 
 /// The plan symbol of a family with a stored body: the jambs of the opening it cuts, then
 /// the cut (or projection) of every solid and the plan symbolic geometry that shows at this detail level.
-fn body_symbol(doc: &Document, id: Id, f: &crate::hosting::InstanceFrame, detail: DetailLevel, cut_z: Option<f64>) -> Option<SymbolGeom> {
+fn body_symbol(doc: &Document, id: Id, f: &crate::hosting::InstanceFrame, detail: DetailLevel, look: PlanLook) -> Option<SymbolGeom> {
+    let cut_z = match look {
+        PlanLook::Cut(z) => Some(z),
+        _ => None,
+    };
     use crate::famgeom::{Axis, SolvedVis};
     let solved = doc.instance_solved(id)?;
     let s = solved.as_ref().as_ref().ok()?;
@@ -181,6 +199,8 @@ fn body_symbol(doc: &Document, id: Id, f: &crate::hosting::InstanceFrame, detail
     let shows = |v: &SolvedVis| {
         v.present
             && v.plan
+            && (!v.only_if_cut || cut_z.is_some())
+            && (!v.only_above_cut || look == PlanLook::Above)
             && match detail {
                 DetailLevel::Coarse => v.coarse,
                 DetailLevel::Medium => v.medium,
