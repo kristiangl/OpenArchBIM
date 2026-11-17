@@ -518,6 +518,70 @@ mod tests {
     }
 
     #[test]
+    fn the_starter_hinged_doors_frame_their_opening_and_swing_in_plan() {
+        let mut d = Document::new_project();
+        let (lvl, wt) = (d.levels()[0].0, d.wall_types()[3].0);
+        // (family, type, rough opening width and height, frame half width and top, frame half depth, leaf faces)
+        let cases = [
+            // Metroll 95: soffits 1.5 outside the 820 leaf, 40 legs, head soffit at 2041.5, 133 across; the leaf
+            // against the stop flush with the frame's interior face
+            ("Single Flush Door - Metal Frame", "820 x 2040", (853.0, 2056.5), (451.5, 2081.5), 66.5, (-66.5, -26.5)),
+            ("Single Flush Door - Metal Frame", "820 x 2040 (114 frame)", (853.0, 2056.5), (451.5, 2081.5), 76.0, (-76.0, -36.0)),
+            // timber 119: stop faces 10 inside the leaf edges, 30 jamb and 10 packing behind (Rough = Width + 60)
+            ("Single Flush Door - Timber Frame", "820 x 2040", (880.0, 2070.0), (430.0, 2060.0), 59.5, (-59.5, -19.5)),
+            ("Double Flush Door - Metal Frame", "2 x 820 x 2040", (1676.0, 2058.0), (863.0, 2083.0), 66.5, (-66.5, -26.5)),
+            ("Double Flush Door - Timber Frame", "2 x 720 x 2040", (1500.0, 2070.0), (740.0, 2060.0), 59.5, (-59.5, -19.5)),
+            ("Glazed Hinged Door - Timber Frame", "820 x 2040", (880.0, 2070.0), (430.0, 2060.0), 69.0, (-69.0, -29.0)),
+        ];
+        let r = |v: f64| (v * 10.0).round() / 10.0;
+        for (x, (fam, ty, rough, frame, depth, leaf)) in cases.into_iter().enumerate() {
+            let what = format!("{fam} {ty}");
+            let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == ty && d.family(t.family).unwrap().name == fam).map(|(i, t)| (t.family, i)).unwrap_or_else(|| panic!("{what}"));
+            let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+            assert!(s.warnings.is_empty(), "{what}: {:?}", s.warnings);
+            // the frame wraps the opening, its stop or legs facing the right way, centred on the wall
+            let fb = tri_box(s.forms.iter().find(|f| f.subcategory == "Frame/Mullion").unwrap());
+            assert_eq!([r(fb[0][0]), r(fb[1][0]), r(fb[1][2]), r(fb[0][1]), r(fb[1][1])], [-frame.0, frame.0, frame.1, -depth, depth], "{what} frame");
+            // the leaves close on the frame's interior face
+            for leaf_form in s.forms.iter().filter(|f| f.owner.is_some() && f.subcategory == "Panel") {
+                let b = tri_box(leaf_form);
+                assert_eq!((r(b[0][1]), r(b[1][1])), leaf, "{what} leaf");
+            }
+            // the swing arcs go the short way round, into the room (the interior, -y), as far as the leaf is wide
+            let arcs: Vec<_> = s.syms.iter().filter(|y| y.subcategory == "Plan Swing" && y.points.len() > 5).collect();
+            assert_eq!(arcs.len(), if fam.starts_with("Double") { 2 } else { 1 }, "{what} arcs");
+            for a in arcs {
+                assert!(a.points.iter().all(|p| p.y <= leaf.0 + 0.01) && a.points.iter().any(|p| p.y < leaf.0 - 300.0), "{what} arc {:?}", a.points);
+            }
+            // placed in a brick veneer wall: the hole is the rough opening, and nothing is reported
+            let w = d.add_wall(wt, lvl, Point::new(0., 5000.0 * x as f64), Point::new(6000., 5000.0 * x as f64), 2700.).unwrap();
+            let inst = d.place_on_wall(tid, w, Point::new(3000., 5000.0 * x as f64)).unwrap();
+            let ops = d.wall_openings(w);
+            assert_eq!((r(ops[0].u1 - ops[0].u0), r(ops[0].z1 - ops[0].z0)), rough, "{what} hole");
+            let solved = d.instance_solved(inst).unwrap();
+            assert!(solved.as_ref().as_ref().unwrap().warnings.is_empty(), "{what}");
+            // plan: the frame cut, the leaf open as a line and its arc (Medium), its section at Fine; no closed leaf
+            let leaves = if fam.starts_with("Double") { 2 } else { 1 };
+            for (detail, closed) in [(crate::view::DetailLevel::Coarse, false), (crate::view::DetailLevel::Medium, false), (crate::view::DetailLevel::Fine, true)] {
+                let sym = crate::symbol::plan_symbol_at(&d, inst, detail, Some(1200.0)).unwrap();
+                assert!(sym.parts.iter().any(|p| p.subcategory == "Frame/Mullion" && p.cut), "{what} {detail:?} frame");
+                assert!(!sym.parts.iter().any(|p| p.subcategory == "Panel"), "{what} {detail:?} closed leaf");
+                let swing: Vec<_> = sym.parts.iter().filter(|p| p.subcategory == "Plan Swing").collect();
+                assert_eq!(swing.len(), leaves * 2, "{what} {detail:?}: {swing:?}");
+                assert_eq!(swing.iter().filter(|p| p.rings[0].len() == 5).count(), if closed { leaves } else { 0 }, "{what} {detail:?}");
+            }
+            // 3D has the frame, leaves and (glazed) glass
+            let (_, solid, glass) = crate::mesh::instance_meshes(&d, inst).unwrap();
+            assert!(!solid.is_empty() && glass.is_empty() != fam.starts_with("Glazed"), "{what} 3D");
+        }
+        // the timber jamb's rebate is on the interior side: a face of the frame at the rebate line, -59.5 + 38
+        let (fid, tid) = d.family_types().into_iter().find(|(_, t)| t.name == "820 x 2040" && d.family(t.family).unwrap().name == "Single Flush Door - Timber Frame").map(|(i, t)| (t.family, i)).unwrap();
+        let s = d.family_preview(fid, Some(tid), &BTreeMap::new()).unwrap();
+        let ys: Vec<f64> = s.forms.iter().find(|f| f.subcategory == "Frame/Mullion").unwrap().solid.tris.iter().flat_map(|t| t.iter().map(|p| r(p[1]))).collect();
+        assert!(ys.contains(&-21.5) && !ys.contains(&21.5));
+    }
+
+    #[test]
     fn a_raked_head_cuts_its_own_shape_in_the_wall() {
         let mut fam = hatch_family();
         fam.body.forms.retain(|f| !f.void);

@@ -773,7 +773,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
 
 /// The starter families shipped as family files (door-window-spec.md step 3), opened and changed in the family
 /// editor like any other.
-const BUNDLED: [(&str, &str); 8] = [
+const BUNDLED: [(&str, &str); 13] = [
     ("Metal Door Frame - Square Bend", include_str!("../families/Profiles/Metal Door Frame - Square Bend.oaf")),
     ("Metal Door Frame - Square Bend Slider", include_str!("../families/Profiles/Metal Door Frame - Square Bend Slider.oaf")),
     ("Timber Door Jamb - Rebated", include_str!("../families/Profiles/Timber Door Jamb - Rebated.oaf")),
@@ -781,7 +781,11 @@ const BUNDLED: [(&str, &str); 8] = [
     ("Aluminium Sliding Door Frame", include_str!("../families/Profiles/Aluminium Sliding Door Frame.oaf")),
     ("Door Panel - Flush", include_str!("../families/Panels/Door Panel - Flush.oaf")),
     ("Door Panel - Flush Vision Panel", include_str!("../families/Panels/Door Panel - Flush Vision Panel.oaf")),
-    ("Door Panel - Glazed", include_str!("../families/Panels/Door Panel - Glazed.oaf")),
+    ("Door Panel - Glazed", include_str!("../families/Panels/Door Panel - Glazed.oaf")),    ("Single Flush Door - Metal Frame", include_str!("../families/Doors/Single Flush Door - Metal Frame.oaf")),
+    ("Single Flush Door - Timber Frame", include_str!("../families/Doors/Single Flush Door - Timber Frame.oaf")),
+    ("Double Flush Door - Metal Frame", include_str!("../families/Doors/Double Flush Door - Metal Frame.oaf")),
+    ("Double Flush Door - Timber Frame", include_str!("../families/Doors/Double Flush Door - Timber Frame.oaf")),
+    ("Glazed Hinged Door - Timber Frame", include_str!("../families/Doors/Glazed Hinged Door - Timber Frame.oaf")),
 ];
 
 /// The bundled family files read into starter families, with their types.
