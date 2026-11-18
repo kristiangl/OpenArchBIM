@@ -2889,6 +2889,13 @@ impl Session {
                         "frame": sym.frame.iter().map(|q| q.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(),
                         // at Fine detail the frame is the steel itself, drawn solid
                         "frame_solid": door_detail == DetailLevel::Fine,
+                        // a hosted door or window: where its flip controls go, on the wall's face on the family's
+                        // exterior side, with that side's direction and the wall's
+                        "flip": inst.host.is_some().then(|| {
+                            let swing = if frame.flip_facing { -1.0 } else { 1.0 };
+                            let face = frame.fam_world(0.0, (frame.wall_left + frame.wall_right) / 2.0);
+                            json!({ "at": pt(&face), "out": [frame.left.x * swing, frame.left.y * swing], "along": [frame.dir.x, frame.dir.y], "hand": frame.flip_hand, "facing": frame.flip_facing })
+                        }),
                     }));
                 }
                 Element::Floor(f) => {
@@ -4991,6 +4998,31 @@ mod tests {
         let f = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [6000, 5000], "flipped": true }))["id"].as_u64().unwrap();
         call(&mut s, "flip_walls", json!({ "ids": [f] }));
         assert!(s.handle("flip_instances", &json!({ "ids": [w] })).is_err(), "walls are not doors");
+    }
+
+    #[test]
+    fn a_hosted_door_tells_the_plan_where_its_flip_controls_go() {
+        let (mut s, lvl, wt, view) = setup();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        // placed from the wall's right (-y), so the family's interior is there and its exterior on +y
+        let d = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [1500, -200] }))["id"].as_u64().unwrap();
+        let flip = |s: &mut Session| call(s, "plan", json!({ "view_id": view }))["inserts"].as_array().unwrap().iter().find(|x| x["id"] == d).unwrap()["flip"].clone();
+        let f = flip(&mut s);
+        let num = |v: &Value| v.as_f64().unwrap();
+        assert!((num(&f["at"][0]) - 1500.0).abs() < 1e-6 && num(&f["at"][1]) > 1.0, "on the exterior face, at the door's centre: {f}");
+        assert!((num(&f["out"][1]) - 1.0).abs() < 1e-9 && (num(&f["along"][0]) - 1.0).abs() < 1e-9);
+        assert_eq!((f["facing"].as_bool(), f["hand"].as_bool()), (Some(false), Some(false)));
+        // the facing control flips the facing alone: the controls go to the other face
+        call(&mut s, "patch_instance", json!({ "id": d, "patch": { "flip_facing": true } }));
+        let g = flip(&mut s);
+        assert!(num(&g["at"][1]) < -1.0 && (num(&g["out"][1]) + 1.0).abs() < 1e-9, "{g}");
+        assert_eq!((g["facing"].as_bool(), g["hand"].as_bool()), (Some(true), Some(false)));
+        call(&mut s, "patch_instance", json!({ "id": d, "patch": { "flip_hand": true } }));
+        assert_eq!(flip(&mut s)["hand"].as_bool(), Some(true));
+        call(&mut s, "undo", json!({}));
+        assert_eq!(flip(&mut s)["hand"].as_bool(), Some(false), "each flip is one undo step");
     }
 
     #[test]

@@ -2596,6 +2596,12 @@ Plan.callbacks.placeMarker = async (p, rotation_deg) => {
   await refresh();
   setPrompt("Elevation marker placed. Pick it to tick more pointers. Esc to stop.");
 };
+// a flip control of a selected door or window: facing or hand, one undo step
+Plan.callbacks.flipInstance = async (id, which, on) => {
+  if (await run("patch_instance", { id, patch: { [which === "hand" ? "flip_hand" : "flip_facing"]: on } })) await refresh();
+  Plan.callbacks.select(Plan.selection());
+  setPrompt(which === "hand" ? "Hand flipped." : "Facing flipped.");
+};
 Plan.callbacks.markerSlot = async (id, slot, on) => {
   await run("patch_marker", { id, patch: { slot_on: { [slot]: on } } });
   await refresh();

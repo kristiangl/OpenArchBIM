@@ -66,6 +66,7 @@ const Plan = (() => {
   let gridHover = null; // the wall or grid the Pick Lines option would use: { id, kind }
   const GRID_ARC = new Set(["arc_3pt", "arc_centre"]);
   let mgrips = []; // screen boxes of the pointer check boxes of the selected elevation marker
+  let fgrips = []; // screen positions of the flip controls of the selected doors and windows
   let markerRot = null; // rotation of the marker about to be placed; null turns it to face the model
   let wallSeq = 0;
   // the curves the picks so far make, asked of the model (it draws previews and commits with the same call)
@@ -1084,6 +1085,43 @@ const Plan = (() => {
     ctx.restore();
   }
 
+  // flip controls of a selected door or window, beyond the wall face on its exterior side: a pair of arrows across
+  // the wall flips the facing, a pair along it flips the hand. Not on pinned ones, which cannot be flipped.
+  function drawFlips() {
+    fgrips = [];
+    if (tool !== "select" || printing) return;
+    const accent = css("--accent"), bg = css("--view-bg");
+    const arrow = (c, d) => {
+      // a double-headed arrow 18 px long through c, along the screen direction d
+      const L = 9, H = 4, n = { x: -d.y, y: d.x };
+      const a = { x: c.x - d.x * L, y: c.y - d.y * L }, b = { x: c.x + d.x * L, y: c.y + d.y * L };
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+      for (const [p, s] of [[a, 1], [b, -1]]) {
+        ctx.beginPath();
+        ctx.moveTo(p.x + d.x * H * s + n.x * H, p.y + d.y * H * s + n.y * H);
+        ctx.lineTo(p.x, p.y);
+        ctx.lineTo(p.x + d.x * H * s - n.x * H, p.y + d.y * H * s - n.y * H);
+        ctx.stroke();
+      }
+    };
+    for (const ins of data.inserts || []) {
+      if (!sel.has(ins.id) || !ins.flip || ins.pinned) continue;
+      const f = ins.flip, at = toScreen({ x: f.at[0], y: f.at[1] });
+      const unit = (v) => { const q = toScreen({ x: f.at[0] + v[0], y: f.at[1] + v[1] }), dx = q.x - at.x, dy = q.y - at.y, l = Math.hypot(dx, dy) || 1; return { x: dx / l, y: dy / l }; };
+      const out = unit(f.out), along = unit(f.along);
+      const fc = { x: at.x + out.x * 16, y: at.y + out.y * 16 };
+      const hc = { x: fc.x + along.x * 24, y: fc.y + along.y * 24 };
+      ctx.save();
+      ctx.setLineDash([]); ctx.lineWidth = 1.5; ctx.strokeStyle = accent;
+      for (const [c, d, which] of [[fc, out, "facing"], [hc, along, "hand"]]) {
+        ctx.fillStyle = bg; ctx.beginPath(); ctx.arc(c.x, c.y, 11, 0, Math.PI * 2); ctx.globalAlpha = 0.85; ctx.fill(); ctx.globalAlpha = 1;
+        arrow(c, d);
+        fgrips.push({ id: ins.id, which, on: !!f[which], x: c.x, y: c.y });
+      }
+      ctx.restore();
+    }
+  }
+
   // elevation markers (a circle with a pointer for each view it makes) and the project base and survey points
   function drawMarkers() {
     mgrips = [];
@@ -1669,6 +1707,7 @@ const Plan = (() => {
       if (tool === "paste") Clip.drawPreview(ctx, toScreen, hover);
       drawGrids();
       drawMarkers();
+      drawFlips();
     });
     if (tool === "grid") drawGridPreview();
     drawGridAlign();
@@ -2551,6 +2590,8 @@ const Plan = (() => {
     if (tool === "select" && e.button === 0) {
       const mg = mgrips.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (mg) { down = null; cb.markerSlot(mg.id, mg.slot, !mg.on); return; }
+      const fg = fgrips.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 10);
+      if (fg) { down = null; cb.flipInstance(fg.id, fg.which, !fg.on); return; }
     }
     if (tool === "select" && e.button === 0) {
       const g = wgrips.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 9);
