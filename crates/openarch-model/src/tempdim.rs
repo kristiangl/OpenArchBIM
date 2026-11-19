@@ -535,10 +535,66 @@ impl Document {
                     let (width, _, _) = self.instance_opening_size(i);
                     self.opening_dims(Some(id), h.wall, h.u_mm, width, s, refs, true)
                 }
-                None => vec![],
+                None => self.component_dims(id, i, s, refs),
             },
             _ => vec![],
         }
+    }
+
+    /// A free-standing component: from its origin along each of its own four directions to the nearest wall across
+    /// that direction on its level (the wall's reference line by the setting). Editing one moves the component.
+    fn component_dims(&self, id: Id, i: &crate::family::FamilyInstance, s: TempDimSettings, refs: &BTreeMap<String, Id>) -> Vec<TempDim> {
+        let Some(frame) = self.instance_frame(id) else { return vec![] };
+        let p = frame.origin;
+        let (x, y) = (frame.dir, frame.left);
+        let mut out = vec![];
+        // each pair drawn on one line through the origin, as a chain: left and right on the component's +y side, up
+        // and down on its -x side
+        for (key, r, side) in [("right", x, y), ("left", Point::new(-x.x, -x.y), y), ("up", y, Point::new(-x.x, -x.y)), ("down", Point::new(-y.x, -y.y), Point::new(-x.x, -x.y))] {
+            let forced = refs.get(key);
+            let mut best: Option<(f64, Id)> = None;
+            for (oid, e) in self.iter() {
+                let Element::Wall(o) = e else { continue };
+                if o.curve.is_some() || o.base_level != i.level || forced.is_some_and(|f| *f != oid) {
+                    continue;
+                }
+                let Some((od, olen)) = unit(o.start, o.end) else { continue };
+                // the wall must run across the direction
+                if (r.x * od.x + r.y * od.y).abs() > 0.0087 {
+                    continue;
+                }
+                let on = Point::new(-od.y, od.x);
+                let rn = r.x * on.x + r.y * on.y;
+                let from = (p.x - o.start.x) * on.x + (p.y - o.start.y) * on.y;
+                let (hl, hr) = self.wall_extents(o);
+                for v in self.wall_ref_offsets(o, s.wall_ref) {
+                    let t = (v - from) / rn;
+                    if t <= 0.5 || t > TEMP_DIM_REACH_MM || best.is_some_and(|b| t >= b.0) {
+                        continue;
+                    }
+                    // where the ray meets the line lies along the wall, its body's ends included
+                    let along = (p.x + r.x * t - o.start.x) * od.x + (p.y + r.y * t - o.start.y) * od.y;
+                    let slack = hl.max(hr);
+                    if along < -slack || along > olen + slack {
+                        continue;
+                    }
+                    best = Some((t, oid));
+                }
+            }
+            if let Some((t, oid)) = best {
+                out.push(TempDim {
+                    key: key.into(),
+                    a: [p.x, p.y],
+                    b: [p.x + r.x * t, p.y + r.y * t],
+                    value: t,
+                    normal: [side.x, side.y],
+                    to: Some(oid),
+                    // growing the dimension moves the component away from the wall
+                    edit: Some(DimEdit::Move { ids: vec![id], dir: [-r.x, -r.y] }),
+                });
+            }
+        }
+        out
     }
 
     fn wall_dims(&self, id: Id, w: &Wall, s: TempDimSettings, refs: &BTreeMap<String, Id>) -> Vec<TempDim> {
@@ -1105,6 +1161,30 @@ mod tests {
         assert!((after.iter().find(|x| x.key == "left").unwrap().value - 500.0).abs() < 1e-6);
         // the default dimension to the nearest wall is still offered alongside
         assert!(after.iter().any(|x| x.key == "right"));
+    }
+
+    #[test]
+    fn a_free_standing_component_measures_to_the_walls_round_it_and_moves_when_edited() {
+        let (mut d, ids) = room();
+        let lvl = wall(&d, ids[0]).base_level;
+        let (wl, wr) = d.wall_extents(&wall(&d, ids[0]));
+        let ty = d.family_types().into_iter().find(|(_, x)| d.family(x.family).is_some_and(|f| f.host == crate::family::HostKind::None && !f.body.is_empty())).map(|(i, _)| i).expect("a free-standing starter family");
+        let c = d.place_free(ty, lvl, p(1000.0, 1500.0), 0.0, 0.0).unwrap();
+        let s = TempDimSettings { wall_ref: WallRef::Faces, ..Default::default() };
+        let dims = d.temp_dimensions(c, s, &BTreeMap::new());
+        let get = |dims: &[TempDim], k: &str| dims.iter().find(|x| x.key == k).map(|x| x.value);
+        // the room's walls run on 0 and 6000 across, 0 and 4000 up, anticlockwise, so their inside faces are on
+        // their left
+        let half = wl;
+        let _ = wr;
+        assert!((get(&dims, "left").unwrap() - (1000.0 - half)).abs() < 0.01, "{dims:?}");
+        assert!((get(&dims, "right").unwrap() - (5000.0 - half)).abs() < 0.01);
+        assert!((get(&dims, "down").unwrap() - (1500.0 - half)).abs() < 0.01);
+        assert!((get(&dims, "up").unwrap() - (2500.0 - half)).abs() < 0.01);
+        let left = dims.iter().find(|x| x.key == "left").unwrap().clone();
+        d.apply_temp_dimension(left.edit.as_ref().unwrap(), left.value, 1200.0).unwrap();
+        let after = d.temp_dimensions(c, s, &BTreeMap::new());
+        assert!((get(&after, "left").unwrap() - 1200.0).abs() < 0.01 && (get(&after, "up").unwrap() - (2500.0 - half)).abs() < 0.01, "{after:?}");
     }
 
     #[test]
