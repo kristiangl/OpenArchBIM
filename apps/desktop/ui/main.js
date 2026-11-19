@@ -179,6 +179,9 @@ const COMMANDS = {
   "v-filters": () => Filters.open(),
   "m-styles": () => openObjectStyles(),
   "m-phases": () => Phases.open(),
+  "m-options": () => DesignOpts.open(),
+  "m-addset": () => DesignOpts.addToSet(),
+  "m-pickedit": () => DesignOpts.pickToEdit(),
   demolish: () => Phases.demolish(),
   "m-snaps": () => openSnaps(),
   "m-families": () => FamModel.list(),
@@ -1358,6 +1361,7 @@ async function refresh(force = false) {
   const info = await run("doc_info", {});
   if (!info) return;
   app.info = info;
+  await DesignOpts.load();
   await Clip.load(false);
   await Hide.load();
   syncGroups();
@@ -1453,7 +1457,7 @@ Plan.callbacks.addWalls = async (segments) => {
 };
 Plan.callbacks.editFloor = (id) => { app.selection = [id]; Plan.setSelection([id]); startFloorSketch(id); };
 Plan.callbacks.editRoof = (id) => { app.selection = [id]; Plan.setSelection([id]); startRoofSketch(id); };
-Plan.callbacks.select = (ids) => { app.browserSel = null; app.selection = ids; app.tdimRefs = {}; app.tdimPins = (ids.length === 1 && app.tdimMemory[ids[0]]) || {}; app.vp?.setSelection(ids); renderProperties(); refreshTempDims(); updateRibbonContext(); refreshGrips3D(); };
+Plan.callbacks.select = (ids) => { if (DesignOpts.onSelect(ids)) return; app.browserSel = null; app.selection = ids; app.tdimRefs = {}; app.tdimPins = (ids.length === 1 && app.tdimMemory[ids[0]]) || {}; app.vp?.setSelection(ids); renderProperties(); refreshTempDims(); updateRibbonContext(); refreshGrips3D(); };
 
 // ---- temporary dimensions ---------------------------------------------------------
 // The model works out the dimensions and what editing each one does (claude/interaction-tools.md, item 7).

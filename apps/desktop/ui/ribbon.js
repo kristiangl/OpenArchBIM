@@ -171,6 +171,9 @@ const RIBBON = {
       { id: "m-lineweights", label: "Line Weights", big: true }, { id: "m-linepatterns", label: "Line Patterns", big: true },
       { id: "m-fillpatterns", label: "Fill Patterns", big: true }, { id: "m-tempdim", label: "Temporary Dimensions", big: true },
       { id: "m-families", label: "Families", big: true } ] },
+    { label: "Design Options", items: [
+      { id: "m-options", label: "Design Options", big: true }, { id: "m-addset", label: "Add to Set", big: true },
+      { id: "m-pickedit", label: "Pick to Edit", big: true } ] },
     { label: "Project", items: [
       { id: "project-info", label: "Project Information", big: true } ] },
   ],

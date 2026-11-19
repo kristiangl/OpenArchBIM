@@ -414,7 +414,8 @@ const Plan = (() => {
   }
   // radius of the marker and point symbols in pixels: 3.5 mm on paper at the view scale, so they keep their printed size against the model
   function symR() { const denom = (data.view && data.view.scale) || 100; return Math.max(2, 3.5 * denom * cam.s); }
-  const selectable = (e) => !(e.display === "underlay" && !selOpts.underlay) && !(e.pinned && !selOpts.pinned);
+  // design options: what is outside the option being edited, or in an option while Exclude Options is on, cannot be picked
+  const selectable = (e) => !(e.display === "underlay" && !selOpts.underlay) && !(e.pinned && !selOpts.pinned) && !(typeof DesignOpts !== "undefined" && DesignOpts.locked(e.id, e.category));
 
   // walls joined end to end with this one, so Tab can pick the whole run
   function wallChain(id) {

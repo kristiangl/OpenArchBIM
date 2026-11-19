@@ -366,7 +366,8 @@ impl Document {
             }
             // in a view, a door or window its phase leaves out (not built yet, demolished, or not shown) is not a hole
             // (where its infill stands in its place, the opening stays and the infill fills it)
-            let gone = |x: Id| drawing.is_some_and(|v| self.phase_hides(v, x)) || self.out_of_phase(x, self.export_phase.get());
+            // nor is one of a design option the view does not show
+            let gone = |x: Id| drawing.is_some_and(|v| self.phase_hides(v, x)) || self.out_of_phase(x, self.export_phase.get()) || (!self.all_openings.get() && self.option_hides(drawing, x));
             if gone(id) && self.infill_of(id).is_none_or(|x| gone(x)) {
                 continue;
             }

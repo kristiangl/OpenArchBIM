@@ -74,6 +74,7 @@ pub mod colorfill;
 pub mod view;
 pub mod viewfilter;
 pub mod phasing;
+pub mod designopt;
 pub mod viewtemplate;
 pub mod viewmarker;
 pub mod wallpath;

@@ -32,7 +32,7 @@ pub struct Document {
     /// How many earlier saves of the project file are kept beside it as numbered backups. Kept in the project
     /// file itself (not an element, so not undone); changing it makes the project unsaved.
     pub(crate) max_backups: u32,
-    revision: u64,
+    pub(crate) revision: u64,
     /// Counts every write through a transaction, rollback, undo and redo; keys the solved-family cache.
     pub(crate) edit_count: u64,
     pub(crate) solve_cache: crate::faminst::SolveCache,
@@ -52,6 +52,11 @@ pub struct Document {
     pub(crate) creation_phase: Option<Id>,
     /// Which element is the project's phasing, as of a revision (phasing.rs).
     pub(crate) phasing_cache: std::cell::Cell<(Option<u64>, Option<Id>)>,
+    /// The design option being edited (designopt.rs). Not saved.
+    pub(crate) active_option: Option<Id>,
+    /// Set while every opening counts, whatever option it is in (working out infills).
+    pub(crate) all_openings: std::cell::Cell<bool>,
+    pub(crate) options_cache: std::cell::Cell<(Option<u64>, Option<Id>)>,
     /// The view being drawn, while it is (phasing.rs): openings follow its phase. None outside drawing.
     pub(crate) drawing_view: std::cell::Cell<Option<Id>>,
     /// The phase being exported, while it is (phasing.rs): openings follow it. None outside export.
@@ -160,7 +165,7 @@ pub const MAX_WALL_HEIGHT_MM: f64 = 1_000_000.0;
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default(), drawing_view: Default::default(), export_phase: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default(), active_option: None, options_cache: Default::default(), all_openings: Default::default(), drawing_view: Default::default(), export_phase: Default::default() }
     }
 }
 
@@ -291,8 +296,27 @@ impl Document {
                         changes.push(Change { id: pid, before: Some(before), after: Some(after) });
                     }
                 }
+                // elements added while a design option is edited go into it
+                if !added.is_empty() {
+                    if let Some((oid, before, after)) = self.option_new_elements(&added) {
+                        self.elements.insert(oid, after.clone());
+                        self.edit_count += 1;
+                        changes.push(Change { id: oid, before: Some(before), after: Some(after) });
+                    }
+                }
+                // a door may not sit in a wall of another option, nor a main-model door in an option's wall
+                let hosted: Vec<Id> = if changes.iter().any(|c| matches!(c.after, Some(Element::DesignOptions(_)))) {
+                    self.iter().filter(|(_, e)| matches!(e, Element::FamilyInstance(_))).map(|(id, _)| id).collect()
+                } else {
+                    changes.iter().filter(|c| matches!(c.after, Some(Element::FamilyInstance(_)))).map(|c| c.id).collect()
+                };
+                if let Some(e) = self.option_host_problem(&hosted) {
+                    Self::apply(&mut self.elements, &changes, true);
+                    self.edit_count += 1;
+                    return Err(e);
+                }
                 // infills follow the doors and windows demolished in their walls, in the same undo step
-                if changes.iter().any(|c| matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Wall(_) | Element::FamilyInstance(_) | Element::FamilyType(_) | Element::Family(_) | Element::Level(_) | Element::Phasing(_) | Element::WallType(_)))) {
+                if changes.iter().any(|c| matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Wall(_) | Element::FamilyInstance(_) | Element::FamilyType(_) | Element::Family(_) | Element::Level(_) | Element::Phasing(_) | Element::DesignOptions(_) | Element::WallType(_)))) {
                     for c in self.infill_plan() {
                         match &c.after {
                             Some(e) => {
@@ -1567,6 +1591,31 @@ impl Document {
     /// The walls as join input. A curved wall comes as one wall per facet of its path, mitred
     /// to the next, so joins and layers work on it the way they do on straight walls; ids carry
     /// the wall and the facet number (see `wallpath`).
+    /// The walls that clean up with one another, in groups: the main model's, and each design option's (spec 5.2:
+    /// an option's walls do not clean up with the main model's).
+    pub(crate) fn join_groups(&self) -> Vec<Vec<crate::join::JoinWall>> {
+        let member = self.design_options().map(|(_, d)| d.member.clone()).unwrap_or_default();
+        let mut by: BTreeMap<Option<Id>, Vec<crate::join::JoinWall>> = BTreeMap::new();
+        for (id, e) in self.iter() {
+            if let Element::Wall(w) = e {
+                if self.curtain_of(w).is_none() && w.infill.is_none() {
+                    by.entry(member.get(&id).copied()).or_default().extend(self.wall_facets(id, w));
+                }
+            }
+        }
+        by.into_values().collect()
+    }
+
+    /// Every wall facet's joined outline, group by group, and the infills' alone.
+    fn joined_facets(&self) -> BTreeMap<Id, [Point; 4]> {
+        let mut out = BTreeMap::new();
+        for g in self.join_groups() {
+            out.extend(crate::join::join_walls(&g));
+        }
+        out.extend(self.infill_outlines());
+        out
+    }
+
     pub(crate) fn join_walls_list(&self) -> Vec<crate::join::JoinWall> {
         // curtain walls take no part in joins: they stop at a wall's face, and an embedded one cuts its host
         // nor do infills: one sits in its host's opening, on its own
@@ -1633,8 +1682,7 @@ impl Document {
     /// Joined plan outline of every straight wall (corners mitred, T junctions butted).
     /// Curved walls are left out; see `wall_polygons`.
     pub fn wall_outlines(&self) -> BTreeMap<Id, [Point; 4]> {
-        let mut by_facet = crate::join::join_walls(&self.join_walls_list());
-        by_facet.extend(self.infill_outlines());
+        let mut by_facet = self.joined_facets();
         self.iter()
             .filter_map(|(id, e)| match e {
                 Element::Wall(w) if w.curve.is_none() => by_facet.remove(&crate::wallpath::facet_id(id, 0)).map(|o| (id, o)),
@@ -1647,8 +1695,7 @@ impl Document {
     /// curved wall the left side from start to end then the right side back.
     pub fn wall_polygons(&self) -> BTreeMap<Id, Vec<Point>> {
         use crate::wallpath::{facet_id};
-        let mut by_facet = crate::join::join_walls(&self.join_walls_list());
-        by_facet.extend(self.infill_outlines());
+        let by_facet = self.joined_facets();
         let mut out = BTreeMap::new();
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
@@ -1675,8 +1722,8 @@ impl Document {
     /// Ends whose join is disallowed are left out.
     pub fn mid_join_hosts(&self) -> BTreeMap<(Id, u8), Id> {
         use crate::wallpath::{facet_no, wall_of};
-        let walls = self.join_walls_list();
         let mut out = BTreeMap::new();
+        for walls in self.join_groups() {
         for n in crate::join::classify(&walls) {
             if let crate::join::Node::Mid { e, other } = n {
                 let (wall, host) = (wall_of(e.id), wall_of(walls[other].id));
@@ -1687,6 +1734,7 @@ impl Document {
                     out.insert((wall, e.which), host);
                 }
             }
+        }
         }
         out
     }

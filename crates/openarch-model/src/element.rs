@@ -743,6 +743,7 @@ pub enum Element {
     PropertyLineTag(crate::propline::PropertyLineTag),
     /// The project's phases, phase filters and each element's Phase Created and Demolished (phasing.rs).
     Phasing(crate::phasing::Phasing),
+    DesignOptions(crate::designopt::DesignOptions),
 }
 
 impl Element {
@@ -789,6 +790,7 @@ impl Element {
             Element::Truss(_) => "Truss",
             Element::PropertyLineTag(_) => "PropertyLineTag",
             Element::Phasing(_) => "Phasing",
+            Element::DesignOptions(_) => "Design Options",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

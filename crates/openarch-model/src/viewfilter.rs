@@ -268,11 +268,21 @@ impl Document {
     /// The graphic overrides of an element in a view: its own (Override Graphics in View) over those of the
     /// view's filters that match it.
     pub fn graphics_of(&self, view: &View, id: &Id) -> Option<CategoryOverride> {
-        let own = view.element_overrides.get(id);
-        // what the view's phase leaves out draws nowhere, whatever else says
-        if self.phase_hides(view, *id) {
+        // what the view's phase or design options leave out draws nowhere, whatever else says
+        if self.phase_hides(view, *id) || self.option_hides(Some(view), *id) {
             return Some(CategoryOverride { visible: false, ..Default::default() });
         }
+        // while a design option is edited, what is outside it is greyed out (spec 3.1)
+        if self.option_locked(*id) {
+            let mut g = self.graphics_of_unlocked(view, id).unwrap_or_default();
+            g.halftone = true;
+            return Some(g);
+        }
+        self.graphics_of_unlocked(view, id)
+    }
+
+    fn graphics_of_unlocked(&self, view: &View, id: &Id) -> Option<CategoryOverride> {
+        let own = view.element_overrides.get(id);
         // the phase's override lies under the filters', which lie under the element's own (phasing.rs)
         let under = match (self.filter_override(view, *id), self.phase_override(view, *id)) {
             (Some(f), Some(p)) => Some(f.over(&p)),
@@ -288,7 +298,7 @@ impl Document {
     /// Whether a filter of the view hides the element.
     pub fn filter_hides(&self, view: &View, id: Id) -> bool {
         // a phase filter's Not Displayed, and what is not built yet or already gone, hide it too
-        self.filter_override(view, id).is_some_and(|o| !o.visible) || self.phase_hides(view, id)
+        self.filter_override(view, id).is_some_and(|o| !o.visible) || self.phase_hides(view, id) || self.option_hides(Some(view), id)
     }
 
     /// The elements a view's filters hide.
@@ -298,6 +308,10 @@ impl Document {
             (Some(v), Some(_)) => self.iter().filter(|(id, e)| crate::phasing::is_phased(e) && self.phase_hides(v, *id)).map(|(id, _)| id).collect(),
             _ => BTreeSet::new(),
         };
+        // and its design options (designopt.rs)
+        if let (Some(v), Some((_, d))) = (self.view(view), self.design_options()) {
+            out.extend(d.member.keys().copied().filter(|id| self.option_hides(Some(v), *id)));
+        }
         let c = self.filter_cache.borrow();
         if c.revision != Some(self.revision()) { return out; }
         out.extend(c.by_view.get(&view).map(|m| m.iter().filter(|(_, o)| !o.visible).map(|(i, _)| *i).collect::<Vec<_>>()).unwrap_or_default());

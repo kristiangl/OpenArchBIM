@@ -701,3 +701,15 @@ button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent)
 .grid-table th { text-align: left; font-weight: 600; padding: 3px 8px; border-bottom: 1px solid var(--line); }
 .grid-table td { padding: 2px 8px; border-bottom: 1px solid var(--line); }
 .grid-table tr.picked td { background: var(--panel-2); }
+/* design options: the status bar's option being edited, and Manage > Design Options */
+#design-opts { display: inline-flex; align-items: center; gap: 4px; }
+#design-opts select { height: 20px; font-size: inherit; max-width: 200px; }
+#design-opts button { height: 20px; padding: 0 6px; background: none; border: 1px solid transparent; border-radius: 3px; color: var(--muted); cursor: pointer; }
+#design-opts button.on { color: var(--accent); border-color: var(--line); background: var(--panel); }
+.opt-layout { display: flex; gap: 12px; }
+.opt-tree { flex: 1; min-height: 240px; border: 1px solid var(--line); padding: 4px; overflow: auto; }
+.opt-set { font-weight: 600; padding: 2px 4px; cursor: pointer; }
+.opt-option { padding: 2px 4px 2px 20px; cursor: pointer; }
+.opt-set.picked, .opt-option.picked { background: var(--accent); color: #fff; }
+.opt-buttons { display: flex; flex-direction: column; gap: 3px; width: 140px; }
+.opt-head { font-weight: 600; margin-top: 6px; }

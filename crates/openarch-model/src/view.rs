@@ -646,6 +646,9 @@ pub struct View {
     pub column_symbolic_offset_mm: f64,
     #[serde(default)]
     pub phase: Option<Id>,
+    /// The option of each option set the view shows (designopt.rs); a set left out is Automatic.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub design_options: BTreeMap<Id, Id>,
     #[serde(default)]
     pub rotation_on_sheet: RotationOnSheet,
     /// Per-element graphics overrides in this view (not part of templates).
@@ -739,6 +742,7 @@ impl View {
             scope_box: None,
             column_symbolic_offset_mm: default_column_offset(),
             phase: None,
+            design_options: BTreeMap::new(),
             rotation_on_sheet: RotationOnSheet::None,
             element_overrides: BTreeMap::new(),
             hidden_elements: BTreeSet::new(),

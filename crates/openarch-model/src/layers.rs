@@ -641,7 +641,8 @@ impl Document {
     /// wrapping are not applied here; see `wall_plan_layers`.
     pub fn wall_layer_geometry(&self) -> BTreeMap<Id, WallLayers> {
         use crate::wallpath::{facet_id};
-        let mut walls: Vec<LWall> = vec![];
+        let mut groups: BTreeMap<Option<Id>, Vec<LWall>> = BTreeMap::new();
+        let member = self.design_options().map(|(_, d)| d.member.clone()).unwrap_or_default();
         let mut alone: Vec<LWall> = vec![];
         let mut types = BTreeMap::new();
         // (facets, ids) of each wall, in order
@@ -663,12 +664,18 @@ impl Document {
                 if w.infill.is_some() {
                     alone.push(LWall { join, layers: specs.clone() });
                 } else {
-                    walls.push(LWall { join, layers: specs.clone() });
+                    groups.entry(member.get(&id).copied()).or_default().push(LWall { join, layers: specs.clone() });
                 }
             }
             types.insert(id, t);
         }
-        let (mut joined, mut free) = join_layers_full(&walls);
+        // the main model's walls clean up with one another, each design option's among themselves (spec 5.2)
+        let (mut joined, mut free) = (BTreeMap::new(), BTreeMap::new());
+        for walls in groups.values() {
+            let (j, f) = join_layers_full(walls);
+            joined.extend(j);
+            free.extend(f);
+        }
         for w in &alone {
             let (j, _) = join_layers_full(std::slice::from_ref(w));
             joined.extend(j);

@@ -471,7 +471,8 @@ impl Document {
         let mut openings: BTreeMap<Id, (u64, f64, f64)> = BTreeMap::new(); // instance: (opening, width, height)
         let mut wall_uses: BTreeMap<(Id, String, bool), Vec<u64>> = BTreeMap::new(); // (type, offset, flipped): walls
         let mut floor_uses: BTreeMap<(Id, String), Vec<u64>> = BTreeMap::new();
-        let skip = |id: Id, ifc: &IfcParams| ifc.export == IfcExport::No || self.out_of_phase(id, phase);
+        // the main model and each set's primary option are exported
+        let skip = |id: Id, ifc: &IfcParams| ifc.export == IfcExport::No || self.out_of_phase(id, phase) || self.in_secondary_option(id);
         // curtain walls: each its IfcCurtainWall and the plates, members and doors it aggregates
         let mut curtains: BTreeMap<Id, (u64, Vec<u64>)> = BTreeMap::new();
         let mut part_materials: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -636,7 +637,7 @@ impl Document {
         // floors: flat ones their regions swept down from the top, sloped ones their 3D mesh
         for (id, e) in self.iter() {
             let Element::Floor(f) = e else { continue };
-            if self.out_of_phase(id, phase) {
+            if self.out_of_phase(id, phase) || self.in_secondary_option(id) {
                 continue;
             }
             let lv = storey_of(f.level);

@@ -28,6 +28,7 @@ mod revisions;
 mod tags;
 mod ceilings;
 mod phasing;
+mod designopt;
 mod topo;
 mod propline;
 mod cad;
@@ -294,6 +295,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_phasing(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_design_options(method, p) {
             return r;
         }
         if let Some(r) = self.handle_structural(method, p) {
@@ -686,6 +690,7 @@ impl Session {
                 let ids = ids_of(p, "ids")?;
                 let mut props = props::multi_props(&self.doc, &ids)?;
                 self.add_phase_properties(&ids, &mut props);
+                self.add_option_properties(&ids, &mut props);
                 self.add_key_properties(&ids, &mut props);
                 Ok(props)
             },
@@ -3302,6 +3307,7 @@ impl Session {
         let mut props = self.describe_base(id)?;
         if matches!(self.doc.get(id),Some(Element::FamilyInstance(_))){props["groups"].as_array_mut().unwrap().push(json!({"name":"Room","rows":self.component_room_fields(id)}));}
         self.add_phase_properties(&[id], &mut props);
+        self.add_option_properties(&[id], &mut props);
         self.add_key_properties(&[id], &mut props);
         Ok(props)
     }
@@ -5134,6 +5140,63 @@ mod tests {
         let f = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [6000, 5000], "flipped": true }))["id"].as_u64().unwrap();
         call(&mut s, "flip_walls", json!({ "ids": [f] }));
         assert!(s.handle("flip_instances", &json!({ "ids": [w] })).is_err(), "walls are not doors");
+    }
+
+    #[test]
+    fn design_options_decide_what_plans_schedules_openings_and_ifc_show() {
+        let (mut s, lvl, wt, view) = setup();
+        let wall = |s: &mut Session, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let main = wall(&mut s, [0, 0], [6000, 0]);
+        let d = call(&mut s, "design_option_op", json!({ "op": "add_set", "name": "Entry" }));
+        let set = d["sets"][0]["id"].as_u64().unwrap();
+        let a = d["sets"][0]["options"][0]["id"].as_u64().unwrap();
+        let d = call(&mut s, "design_option_op", json!({ "op": "add_option", "set": set }));
+        let b = d["sets"][0]["options"][1]["id"].as_u64().unwrap();
+        // a wall in each option; a door in B in the main wall
+        call(&mut s, "set_active_option", json!({ "option": a }));
+        let wa = wall(&mut s, [0, 2000], [6000, 2000]);
+        call(&mut s, "set_active_option", json!({ "option": b }));
+        let wb = wall(&mut s, [0, 3000], [6000, 3000]);
+        let info = call(&mut s, "doc_info", json!({}));
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let dr = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": main, "point": [1500, -200] }))["id"].as_u64().unwrap();
+        // while B is edited the plan (Automatic) shows B: its wall, its door cutting the main wall
+        let look = |s: &mut Session| {
+            let plan = call(s, "plan", json!({ "view_id": view }));
+            let walls: Vec<u64> = plan["walls"].as_array().unwrap().iter().map(|x| x["id"].as_u64().unwrap()).collect();
+            let pieces = plan["walls"].as_array().unwrap().iter().find(|x| x["id"] == main).unwrap()["pieces"].as_array().unwrap().len();
+            (walls, pieces, plan["inserts"].as_array().unwrap().len())
+        };
+        assert_eq!(look(&mut s), (vec![main, wb], 2, 1));
+        // the main model: Automatic shows the primary (A); B's door does not cut the main wall
+        call(&mut s, "set_active_option", json!({ "option": null }));
+        assert_eq!(look(&mut s), (vec![main, wa], 1, 0));
+        // Properties: the element's option, the view's choice per set
+        let rows = |s: &mut Session, id: u64, g: &str| call(s, "describe", json!({ "id": id }))["groups"].as_array().unwrap().iter().find(|x| x["name"] == g).map(|x| x["rows"].clone());
+        assert_eq!(rows(&mut s, wb, "Design Options").unwrap()[0]["value"], "Entry: Option 2");
+        assert_eq!(rows(&mut s, view, "Design Options").unwrap()[0]["value"], "<Automatic> (Option 1 (primary))");
+        // the view set to B shows B whatever is edited
+        call(&mut s, "set_view_option", json!({ "id": view, "patch": { "set": set, "option": b } }));
+        assert_eq!(look(&mut s), (vec![main, wb], 2, 1));
+        // a schedule lists the main model and the primary unless set otherwise
+        let ws = call(&mut s, "add_schedule", json!({ "category": "Walls" }))["id"].as_u64().unwrap();
+        call(&mut s, "set_schedule", json!({ "id": ws, "def": { "category": "Walls", "fields": [{ "name": "Length", "kind": "instance" }] } }));
+        let ids = |s: &mut Session| { let t = call(s, "schedule_table", json!({ "id": ws })); let mut v: Vec<u64> = t["rows"].as_array().unwrap().iter().filter(|r| r["kind"] == "item").flat_map(|r| r["ids"].as_array().unwrap().iter().map(|x| x.as_u64().unwrap()).collect::<Vec<_>>()).collect(); v.sort(); v };
+        assert_eq!(ids(&mut s), vec![main, wa]);
+        call(&mut s, "set_view_option", json!({ "id": ws, "patch": { "set": set, "option": b } }));
+        assert_eq!(ids(&mut s), vec![main, wb]);
+        // IFC: the main model and the primary
+        let dir = std::env::temp_dir().join(format!("openarch-options-ifc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("o.ifc");
+        call(&mut s, "export_ifc", json!({ "path": path.to_string_lossy() }));
+        let f = std::fs::read_to_string(&path).unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+        assert_eq!(f.matches("IFCWALL(").count() + f.matches("IFCWALLSTANDARDCASE(").count(), 2, "main and A's wall");
+        assert!(!f.contains("IFCDOOR("), "B's door is not exported");
+        // a main-model door cannot go in A's wall
+        assert!(s.handle("place_instance", &json!({ "type_id": door, "host_id": wa, "point": [1500, 1800] })).is_err());
+        let _ = dr;
     }
 
     #[test]

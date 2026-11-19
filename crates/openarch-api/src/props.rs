@@ -384,6 +384,8 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
     let on_sheet = d.viewports().into_iter().find(|(_, vp)| vp.view == id).and_then(|(_, vp)| d.sheet(vp.sheet));
     // a model view shows one phase of the project
     groups.push(crate::phasing::view_phase_group(d, id, v));
+    // and, when the project has option sets, which option of each it shows
+    groups.extend(crate::designopt::view_option_group(d, id, v));
     groups.push(group("Identity Data", vec![
         select("View Template", tpl_opts),
         text("View Name", "name", &v.name),
@@ -1606,6 +1608,9 @@ fn schedule_props(d: &Document, id: Id, v: &View, s: &openarch_model::schedule::
     // a schedule of model elements lists one phase of the project (spec 6.2): not key schedules or sheet lists
     if s.key.is_none() && !matches!(s.category.as_str(), "Sheets" | "Views" | "Revisions") {
         p["groups"].as_array_mut().unwrap().insert(1, crate::phasing::view_phase_group(d, id, v));
+        if let Some(g) = crate::designopt::view_option_group(d, id, v) {
+            p["groups"].as_array_mut().unwrap().insert(2, g);
+        }
     }
     p
 }

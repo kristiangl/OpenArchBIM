@@ -559,6 +559,9 @@ impl Document {
     /// Whether a schedule (or other view) lists an element: a room in the view's phase, another element where
     /// the view's phase and filter show it (spec 6.2).
     pub fn phase_lists(&self, view: &View, id: Id) -> bool {
+        if self.option_hides(Some(view), id) {
+            return false;
+        }
         match self.get(id) {
             Some(Element::Room(r)) => self.view_shows_phase(view, r.phase),
             Some(Element::RoomSeparation(s)) => self.view_shows_phase(view, s.phase),
@@ -651,7 +654,7 @@ impl Document {
     /// demolished with the host. `(instance, wall, phase created, phase demolished)`.
     fn wanted_infills(&self) -> Vec<(Id, crate::Wall, Id, Option<Id>)> {
         let Some((_, ph)) = self.phasing() else { return vec![] };
-        let was = (self.drawing_view.replace(None), self.export_phase.replace(None));
+        let was = (self.drawing_view.replace(None), self.export_phase.replace(None), self.all_openings.replace(true));
         let mut out = vec![];
         for (&inst, &demo) in &ph.demolished {
             let Some(Element::FamilyInstance(i)) = self.get(inst) else { continue };
@@ -685,6 +688,7 @@ impl Document {
         }
         self.drawing_view.set(was.0);
         self.export_phase.set(was.1);
+        self.all_openings.set(was.2);
         out
     }
 
@@ -735,6 +739,21 @@ impl Document {
         }
         if ph != *ph0 {
             out.push(Change { id: pid, before: Some(Element::Phasing(ph0.clone())), after: Some(Element::Phasing(ph)) });
+        }
+        // an infill is in its door's design option
+        if let Some((oid, d0)) = self.design_options() {
+            let mut d = d0.clone();
+            for c in &out {
+                if let Some(Element::Wall(w)) = &c.after {
+                    match w.infill.and_then(|i| d0.member.get(&i).copied()) {
+                        Some(o) => d.member.insert(c.id, o),
+                        None => d.member.remove(&c.id),
+                    };
+                }
+            }
+            if d != *d0 {
+                out.push(Change { id: oid, before: Some(Element::DesignOptions(d0.clone())), after: Some(Element::DesignOptions(d)) });
+            }
         }
         out
     }
