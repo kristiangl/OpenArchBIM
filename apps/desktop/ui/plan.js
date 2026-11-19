@@ -63,6 +63,8 @@ const Plan = (() => {
   let gpins = []; // screen position of each padlock between aligned grid ends
   let gridAlignHint = null; // the grid end the cursor lines up with, while drawing or dragging a grid end
   let gridOpen = null; // the head pressed, opened as a name input on release
+  let gelbows = []; // screen controls of the selected grids' heads: Add Elbow, and the elbow's drag grip
+  let gelbow = null; // { id, end, g, P, uw, perp, d } while an elbow is dragged: d is the offset across the line, mm
   let gridHover = null; // the wall or grid the Pick Lines option would use: { id, kind }
   const GRID_ARC = new Set(["arc_3pt", "arc_centre"]);
   let mgrips = []; // screen boxes of the pointer check boxes of the selected elevation marker
@@ -185,7 +187,10 @@ const Plan = (() => {
   // Measure: the last distance measured ({ a, b } world points), shown as a temporary dimension until the next
   // measurement replaces it, Esc clears it or the tool ends. Nothing is stored in the model.
   let measured = null;
+  // Chain: the points clicked so far, each segment measured and the total in the prompt
+  let measureChain = [];
   const measureLen = (m) => Math.hypot(m.b.x - m.a.x, m.b.y - m.a.y);
+  const chainTotal = (pts) => pts.slice(1).reduce((t, q, i) => t + Math.hypot(q.x - pts[i].x, q.y - pts[i].y), 0);
   function measureText(m) {
     const dx = m.b.x - m.a.x, dy = m.b.y - m.a.y;
     let ang = Math.atan2(dy, dx) * 180 / Math.PI; if (ang < 0) ang += 360;
@@ -929,16 +934,23 @@ const Plan = (() => {
     const denom = (data.view && data.view.scale) || 100;
     // printed: the bubble is its paper size at the view's scale
     const R = Math.max(2, (g.bubble_dia_mm / 2) * denom * cam.s);
-    const off = g.head_offsets && g.head_offsets[end];
-    const c = { x: P.x + u.x * R + (off ? off[0] * cam.s : 0), y: P.y + u.y * R - (off ? off[1] * cam.s : 0) };
-    return { P, u, R, c, offset: !!off };
+    // an elbow being dragged shows where the head will go
+    let off = g.head_offsets && g.head_offsets[end];
+    if (gelbow && gelbow.id === g.id && gelbow.end === end) off = Math.abs(gelbow.d) < 1 ? null : [gelbow.perp.x * gelbow.d, gelbow.perp.y * gelbow.d];
+    // with an elbow the head sits further out, past the jog, and to the side by the offset
+    const out = off ? 3 * R : R;
+    const c = { x: P.x + u.x * out + (off ? off[0] * cam.s : 0), y: P.y + u.y * out - (off ? off[1] * cam.s : 0) };
+    const o = off ? { x: off[0] * cam.s, y: -off[1] * cam.s } : { x: 0, y: 0 };
+    // the jog: straight on from the end, across to the offset, straight on into the head
+    const j1 = { x: P.x + u.x * R * 0.8, y: P.y + u.y * R * 0.8 }, j2 = { x: P.x + u.x * R * 1.2 + o.x, y: P.y + u.y * R * 1.2 + o.y };
+    return { P, u, R, c, offset: !!off, j1, j2, edge: { x: c.x - u.x * R, y: c.y - u.y * R } };
   }
 
   function drawGridHead(g, pts, end, col, selected) {
     const h = gridHead(g, pts, end);
     ctx.save();
     ctx.strokeStyle = col; ctx.lineWidth = selected ? 2 : 1.2; ctx.setLineDash([]);
-    if (h.offset) { ctx.beginPath(); ctx.moveTo(h.P.x, h.P.y); ctx.lineTo(h.c.x, h.c.y); ctx.stroke(); }
+    if (h.offset) { ctx.beginPath(); ctx.moveTo(h.P.x, h.P.y); ctx.lineTo(h.j1.x, h.j1.y); ctx.lineTo(h.j2.x, h.j2.y); ctx.lineTo(h.edge.x, h.edge.y); ctx.stroke(); }
     ctx.beginPath(); ctx.arc(h.c.x, h.c.y, h.R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
     let size = h.R * 0.95;
     ctx.font = `600 ${size}px system-ui, sans-serif`;
@@ -1002,7 +1014,7 @@ const Plan = (() => {
   }
 
   function drawGrids() {
-    ggrips = []; gboxes = []; gbubbles = [];
+    ggrips = []; gboxes = []; gbubbles = []; gelbows = [];
     const text = css("--text"), accent = css("--accent");
     const denom = (data.view && data.view.scale) || 100, paperPx = denom * cam.s;
     for (const g of data.grids || []) {
@@ -1044,6 +1056,26 @@ const Plan = (() => {
           if (g.bubbles[end]) { ctx.beginPath(); ctx.moveTo(bx - 3, by); ctx.lineTo(bx - 1, by + 3); ctx.lineTo(bx + 4, by - 3); ctx.stroke(); }
           ggrips.push({ id: g.id, end, x: h.P.x, y: h.P.y, g });
           gboxes.push({ id: g.id, end, x: bx, y: by, on: g.bubbles[end], g });
+          if (g.bubbles[end] && !g.pinned) {
+            // Add Elbow beside a head with none (a small jog); a grip on the jog of one that has one, to drag the head
+            // across (dragged back onto the line, the elbow goes)
+            ctx.save(); ctx.strokeStyle = accent; ctx.fillStyle = css("--view-bg"); ctx.lineWidth = 1.2; ctx.setLineDash([]);
+            if (h.offset) {
+              const m = { x: (h.j1.x + h.j2.x) / 2, y: (h.j1.y + h.j2.y) / 2 };
+              ctx.beginPath(); ctx.arc(m.x, m.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+              gelbows.push({ id: g.id, end, kind: "grip", x: m.x, y: m.y, g, h });
+            } else {
+              const n = { x: -h.u.y, y: h.u.x }, q = { x: h.c.x + n.x * (h.R + 12), y: h.c.y + n.y * (h.R + 12) };
+              ctx.beginPath();
+              ctx.moveTo(q.x - h.u.x * 6, q.y - h.u.y * 6);
+              ctx.lineTo(q.x - h.u.x * 1 + n.x * 0, q.y - h.u.y * 1);
+              ctx.lineTo(q.x + h.u.x * 1 + n.x * 4, q.y + h.u.y * 1 + n.y * 4);
+              ctx.lineTo(q.x + h.u.x * 6 + n.x * 4, q.y + h.u.y * 6 + n.y * 4);
+              ctx.stroke();
+              gelbows.push({ id: g.id, end, kind: "add", x: q.x, y: q.y, g, h, n });
+            }
+            ctx.restore();
+          }
         }
       }
     }
@@ -1896,7 +1928,7 @@ const Plan = (() => {
     markerRot = null; gridHover = null; ggrip = null;
     ed = isEditTool(t) ? newEdit(t) : null;
     edHover = null;
-    measured = null;
+    measured = null; measureChain = [];
     placeHover = null;
     if (t !== "component") comp = null;
     placeDims = []; placeKey = ""; closeTdimInput();
@@ -1962,7 +1994,9 @@ const Plan = (() => {
     if (T === "trim") return eo.trimMode === "corner" ? (st === "a" ? "Click the first wall on the part to keep." : "Click the second wall on the part to keep.") : st === "a" ? "Click the wall to trim or extend to." : "Click the wall to trim or extend, on the part to keep.";
     if (T === "align") return st === "a" ? "Click the line to align to. Tab cycles overlapping lines." : "Click the line of the element to move. Ctrl keeps the same reference.";
     if (T === "measure") {
-      if (st === "b") return "Click the second point. Shift keeps to 45 degrees. Esc cancels.";
+      if (eo.measureMode === "element") return (measured ? measureText(measured) + ". " : "") + "Click a line to measure along it (a wall's face or centreline gives the wall's length, a floor or roof edge its own). Tab cycles lines. Esc to stop.";
+      if (eo.measureChain && measureChain.length > 1) return `Chain: ${measureChain.length - 1} segment${measureChain.length === 2 ? "" : "s"}, total ${fmtMM(chainTotal(measureChain))} mm. Click the next point; Esc ends the chain.`;
+      if (st === "b") return eo.measureChain ? "Click the next point. Each segment is measured and the total shown here. Esc ends the chain." : "Click the second point. Shift keeps to 45 degrees. Esc cancels.";
       return (measured ? measureText(measured) + ". " : "") + "Click the first point to measure from." + (measured ? " Esc clears the dimension." : " Esc to stop.");
     }
     return "";
@@ -2030,7 +2064,7 @@ const Plan = (() => {
   // preview and sends the command through cb.edit, cb.offset, cb.trim and cb.align.
   const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align", "array", "measure"];
   const NEEDS_SELECTION = new Set(["move", "copy", "rotate", "mirror", "array"]);
-  let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "",
+  let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "", measureMode: "points", measureChain: false,
     arrayKind: "linear", arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false, arrayAssociate: true };
   let cdrag = false; // the centre of rotation (Rotate, a radial Array) being dragged
   const radialTool = () => tool === "rotate" || (tool === "array" && eo.arrayKind === "radial");
@@ -2263,11 +2297,16 @@ const Plan = (() => {
       } else if (ed.stage === "a") { ed.boundary = w.id; ed.stage = "b"; }
       else { cb.trim({ mode: "single", wall: w.id, pick: [pt.x, pt.y], boundary: ed.boundary }); if (eo.trimMode === "single") { ed.stage = "a"; ed.boundary = null; } }
     } else if (tool === "measure") {
-      if (ed.stage === "a") { ed.p0 = p; ed.stage = "b"; }
+      if (eo.measureMode === "element") {
+        // along an element: the line clicked, end to end
+        const cs = edgeCands(sx, sy, "all"), c = cs[tabIdx % Math.max(1, cs.length)];
+        if (!c) { cb.prompt("Click a line to measure along it: a wall's face or centreline, a floor or roof edge. Tab cycles lines."); return true; }
+        measured = { a: { x: c.a[0], y: c.a[1] }, b: { x: c.b[0], y: c.b[1] } };
+      } else if (ed.stage === "a") { ed.p0 = p; ed.stage = "b"; measureChain = eo.measureChain ? [{ x: p.x, y: p.y }] : []; measured = null; }
       else {
         if (dist(ed.p0, p) < 0.5) return true;
-        measured = { a: { x: ed.p0.x, y: ed.p0.y }, b: { x: p.x, y: p.y } };
-        ed = newEdit(tool);
+        if (eo.measureChain) { measureChain.push({ x: p.x, y: p.y }); ed.p0 = p; }
+        else { measured = { a: { x: ed.p0.x, y: ed.p0.y }, b: { x: p.x, y: p.y } }; ed = newEdit(tool); }
       }
     } else if (tool === "align") {
       const c = edgeCands(sx, sy, eo.prefer)[tabIdx % Math.max(1, edgeCands(sx, sy, eo.prefer).length)];
@@ -2287,7 +2326,9 @@ const Plan = (() => {
   function editMove(sx, sy) {
     if (!ed) return;
     edHover = null;
-    if (tool === "mirror" && eo.mirrorMode === "pick" && ed.stage === "a") {
+    if (tool === "measure" && eo.measureMode === "element") {
+      const c = edgeCands(sx, sy, "all"); const e = c[tabIdx % Math.max(1, c.length)]; if (e) edHover = { kind: "edge", a: e.a, b: e.b };
+    } else if (tool === "mirror" && eo.mirrorMode === "pick" && ed.stage === "a") {
       const c = edgeCands(sx, sy, "all"); const e = c[tabIdx % Math.max(1, c.length)]; if (e) edHover = { kind: "edge", a: e.a, b: e.b };
     } else if (tool === "align") {
       const c = edgeCands(sx, sy, eo.prefer); const e = c[tabIdx % Math.max(1, c.length)]; if (e) edHover = { kind: "edge", a: e.a, b: e.b, owner: e.owner };
@@ -2397,7 +2438,9 @@ const Plan = (() => {
     } else if (tool === "measure") {
       // a dashed line straight between the two points, with the temporary dimension beside it
       const show = (m) => { if (measureLen(m) < 0.5) return; lineOnScreen([m.a.x, m.a.y], [m.b.x, m.b.y], "#1d6fb8", 1.5, true); drawTempDims([measureDim(m)], true, true); };
-      if (ed.stage === "b" && hover) show({ a: ed.p0, b: hover });
+      if (eo.measureMode === "element" && edHover) lineOnScreen(edHover.a, edHover.b, "#d4572f", 2.5, false);
+      for (let i = 1; i < measureChain.length; i++) show({ a: measureChain[i - 1], b: measureChain[i] });
+      if (eo.measureMode !== "element" && ed.stage === "b" && hover) show({ a: ed.p0, b: hover });
       else if (measured) show(measured);
     } else if (tool === "align") {
       if (ed.ref) lineOnScreen(ed.ref.a, ed.ref.b, "#3c965a", 2.5, false);
@@ -2582,6 +2625,25 @@ const Plan = (() => {
       if (gp) { down = null; cb.toggleGridLock(gp); return; }
       const gb = gboxes.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (gb) { down = null; const b = gb.g.bubbles.slice(); b[gb.end] = !b[gb.end]; cb.patchGrid(gb.id, { bubbles: b }); return; }
+      const ge = gelbows.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 8);
+      if (ge) {
+        down = null;
+        // the world direction the line leaves in, and across it towards the side the control was on
+        const uw = { x: ge.h.u.x, y: -ge.h.u.y }, perp = { x: -uw.y, y: uw.x };
+        const Pw = toWorld(ge.h.P.x, ge.h.P.y);
+        const denom = (data.view && data.view.scale) || 100, Rmm = (ge.g.bubble_dia_mm / 2) * denom;
+        if (ge.kind === "add") {
+          // a new elbow moves the head one bubble across, to the side the control is on
+          const sideW = { x: ge.n.x, y: -ge.n.y }, side = Math.sign(sideW.x * perp.x + sideW.y * perp.y) || 1;
+          const offs = (ge.g.head_offsets || [null, null]).map((o) => (o ? { x: o[0], y: o[1] } : null));
+          offs[ge.end] = { x: perp.x * 2 * Rmm * side, y: perp.y * 2 * Rmm * side };
+          cb.patchGrid(ge.id, { head_offsets: offs });
+          return;
+        }
+        const o = ge.g.head_offsets[ge.end];
+        gelbow = { id: ge.id, end: ge.end, g: ge.g, P: Pw, uw, perp, Rmm, d: o[0] * perp.x + o[1] * perp.y };
+        return;
+      }
       const gg = ggrips.find((q) => Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= 8);
       if (gg) { ggrip = { id: gg.id, end: gg.end, g: gg.g, cur: null, moved: false, px: e.offsetX, py: e.offsetY, preview: null }; down = null; return; }
       const hb = gbubbles.find((q) => sel.has(q.id) && Math.hypot(e.offsetX - q.x, e.offsetY - q.y) <= q.r);
@@ -2656,6 +2718,13 @@ const Plan = (() => {
       return;
     }
     if (cdrag) { const p = snap(e.offsetX, e.offsetY); hover = p; ed.centre = { x: p.x, y: p.y }; cb.cursor(p); render(); return; }
+    if (gelbow) {
+      // the head follows the cursor across the line only; near the line the elbow goes
+      const w = toWorld(e.offsetX, e.offsetY), d = (w.x - gelbow.P.x) * gelbow.perp.x + (w.y - gelbow.P.y) * gelbow.perp.y;
+      gelbow.d = Math.abs(d) < gelbow.Rmm * 0.5 ? 0 : d;
+      render();
+      return;
+    }
     if (ggrip) {
       if (Math.hypot(e.offsetX - ggrip.px, e.offsetY - ggrip.py) > 3) ggrip.moved = true;
       if (ggrip.moved) {
@@ -2788,6 +2857,14 @@ const Plan = (() => {
     }
     if (tdimOpen) { const t = tdimOpen; tdimOpen = null; openTdimInput(t); return; }
     if (gridOpen) { const b = gridOpen; gridOpen = null; openGridName(b); return; }
+    if (gelbow) {
+      const g = gelbow; gelbow = null;
+      const offs = (g.g.head_offsets || [null, null]).map((o) => (o ? { x: o[0], y: o[1] } : null));
+      const r = (v) => Math.round(v * 1000) / 1000;
+      offs[g.end] = Math.abs(g.d) < 1 ? null : { x: r(g.perp.x * g.d), y: r(g.perp.y * g.d) };
+      cb.patchGrid(g.id, { head_offsets: offs });
+      return;
+    }
     if (ggrip) {
       const g = ggrip; ggrip = null; hover = null;
       const r = (v) => Math.round(v * 1000) / 1000;
@@ -3157,7 +3234,7 @@ const Plan = (() => {
       }
       if (ed && e.key === "Escape") {
         if (ed.typed) { ed.typed = ""; cb.prompt(promptText()); render(); return true; }
-        if (tool === "measure" && (ed.stage === "b" || measured)) { measured = null; ed = newEdit(tool); cb.prompt(promptText()); render(); return true; }
+        if (tool === "measure" && (ed.stage === "b" || measured || measureChain.length)) { measured = null; measureChain = []; ed = newEdit(tool); cb.prompt(promptText()); render(); return true; }
         if (ed.stage === "b" || (tool === "align" && ed.ref) || ed.first || ed.boundary) { ed = newEdit(tool); if (ed.stage === "pick" && sel.size) ed.stage = "a"; cb.prompt(promptText()); render(); return true; }
         setTool("select"); return true;
       }

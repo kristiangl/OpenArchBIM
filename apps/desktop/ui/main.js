@@ -910,7 +910,9 @@ function renderTree() {
 // ---- right-click in a view: what can be done with the selection, and with the view -------------------------------
 // The ids drawn in the open plan or elevation (Select All Instances: Visible in View keeps to these)
 function idsInView() {
-  const d = app.view.kind === "elevation" ? Elev.viewData?.() : Plan.viewData();
+  // a 3D view shows the elements it has meshes for
+  if (app.view.kind === "3d") return new Set(app.sceneIds || []);
+  const d = app.view.kind === "elevation" ? Elev.viewData?.() : app.view.kind === "sheet" ? SheetView.sheet : Plan.viewData();
   const out = new Set();
   const walk = (v, depth) => {
     if (!v || depth > 2) return;
@@ -942,8 +944,21 @@ async function selectPrevious() {
 }
 async function selectIds(ids) {
   app.selection = ids; Plan.setSelection(ids); Elev.setSelection?.(ids); app.vp?.setSelection(ids);
+  if (app.view.kind === "sheet") SheetView.setSelection(ids);
+  if (app.view.kind === "3d") refreshGrips3D();
   Plan.callbacks.select(ids);
   setPrompt(`${ids.length} element${ids.length === 1 ? "" : "s"} selected.`);
+}
+// Select All Instances and Select Previous for the 3D and sheet menus (plans and elevations have them in their own
+// menu): the items, then a separator
+function selectionMenuItems() {
+  const one = app.selection.length === 1;
+  return [
+    { label: "Select All Instances: Visible in View", disabled: !one, title: one ? "" : "Select one element", run: () => selectAllInstances(true) },
+    { label: "Select All Instances: In Entire Project", disabled: !one, run: () => selectAllInstances(false) },
+    { label: "Select Previous", keys: "Ctrl+Left", disabled: !app.previousSelection().length, run: selectPrevious },
+    { sep: true },
+  ];
 }
 async function selectAllInstances(inView) {
   const r = await run("same_type_ids", { id: app.selection[0] });
@@ -1271,6 +1286,7 @@ async function refreshView(force) {
       app.sceneRevision = scene.revision;
       app.sceneStyle = scene.visual_style || "shaded";
       app.vp.setMeshes(scene.meshes, app.selection);
+      app.sceneIds = new Set(scene.meshes.map((m) => m.id).filter((i) => typeof i === "number"));
       // imported CAD drawings, as lines at their levels
       Cad.lines3D(scene.cad_imports).then((lines) => { if (app.view.kind === "3d" && app.vp) app.vp.setLines(lines); });
       snapGeometry3D(scene.meshes);
@@ -2234,6 +2250,10 @@ function renderEditBar() {
     kids.push(...radios("offsetMode", [["graphical", "Graphical"], ["numerical", "Numerical"]]), el("label", {}, ["Offset ", d, " mm"]), check("Copy", "offsetCopy", "Keep the original (Ctrl does the same for one pick)"), el("span", { textContent: "Tab: whole chain" }));
   }
   if (t === "trim") kids.push(...radios("trimMode", [["corner", "To corner"], ["single", "Single element"], ["multiple", "Multiple elements"]]));
+  if (t === "measure") {
+    kids.push(...radios("measureMode", [["points", "Between points"], ["element", "Along an element"]]));
+    if (o.measureMode !== "element") kids.push(check("Chain", "measureChain", "Keep clicking: each segment is measured and the total shown in the status bar"));
+  }
   if (t === "align") {
     const pf = el("select", { onchange: () => set({ prefer: pf.value }) });
     for (const [v, l] of [["all", "Any line"], ["face", "Wall faces"], ["centre", "Wall centrelines"], ["core", "Faces of core"]]) { const op = new Option(l, v); op.selected = o.prefer === v; pf.add(op); }
@@ -2904,6 +2924,7 @@ SheetView.callbacks.menu = (v, x, y) => showMenu(x, y, [
   { label: "Activate View", run: () => activateViewport(v.id) },
   { label: "Open View", run: () => SheetView.callbacks.openView(v.view) },
   { sep: true },
+  ...selectionMenuItems(),
   { label: "Delete", run: async () => { if (await run("delete", { ids: [v.id] })) await refresh(); } },
 ]);
 SheetView.callbacks.activeBox = (b) => {
@@ -3862,7 +3883,7 @@ async function initViewport() {
       const ids = additive ? [...new Set([...app.selection, ...picked])] : picked;
       app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext(); refreshGrips3D();
     });
-    vp.onMenu((x, y) => showMenu(x, y, [{ label: "Mouse Buttons...", run: () => mouseButtonsDialog(vp) }]));
+    vp.onMenu((x, y) => showMenu(x, y, [...selectionMenuItems(), { label: "Mouse Buttons...", run: () => mouseButtonsDialog(vp) }]));
     // what is drawn over the view follows the camera
     vp.onRender(() => { if (ed3 || grips3.length) draw3DEdit(); });
     pill.textContent = `GPU: ${vp.info}`;
