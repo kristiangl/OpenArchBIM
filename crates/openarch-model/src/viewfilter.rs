@@ -269,7 +269,12 @@ impl Document {
     /// view's filters that match it.
     pub fn graphics_of(&self, view: &View, id: &Id) -> Option<CategoryOverride> {
         let own = view.element_overrides.get(id);
-        match (own, self.filter_override(view, *id)) {
+        // the phase's override lies under the filters', which lie under the element's own (phasing.rs)
+        let under = match (self.filter_override(view, *id), self.phase_override(view, *id)) {
+            (Some(f), Some(p)) => Some(f.over(&p)),
+            (f, p) => f.or(p),
+        };
+        match (own, under) {
             (Some(e), Some(f)) => Some(e.over(&f)),
             (Some(e), None) => Some(e.clone()),
             (None, f) => f,
@@ -278,7 +283,8 @@ impl Document {
 
     /// Whether a filter of the view hides the element.
     pub fn filter_hides(&self, view: &View, id: Id) -> bool {
-        self.filter_override(view, id).is_some_and(|o| !o.visible)
+        // a phase filter's Not Displayed, and what is not built yet or already gone, hide it too
+        self.filter_override(view, id).is_some_and(|o| !o.visible) || self.phase_hides(view, id)
     }
 
     /// The elements a view's filters hide.

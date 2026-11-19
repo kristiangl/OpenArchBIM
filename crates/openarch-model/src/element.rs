@@ -736,6 +736,8 @@ pub enum Element {
     Truss(crate::framing::Truss),
     /// A view's label of a property line's bearings and distances (propline.rs).
     PropertyLineTag(crate::propline::PropertyLineTag),
+    /// The project's phases, phase filters and each element's Phase Created and Demolished (phasing.rs).
+    Phasing(crate::phasing::Phasing),
 }
 
 impl Element {
@@ -781,6 +783,7 @@ impl Element {
             Element::BeamSystem(_) => "BeamSystem",
             Element::Truss(_) => "Truss",
             Element::PropertyLineTag(_) => "PropertyLineTag",
+            Element::Phasing(_) => "Phasing",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

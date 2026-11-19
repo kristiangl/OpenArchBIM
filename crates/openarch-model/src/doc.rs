@@ -48,6 +48,10 @@ pub struct Document {
     pub(crate) temp_templates: std::cell::RefCell<BTreeMap<Id, Id>>,
     /// Temporary Hide/Isolate and Reveal Hidden Elements: the session's, not saved and not undone.
     pub(crate) display: crate::hide::ViewDisplay,
+    /// The phase new physical elements are built in: the active view's (phasing.rs). Not saved.
+    pub(crate) creation_phase: Option<Id>,
+    /// Which element is the project's phasing, as of a revision (phasing.rs).
+    pub(crate) phasing_cache: std::cell::Cell<(Option<u64>, Option<Id>)>,
 }
 
 /// Handle passed to a transaction closure. Every change is recorded so the
@@ -152,7 +156,7 @@ pub const MAX_WALL_HEIGHT_MM: f64 = 1_000_000.0;
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default() }
     }
 }
 
@@ -270,10 +274,19 @@ impl Document {
     pub fn transact<T>(&mut self, name: &str, f: impl FnOnce(&mut Tx) -> Result<T, String>) -> Result<T, String> {
         let mut tx = Tx { doc: self, changes: Vec::new() };
         let out = f(&mut tx);
-        let changes = std::mem::take(&mut tx.changes);
+        let mut changes = std::mem::take(&mut tx.changes);
         drop(tx);
         match out {
             Ok(v) => {
+                // physical elements added while a view of another phase is active are built in that phase
+                let added: Vec<Id> = changes.iter().filter(|c| c.before.is_none() && c.after.is_some()).map(|c| c.id).collect();
+                if !added.is_empty() {
+                    if let Some((pid, before, after)) = self.phase_new_elements(&added) {
+                        self.elements.insert(pid, after.clone());
+                        self.edit_count += 1;
+                        changes.push(Change { id: pid, before: Some(before), after: Some(after) });
+                    }
+                }
                 if !changes.is_empty() {
                     let model = changes.iter().any(|c| !matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Dimension(_) | Element::DimensionType(_) | Element::Spot(_) | Element::SpotType(_) | Element::DetailLine(_) | Element::DetailRegion(_) | Element::FilledRegionType(_) | Element::TextNote(_) | Element::TextNoteType(_))));
                     let redo = if model && self.defer_settle == 0 && !self.settling { Some(self.redo.clone()) } else { None };
