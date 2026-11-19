@@ -358,9 +358,14 @@ impl Document {
         let len = w.length();
         let (wz0, wz1) = self.wall_extent(w);
         let mut out = vec![];
+        let drawing = self.drawing_view.get().and_then(|v| self.view(v));
         for (id, i) in self.instances() {
             let Some(h) = i.host else { continue };
             if h.wall != wall {
+                continue;
+            }
+            // in a view, a door or window its phase leaves out (not built yet, demolished, or not shown) is not a hole
+            if drawing.is_some_and(|v| self.phase_hides(v, id)) {
                 continue;
             }
             let Some(f) = self.instance_frame(id) else { continue };

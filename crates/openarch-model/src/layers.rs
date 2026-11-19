@@ -652,7 +652,10 @@ impl Document {
             if t.curtain.is_some() {
                 continue;
             }
-            let specs: Vec<LayerSpec> = t.layers.iter().map(|l| LayerSpec { thickness: l.thickness_mm, priority: l.join_priority(), core: l.core }).collect();
+            // a later phase's wall gives way to an earlier one's: its layers stop at the older wall's face and the
+            // older wall's run through, so walls of different phases do not clean into one another (phasing.rs)
+            let shift = self.phase_rank(id).saturating_mul(10);
+            let specs: Vec<LayerSpec> = t.layers.iter().map(|l| LayerSpec { thickness: l.thickness_mm, priority: l.join_priority().saturating_add(shift), core: l.core }).collect();
             let facets = self.wall_facets(id, w);
             facets_of.insert(id, facets.len());
             for join in facets {

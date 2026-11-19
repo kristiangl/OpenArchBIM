@@ -491,6 +491,61 @@ impl Document {
     }
 }
 
+/// While alive, the document draws `view`: openings follow its phase. Put back on drop.
+pub struct DrawingView<'a> {
+    doc: &'a Document,
+    was: Option<Id>,
+}
+
+impl Drop for DrawingView<'_> {
+    fn drop(&mut self) {
+        self.doc.drawing_view.set(self.was);
+    }
+}
+
+impl Document {
+    /// Draw `view` until the guard goes: a door or window its phase leaves out does not open its wall.
+    pub fn drawing(&self, view: Id) -> DrawingView<'_> {
+        let was = self.drawing_view.replace(Some(view));
+        DrawingView { doc: self, was }
+    }
+
+    /// How far into the timeline an element is built (0 for the first phase, and without phasing).
+    pub fn phase_rank(&self, id: Id) -> u8 {
+        let Some((_, ph)) = self.phasing() else { return 0 };
+        ph.index(ph.created_of(id)).unwrap_or(0).min(20) as u8
+    }
+
+    /// Where a straight wall shown in `view` is filled in at the cut height `cut`: the openings of doors and
+    /// windows demolished in the view's phase that the view does not show (in later phases the infill is simply
+    /// part of the wall). Each as a ring across the wall, so
+    /// the plan can draw the infill as new work.
+    pub fn phase_infills(&self, view: &View, wall: Id, cut: f64) -> Vec<[crate::geom::Point; 4]> {
+        let Some((_, ph)) = self.phasing() else { return vec![] };
+        let Some((vphase, _)) = self.view_phase(view) else { return vec![] };
+        let Some(Element::Wall(w)) = self.get(wall) else { return vec![] };
+        if w.curve.is_some() || self.phase_hides(view, wall) {
+            return vec![];
+        }
+        let was = self.drawing_view.replace(None);
+        let all = self.wall_openings(wall);
+        self.drawing_view.set(was);
+        let (wl, wr) = self.wall_extents(w);
+        let len = w.start.dist(&w.end);
+        if len < 1e-6 {
+            return vec![];
+        }
+        let d = crate::geom::Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+        let n = crate::geom::Point::new(-d.y, d.x);
+        let at = |u: f64, o: f64| crate::geom::Point::new(w.start.x + d.x * u + n.x * o, w.start.y + d.y * u + n.y * o);
+        all.into_iter()
+            .filter(|o| o.z0 < cut && cut < o.z1)
+            .filter(|o| ph.demolished.get(&o.instance) == Some(&vphase) && self.phase_hides(view, o.instance))
+            .map(|o| [at(o.u0, -wr), at(o.u1, -wr), at(o.u1, wl), at(o.u0, wl)])
+            .collect()
+    }
+}
+
 /// What a phasing must hold to.
 fn check(ph: &Phasing) -> Result<(), String> {
     if ph.phases.is_empty() {

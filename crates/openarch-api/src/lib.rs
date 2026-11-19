@@ -2443,6 +2443,7 @@ impl Session {
     /// them (cut line, cut pattern), and the hatch definitions come with the data.
     fn elevation_json(&self, vid: Id) -> Res {
         let d = &self.doc;
+        let _drawing = d.drawing(vid);
         let data = d.elevation_data(vid)?;
         let mut v = serde_json::to_value(&data).map_err(|e| e.to_string())?;
         let settings = d.effective_settings(vid).ok_or("not a view")?;
@@ -2719,6 +2720,8 @@ impl Session {
             None => self.plan_view_of_level(id_of(p, "level_id")?)?,
         };
         let view = d.view(vid).filter(|v| v.view_kind.is_plan()).ok_or("not a plan view")?;
+        // openings follow the view's phase while it is drawn
+        let _drawing = d.drawing(vid);
         let settings = d.effective_settings(vid).ok_or("not a view")?;
         let range = d.resolve_view_range(view, &settings).ok_or("view has no level")?;
         let polygons = d.wall_polygons();
@@ -3098,6 +3101,8 @@ impl Session {
                 "annotation": view.crop.annotation_crop, "annotation_offset": view.crop.annotation_offsets(),
             },
             "walls": walls, "curtains": curtains, "floors": floors, "roofs": roofs, "inserts": inserts,
+            // where a demolished door or window has been filled in, drawn as new work in its wall
+            "phase_infills": d.iter().filter(|(_, e)| matches!(e, Element::Wall(_))).flat_map(|(id, _)| d.phase_infills(view, id, range.cut)).map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(),
             "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(section_tag.and_then(|t| t.head)).map(|(fid, f)| symbol_json(d, fid, f)),
             "section_tail_family": section_tag.and_then(|t| t.tail).and_then(|id| d.section_marker_family(Some(id))).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
@@ -3132,6 +3137,7 @@ impl Session {
             .and_then(|v| v.as_u64())
             .or_else(|| d.views().iter().find(|(_, v)| v.view_kind == ViewKind::ThreeD).map(|(id, _)| *id));
         let settings = view.and_then(|v| d.effective_settings(v));
+        let _drawing = view.map(|v| d.drawing(v));
         let mut hidden = view.and_then(|v| d.view(v)).map(|v| v.hidden_elements.clone()).unwrap_or_default();
         // what the view's filters hide is hidden here too; their colours and transparency are applied below
         if let Some(v) = view { hidden.extend(d.filter_hidden(v)); }
@@ -5038,6 +5044,39 @@ mod tests {
         let stage = r["phases"].as_array().unwrap().iter().find(|p| p["name"] == "Stage 2").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "phase_op", json!({ "op": "combine", "id": stage, "into": phase("New Construction") }));
         assert_eq!(call(&mut s, "phasing", json!({}))["phases"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_door_opens_its_wall_only_where_its_phase_shows_and_a_demolished_one_leaves_an_infill() {
+        let (mut s, lvl, wt, view) = setup();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let old = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [1500, -200] }))["id"].as_u64().unwrap();
+        let new = call(&mut s, "place_instance", json!({ "type_id": door, "host_id": w, "point": [4500, -200] }))["id"].as_u64().unwrap();
+        let ph = call(&mut s, "phasing", json!({}));
+        let phase = |n: &str| ph["phases"].as_array().unwrap().iter().find(|p| p["name"] == n).unwrap()["id"].as_u64().unwrap();
+        let filter = |n: &str| ph["filters"].as_array().unwrap().iter().find(|f| f["name"] == n).unwrap()["id"].as_u64().unwrap();
+        // the wall and the old door were there; the old door goes and the new one comes in New Construction
+        call(&mut s, "set_element_phases", json!({ "ids": [w, old], "patch": { "created": phase("Existing") } }));
+        call(&mut s, "demolish", json!({ "view_id": view, "ids": [old] }));
+        let look = |s: &mut Session| {
+            let plan = call(s, "plan", json!({ "view_id": view }));
+            let wall = plan["walls"].as_array().unwrap().iter().find(|x| x["id"] == w).unwrap().clone();
+            let doors: Vec<u64> = plan["inserts"].as_array().unwrap().iter().map(|x| x["id"].as_u64().unwrap()).collect();
+            (wall["pieces"].as_array().unwrap().len(), doors, plan["phase_infills"].as_array().unwrap().len())
+        };
+        // Show All: both doors cut the wall (three pieces), no infill
+        assert_eq!(look(&mut s), (3, vec![old, new], 0));
+        // proposed (Show Previous + New): the new door cuts it, the old opening is filled in
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + New") } }));
+        assert_eq!(look(&mut s), (2, vec![new], 1));
+        // demolition (Show Previous + Demo): the old door shows, the new one is not there yet and does not cut
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + Demo") } }));
+        assert_eq!(look(&mut s), (2, vec![old], 0));
+        // the Existing phase: the old door stands, the new one is not built
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("Existing"), "phase_filter": filter("Show All") } }));
+        assert_eq!(look(&mut s), (2, vec![old], 0));
     }
 
     #[test]

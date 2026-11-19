@@ -52,6 +52,8 @@ pub struct Document {
     pub(crate) creation_phase: Option<Id>,
     /// Which element is the project's phasing, as of a revision (phasing.rs).
     pub(crate) phasing_cache: std::cell::Cell<(Option<u64>, Option<Id>)>,
+    /// The view being drawn, while it is (phasing.rs): openings follow its phase. None outside drawing.
+    pub(crate) drawing_view: std::cell::Cell<Option<Id>>,
 }
 
 /// Handle passed to a transaction closure. Every change is recorded so the
@@ -156,7 +158,7 @@ pub const MAX_WALL_HEIGHT_MM: f64 = 1_000_000.0;
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default(), drawing_view: Default::default() }
     }
 }
 
