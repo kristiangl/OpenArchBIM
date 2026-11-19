@@ -1771,8 +1771,14 @@ impl Session {
                 Ok(json!({ "dims": dims }))
             }
             "temp_dim_lines" => {
-                // the reference lines the selected element's dimensions can be dragged to
-                let lines = self.doc.dim_lines(id_of(p, "id")?).ok_or("that element has no dimensions")?;
+                // the reference lines the selected element's dimensions can be dragged to (a component's differ by
+                // which of its dimensions, so the key names it)
+                let id = id_of(p, "id")?;
+                let lines = match p.get("key").and_then(|v| v.as_str()) {
+                    Some(k) => self.doc.dim_lines_for(id, k),
+                    None => self.doc.dim_lines(id),
+                }
+                .ok_or("that element has no dimensions")?;
                 Ok(serde_json::to_value(lines).map_err(|e| e.to_string())?)
             }
             "set_temp_dimension" => {

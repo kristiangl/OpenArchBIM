@@ -2615,7 +2615,7 @@ const Plan = (() => {
         if (t.type === "promote") { down = null; cb.tempPromote(t.dim, 55 / cam.s); return; }
         tgrip = { dim: t.dim, role: t.role, x: t.x, y: t.y, px: e.offsetX, py: e.offsetY, lines: null, cand: null };
         const g = tgrip;
-        g.ready = Promise.resolve(cb.tempLines()).then((l) => { g.lines = l; });
+        g.ready = Promise.resolve(cb.tempLines(t.dim.key)).then((l) => { g.lines = l; });
         down = null;
         return;
       }

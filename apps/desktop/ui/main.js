@@ -1435,8 +1435,8 @@ Plan.callbacks.tempEdit = async (dim, value) => {
   setPrompt("Dimension changed.");
 };
 // the lines the selected element's dimensions can be dragged to (faces, layers, opening and frame edges)
-Plan.callbacks.tempLines = async () => {
-  try { return await Backend.call("temp_dim_lines", { id: app.selection[0] }); } catch { return null; }
+Plan.callbacks.tempLines = async (key) => {
+  try { return await Backend.call("temp_dim_lines", { id: app.selection[0], key }); } catch { return null; }
 };
 // an end of a dimension dropped on a line (or on nothing, which puts it back)
 Plan.callbacks.tempPin = (key, role, spec) => {

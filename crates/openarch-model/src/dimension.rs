@@ -712,6 +712,10 @@ impl Document {
                 let (a, b) = g.line()?;
                 Some(RefGeom::Line(a, b))
             }
+            RefSpec::FamilyPlane { id, plane, axis } => {
+                let (a, b) = self.family_plane_line(*id, *plane, *axis)?;
+                Some(RefGeom::Line(a, b))
+            }
             RefSpec::Level { .. } | RefSpec::Elev { .. } => None,
         }
     }
@@ -1251,7 +1255,7 @@ impl Document {
             return Ok(());
         }
         match spec {
-            RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::Grid { id } => {
+            RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::Grid { id } | RefSpec::FamilyPlane { id, .. } => {
                 self.transform_elements(&[*id], Xform::Move { dx: v.x, dy: v.y }, EditOptions::default()).map(|_| ())
             }
             RefSpec::WallEnd { id, end } => {
@@ -1508,7 +1512,7 @@ impl Document {
     pub fn promote_temp_dimension(&mut self, view: Id, element: Id, key: &str, s: TempDimSettings, refs: &BTreeMap<String, Id>, pins: &crate::tempdim::Pins, offset_mm: f64) -> Result<Id, String> {
         let dims = self.temp_dimensions_pinned(element, s, refs, pins);
         let t = dims.iter().find(|d| d.key == key).ok_or("that dimension is not showing")?.clone();
-        let lines = self.dim_lines(element).ok_or("that element has no dimensions")?;
+        let lines = self.dim_lines_for(element, key).ok_or("that element has no dimensions")?;
         let (a, b) = (Point::new(t.a[0], t.a[1]), Point::new(t.b[0], t.b[1]));
         let along = |p: Point| (p.x - lines.origin[0]) * lines.axis[0] + (p.y - lines.origin[1]) * lines.axis[1];
         let (refs_two, line_point, axis): (Vec<DimRef>, Point, Option<[f64; 2]>) = if key == "length" {

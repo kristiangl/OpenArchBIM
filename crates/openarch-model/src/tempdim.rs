@@ -68,6 +68,14 @@ pub enum RefSpec {
     /// A line seen in an elevation or section view, named the way the view names it (`ElevRef::key`: "top",
     /// "sill", "end:min", "w:-45.0" ...), so it follows its element.
     Elev { id: Id, key: String },
+    /// A reference plane of a family instance, by its id in the family, or the instance's origin when `plane` is
+    /// None; `axis` is the family's own axis the plane is set out along (X: a line across the family's width).
+    FamilyPlane {
+        id: Id,
+        #[serde(default)]
+        plane: Option<crate::famgeom::PlaneId>,
+        axis: crate::famgeom::Axis,
+    },
 }
 
 impl RefSpec {
@@ -78,6 +86,7 @@ impl RefSpec {
             (RefSpec::WallEnd { id: a, end: x }, RefSpec::WallEnd { id: b, end: y }) => a == b && x == y,
             (RefSpec::Grid { id: a }, RefSpec::Grid { id: b }) | (RefSpec::Level { id: a }, RefSpec::Level { id: b }) => a == b,
             (RefSpec::Elev { id: a, key: x }, RefSpec::Elev { id: b, key: y }) => a == b && x == y,
+            (RefSpec::FamilyPlane { id: a, plane: p, axis: x }, RefSpec::FamilyPlane { id: b, plane: q, axis: y }) => a == b && p == q && x == y,
             _ => false,
         }
     }
@@ -85,7 +94,7 @@ impl RefSpec {
     /// The element the line belongs to.
     pub fn element(&self) -> Id {
         match self {
-            RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Grid { id } | RefSpec::Level { id } | RefSpec::Elev { id, .. } => *id,
+            RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Grid { id } | RefSpec::Level { id } | RefSpec::Elev { id, .. } | RefSpec::FamilyPlane { id, .. } => *id,
         }
     }
 }
@@ -419,6 +428,127 @@ impl Document {
         }
     }
 
+    /// The lines one dimension of a selected element can use: a free-standing component's left and right run along
+    /// its width and its up and down along its depth, so each pair has its own lines; anything else has one set.
+    pub fn dim_lines_for(&self, id: Id, key: &str) -> Option<DimLines> {
+        match self.get(id)? {
+            Element::FamilyInstance(i) if i.host.is_none() => self.component_lines(id, i, key),
+            _ => self.dim_lines(id),
+        }
+    }
+
+    /// A family instance's line for one of its reference planes (or its origin when `plane` is None), set out
+    /// along the family's `axis`, reaching a little past the instance's body.
+    pub(crate) fn family_plane_line(&self, id: Id, plane: Option<crate::famgeom::PlaneId>, axis: crate::famgeom::Axis) -> Option<(Point, Point)> {
+        let frame = self.instance_frame(id)?;
+        let v = match plane {
+            None => 0.0,
+            Some(pid) => {
+                let solved = self.instance_solved(id)?;
+                let s = solved.as_ref().as_ref().ok()?;
+                *s.planes.get(&pid)?
+            }
+        };
+        let b = self.instance_body_bounds(id).unwrap_or([[-300.0, -300.0, 0.0], [300.0, 300.0, 0.0]]);
+        let pad = 150.0;
+        match axis {
+            crate::famgeom::Axis::X => Some((frame.fam_world(v, b[0][1] - pad), frame.fam_world(v, b[1][1] + pad))),
+            crate::famgeom::Axis::Y => Some((frame.fam_world(b[0][0] - pad, v), frame.fam_world(b[1][0] + pad, v))),
+            crate::famgeom::Axis::Z => None,
+        }
+    }
+
+    /// A family instance's reference planes set out along `axis` (any but Not a Reference), and its origin where
+    /// no plane passes through it, as (plane, name, line).
+    pub(crate) fn family_plane_lines(&self, id: Id, axis: crate::famgeom::Axis) -> Vec<(Option<crate::famgeom::PlaneId>, String, Point, Point)> {
+        let Some(Element::FamilyInstance(i)) = self.get(id) else { return vec![] };
+        let Some((fam, _)) = self.instance_family(i) else { return vec![] };
+        let Some(frame) = self.instance_frame(id) else { return vec![] };
+        let along = |p: Point| match axis {
+            crate::famgeom::Axis::X => (p.x - frame.origin.x) * frame.dir.x + (p.y - frame.origin.y) * frame.dir.y,
+            _ => (p.x - frame.origin.x) * frame.left.x + (p.y - frame.origin.y) * frame.left.y,
+        };
+        let mut out: Vec<(Option<crate::famgeom::PlaneId>, String, Point, Point)> = vec![];
+        let mut seen: Vec<f64> = vec![];
+        for p in fam.body.planes.iter().filter(|p| p.axis == axis && p.ref_kind != crate::famgeom::RefKind::NotReference) {
+            let Some((a, b)) = self.family_plane_line(id, Some(p.id), axis) else { continue };
+            let at = along(a);
+            if seen.iter().any(|s| (s - at).abs() < 0.01) {
+                continue;
+            }
+            seen.push(at);
+            out.push((Some(p.id), p.name.clone(), a, b));
+        }
+        if let Some((a, b)) = self.family_plane_line(id, None, axis) {
+            if !seen.iter().any(|s| (s - along(a)).abs() < 0.01) {
+                out.push((None, "Origin".into(), a, b));
+            }
+        }
+        out
+    }
+
+    /// The lines one dimension of a free-standing component can use: its own planes across the dimension's
+    /// direction, and, as targets, wall faces and layers, straight grids and other family instances' planes on its
+    /// level that run across it.
+    fn component_lines(&self, id: Id, i: &crate::family::FamilyInstance, key: &str) -> Option<DimLines> {
+        use crate::famgeom::Axis;
+        let frame = self.instance_frame(id)?;
+        let across_width = match key {
+            "left" | "right" => true,
+            "up" | "down" => false,
+            _ => return None,
+        };
+        let ax = if across_width { frame.dir } else { frame.left };
+        let o = frame.origin;
+        let pos = |a: Point, b: Point| ((a.x + b.x) / 2.0 - o.x) * ax.x + ((a.y + b.y) / 2.0 - o.y) * ax.y;
+        let line = |spec: RefSpec, a: Point, b: Point, label: String| RefLine { pos: pos(a, b), spec, a: [a.x, a.y], b: [b.x, b.y], label };
+        // a line running across the dimension's direction
+        let across = |d: Point| (d.x * ax.x + d.y * ax.y).abs() < 0.0087;
+        let axis = if across_width { Axis::X } else { Axis::Y };
+        let own: Vec<RefLine> = self.family_plane_lines(id, axis).into_iter().map(|(plane, name, a, b)| line(RefSpec::FamilyPlane { id, plane, axis }, a, b, name)).collect();
+        let mut targets: Vec<RefLine> = vec![];
+        for (oid, e) in self.iter() {
+            match e {
+                Element::Wall(w) if w.curve.is_none() && w.base_level == i.level => {
+                    let Some((d, _)) = unit(w.start, w.end) else { continue };
+                    if !across(d) {
+                        continue;
+                    }
+                    let n = Point::new(-d.y, d.x);
+                    for (off, name) in self.wall_boundaries(w) {
+                        let (a, b) = (Point::new(w.start.x + n.x * off, w.start.y + n.y * off), Point::new(w.end.x + n.x * off, w.end.y + n.y * off));
+                        targets.push(line(RefSpec::Wall { id: oid, offset: off }, a, b, name));
+                    }
+                }
+                Element::Grid(g) => {
+                    let Some((a, b)) = g.line() else { continue };
+                    let Some((d, _)) = unit(a, b) else { continue };
+                    if across(d) {
+                        targets.push(line(RefSpec::Grid { id: oid }, a, b, format!("Grid {}", g.name)));
+                    }
+                }
+                Element::FamilyInstance(other) if oid != id && other.level == i.level => {
+                    let Some(f) = self.instance_frame(oid) else { continue };
+                    let Some((fam, _)) = self.instance_family(other) else { continue };
+                    // its planes across its width run across this direction when its width runs along it
+                    let their = if (f.dir.x * ax.x + f.dir.y * ax.y).abs() > 0.9999 {
+                        Axis::X
+                    } else if (f.left.x * ax.x + f.left.y * ax.y).abs() > 0.9999 {
+                        Axis::Y
+                    } else {
+                        continue;
+                    };
+                    for (plane, name, a, b) in self.family_plane_lines(oid, their) {
+                        targets.push(line(RefSpec::FamilyPlane { id: oid, plane, axis: their }, a, b, format!("{}: {}", fam.name, name)));
+                    }
+                }
+                _ => {}
+            }
+        }
+        targets.retain(|l| l.pos.abs() <= TEMP_DIM_REACH_MM);
+        Some(DimLines { origin: [o.x, o.y], axis: [ax.x, ax.y], own, targets })
+    }
+
     /// Dimensions for one selected element.
     pub fn temp_dimensions(&self, id: Id, s: TempDimSettings, refs: &BTreeMap<String, Id>) -> Vec<TempDim> {
         self.temp_dimensions_pinned(id, s, refs, &Pins::new())
@@ -437,6 +567,11 @@ impl Document {
     fn apply_pins(&self, id: Id, s: TempDimSettings, mut dims: Vec<TempDim>, pins: &Pins) -> Vec<TempDim> {
         if self.on_curved_wall(id) {
             return dims;
+        }
+        if let Some(Element::FamilyInstance(i)) = self.get(id) {
+            if i.host.is_none() {
+                return self.apply_component_pins(id, i, dims, pins);
+            }
         }
         let (host, instance, w) = match self.get(id) {
             Some(Element::Wall(w)) => (id, None, w),
@@ -541,16 +676,72 @@ impl Document {
         }
     }
 
+    /// A component dimension's direction from the component, and the side it is drawn on: left and right as one
+    /// chain on the component's up side, up and down as one on its left.
+    fn component_dir(frame: &crate::hosting::InstanceFrame, key: &str) -> Option<(Point, Point)> {
+        let (x, y) = (frame.dir, frame.left);
+        let neg = |p: Point| Point::new(-p.x, -p.y);
+        match key {
+            "right" => Some((x, y)),
+            "left" => Some((neg(x), y)),
+            "up" => Some((y, neg(x))),
+            "down" => Some((neg(y), neg(x))),
+            _ => None,
+        }
+    }
+
+    /// A component's dimensions with the ends the person has moved: the end on the component to one of its own
+    /// planes, the other to a wall, a grid or another family's plane. Both ends sit on the line through the
+    /// component's origin along the dimension's direction.
+    fn apply_component_pins(&self, id: Id, i: &crate::family::FamilyInstance, mut dims: Vec<TempDim>, pins: &Pins) -> Vec<TempDim> {
+        let Some(frame) = self.instance_frame(id) else { return dims };
+        let o = frame.origin;
+        for (key, pin) in pins {
+            let Some((_, side)) = Self::component_dir(&frame, key) else { continue };
+            let Some(lines) = self.component_lines(id, i, key) else { continue };
+            let ax = Point::new(lines.axis[0], lines.axis[1]);
+            let find = |list: &[RefLine], spec: &Option<RefSpec>| spec.as_ref().and_then(|sp| list.iter().find(|l| l.spec.same(sp)).cloned());
+            let (own_line, tgt_line) = (find(&lines.own, &pin.own), find(&lines.targets, &pin.target));
+            if own_line.is_none() && tgt_line.is_none() {
+                continue;
+            }
+            let existing = dims.iter().position(|x| &x.key == key);
+            let pos = |p: [f64; 2]| (p[0] - o.x) * ax.x + (p[1] - o.y) * ax.y;
+            let own_pos = own_line.as_ref().map(|l| l.pos).or(existing.map(|k| pos(dims[k].a))).unwrap_or(0.0);
+            let Some(tgt_pos) = tgt_line.as_ref().map(|l| l.pos).or(existing.map(|k| pos(dims[k].b))) else { continue };
+            let value = (tgt_pos - own_pos).abs();
+            if value < 0.5 {
+                dims.retain(|x| &x.key != key);
+                continue;
+            }
+            let sign = if tgt_pos > own_pos { 1.0 } else { -1.0 };
+            let at = |t: f64| [o.x + ax.x * t, o.y + ax.y * t];
+            let dim = TempDim {
+                key: key.clone(),
+                a: at(own_pos),
+                b: at(tgt_pos),
+                value,
+                normal: [side.x, side.y],
+                to: tgt_line.as_ref().map(|l| l.spec.element()).or(existing.and_then(|k| dims[k].to)),
+                // growing the dimension moves the component away from what it measures to
+                edit: Some(DimEdit::Move { ids: vec![id], dir: [-ax.x * sign, -ax.y * sign] }),
+            };
+            match existing {
+                Some(k) => dims[k] = dim,
+                None => dims.push(dim),
+            }
+        }
+        dims
+    }
+
     /// A free-standing component: from its origin along each of its own four directions to the nearest wall across
     /// that direction on its level (the wall's reference line by the setting). Editing one moves the component.
     fn component_dims(&self, id: Id, i: &crate::family::FamilyInstance, s: TempDimSettings, refs: &BTreeMap<String, Id>) -> Vec<TempDim> {
         let Some(frame) = self.instance_frame(id) else { return vec![] };
         let p = frame.origin;
-        let (x, y) = (frame.dir, frame.left);
         let mut out = vec![];
-        // each pair drawn on one line through the origin, as a chain: left and right on the component's +y side, up
-        // and down on its -x side
-        for (key, r, side) in [("right", x, y), ("left", Point::new(-x.x, -x.y), y), ("up", y, Point::new(-x.x, -x.y)), ("down", Point::new(-y.x, -y.y), Point::new(-x.x, -x.y))] {
+        for key in ["right", "left", "up", "down"] {
+            let Some((r, side)) = Self::component_dir(&frame, key) else { continue };
             let forced = refs.get(key);
             let mut best: Option<(f64, Id)> = None;
             for (oid, e) in self.iter() {
@@ -1185,6 +1376,48 @@ mod tests {
         d.apply_temp_dimension(left.edit.as_ref().unwrap(), left.value, 1200.0).unwrap();
         let after = d.temp_dimensions(c, s, &BTreeMap::new());
         assert!((get(&after, "left").unwrap() - 1200.0).abs() < 0.01 && (get(&after, "up").unwrap() - (2500.0 - half)).abs() < 0.01, "{after:?}");
+    }
+
+    #[test]
+    fn a_component_dimension_can_run_from_one_of_its_planes_to_a_grid_or_another_components_plane() {
+        let (mut d, ids) = room();
+        let lvl = wall(&d, ids[0]).base_level;
+        let ty = d.family_types().into_iter().find(|(_, x)| d.family(x.family).is_some_and(|f| f.host == crate::family::HostKind::None && !f.body.is_empty() && f.body.planes.iter().filter(|q| q.axis == crate::famgeom::Axis::X).count() >= 2)).map(|(i, _)| i).expect("a free-standing family with planes across its width");
+        let c = d.place_free(ty, lvl, p(1000.0, 1500.0), 0.0, 0.0).unwrap();
+        let other = d.place_free(ty, lvl, p(1000.0, 3200.0), 0.0, 0.0).unwrap();
+        let grid = d.add_grid(vec![Curve::Line { a: p(2500.0, -1000.0), b: p(2500.0, 5000.0) }], None, Some("B")).unwrap();
+        let s = TempDimSettings { wall_ref: WallRef::Faces, ..Default::default() };
+
+        // the right dimension's own end can go to any of the component's planes across its width
+        let lines = d.dim_lines_for(c, "right").unwrap();
+        let edge = lines.own.iter().filter(|l| matches!(l.spec, RefSpec::FamilyPlane { plane: Some(_), .. })).max_by(|a, b| a.pos.total_cmp(&b.pos)).expect("a plane").clone();
+        assert!(edge.pos > 1.0, "a plane to the right of the origin: {:?}", lines.own);
+        // and its other end to the grid, or a wall face
+        let g = lines.targets.iter().find(|l| l.spec == RefSpec::Grid { id: grid }).expect("the grid").clone();
+        assert!((g.pos - 1500.0).abs() < 0.01);
+        assert!(lines.targets.iter().any(|l| matches!(l.spec, RefSpec::Wall { .. })));
+
+        let mut pins = Pins::new();
+        pins.insert("right".into(), DimPin { own: Some(edge.spec.clone()), target: Some(g.spec.clone()) });
+        let dims = d.temp_dimensions_pinned(c, s, &BTreeMap::new(), &pins);
+        let right = dims.iter().find(|x| x.key == "right").unwrap().clone();
+        assert!((right.value - (1500.0 - edge.pos)).abs() < 0.01 && right.to == Some(grid), "{right:?}");
+        // typing a value moves the component, the plane keeping its distance to the grid as typed
+        d.apply_temp_dimension(right.edit.as_ref().unwrap(), right.value, 600.0).unwrap();
+        let again = d.temp_dimensions_pinned(c, s, &BTreeMap::new(), &pins);
+        assert!((again.iter().find(|x| x.key == "right").unwrap().value - 600.0).abs() < 0.01);
+
+        // up runs across the other component, standing above with its width along x: its planes across its depth
+        let up = d.dim_lines_for(c, "up").unwrap();
+        assert!(up.targets.iter().any(|l| matches!(l.spec, RefSpec::FamilyPlane { id, .. } if id == other)), "{:?}", up.targets);
+
+        // made permanent, it measures from that plane of the component, and follows it when the component moves
+        let view = d.views().iter().find(|(_, v)| v.view_kind == crate::view::ViewKind::FloorPlan).unwrap().0;
+        let dim = d.promote_temp_dimension(view, c, "right", s, &BTreeMap::new(), &pins, 500.0).unwrap();
+        let value = |d: &Document| d.dimension_draw(dim).unwrap().segments[0].value_mm;
+        assert!((value(&d) - 600.0).abs() < 0.01);
+        d.transform_elements(&[c], Xform::Move { dx: -100.0, dy: 0.0 }, EditOptions::default()).unwrap();
+        assert!((value(&d) - 700.0).abs() < 0.01);
     }
 
     #[test]

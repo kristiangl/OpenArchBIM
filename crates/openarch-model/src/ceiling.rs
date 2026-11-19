@@ -251,6 +251,30 @@ pub(crate) fn starter_ceiling_families() -> Vec<crate::family::StarterFamily> {
         family("Supply Air Diffuser 600 x 600", FamilyCategory::AirTerminals, vec![(outline(595.0, 595.0, 0), 20.0), (outline(300.0, 300.0, 0), 60.0)], &["600 x 600"]),
         family("Smoke Detector", FamilyCategory::FireAlarmDevices, vec![(outline(100.0, 0.0, 16), 45.0)], &["Photoelectric"]),
     ]
+    .into_iter()
+    .map(|mut f| {
+        // the square ones have a reference plane on each edge (Left, Right, Front and Back), so a dimension can
+        // be taken from the edge of a fitting as well as its centre
+        if f.family.name.ends_with("600 x 600") {
+            edge_planes(&mut f.family.body, 595.0, 595.0);
+        }
+        f
+    })
+    .collect()
+}
+
+/// Reference planes on the edges of a `w` by `l` rectangle about a family's centre planes.
+fn edge_planes(body: &mut crate::famgeom::FamilyBody, w: f64, l: f64) {
+    use crate::famgeom::{Anchor, Axis, RefKind, RefPlane, PLANE_FB, PLANE_LR};
+    for (name, axis, from, by, kind) in [
+        ("Left", Axis::X, PLANE_LR, -w / 2.0, RefKind::Left),
+        ("Right", Axis::X, PLANE_LR, w / 2.0, RefKind::Right),
+        ("Front", Axis::Y, PLANE_FB, -l / 2.0, RefKind::Front),
+        ("Back", Axis::Y, PLANE_FB, l / 2.0, RefKind::Back),
+    ] {
+        let id = body.take_id();
+        body.planes.push(RefPlane { id, name: name.into(), axis, anchor: Anchor::Offset { from, by: format!("{by}") }, ref_kind: kind, wall_closure: false });
+    }
 }
 
 pub(crate) fn starter_ceiling_types() -> Vec<CeilingType> {

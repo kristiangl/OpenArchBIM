@@ -211,7 +211,7 @@ fn map_measured(e: &mut Element, f: &dyn Fn(Id) -> Option<Id>) -> bool {
         Element::Dimension(d) => {
             for r in &mut d.refs {
                 let id = match &mut r.spec {
-                    RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Elev { id, .. } => id,
+                    RefSpec::Wall { id, .. } | RefSpec::Opening { id, .. } | RefSpec::WallEnd { id, .. } | RefSpec::Elev { id, .. } | RefSpec::FamilyPlane { id, .. } => id,
                     RefSpec::Grid { .. } | RefSpec::Level { .. } => return false,
                 };
                 match f(*id) {
