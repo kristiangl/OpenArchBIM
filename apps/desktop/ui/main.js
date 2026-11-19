@@ -920,6 +920,26 @@ function idsInView() {
   walk(d, 0);
   return out;
 }
+// Select Previous (Ctrl+Left): the selection before the current one. Every place that sets app.selection goes
+// through this setter, so the previous set is kept however the selection changed (a click, Esc, a delete).
+{
+  let cur = app.selection || [], prev = [];
+  const same = (a, b) => a.length === b.length && a.every((x) => b.includes(x));
+  Object.defineProperty(app, "selection", {
+    get: () => cur,
+    set: (v) => { const n = v || []; if (cur.length && !same(cur, n)) prev = cur; cur = n; },
+    configurable: true, enumerable: true,
+  });
+  app.previousSelection = () => prev;
+}
+async function selectPrevious() {
+  const want = app.previousSelection();
+  if (!want.length) { setPrompt("There is no earlier selection.", true); return; }
+  // what has been deleted since is left out
+  const ok = (await Promise.all(want.map(async (id) => { try { await Backend.call("describe", { id }); return id; } catch { return null; } }))).filter((x) => x !== null);
+  if (!ok.length) { setPrompt("The earlier selection has been deleted.", true); return; }
+  await selectIds(ok);
+}
 async function selectIds(ids) {
   app.selection = ids; Plan.setSelection(ids); Elev.setSelection?.(ids); app.vp?.setSelection(ids);
   Plan.callbacks.select(ids);
@@ -995,6 +1015,8 @@ async function viewContextMenu(x, y, at = {}) {
     { label: "Zoom To Fit", keys: "ZF", run: fit },
     { label: "Properties", run: cmd("props") },
   ] : [
+    { label: "Select Previous", keys: "Ctrl+Left", disabled: !app.previousSelection().length, run: selectPrevious },
+    { sep: true },
     { label: "Zoom To Fit", keys: "ZF", run: fit },
     { label: "Reset Temporary Hide/Isolate", keys: "HR", run: cmd("temp-reset") },
     { label: "Reveal Hidden Elements", keys: "RH", run: cmd("reveal") },
@@ -3146,6 +3168,25 @@ function shortcutCommand(projectId) {
   return f ? () => f() : null;
 }
 let keyBuf = "", keyTimer = null;
+// a temporary snap override for the next pick, typed (SE, SM ...) or from the right-click menu
+function snapOverride(code) {
+  Snap.setOverride(code);
+  const name = code === "SS" ? "off" : code === "SO" ? "Snaps off for the next pick" : `${Snap.LABEL[Snap.override] || ""} only for the next pick`;
+  setPrompt(`Snap override: ${name}.`);
+  Plan.refreshSnap();
+}
+Plan.callbacks.drawMenu = (x, y, cancel) => {
+  const ov = (code, label) => ({ label: `   ${label}`, keys: code, run: () => snapOverride(code) });
+  showMenu(x, y, [
+    { label: "Cancel", run: cancel },
+    { sep: true },
+    { label: "Snap Overrides", disabled: true },
+    ov("SE", "Endpoints"), ov("SM", "Midpoints"), ov("SI", "Intersections"), ov("SC", "Centers"),
+    ov("SP", "Perpendicular"), ov("SN", "Nearest"), ov("SW", "Work Plane Grid"),
+    { sep: true },
+    ov("SO", "Snaps Off"), ov("SS", "Override Off"),
+  ]);
+};
 document.addEventListener("keydown", (e) => {
   const typing = e.target && (e.target.isContentEditable || ["INPUT", "SELECT", "TEXTAREA"].includes(e.target.tagName));
   const mod = e.ctrlKey || e.metaKey;
@@ -3155,6 +3196,7 @@ document.addEventListener("keydown", (e) => {
     if (k === "y" || (k === "z" && e.shiftKey)) { e.preventDefault(); redo(); return; }
     if (k === "s") { e.preventDefault(); save(e.shiftKey); return; }
     if (k === "o") { e.preventDefault(); openProject(); return; }
+    if (e.key === "ArrowLeft" && app.doc === "project" && !Sketch.active) { e.preventDefault(); selectPrevious(); return; }
     // the clipboard, in a project's model views
     if (app.doc === "project" && !Sketch.active && ["c", "x", "v"].includes(k) && !e.shiftKey) {
       e.preventDefault();
@@ -3183,10 +3225,7 @@ document.addEventListener("keydown", (e) => {
     const run = shortcutCommand(map[keyBuf]);
     if (run) { run(); keyBuf = ""; }
     else if (app.view.kind === "plan" && Snap.isOverride(keyBuf) && (["wall", "sketch"].includes(Plan.tool) || Plan.isEditTool())) {
-      Snap.setOverride(keyBuf);
-      const name = keyBuf === "SS" ? "off" : keyBuf === "SO" ? "Snaps off for the next pick" : `${Snap.LABEL[Snap.override] || ""} only for the next pick`;
-      setPrompt(`Snap override: ${name}.`);
-      Plan.refreshSnap();
+      snapOverride(keyBuf);
       keyBuf = "";
     }
   }

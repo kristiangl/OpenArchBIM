@@ -1940,7 +1940,7 @@ const Plan = (() => {
     if (tool === "secsplit") return Sections.splitPrompt();
     if (tool === "section") return draw ? "Click the end of the section line. Shift keeps to 45 degrees. The view looks to the left of the direction you draw; flip it after. Esc cancels." : "Click the start of the section line.";
     if (tool === "elevation") return "Click to place the elevation marker. Space turns it 90 degrees. Tick the pointers you want views for in the options bar. Esc to stop.";
-    if (tool === "wall") return draw ? "Click to place the next wall point. Esc finishes the chain. Hold Shift for 45 degree angles." : "Click to start a wall. Esc or right-click to stop.";
+    if (tool === "wall") return draw ? "Click to place the next wall point. Esc finishes the chain. Hold Shift for 45 degree angles. Right-click for snap overrides." : "Click to start a wall. Esc to stop; right-click for Cancel and snap overrides.";
     if (ed) return editPrompt();
     if (tool === "joins") return "Click a wall end to edit its join. Use Next / Previous to step through the configurations. Esc to stop.";
     if (hostedTool(tool)) return `Click on a wall to place the ${place.label}. ${tool === "hosted" ? "It faces the side of the wall you click." : "The swing follows the side of the wall you click."} Esc to stop.`;
@@ -2823,6 +2823,13 @@ const Plan = (() => {
     if (pan) {
       const wasClick = !pan.moved && pan.button === 2;
       pan = null;
+      // where snap overrides apply (the wall tool, sketches, the Modify tools), a right-click offers Cancel and the
+      // overrides, as Revit's menu does; Cancel does what the right-click did before
+      if (wasClick && cb.drawMenu && (Sketch.active || tool === "wall" || isEditTool())) {
+        const cancel = Sketch.active ? () => Sketch.rightClick() : () => { if (draw) { draw = null; cb.prompt(promptText()); render(); } else if (tool !== "select") setTool("select"); };
+        cb.drawMenu(e.clientX, e.clientY, cancel);
+        return;
+      }
       if (wasClick && Sketch.active) { Sketch.rightClick(); return; }
       if (wasClick && tool === "spot") { if (!Spots.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
       if (wasClick && tool === "dimension") { if (!Dims.cancel()) setTool("select"); cb.prompt(promptText()); render(); return; }
