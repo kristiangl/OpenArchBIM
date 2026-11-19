@@ -47,6 +47,9 @@ pub struct Level {
     /// The ends of other levels each end of this one is locked in line with (the alignment pin).
     #[serde(default)]
     pub end_locks: crate::datum::EndLocks,
+    /// How far each end's head sits above (or below) the line on paper, mm: the elbow. `None` has no elbow.
+    #[serde(default)]
+    pub head_offsets: [Option<f64>; 2],
 }
 
 fn default_bubbles() -> [bool; 2] {
@@ -55,7 +58,7 @@ fn default_bubbles() -> [bool; 2] {
 
 impl Level {
     pub fn new(name: &str, elevation_mm: f64) -> Level {
-        Level { name: name.into(), elevation_mm, computation_height_mm: 0.0, elevation_base: ElevationBase::default(), building_story: true, structural: false, bubbles: default_bubbles(), extent: None, pinned: false, level_type: None, number: String::new(), end_locks: Default::default() }
+        Level { name: name.into(), elevation_mm, computation_height_mm: 0.0, elevation_base: ElevationBase::default(), building_story: true, structural: false, bubbles: default_bubbles(), extent: None, pinned: false, level_type: None, number: String::new(), end_locks: Default::default(), head_offsets: [None, None] }
     }
 }
 

@@ -9,7 +9,7 @@ const Elev = (() => {
   // renderTo: drawing a view onto a sheet or a page, at another size, with nothing selected and no tool showing
   let printing = false, printSize = null;
   const cb = {
-    select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {},
+    select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {}, levelElbow: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
     addGrid: () => {}, addSection: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
     dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
@@ -213,7 +213,7 @@ const Elev = (() => {
     }
     ctx.restore();
   }
-  const EDIT = ["move", "copy", "align", "array"];
+  const EDIT = ["move", "copy", "align", "array", "measure"];
   const isEdit = () => EDIT.includes(tool);
 
   const css = (n) => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
@@ -341,10 +341,10 @@ const Elev = (() => {
     if (!data) return null;
     for (const l of data.levels) {
       if (!sel.has(l.id) || !l.head) continue;
-      const { a, b } = levelParts(l);
+      const { heads } = levelParts(l);
       for (const end of [0, 1]) {
         if (!l.bubbles[end]) continue;
-        const p = end === 0 ? a : b;
+        const p = heads[end].h;
         for (const box of Ann.labelBoxes(l.head.labels, { x: p.x, y: p.y, k: k(), flip: end === 0 })) {
           if (sx >= box.x - 3 && sx <= box.x + box.w + 3 && sy >= box.y - 3 && sy <= box.y + box.h + 3) return { id: l.id, l, name: box.text.trim() === String(l.name).trim(), x: box.x, y: box.y };
         }
@@ -413,17 +413,39 @@ const Elev = (() => {
   const hoverPick = (sx, sy) => { const c = candIds(sx, sy); return c.length ? c[tabIdx % c.length] : null; };
 
   // handles of the selected level: the end grips, and the bubble check boxes
+  // where a level head's elbow control goes: on the jog when it has one, else just inside the end, above the line
+  function elbowControl(hd, end) {
+    if (hd.elbow) return hd.mid;
+    return { x: hd.P.x + (end === 0 ? 18 : -18), y: hd.P.y - 12 };
+  }
+  let elbowDrag = null; // { id, end, P, off } while a level head's elbow is dragged: off in paper mm above the line
   function levelParts(l) {
     const a = toScreen(l.u0, l.z), b = toScreen(l.u1, l.z);
     const hw = Math.max(headW(l), gridR() * 2) + 14;
-    return { a, b, boxes: [{ end: 0, x: a.x - hw, y: a.y }, { end: 1, x: b.x + hw, y: a.y }] };
+    // each end's head: at the end, or with an elbow further out, past a jog, and up or down by its offset
+    const r = Math.max(6, 2.5 * k());
+    const heads = [0, 1].map((end) => {
+      const P = end === 0 ? a : b, out = end === 0 ? -1 : 1;
+      const off = elbowDrag && elbowDrag.id === l.id && elbowDrag.end === end ? elbowDrag.off : (l.head_offsets || [])[end];
+      if (off == null) return { P, h: P, elbow: false };
+      const dy = -off * k();
+      const j1 = { x: P.x + out * r * 0.8, y: P.y }, j2 = { x: P.x + out * r * 1.6, y: P.y + dy };
+      return { P, j1, j2, h: { x: P.x + out * r * 2.4, y: P.y + dy }, elbow: true, mid: { x: (j1.x + j2.x) / 2, y: (j1.y + j2.y) / 2 } };
+    });
+    const by = (end) => heads[end].h.y, bx = (end) => heads[end].h.x + (end === 0 ? -hw : hw);
+    return { a, b, heads, boxes: [{ end: 0, x: bx(0), y: by(0) }, { end: 1, x: bx(1), y: by(1) }] };
   }
   function gripAt(sx, sy) {
     if (!data) return null;
     for (const l of data.levels) {
       if (!sel.has(l.id)) continue;
-      const { a, b, boxes } = levelParts(l);
+      const { a, b, boxes, heads } = levelParts(l);
       for (const bx of boxes) if (Math.abs(sx - bx.x) <= 7 && Math.abs(sy - bx.y) <= 7) return { id: l.id, kind: "bubble", end: bx.end, l };
+      for (const end of [0, 1]) {
+        if (!l.bubbles[end] || l.pinned) continue;
+        const e = elbowControl(heads[end], end);
+        if (Math.hypot(sx - e.x, sy - e.y) <= 7) return { id: l.id, kind: heads[end].elbow ? "elbow" : "add-elbow", end, l };
+      }
       if (Math.hypot(sx - a.x, sy - a.y) <= 7) return { id: l.id, kind: "end", end: 0, l };
       if (Math.hypot(sx - b.x, sy - b.y) <= 7) return { id: l.id, kind: "end", end: 1, l };
     }
@@ -574,9 +596,14 @@ const Elev = (() => {
     // the head family at each end that shows one: Name and elevation as its labels say
     ctx.save();
     if (ctx.oaTag) ctx.oaTag({ cat: "Levels", sub: null, kind: "iden" });
+    const { heads } = levelParts(l);
     for (const end of [0, 1]) {
       if (!l.bubbles[end]) continue;
-      const p = end === 0 ? a : b;
+      const hd = heads[end], p = hd.h;
+      if (hd.elbow) {
+        ctx.strokeStyle = col; ctx.lineWidth = mode === "sel" ? 1.8 : 1;
+        ctx.beginPath(); ctx.moveTo(hd.P.x, hd.P.y); ctx.lineTo(hd.j1.x, hd.j1.y); ctx.lineTo(hd.j2.x, hd.j2.y); ctx.lineTo(p.x, p.y); ctx.stroke();
+      }
       if (l.head) Ann.draw(ctx, l.head, { x: p.x, y: p.y, k: k(), flip: end === 0 }, col, css("--view-bg"), { own: !mode, pats: data.fill_patterns });
     }
     // the name beside the line when no head carries it
@@ -588,6 +615,17 @@ const Elev = (() => {
       for (const bx of levelParts(l).boxes) {
         ctx.strokeStyle = accent; ctx.lineWidth = 1; ctx.strokeRect(bx.x - 5, bx.y - 5, 10, 10);
         if (l.bubbles[bx.end]) { ctx.beginPath(); ctx.moveTo(bx.x - 3, bx.y); ctx.lineTo(bx.x - 1, bx.y + 3); ctx.lineTo(bx.x + 4, bx.y - 3); ctx.stroke(); }
+      }
+      // Add Elbow (a small jog) inside each shown head, or a grip on the jog of one that has an elbow
+      if (!l.pinned) {
+        const { heads } = levelParts(l);
+        for (const end of [0, 1]) {
+          if (!l.bubbles[end]) continue;
+          const e = elbowControl(heads[end], end);
+          ctx.strokeStyle = accent; ctx.fillStyle = css("--view-bg"); ctx.lineWidth = 1.2;
+          if (heads[end].elbow) { ctx.beginPath(); ctx.arc(e.x, e.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+          else { ctx.beginPath(); ctx.moveTo(e.x - 6, e.y + 2); ctx.lineTo(e.x - 1, e.y + 2); ctx.lineTo(e.x + 1, e.y - 3); ctx.lineTo(e.x + 6, e.y - 3); ctx.stroke(); }
+        }
       }
     }
   }
@@ -850,6 +888,8 @@ const Elev = (() => {
   // ---- Modify tools -----------------------------------------------------------------------------
   function newEd() {
     if (tool === "align") return { stage: "ref", ref: null };
+    // Measure needs no selection: two points, the distance shown until the next or Esc
+    if (tool === "measure") return { stage: "a", base: null, measured: null };
     return { stage: sel.size ? "a" : "pick", base: null };
   }
   function drawGhost(du, dz) {
@@ -886,6 +926,25 @@ const Elev = (() => {
       }
       return; // Align shows the highlighted line only, no snap glyphs
     }
+    if (tool === "measure") {
+      // a dashed line between the points with the distance beside it; the live one follows the cursor
+      const show = (m) => {
+        const a = toScreen(m.a.u, m.a.z), b = toScreen(m.b.u, m.b.z);
+        ctx.save(); ctx.strokeStyle = "#1d6fb8"; ctx.lineWidth = 1.5; ctx.setLineDash([6, 3]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
+        for (const q of [a, b]) { ctx.save(); ctx.fillStyle = "#1d6fb8"; ctx.beginPath(); ctx.arc(q.x, q.y, 3, 0, Math.PI * 2); ctx.fill(); ctx.restore(); }
+        label(`${Math.round(Math.hypot(m.b.u - m.a.u, m.b.z - m.a.z) * 10) / 10}`, (a.x + b.x) / 2 + 8, (a.y + b.y) / 2 - 10, "#1d6fb8", "left", true);
+      };
+      if (ed.measured) show(ed.measured);
+      if (!mouse || !data) return;
+      const p = snapPt(mouse.x, mouse.y), s = toScreen(p.u, p.z);
+      if (p.snap) { ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1.5; ctx.strokeRect(s.x - 5, s.y - 5, 10, 10); ctx.restore(); }
+      if (ed.stage === "b" && ed.base) {
+        let { u, z } = p;
+        if (mouse.shift) { if (Math.abs(u - ed.base.u) > Math.abs(z - ed.base.z)) z = ed.base.z; else u = ed.base.u; }
+        show({ a: ed.base, b: { u, z } });
+      }
+      return;
+    }
     if (!mouse || !data) return;
     const p = snapPt(mouse.x, mouse.y);
     const s = toScreen(p.u, p.z);
@@ -913,9 +972,15 @@ const Elev = (() => {
     const du = u - ed.base.u, dz = z - ed.base.z, k = o.arrayMoveTo === "last" ? 1 / (n - 1) : 1;
     return { n, du, dz, su: du * k, sz: dz * k, last: o.arrayMoveTo === "last" };
   }
+  // a measured distance in words: along it, across the view and up
+  function measureWords(m) {
+    const du = m.b.u - m.a.u, dz = m.b.z - m.a.z;
+    return `Distance ${Math.round(Math.hypot(du, dz) * 10) / 10} mm (across ${Math.round(Math.abs(du) * 10) / 10}, up ${Math.round(Math.abs(dz) * 10) / 10})`;
+  }
   function editPrompt() {
-    const name = tool === "move" ? "Move" : tool === "copy" ? "Copy" : tool === "array" ? "Array" : "Align";
+    const name = tool === "move" ? "Move" : tool === "copy" ? "Copy" : tool === "array" ? "Array" : tool === "measure" ? "Measure" : "Align";
     if (!ed) return name;
+    if (tool === "measure") return ed.stage === "b" ? "Measure: click the second point. Shift keeps it level or plumb. Esc cancels." : (ed.measured ? measureWords(ed.measured) + ". " : "") + "Measure: click the first point." + (ed.measured ? " Esc clears it." : " Esc to stop.");
     if (tool === "array" && ed.stage === "b") return `Array: click where the ${cb.arrayOptions().arrayMoveTo === "last" ? "last member goes (the rest spaced evenly between)" : "second member goes (the spacing)"}. Shift keeps it level or plumb.`;
     if (tool === "align") return ed.stage === "ref" ? "Align: click the line to align to. Tab cycles overlapping lines." : "Align: click the line of the element to move.";
     if (ed.stage === "pick") return `${name}: select the elements to ${tool}, then click to start.`;
@@ -923,6 +988,19 @@ const Elev = (() => {
     return `${name}: click the end point. Shift keeps it level or plumb.`;
   }
   function editClick(e) {
+    if (tool === "measure") {
+      const p = snapPt(e.offsetX, e.offsetY);
+      if (ed.stage === "a") { ed = { stage: "b", base: p, measured: null }; }
+      else {
+        let { u, z } = p;
+        if (e.shiftKey) { if (Math.abs(u - ed.base.u) > Math.abs(z - ed.base.z)) z = ed.base.z; else u = ed.base.u; }
+        if (Math.hypot(u - ed.base.u, z - ed.base.z) < 0.5) return;
+        ed = { stage: "a", base: null, measured: { a: ed.base, b: { u, z } } };
+      }
+      cb.prompt(editPrompt());
+      render();
+      return;
+    }
     if (tool === "align") {
       const list = candsAt(e.offsetX, e.offsetY);
       if (!list.length) return;
@@ -1249,6 +1327,14 @@ const Elev = (() => {
       if (dh) { down = null; dimDown = dh; return; } // the box opens on release, so the click does not take its focus back
       const g = gripAt(e.offsetX, e.offsetY);
       if (g && g.kind === "bubble") { down = null; cb.toggleBubble(g.id, g.end, g.l.bubbles); return; }
+      if (g && g.kind === "add-elbow") {
+        // a new elbow lifts the head clear of the line by about its own height
+        down = null;
+        const offs = (g.l.head_offsets || [null, null]).slice(); offs[g.end] = 6;
+        cb.levelElbow(g.id, offs);
+        return;
+      }
+      if (g && g.kind === "elbow") { down = null; elbowDrag = { id: g.id, end: g.end, l: g.l, off: g.l.head_offsets[g.end], y0: toScreen(g.l.u0, g.l.z).y }; return; }
       if (g && g.kind === "end") { drag = { id: g.id, kind: "end", end: g.end, u: g.end === 0 ? g.l.u0 : g.l.u1, moved: false, group: lockGroup(g.id, modelEnd(g.l, g.end)), align: null }; down = null; return; }
       // pressing on a selected curtain grid line placed by hand and moving drags it along the wall
       const sg = sel.size === 1 ? gridLine([...sel][0]) : null;
@@ -1312,6 +1398,13 @@ const Elev = (() => {
       return;
     }
     if (tgrip) { tgrip.x = e.offsetX; tgrip.y = e.offsetY; tgrip.cand = gripCand(tgrip.grip, e.offsetX, e.offsetY); canvas.style.cursor = tgrip.cand ? "crosshair" : "default"; render(); return; }
+    if (elbowDrag) {
+      // the head follows the cursor up and down; near the line the elbow goes
+      const off = (elbowDrag.y0 - e.offsetY) / k();
+      elbowDrag.off = Math.abs(off) < 1.5 ? null : Math.round(off * 10) / 10;
+      render();
+      return;
+    }
     const p = toWorld(e.offsetX, e.offsetY);
     cb.cursor(`${fmtElev(p.z - datum())}`);
     if (drag) {
@@ -1432,6 +1525,12 @@ const Elev = (() => {
         render();
         return;
       }
+    }
+    if (elbowDrag) {
+      const g = elbowDrag; elbowDrag = null;
+      const offs = (g.l.head_offsets || [null, null]).slice(); offs[g.end] = g.off;
+      cb.levelElbow(g.id, offs);
+      return;
     }
     if (drag) {
       const d = drag; drag = null;
@@ -1843,7 +1942,7 @@ const Elev = (() => {
       if (isEdit()) {
         if (e.key === "Tab" && tool === "align") { candTab++; render(); return true; }
         if (e.key === "Escape") {
-          if (ed && (ed.stage === "b" || ed.stage === "tgt" || (ed.stage === "a" && tool !== "align" && ed.base))) { ed = newEd(); cb.prompt(editPrompt()); render(); } else setTool("select");
+          if (ed && (ed.stage === "b" || ed.stage === "tgt" || ed.measured || (ed.stage === "a" && tool !== "align" && ed.base))) { ed = newEd(); cb.prompt(editPrompt()); render(); } else setTool("select");
           return true;
         }
       }

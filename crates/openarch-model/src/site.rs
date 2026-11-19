@@ -147,6 +147,9 @@ pub struct LevelLine {
     /// What the person sees (from the level's datum).
     pub elev: f64,
     pub bubbles: [bool; 2],
+    /// Each end's elbow: the head's height above the line on paper, mm.
+    pub head_offsets: [Option<f64>; 2],
+    pub pinned: bool,
     pub story: bool,
     /// Where the line starts and ends across the view (mm along the view's right axis), when the
     /// level has its own extent; otherwise the view's width.
@@ -1232,7 +1235,7 @@ impl Document {
             .map(|(id, l)| {
                 let ext = l.extent.map(|[a, b]| (u_of(a), u_of(b)));
                 let (u0, u1) = ext.map_or((-frame.left_mm, frame.right_mm), |(a, b)| (a.min(b), a.max(b)));
-                LevelLine { id, name: l.name.clone(), z: l.elevation_mm, elev: self.level_display_elevation(l), bubbles: l.bubbles, story: l.building_story, u0, u1, custom_extent: ext.is_some(), end_left: ext.map_or(0, |(a, b)| if a <= b { 0 } else { 1 }), locks: l.end_locks.clone(), head: self.drawn_head(l) }
+                LevelLine { id, name: l.name.clone(), z: l.elevation_mm, elev: self.level_display_elevation(l), bubbles: l.bubbles, head_offsets: l.head_offsets, pinned: l.pinned, story: l.building_story, u0, u1, custom_extent: ext.is_some(), end_left: ext.map_or(0, |(a, b)| if a <= b { 0 } else { 1 }), locks: l.end_locks.clone(), head: self.drawn_head(l) }
             })
             .collect();
         let settings = self.effective_settings_of(v);

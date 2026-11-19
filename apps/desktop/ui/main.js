@@ -1930,7 +1930,7 @@ function toggleProperties() {
   setPrompt(hidden ? "Properties palette hidden. Properties shows it again." : "Properties palette shown.");
 }
 
-const ELEV_EDIT = new Set(["move", "copy", "align", "array"]);
+const ELEV_EDIT = new Set(["move", "copy", "align", "array", "measure"]);
 // Move, Copy and Rotate in the 3D view. Points are picked where the line of sight meets the plane of the current
 // level; the selection moves in plan (heights stay). Move and Copy: a base point, then where it goes. Rotate: the
 // centre, a point that gives the start direction, then the end direction. Esc cancels.
@@ -2608,6 +2608,7 @@ Elev.callbacks.moveLevel = (id, elev) => levelPatch(id, { display_elevation_mm: 
 Elev.callbacks.editElevation = (id, elev) => levelPatch(id, { display_elevation_mm: elev });
 Elev.callbacks.renameLevel = (id, name) => levelPatch(id, { name });
 Elev.callbacks.toggleBubble = (id, end, bubbles) => { const b = bubbles.slice(); b[end] = !b[end]; return levelPatch(id, { bubbles: b }); };
+Elev.callbacks.levelElbow = (id, offsets) => levelPatch(id, { head_offsets: offsets });
 // Dragging the end of a level. `end` is the side in this view (0 left, 1 right); a level that fitted the view gets an
 // extent of its own from the view's ends, and an end that lined up with another level's end is locked to it.
 Elev.callbacks.setExtent = async (id, end, u, l, align) => {
@@ -3106,7 +3107,7 @@ $("#qa-redo").onclick = redo;
 $("#qa-export").onclick = () => runCommand("export");
 // Measure on the top bar: the same tool as Modify > Measure, in a project's plan views
 $("#qa-measure").onclick = () => {
-  if (app.doc !== "project") { setPrompt("Measure works in a project's plan views.", true); return; }
+  if (app.doc !== "project") { setPrompt("Measure works in a project's plan, elevation and section views.", true); return; }
   runCommand("me");
 };
 // Help is a drop-down on the top bar, not a ribbon tab
