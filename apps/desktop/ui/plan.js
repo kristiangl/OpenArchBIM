@@ -1607,14 +1607,6 @@ const Plan = (() => {
         label(`${Math.round(L)}`, toScreen({ x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 }), accent);
       }
     }
-    // where a demolished door or window has been filled in: new work across the wall, drawn over it (phasing)
-    for (const ring of data.phase_infills || []) {
-      polyPath(ring);
-      ctx.save();
-      ctx.fillStyle = css("--view-bg"); ctx.fill();
-      ctx.strokeStyle = css("--text"); ctx.lineWidth = thin ? 1 : 1.5; ctx.setLineDash([]); ctx.stroke();
-      ctx.restore();
-    }
     // doors and windows: each part draws in its subcategory's style
     for (const ins of [...data.inserts].sort((a, b) => order[a.display] - order[b.display])) {
       const sub = (name) => (ins.sub_styles && ins.sub_styles[name]) || ins.style;

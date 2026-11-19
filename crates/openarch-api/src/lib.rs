@@ -3104,7 +3104,6 @@ impl Session {
             },
             "walls": walls, "curtains": curtains, "floors": floors, "roofs": roofs, "inserts": inserts,
             // where a demolished door or window has been filled in, drawn as new work in its wall
-            "phase_infills": d.iter().filter(|(_, e)| matches!(e, Element::Wall(_))).flat_map(|(id, _)| d.phase_infills(view, id, range.cut)).map(|r| r.iter().map(pt).collect::<Vec<_>>()).collect::<Vec<_>>(),
             "markers": markers, "marker_family": d.marker_family(None).map(|(fid, f)| symbol_json(d, fid, f)), "site_points": site_points, "sections": sections, "section_family": d.section_marker_family(section_tag.and_then(|t| t.head)).map(|(fid, f)| symbol_json(d, fid, f)),
             "section_tail_family": section_tag.and_then(|t| t.tail).and_then(|id| d.section_marker_family(Some(id))).map(|(fid, f)| symbol_json(d, fid, f)), "grids": grids, "dimensions": dimensions, "spots": spots,
             "wall_groups": graphics::wall_groups(d, &settings, view, &layered, settings.wall_join_display == WallJoinDisplay::CleanSameType),
@@ -5064,21 +5063,42 @@ mod tests {
         call(&mut s, "demolish", json!({ "view_id": view, "ids": [old] }));
         let look = |s: &mut Session| {
             let plan = call(s, "plan", json!({ "view_id": view }));
-            let wall = plan["walls"].as_array().unwrap().iter().find(|x| x["id"] == w).unwrap().clone();
+            let walls = plan["walls"].as_array().unwrap();
+            let wall = walls.iter().find(|x| x["id"] == w).unwrap().clone();
             let doors: Vec<u64> = plan["inserts"].as_array().unwrap().iter().map(|x| x["id"].as_u64().unwrap()).collect();
-            (wall["pieces"].as_array().unwrap().len(), doors, plan["phase_infills"].as_array().unwrap().len())
+            (wall["pieces"].as_array().unwrap().len(), doors, walls.len() - 1)
         };
-        // Show All: both doors cut the wall (three pieces), no infill
-        assert_eq!(look(&mut s), (3, vec![old, new], 0));
-        // proposed (Show Previous + New): the new door cuts it, the old opening is filled in
+        // the old door's opening gets an infill: a wall of the host's type, New Construction, pinned
+        let infills = |s: &mut Session| -> Vec<(u64, f64, f64)> {
+            s.doc.iter().filter_map(|(id, e)| match e { Element::Wall(x) if x.infill.is_some() => Some((id, x.start.dist(&x.end), x.height_mm)), _ => None }).collect()
+        };
+        let f = infills(&mut s);
+        assert_eq!(f.len(), 1, "{f:?}");
+        assert!((f[0].1 - 820.0).abs() < 60.0 && f[0].2 > 2000.0, "{f:?}");
+        let fid = f[0].0;
+        let rows = call(&mut s, "describe", json!({ "id": fid }))["groups"].as_array().unwrap().iter().find(|g| g["name"] == "Phasing").unwrap()["rows"].clone();
+        assert_eq!(rows[0]["value"], "New Construction");
+        // Show All: both doors cut the wall (three pieces), and the infill is drawn in the old one
+        assert_eq!(look(&mut s), (3, vec![old, new], 1));
+        // proposed (Show Previous + New): the new door cuts it, the old opening is filled in by the infill
         call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + New") } }));
-        assert_eq!(look(&mut s), (2, vec![new], 1));
-        // demolition (Show Previous + Demo): the old door shows, the new one is not there yet and does not cut
+        assert_eq!(look(&mut s), (3, vec![new], 1));
+        // demolition (Show Previous + Demo): the old door shows, the new one and the infill are not there yet
         call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + Demo") } }));
         assert_eq!(look(&mut s), (2, vec![old], 0));
         // the Existing phase: the old door stands, the new one is not built
         call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("Existing"), "phase_filter": filter("Show All") } }));
         assert_eq!(look(&mut s), (2, vec![old], 0));
+        // the infill follows the door: moved with it, gone when the door stays or is deleted, back on undo
+        call(&mut s, "move_vertical", json!({ "ids": [old], "dz": 0, "dx": 500, "dy": 0 }));
+        let g = infills(&mut s);
+        assert_eq!(g[0].0, fid);
+        call(&mut s, "set_element_phases", json!({ "ids": [old], "patch": { "demolished": null } }));
+        assert!(infills(&mut s).is_empty());
+        call(&mut s, "undo", json!({}));
+        assert_eq!(infills(&mut s).len(), 1);
+        call(&mut s, "delete", json!({ "ids": [old] }));
+        assert!(infills(&mut s).is_empty());
     }
 
     #[test]
@@ -5114,6 +5134,31 @@ mod tests {
         let f = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [6000, 5000], "flipped": true }))["id"].as_u64().unwrap();
         call(&mut s, "flip_walls", json!({ "ids": [f] }));
         assert!(s.handle("flip_instances", &json!({ "ids": [w] })).is_err(), "walls are not doors");
+    }
+
+    #[test]
+    fn building_outlines_and_automatic_ceilings_follow_the_active_phase() {
+        let (mut s, lvl, wt, view) = setup();
+        let wall = |s: &mut Session, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
+        // an existing 6 x 4 m box with a new 3 m extension off its east wall
+        let old: Vec<u64> = [([0, 0], [6000, 0]), ([6000, 0], [6000, 4000]), ([6000, 4000], [0, 4000]), ([0, 4000], [0, 0])].into_iter().map(|(a, b)| wall(&mut s, a, b)).collect();
+        for (a, b) in [([6000, 0], [9000, 0]), ([9000, 0], [9000, 4000]), ([9000, 4000], [6000, 4000])] {
+            wall(&mut s, a, b);
+        }
+        let ph = call(&mut s, "phasing", json!({}));
+        let phase = |n: &str| ph["phases"].as_array().unwrap().iter().find(|p| p["name"] == n).unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "set_element_phases", json!({ "ids": old, "patch": { "created": phase("Existing") } }));
+        let outline = |s: &Session| s.doc.building_outlines(lvl, 1200.0).iter().map(|r| openarch_model::geom::signed_area(r).abs() / 1e6).sum::<f64>();
+        let new = outline(&s);
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("Existing") } }));
+        call(&mut s, "active_view", json!({ "view_id": view }));
+        let existing = outline(&s);
+        assert!(new > existing * 1.3 && existing > 20.0, "{new} {existing}");
+        // an automatic ceiling in the extension: nothing encloses it before it is built
+        assert!(s.doc.ceiling_region_at(lvl, 2400.0, openarch_model::geom::Point::new(7500.0, 2000.0)).is_none());
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("New Construction") } }));
+        call(&mut s, "active_view", json!({ "view_id": view }));
+        assert!(s.doc.ceiling_region_at(lvl, 2400.0, openarch_model::geom::Point::new(7500.0, 2000.0)).is_some());
     }
 
     #[test]

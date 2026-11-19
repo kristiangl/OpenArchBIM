@@ -506,6 +506,10 @@ pub struct Wall {
     /// An outline sketched with Edit Profile, in place of the wall's rectangle.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub profile: Option<crate::wallprofile::WallProfile>,
+    /// An infill (phasing, spec 5.1): this wall fills the opening the demolished door or window left in its
+    /// host, built in the phase it was demolished in. Kept to the opening by `Document::sync_infills`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub infill: Option<Id>,
 }
 
 impl Wall {
@@ -539,6 +543,7 @@ impl Wall {
             pinned: false,
             curtain_lines: None,
             profile: None,
+            infill: None,
         }
     }
 }

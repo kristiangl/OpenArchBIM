@@ -107,15 +107,21 @@ impl Document {
     }
 
     /// The free-space faces walls (that reach height `z`), room-bounding columns and families, and (with `separators`)
-    /// room separation lines enclose on a level: what rooms and automatic ceilings fill.
+    /// room separation lines enclose on a level: what rooms and automatic ceilings fill. Only what stands in the
+    /// active view's phase.
     pub fn enclosed_faces(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Region>{
-        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators,None)).0
+        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators,self.active_spatial_phase())).0
     }
 
     /// The outline of the building on a level at height `z`: the outer faces of the walls (and bounding columns)
     /// that the outside meets, one ring per separate building.
     pub fn building_outlines(&self,level:Id,z:f64)->Vec<Vec<Point>>{
-        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false,None)).1
+        self.building_outlines_in(level,z,self.active_spatial_phase())
+    }
+
+    /// The building's outline as it stands in `phase` (None: everything).
+    pub fn building_outlines_in(&self,level:Id,z:f64,phase:Option<Id>)->Vec<Vec<Point>>{
+        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false,phase)).1
     }
 
     /// What bounds rooms on a level at height `z`: wall bodies (to the boundary location), separation lines when

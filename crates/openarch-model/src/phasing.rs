@@ -562,6 +562,8 @@ impl Document {
         match self.get(id) {
             Some(Element::Room(r)) => self.view_shows_phase(view, r.phase),
             Some(Element::RoomSeparation(s)) => self.view_shows_phase(view, s.phase),
+            // an area is in its area plan's phase
+            Some(Element::Area(a)) => self.view_shows_phase(view, self.view(a.view).and_then(|v| v.phase)),
             _ => !self.phase_hides(view, id),
         }
     }
@@ -636,33 +638,105 @@ impl Document {
         ph.index(ph.created_of(id)).unwrap_or(0).min(20) as u8
     }
 
-    /// Where a straight wall shown in `view` is filled in at the cut height `cut`: the openings of doors and
-    /// windows demolished in the view's phase that the view does not show (in later phases the infill is simply
-    /// part of the wall). Each as a ring across the wall, so
-    /// the plan can draw the infill as new work.
-    pub fn phase_infills(&self, view: &View, wall: Id, cut: f64) -> Vec<[crate::geom::Point; 4]> {
+    /// The infill wall filling the opening `instance` left, if it has one.
+    pub fn infill_of(&self, instance: Id) -> Option<Id> {
+        if !self.phasing().is_some_and(|(_, ph)| ph.demolished.contains_key(&instance)) {
+            return None;
+        }
+        self.iter().find_map(|(id, e)| matches!(e, Element::Wall(w) if w.infill == Some(instance)).then_some(id))
+    }
+
+    /// The infills the model should have (spec 5.1): for each door or window demolished in a straight wall that
+    /// still stands after it, a wall of the host's type across its opening, built in the phase the door goes and
+    /// demolished with the host. `(instance, wall, phase created, phase demolished)`.
+    fn wanted_infills(&self) -> Vec<(Id, crate::Wall, Id, Option<Id>)> {
         let Some((_, ph)) = self.phasing() else { return vec![] };
-        let Some((vphase, _)) = self.view_phase(view) else { return vec![] };
-        let Some(Element::Wall(w)) = self.get(wall) else { return vec![] };
-        if w.curve.is_some() || self.phase_hides(view, wall) {
+        let was = (self.drawing_view.replace(None), self.export_phase.replace(None));
+        let mut out = vec![];
+        for (&inst, &demo) in &ph.demolished {
+            let Some(Element::FamilyInstance(i)) = self.get(inst) else { continue };
+            let Some(h) = i.host else { continue };
+            let Some(Element::Wall(w)) = self.get(h.wall) else { continue };
+            if w.curve.is_some() || w.infill.is_some() || self.curtain_of(w).is_some() || self.curtain_door_cell(i).is_some() {
+                continue;
+            }
+            let Some(di) = ph.index(demo) else { continue };
+            let host_demo = ph.demolished.get(&h.wall).copied().filter(|d| ph.index(*d).is_some());
+            if host_demo.and_then(|d| ph.index(d)).is_some_and(|e| e <= di) || ph.index(ph.created_of(h.wall)).is_some_and(|c| c > di) {
+                continue;
+            }
+            let Some(o) = self.wall_openings(h.wall).into_iter().find(|o| o.instance == inst) else { continue };
+            let len = w.start.dist(&w.end);
+            if len < 1e-6 {
+                continue;
+            }
+            let at = |u: f64| crate::geom::Point::new(w.start.x + (w.end.x - w.start.x) * u / len, w.start.y + (w.end.y - w.start.y) * u / len);
+            let base = self.level(w.base_level).map_or(0.0, |l| l.elevation_mm);
+            let mut f = crate::Wall::new(w.wall_type, w.base_level, at(o.u0), at(o.u1), o.z1 - o.z0);
+            f.base_offset_mm = o.z0 - base;
+            f.location_line = w.location_line;
+            f.flipped = w.flipped;
+            f.room_bounding = w.room_bounding;
+            f.start_join.allowed = false;
+            f.end_join.allowed = false;
+            f.pinned = true;
+            f.infill = Some(inst);
+            out.push((inst, f, demo, host_demo));
+        }
+        self.drawing_view.set(was.0);
+        self.export_phase.set(was.1);
+        out
+    }
+
+    /// What brings the infills in line with the demolished doors and windows: walls added, moved to their
+    /// openings or removed, and their phases. Applied by `transact` within the step that caused them.
+    pub(crate) fn infill_plan(&self) -> Vec<crate::doc::Change> {
+        use crate::doc::Change;
+        let Some((pid, ph0)) = self.phasing() else { return vec![] };
+        let existing: Vec<(Id, Id, crate::Wall)> = self.iter().filter_map(|(id, e)| match e { Element::Wall(w) => w.infill.map(|i| (id, i, w.clone())), _ => None }).collect();
+        if ph0.demolished.is_empty() && existing.is_empty() {
             return vec![];
         }
-        let was = self.drawing_view.replace(None);
-        let all = self.wall_openings(wall);
-        self.drawing_view.set(was);
-        let (wl, wr) = self.wall_extents(w);
-        let len = w.start.dist(&w.end);
-        if len < 1e-6 {
-            return vec![];
+        let mut ph = ph0.clone();
+        let mut out = vec![];
+        let mut kept = std::collections::BTreeSet::new();
+        let mut next = self.next_id;
+        for (inst, f, created, demo) in self.wanted_infills() {
+            let id = match existing.iter().find(|(id, i, _)| *i == inst && !kept.contains(id)) {
+                Some((id, _, w)) => {
+                    let mut n = w.clone();
+                    (n.wall_type, n.base_level, n.start, n.end, n.curve, n.top_level, n.height_mm, n.base_offset_mm) = (f.wall_type, f.base_level, f.start, f.end, None, None, f.height_mm, f.base_offset_mm);
+                    (n.location_line, n.flipped, n.room_bounding, n.profile) = (f.location_line, f.flipped, f.room_bounding, None);
+                    if n != *w {
+                        out.push(Change { id: *id, before: Some(Element::Wall(w.clone())), after: Some(Element::Wall(n)) });
+                    }
+                    *id
+                }
+                None => {
+                    let id = next;
+                    next += 1;
+                    out.push(Change { id, before: None, after: Some(Element::Wall(f)) });
+                    id
+                }
+            };
+            kept.insert(id);
+            ph.created.insert(id, created);
+            match demo {
+                Some(d) => ph.demolished.insert(id, d),
+                None => ph.demolished.remove(&id),
+            };
         }
-        let d = crate::geom::Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
-        let n = crate::geom::Point::new(-d.y, d.x);
-        let at = |u: f64, o: f64| crate::geom::Point::new(w.start.x + d.x * u + n.x * o, w.start.y + d.y * u + n.y * o);
-        all.into_iter()
-            .filter(|o| o.z0 < cut && cut < o.z1)
-            .filter(|o| ph.demolished.get(&o.instance) == Some(&vphase) && self.phase_hides(view, o.instance))
-            .map(|o| [at(o.u0, -wr), at(o.u1, -wr), at(o.u1, wl), at(o.u0, wl)])
-            .collect()
+        for (id, _, w) in &existing {
+            if !kept.contains(id) {
+                out.push(Change { id: *id, before: Some(Element::Wall(w.clone())), after: None });
+                ph.created.remove(id);
+                ph.demolished.remove(id);
+            }
+        }
+        if ph != *ph0 {
+            out.push(Change { id: pid, before: Some(Element::Phasing(ph0.clone())), after: Some(Element::Phasing(ph)) });
+        }
+        out
     }
 }
 

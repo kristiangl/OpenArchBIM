@@ -642,6 +642,7 @@ impl Document {
     pub fn wall_layer_geometry(&self) -> BTreeMap<Id, WallLayers> {
         use crate::wallpath::{facet_id};
         let mut walls: Vec<LWall> = vec![];
+        let mut alone: Vec<LWall> = vec![];
         let mut types = BTreeMap::new();
         // (facets, ids) of each wall, in order
         let mut facets_of: BTreeMap<Id, usize> = BTreeMap::new();
@@ -659,11 +660,20 @@ impl Document {
             let facets = self.wall_facets(id, w);
             facets_of.insert(id, facets.len());
             for join in facets {
-                walls.push(LWall { join, layers: specs.clone() });
+                if w.infill.is_some() {
+                    alone.push(LWall { join, layers: specs.clone() });
+                } else {
+                    walls.push(LWall { join, layers: specs.clone() });
+                }
             }
             types.insert(id, t);
         }
-        let (mut joined, free) = join_layers_full(&walls);
+        let (mut joined, mut free) = join_layers_full(&walls);
+        for w in &alone {
+            let (j, _) = join_layers_full(std::slice::from_ref(w));
+            joined.extend(j);
+            free.insert(w.join.id, [false, false]);
+        }
         let mut out = BTreeMap::new();
         for (id, t) in types {
             let n = facets_of[&id];

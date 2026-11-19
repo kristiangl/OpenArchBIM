@@ -275,7 +275,8 @@ impl Document {
             let mut name = l.name.clone();
             let mut k = 1;
             while taken(&name) { name = format!("{}({k})", l.name); k += 1; }
-            let (walls, outline) = if boundaries { self.exterior_walls(level, l.elevation_mm + 1200.0) } else { (vec![], vec![]) };
+            // a new plan shows the default phase: its boundaries go round the building as it stands then
+            let (walls, outline) = if boundaries { self.exterior_walls(level, l.elevation_mm + 1200.0, self.spatial_phase(None)) } else { (vec![], vec![]) };
             plans.push((View::area_plan(&name, level, scheme), walls, outline));
         }
         let _ = s;
@@ -298,14 +299,15 @@ impl Document {
 
     /// The walls round the outside of the building on a level at height `z` (one face outside, the other in), with
     /// their centrelines; when they do not close round anything, no walls and the building's outline instead.
-    fn exterior_walls(&self, level: Id, z: f64) -> (Vec<(Id, Curve)>, Vec<Vec<Point>>) {
-        let outline = self.building_outlines(level, z);
+    /// Only what stands in `phase`.
+    fn exterior_walls(&self, level: Id, z: f64, phase: Option<Id>) -> (Vec<(Id, Curve)>, Vec<Vec<Point>>) {
+        let outline = self.building_outlines_in(level, z, phase);
         let outside = |p: Point| !outline.iter().any(|ring| crate::curve::point_in_polygon(p, ring));
         let mut walls = vec![];
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
             let (lo, hi) = self.wall_extent(w);
-            if !w.room_bounding || z < lo - 0.01 || z >= hi - 0.001 { continue; }
+            if !w.room_bounding || z < lo - 0.01 || z >= hi - 0.001 || !self.stands_in(id, phase) { continue; }
             let path = w.path();
             if path.length() < 1.0 { continue; }
             let (p, d) = path.at(path.length() / 2.0);

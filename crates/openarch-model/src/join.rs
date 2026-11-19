@@ -422,7 +422,7 @@ impl crate::Document {
             return None;
         }
         let u = Point::new((p.x - from.x) / run, (p.y - from.y) / run);
-        let walls: Vec<(Id, &crate::element::Wall)> = self.iter().filter_map(|(id, e)| match e { Element::Wall(w) if w.base_level == level && !skip.contains(&id) && w.start.dist(&w.end) > 1.0 => Some((id, w)), _ => None }).collect();
+        let walls: Vec<(Id, &crate::element::Wall)> = self.iter().filter_map(|(id, e)| match e { Element::Wall(w) if w.base_level == level && !skip.contains(&id) && w.infill.is_none() && w.start.dist(&w.end) > 1.0 => Some((id, w)), _ => None }).collect();
         // an end that other walls already meet at stays where it is
         let shared = |id: Id, q: Point| walls.iter().any(|(o, w)| *o != id && (w.start.dist(&q) <= TOL || w.end.dist(&q) <= TOL || (w.curve.is_none() && dist_to_segment(q, w.start, w.end) <= TOL)));
         let mut corner: Option<(f64, Point, Option<(Id, u8)>)> = None;

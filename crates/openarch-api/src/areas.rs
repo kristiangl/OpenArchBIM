@@ -94,6 +94,8 @@ impl Session {
         let dup = d.areas().iter().any(|(o, x)| *o != id && x.number == a.number && d.scheme_of_area(x) == d.scheme_of_area(a));
         let mut identity = vec![text("Number", "number", &a.number), text("Name", "name", &a.name), text("Comments", "comments", &a.comments), json!({ "label": "Area Type", "kind": "select", "value": a.area_type.label(), "options": types }), ro("Status", status_label(c.status).into(), None, "text")];
         if dup { identity.push(ro("Warning", "Another area in this scheme has the same number.".into(), None, "text")); }
+        // an area is in its area plan's phase (set on the plan)
+        let phase = d.phasing().and_then(|(_, ph)| ph.phase(d.spatial_phase(d.view(a.view).and_then(|v| v.phase))?).map(|p| p.name.clone())).unwrap_or_else(|| "New Construction".into());
         json!({
             "id": id, "kind": "Area", "category": area_category(d, a), "title": format!("Area: {} {}", a.number, a.name), "type_label": "Area",
             "target": { "method": "patch_area", "id": id },
@@ -103,6 +105,7 @@ impl Session {
                     ro("Area Scheme", scheme.map_or(String::new(), |s| s.name.clone()), None, "text"),
                     { "label": "Pinned", "kind": "bool", "path": "pinned", "raw": a.pinned, "value": if a.pinned { "Yes" } else { "No" } },
                 ] },
+                { "name": "Phasing", "rows": [ro("Phase", phase, None, "text")] },
                 { "name": "Dimensions", "rows": [
                     ro("Area", if placed { format!("{:.2} m\u{b2}", c.area_mm2 / 1e6) } else { status_label(c.status).into() }, placed.then_some(c.area_mm2 / 1e6), "area"),
                     ro("Perimeter", format!("{:.0}", c.perimeter_mm), placed.then_some(c.perimeter_mm), "length"),

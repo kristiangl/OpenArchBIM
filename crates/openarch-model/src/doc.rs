@@ -8,10 +8,10 @@ use crate::geom::{polygon_area_abs, Point};
 use crate::view::*;
 
 #[derive(Debug, Clone)]
-struct Change {
-    id: Id,
-    before: Option<Element>,
-    after: Option<Element>,
+pub(crate) struct Change {
+    pub(crate) id: Id,
+    pub(crate) before: Option<Element>,
+    pub(crate) after: Option<Element>,
 }
 
 #[derive(Debug, Clone)]
@@ -289,6 +289,24 @@ impl Document {
                         self.elements.insert(pid, after.clone());
                         self.edit_count += 1;
                         changes.push(Change { id: pid, before: Some(before), after: Some(after) });
+                    }
+                }
+                // infills follow the doors and windows demolished in their walls, in the same undo step
+                if changes.iter().any(|c| matches!(c.after.as_ref().or(c.before.as_ref()), Some(Element::Wall(_) | Element::FamilyInstance(_) | Element::FamilyType(_) | Element::Family(_) | Element::Level(_) | Element::Phasing(_) | Element::WallType(_)))) {
+                    for c in self.infill_plan() {
+                        match &c.after {
+                            Some(e) => {
+                                self.elements.insert(c.id, e.clone());
+                            }
+                            None => {
+                                self.elements.remove(&c.id);
+                            }
+                        }
+                        if c.before.is_none() {
+                            self.next_id = self.next_id.max(c.id + 1);
+                        }
+                        self.edit_count += 1;
+                        changes.push(c);
                     }
                 }
                 if !changes.is_empty() {
@@ -1551,7 +1569,14 @@ impl Document {
     /// the wall and the facet number (see `wallpath`).
     pub(crate) fn join_walls_list(&self) -> Vec<crate::join::JoinWall> {
         // curtain walls take no part in joins: they stop at a wall's face, and an embedded one cuts its host
-        self.iter().filter_map(|(id, e)| if let Element::Wall(w) = e { (self.curtain_of(w).is_none()).then(|| self.wall_facets(id, w)) } else { None }).flatten().collect()
+        // nor do infills: one sits in its host's opening, on its own
+        self.iter().filter_map(|(id, e)| if let Element::Wall(w) = e { (self.curtain_of(w).is_none() && w.infill.is_none()).then(|| self.wall_facets(id, w)) } else { None }).flatten().collect()
+    }
+
+    /// Each infill wall's facets, joined alone (square ends).
+    fn infill_outlines(&self) -> BTreeMap<Id, [Point; 4]> {
+        let walls: Vec<crate::join::JoinWall> = self.iter().filter_map(|(id, e)| if let Element::Wall(w) = e { w.infill.is_some().then(|| self.wall_facets(id, w)) } else { None }).flatten().collect();
+        walls.iter().flat_map(|w| crate::join::join_walls(std::slice::from_ref(w))).collect()
     }
 
     /// The curtain wall types a project starts with, added to projects saved before curtain walls.
@@ -1609,6 +1634,7 @@ impl Document {
     /// Curved walls are left out; see `wall_polygons`.
     pub fn wall_outlines(&self) -> BTreeMap<Id, [Point; 4]> {
         let mut by_facet = crate::join::join_walls(&self.join_walls_list());
+        by_facet.extend(self.infill_outlines());
         self.iter()
             .filter_map(|(id, e)| match e {
                 Element::Wall(w) if w.curve.is_none() => by_facet.remove(&crate::wallpath::facet_id(id, 0)).map(|o| (id, o)),
@@ -1621,7 +1647,8 @@ impl Document {
     /// curved wall the left side from start to end then the right side back.
     pub fn wall_polygons(&self) -> BTreeMap<Id, Vec<Point>> {
         use crate::wallpath::{facet_id};
-        let by_facet = crate::join::join_walls(&self.join_walls_list());
+        let mut by_facet = crate::join::join_walls(&self.join_walls_list());
+        by_facet.extend(self.infill_outlines());
         let mut out = BTreeMap::new();
         for (id, e) in self.iter() {
             let Element::Wall(w) = e else { continue };
