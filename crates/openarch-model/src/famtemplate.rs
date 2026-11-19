@@ -87,7 +87,7 @@ fn schedule_params(panels: FamilyCategory) -> Vec<ParamDef> {
 }
 
 /// The standard identity data every family has.
-fn identity_params() -> Vec<ParamDef> {
+pub fn identity_params() -> Vec<ParamDef> {
     let mut v: Vec<ParamDef> = ["Keynote", "Model", "Manufacturer", "Type Comments", "URL", "Description", "Assembly Description", "Assembly Code", "Type Mark", "OmniClass Number", "OmniClass Title"].iter().map(|n| text(n, "Identity Data")).collect();
     v.push(param("Cost", ParamKind::Number, false, "Identity Data", ParamValue::Number(0.0)));
     v

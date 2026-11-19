@@ -329,6 +329,7 @@ impl FamilyBody {
                 let off = || format!("{} {name} {OFF_PLANE}", what(&x));
                 let lp = |l: &Loop| c.lp(l, np, w0).ok_or_else(off);
                 match &mut f.shape {
+                    FormShape::Mesh { .. } => return Err(format!("{name} is imported geometry: it cannot be moved, copied or mirrored in the family editor yet")),
                     FormShape::Extrusion { profile, .. } => *profile = profile.iter().map(&lp).collect::<Result<_, _>>()?,
                     FormShape::Blend { base, top, .. } => {
                         *base = base.iter().map(&lp).collect::<Result<_, _>>()?;

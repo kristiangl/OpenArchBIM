@@ -106,7 +106,7 @@ const Backend = {
   },
 
   async pickOpenFamily() {
-    return this.fileDialog("open", { multiple: false, filters: [{ name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }] });
+    return this.fileDialog("open", { multiple: false, filters: [{ name: "Families", extensions: ["oaf", "ibfam", "rfa"] }, { name: "OpenArch BIM family", extensions: ["oaf", "ibfam"] }, { name: "Revit family", extensions: ["rfa"] }] });
   },
 };
 

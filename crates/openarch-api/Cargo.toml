@@ -12,3 +12,4 @@ openarch-model = { path = "../openarch-model" }
 openarch-params = { path = "../openarch-params" }
 openarch-links = { path = "../openarch-links" }
 openarch-cad = { path = "../openarch-cad" }
+openarch-rfa = { path = "../openarch-rfa" }

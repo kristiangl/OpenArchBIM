@@ -490,6 +490,14 @@ pub enum FormShape {
         #[serde(default)]
         flip: bool,
     },
+    /// Fixed triangles in the family's own axes (mm), read from another program's family (a Revit family's saved
+    /// display geometry). It does not flex with the family's parameters and has no work plane of its own.
+    Mesh {
+        /// x, y, z of each point in turn.
+        verts: Vec<f64>,
+        /// Three point indices per triangle, counter-clockwise seen from outside.
+        tris: Vec<u32>,
+    },
 }
 
 /// A Profile family a sweep uses: the family by its name in the project and the type, with the profile's own
@@ -510,6 +518,8 @@ impl FormShape {
     pub fn plane(&self) -> PlaneId {
         match self {
             FormShape::Extrusion { plane, .. } | FormShape::Blend { plane, .. } | FormShape::Revolve { plane, .. } | FormShape::Sweep { plane, .. } | FormShape::SweptBlend { plane, .. } => *plane,
+            // a mesh stands on the reference level, the plane every body has
+            FormShape::Mesh { .. } => PLANE_LEVEL,
         }
     }
 }
@@ -881,6 +891,7 @@ impl FamilyBody {
                     FormShape::Revolve { profile, .. } => profile.iter().any(in_loop),
                     FormShape::Blend { base, top, start_lock, end_lock, .. } => base.iter().chain(top).any(in_loop) || *start_lock == Some(id) || *end_lock == Some(id),
                     FormShape::Sweep { path, .. } | FormShape::SweptBlend { path, .. } => in_loop(path),
+                    FormShape::Mesh { .. } => false,
                 }
         });
         let used_by_sym = self.syms.iter().any(|s| in_loop(&s.path))
@@ -1334,7 +1345,7 @@ impl FamilyBody {
                     profile_exprs(profile, &what, f);
                     profile_exprs(profile_end, &what, f);
                 }
-                FormShape::Revolve { .. } => {}
+                FormShape::Revolve { .. } | FormShape::Mesh { .. } => {}
             }
             if let Some(w) = &mut fm.vis.when {
                 f(format!("{what} (visible when)"), w);
@@ -2191,6 +2202,14 @@ impl FamilyBody {
         let axes = normal.sketch_axes();
         let w0 = pos[&wp.id];
         match &f.shape {
+            FormShape::Mesh { verts, tris } => {
+                let at = |i: u32| -> Option<[f64; 3]> {
+                    let k = i as usize * 3;
+                    Some([*verts.get(k)?, *verts.get(k + 1)?, *verts.get(k + 2)?])
+                };
+                let tris = tris.chunks_exact(3).filter_map(|t| Some([at(t[0])?, at(t[1])?, at(t[2])?])).collect();
+                Ok(Solid { axis: None, parts: vec![], tris })
+            }
             FormShape::Extrusion { start, end, start_lock, end_lock, profile, .. } => {
                 let (a, b) = (self.depth(pos, normal, w0, start, *start_lock, env)?, self.depth(pos, normal, w0, end, *end_lock, env)?);
                 let (lo, hi) = (a.min(b), a.max(b));

@@ -75,3 +75,95 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## rvt-rs
+
+- Source: https://github.com/DrunkOnJava/rvt-rs, at commit 62cc17e (version 0.25.0). Copyright 2026 Griffin Long.
+- Licence: Apache License 2.0. The licence text is at https://www.apache.org/licenses/LICENSE-2.0 and in the
+  repository's `LICENSE` file.
+- Used unmodified, as a separate library (the `rvt` crate with its `unstable-research` feature): `crates/openarch-rfa`
+  calls it to read Revit family files (.rfa) for Load Family. None of its source is copied into OpenArch BIM. Its
+  source code is available from the address above. Its NOTICE file:
+
+```
+rvt-rs — open reader for Autodesk Revit files
+Copyright 2026 Griffin Long
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+==============================================================================
+Trademark and attribution notices
+==============================================================================
+
+"Autodesk" and "Revit" are registered trademarks of Autodesk, Inc.
+This project is not affiliated with, endorsed by, or sponsored by
+Autodesk. All references to "Autodesk" and "Revit" in this project's
+source, tests, documentation, and output are nominative fair use —
+they identify the file format this reader parses, and no more.
+
+This project neither uses nor distributes any Autodesk source code,
+object code, proprietary SDK components, or header files. All
+file-format observations documented here were obtained by inspecting
+the bytes of files written by Autodesk Revit — publicly shipped
+sample content — using only public tools (the Microsoft Compound
+File Binary Format specification [MS-CFB], RFC 1952 gzip, and
+standard Rust crates).
+
+==============================================================================
+Interoperability basis
+==============================================================================
+
+Reverse engineering for the sole purpose of achieving interoperability
+between independently-developed software and the Autodesk Revit file
+format is recognised as lawful fair use under:
+
+  * United States — Sega Enterprises v. Accolade, 977 F.2d 1510
+    (9th Cir. 1992); Sony Computer Entertainment v. Connectix, 203
+    F.3d 596 (9th Cir. 2000).
+  * European Union — Article 6 of Directive 2009/24/EC (Software
+    Directive).
+  * Australia — Copyright Act 1968, Section 47D.
+
+File formats themselves are not copyrightable subject matter (Baker
+v. Selden, 101 U.S. 99 (1879); Lotus Development v. Borland, 516
+U.S. 233 (1996)). The Microsoft Compound File Binary Format is a
+published public specification; the compression (RFC 1951 DEFLATE)
+is an Internet standard.
+
+No access-control or rights-management technology has been
+circumvented by this project — the underlying Revit files are not
+encrypted and carry no technological protection measures.
+
+==============================================================================
+Third-party dependencies (runtime)
+==============================================================================
+
+  cfb           — MIT OR Apache-2.0
+  flate2        — MIT OR Apache-2.0
+  encoding_rs   — Apache-2.0 OR MIT
+  quick-xml     — MIT
+  serde         — MIT OR Apache-2.0
+  serde_json    — MIT OR Apache-2.0
+  clap          — MIT OR Apache-2.0
+  anyhow        — MIT OR Apache-2.0
+  thiserror     — MIT OR Apache-2.0
+
+See each dependency's own license for full terms. All runtime
+dependencies are permissively licensed and compatible with
+Apache-2.0 redistribution.
+
+==============================================================================
+Test-corpus attribution
+==============================================================================
+
+The integration test suite uses the publicly-available
+`rac_basic_sample_family` RFA fixture family distributed by
+Autodesk as part of every Revit release, and curated into a
+Git-LFS-hosted repository by Andreas Philipp at
+https://github.com/phi-ag/rvt under the Unlicense. The sample
+family files themselves are Autodesk property; this project
+consumes them only for interoperability-verification testing and
+does not redistribute them (the phi-ag/rvt test corpus is pulled
+via LFS from their repo at `git clone` time; it is not vendored
+here).
+```

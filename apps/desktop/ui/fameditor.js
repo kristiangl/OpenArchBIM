@@ -125,6 +125,24 @@ const FamModel = (() => {
     });
   }
 
+  // A face-based Revit family is drawn on its host face, so which way up it goes is asked: against a wall or on a floor.
+  function askFace(info) {
+    return new Promise((resolve) => {
+      let settled = false;
+      const done = (v, close) => { settled = true; if (close) close(); resolve(v); };
+      openModal("Face-Based Revit Family", (body, foot, close) => {
+        body.append(el("div", "modal-msg", `"${info.name}" is a face-based Revit family. Revit places it on a face, and the file does not say whether that is a wall or a floor. It comes in free standing.`));
+        body.append(el("div", "modal-msg", "Revit family import is experimental and may give unexpected results. It does not work for parametric families: the family comes in at the size it was saved."));
+        foot.append(button("Cancel", () => done(null, close)));
+        foot.append(button("Sits on a Floor", () => done("floor", close)));
+        foot.append(button("Stands Against a Wall", () => done("wall", close), true));
+      });
+      const back = [...document.querySelectorAll(".modal-back")].pop();
+      const watch = new MutationObserver(() => { if (!back.isConnected) { watch.disconnect(); if (!settled) resolve(null); } });
+      watch.observe(document.body, { childList: true });
+    });
+  }
+
   // Load a family file into the project: the project gets its own copy that remembers the file's place.
   // Returns the family id, or null when nothing was loaded.
   async function loadFile(after, { quiet } = {}) {
@@ -138,10 +156,17 @@ const FamModel = (() => {
         mode = await askReplace(info);
         if (!mode) return null;
       }
-      const r = await Backend.call("import_family_file", { path, mode, loaded_at: today() });
+      // a Revit family: which way up a face-based one goes
+      let face = null;
+      if (info.revit && info.revit.host === "Face") {
+        face = await askFace(info);
+        if (!face) return null;
+      }
+      const r = await Backend.call("import_family_file", { path, mode, loaded_at: today(), face });
       if (r.annotation) AnnModel.rememberFile(r.id, path);
       await refresh();
-      if (!quiet) setPrompt(`${r.replaced ? "Reloaded" : "Loaded"} ${info.name}.`);
+      const notes = (r.notes || []).length ? " " + r.notes.join(" ") : "";
+      if (!quiet || notes) setPrompt(`${r.replaced ? "Reloaded" : "Loaded"} ${info.name}${info.revit ? ` from Revit ${info.revit.version || ""}`.trimEnd() : ""}.${notes}`);
       if (after) after();
       return r.id;
     } catch (e) { setPrompt(String(e.message || e), true); return null; }
@@ -988,7 +1013,7 @@ const FamModel = (() => {
 
   function formProps(r, f) {
     if (!f) return;
-    r.append(el("div", "famed-hint", { blend: "Blend", revolve: "Revolve", sweep: "Sweep", swept_blend: "Swept Blend" }[f.shape.type] || (f.void ? "Void extrusion" : "Extrusion")));
+    r.append(el("div", "famed-hint", { blend: "Blend", revolve: "Revolve", sweep: "Sweep", swept_blend: "Swept Blend", mesh: "Imported geometry" }[f.shape.type] || (f.void ? "Void extrusion" : "Extrusion")));
     r.append(field("Name", textIn(f.name, (v) => change((b) => { formById(f.id).name = v; }, true))));
     r.append(field("Void", checkIn(f.void, (v) => change((b) => { formById(f.id).void = v; }))));
     const sh = f.shape;
@@ -3567,7 +3592,7 @@ const FamModel = (() => {
     wrap.append(el("span", "", "Depth"), inp);
     return wrap;
   }
-  const NOUN = (f) => ({ extrusion: "Extrusion", blend: "Blend", revolve: "Revolve", sweep: "Sweep", swept_blend: "Swept Blend" }[f.shape.type]);
+  const NOUN = (f) => ({ extrusion: "Extrusion", blend: "Blend", revolve: "Revolve", sweep: "Sweep", swept_blend: "Swept Blend", mesh: "Imported geometry" }[f.shape.type]);
   // What the ribbon shows for the selection: null for none. main.js draws it as a "Modify | ..." tab.
   function context() {
     const c = contextBase();

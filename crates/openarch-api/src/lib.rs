@@ -88,12 +88,25 @@ pub const SITE_SURVEY_ID: u64 = 4_503_599_627_370_002;
 
 /// Read a family file (.oaf; the older .ibfam files are the same JSON).
 fn read_annotation_file(path: &std::path::Path) -> Result<Option<(openarch_model::annotation::AnnotationFamily, Value)>, String> {
+    if path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rfa")) {
+        return Ok(None); // a Revit family is binary, read by read_revit_family
+    }
     let text = std::fs::read_to_string(path).map_err(|e| format!("cannot read {}: {e}", path.display()))?;
     let file: Value = serde_json::from_str(&text).map_err(|e| format!("not a family file: {e}"))?;
     if file.get("format").and_then(|v| v.as_str()) != Some("openarch-annotation") { return Ok(None); }
     if file.get("version").and_then(|v| v.as_u64()) != Some(1) { return Err("unsupported annotation family file version".into()); }
     let family = serde_json::from_value(file.get("family").cloned().ok_or("missing annotation family")?).map_err(|e| format!("bad annotation family: {e}"))?;
     Ok(Some((family, file)))
+}
+
+/// A Revit family (.rfa) read into a family file, with notes on what was left out. `face` says which way up a
+/// face-based one goes ("wall", the default, or "floor").
+fn read_revit_family(path: &std::path::Path, face: Option<&str>) -> Result<Option<openarch_rfa::RfaFamily>, String> {
+    if !path.extension().is_some_and(|e| e.eq_ignore_ascii_case("rfa")) {
+        return Ok(None);
+    }
+    let face = if face == Some("floor") { openarch_rfa::FaceAs::Floor } else { openarch_rfa::FaceAs::Wall };
+    openarch_rfa::read(path, face).map(Some)
 }
 
 fn read_family_file(path: &std::path::Path) -> Result<openarch_model::faminst::FamilyFile, String> {
@@ -1185,11 +1198,17 @@ impl Session {
                     let exists = self.doc.annotation_families().into_iter().find(|(_, f)| f.name == family.name).map(|(id, _)| id);
                     return Ok(json!({ "name": family.name, "annotation": true, "category_label": family.kind.category(), "types": [], "exists": exists }));
                 }
-                let file = read_family_file(&path)?;
+                let revit = read_revit_family(&path, None)?;
+                let file = match &revit {
+                    Some(r) => r.file.clone(),
+                    None => read_family_file(&path)?,
+                };
                 let exists = self.doc.families().into_iter().find(|(_, f)| f.name == file.family.name).map(|(id, _)| id);
                 Ok(json!({
                     "name": file.family.name, "category": file.family.category, "category_label": file.family.category.label(),
                     "types": file.types.iter().map(|t| t.name.clone()).collect::<Vec<_>>(), "exists": exists,
+                    // a Revit family: what Revit called its category and host, its version and what will be left out
+                    "revit": revit.map(|r| json!({ "category": r.info.category, "host": r.info.host, "version": r.info.revit_version, "notes": r.notes })),
                 }))
             }
             "import_family_file" => {
@@ -1224,10 +1243,15 @@ impl Session {
                     })?;
                     return Ok(json!({ "id": id, "replaced": replaced, "annotation": true }));
                 }
-                let file = read_family_file(&path)?;
+                let revit = read_revit_family(&path, p.get("face").and_then(|v| v.as_str()))?;
+                let notes = revit.as_ref().map(|r| r.notes.clone()).unwrap_or_default();
+                let file = match revit {
+                    Some(r) => r.file,
+                    None => read_family_file(&path)?,
+                };
                 let at = p.get("loaded_at").and_then(|v| v.as_str()).map(String::from);
                 let (id, replaced) = self.doc.import_family_with(file, mode, Some((path.to_string_lossy().into_owned(), at)))?;
-                Ok(json!({ "id": id, "replaced": replaced }))
+                Ok(json!({ "id": id, "replaced": replaced, "notes": notes }))
             }
             "family_file_status" => {
                 let f = self.doc.family(id_of(p, "id")?).ok_or("no such family")?;
