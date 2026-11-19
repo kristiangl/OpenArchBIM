@@ -463,7 +463,31 @@ impl Document {
     /// now, views showing it show `into`, and it is gone. One undo step.
     pub fn combine_phase(&mut self, phase: Id, into: Id) -> Result<(), String> {
         let views: Vec<Id> = self.views().iter().filter(|(_, v)| v.phase == Some(phase)).map(|(id, _)| *id).collect();
+        // rooms and separation lines of the phase move to `into` (stored as none when it is the default phase)
+        let spatial: Vec<(Id, Element)> = self
+            .iter()
+            .filter_map(|(id, e)| match e {
+                Element::Room(r) if r.phase == Some(phase) => Some((id, e.clone())),
+                Element::RoomSeparation(s) if s.phase == Some(phase) => Some((id, e.clone())),
+                _ => None,
+            })
+            .collect();
+        let into_default = self.phasing().is_some_and(|(_, ph)| ph.default_phase == into || ph.default_phase == phase);
         self.grouped("Combine phases", |d| {
+            if !spatial.is_empty() {
+                let to = if into_default { None } else { Some(into) };
+                d.transact("Combine phases", |tx| {
+                    for (id, mut e) in spatial {
+                        match &mut e {
+                            Element::Room(r) => r.phase = to,
+                            Element::RoomSeparation(s) => s.phase = to,
+                            _ => {}
+                        }
+                        tx.update(id, e)?;
+                    }
+                    Ok(())
+                })?;
+            }
             d.edit_phasing("Combine phases", |ph| {
                 let (a, b) = (ph.index(phase).ok_or("no such phase")?, ph.index(into).ok_or("no such phase")?);
                 if a.abs_diff(b) != 1 {
@@ -488,6 +512,102 @@ impl Document {
             }
             Ok(())
         })
+    }
+}
+
+impl Document {
+    /// The phase a room or room separation line belongs to: its own, or the default phase (None: no phasing yet).
+    pub fn spatial_phase(&self, phase: Option<Id>) -> Option<Id> {
+        let (_, ph) = self.phasing()?;
+        Some(phase.filter(|p| ph.index(*p).is_some()).unwrap_or(ph.default_phase))
+    }
+
+    /// The phase of the active view, which rooms are placed and found in (None: no phasing yet).
+    pub fn active_spatial_phase(&self) -> Option<Id> {
+        self.spatial_phase(self.creation_phase)
+    }
+
+    /// The phase new rooms and separation lines are stored with: the active view's, when it is not the default.
+    pub(crate) fn new_spatial_phase(&self) -> Option<Id> {
+        let p = self.creation_phase?;
+        let (_, ph) = self.phasing()?;
+        (p != ph.default_phase && ph.index(p).is_some()).then_some(p)
+    }
+
+    /// Whether an element stands in `phase` (is New or Existing there): what bounds the phase's rooms (spec 6.1).
+    /// Elements that are not phased, and every element when `phase` is None, stand.
+    pub fn stands_in(&self, id: Id, phase: Option<Id>) -> bool {
+        let Some(phase) = phase else { return true };
+        if !self.get(id).is_some_and(is_phased) {
+            return true;
+        }
+        let Some((_, ph)) = self.phasing() else { return true };
+        matches!(
+            ph.status(ph.created_of(id), ph.demolished.get(&id).copied(), phase),
+            PhaseState::Unphased | PhaseState::Status(PhaseStatus::New | PhaseStatus::Existing)
+        )
+    }
+
+    /// Whether a view shows the rooms of `phase`: a room exists only in its own phase (spec 6.1).
+    pub fn view_shows_phase(&self, view: &View, phase: Option<Id>) -> bool {
+        match self.view_phase(view) {
+            None => true,
+            Some((vp, _)) => self.spatial_phase(phase) == Some(vp),
+        }
+    }
+
+    /// Whether a schedule (or other view) lists an element: a room in the view's phase, another element where
+    /// the view's phase and filter show it (spec 6.2).
+    pub fn phase_lists(&self, view: &View, id: Id) -> bool {
+        match self.get(id) {
+            Some(Element::Room(r)) => self.view_shows_phase(view, r.phase),
+            Some(Element::RoomSeparation(s)) => self.view_shows_phase(view, s.phase),
+            _ => !self.phase_hides(view, id),
+        }
+    }
+
+    /// While alive, the document is exported as it stands in `phase`: doors and windows not built yet or
+    /// demolished before it do not open their walls.
+    pub fn exporting(&self, phase: Option<Id>) -> ExportPhase<'_> {
+        let was = self.export_phase.replace(phase);
+        ExportPhase { doc: self, was }
+    }
+
+    /// Whether an element is left out of an export in `phase`: built after it or demolished before it.
+    pub fn out_of_phase(&self, id: Id, phase: Option<Id>) -> bool {
+        let Some(phase) = phase else { return false };
+        match self.get(id) {
+            Some(Element::Room(r)) => return self.spatial_phase(r.phase) != Some(phase),
+            Some(e) if is_phased(e) => {}
+            _ => return false,
+        }
+        let Some((_, ph)) = self.phasing() else { return false };
+        ph.status(ph.created_of(id), ph.demolished.get(&id).copied(), phase) == PhaseState::OutOfScope
+    }
+
+    /// An element's status in `phase`, for export: New, Existing, Demolished or Temporary (None: not phased,
+    /// no phasing, or out of scope).
+    pub fn status_in(&self, id: Id, phase: Id) -> Option<PhaseStatus> {
+        if !self.get(id).is_some_and(is_phased) {
+            return None;
+        }
+        let (_, ph) = self.phasing()?;
+        match ph.status(ph.created_of(id), ph.demolished.get(&id).copied(), phase) {
+            PhaseState::Status(s) => Some(s),
+            _ => None,
+        }
+    }
+}
+
+/// While alive, the document exports one phase (`Document::exporting`). Put back on drop.
+pub struct ExportPhase<'a> {
+    doc: &'a Document,
+    was: Option<Id>,
+}
+
+impl Drop for ExportPhase<'_> {
+    fn drop(&mut self) {
+        self.doc.export_phase.set(self.was);
     }
 }
 

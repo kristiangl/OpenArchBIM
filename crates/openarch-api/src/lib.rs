@@ -2375,7 +2375,9 @@ impl Session {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
                 let name = p.get("name").and_then(|v| v.as_str()).map(str::to_string).or_else(|| path.file_stem().map(|s| s.to_string_lossy().to_string())).unwrap_or_else(|| "OpenArch project".into());
                 let properties = self.ifc_schedule_properties(p)?;
-                let text = self.doc.export_ifc_with_properties(&name, &properties);
+                // the phase exported: the one asked for, else the active view's
+                let phase = p.get("phase").and_then(|v| v.as_u64()).or_else(|| self.doc.active_spatial_phase());
+                let text = self.doc.export_ifc_phase(&name, &properties, phase);
                 std::fs::write(&path, &text).map_err(|e| format!("could not write {}: {e}", path.display()))?;
                 Ok(json!({ "path": path.to_string_lossy(), "bytes": text.len(), "schedule_sets": properties.len() }))
             }
@@ -5112,6 +5114,84 @@ mod tests {
         let f = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [6000, 5000], "flipped": true }))["id"].as_u64().unwrap();
         call(&mut s, "flip_walls", json!({ "ids": [f] }));
         assert!(s.handle("flip_instances", &json!({ "ids": [w] })).is_err(), "walls are not doors");
+    }
+
+    #[test]
+    fn rooms_schedules_and_ifc_follow_the_phase() {
+        let (mut s, lvl, wt, view) = setup();
+        let wall = |s: &mut Session, a: [i64; 2], b: [i64; 2]| call(s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": a, "end": b, "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let box_walls: Vec<u64> = [([0, 0], [6000, 0]), ([6000, 0], [6000, 4000]), ([6000, 4000], [0, 4000]), ([0, 4000], [0, 0])].into_iter().map(|(a, b)| wall(&mut s, a, b)).collect();
+        wall(&mut s, [3000, 0], [3000, 4000]);
+        let ph = call(&mut s, "phasing", json!({}));
+        let phase = |n: &str| ph["phases"].as_array().unwrap().iter().find(|p| p["name"] == n).unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "set_element_phases", json!({ "ids": box_walls, "patch": { "created": phase("Existing") } }));
+        // a room placed in the Existing plan fills the whole box: the new wall is not there yet
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("Existing") } }));
+        call(&mut s, "active_view", json!({ "view_id": view }));
+        let old = call(&mut s, "add_room", json!({ "level_id": lvl, "point": [1000, 2000], "view_id": view }))["id"].as_u64().unwrap();
+        let area = |s: &mut Session, id: u64| {
+            let g = call(s, "describe", json!({ "id": id }))["groups"].as_array().unwrap().clone();
+            g.iter().find(|g| g["name"] == "Dimensions").unwrap()["rows"][0]["raw"].as_f64().unwrap()
+        };
+        let whole = area(&mut s, old);
+        assert!(whole > 20.0, "{whole}");
+        let room_phase = |s: &mut Session, id: u64| {
+            let g = call(s, "describe", json!({ "id": id }))["groups"].as_array().unwrap().clone();
+            g.iter().find(|g| g["name"] == "Phasing").unwrap()["rows"][0]["value"].as_str().unwrap().to_string()
+        };
+        assert_eq!(room_phase(&mut s, old), "Existing");
+        // the proposed plan's room is bounded by the new wall too
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("New Construction") } }));
+        call(&mut s, "active_view", json!({ "view_id": view }));
+        let new = call(&mut s, "add_room", json!({ "level_id": lvl, "point": [1000, 2000], "view_id": view }))["id"].as_u64().unwrap();
+        let half = area(&mut s, new);
+        assert!(half < whole * 0.6 && half > whole * 0.4, "{half} of {whole}");
+        assert_eq!(room_phase(&mut s, new), "New Construction");
+        // each plan shows its own phase's rooms and tags
+        let rooms_in = |s: &mut Session| {
+            let p = call(s, "plan", json!({ "view_id": view }));
+            (p["rooms"].as_array().unwrap().iter().map(|r| r["id"].as_u64().unwrap()).collect::<Vec<_>>(), p["room_tags"].as_array().unwrap().len())
+        };
+        assert_eq!(rooms_in(&mut s), (vec![new], 1));
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("Existing") } }));
+        assert_eq!(rooms_in(&mut s), (vec![old], 1));
+        // schedules: a room schedule lists its phase's rooms; a wall schedule what its phase and filter show
+        let items = |t: &Value| t["rows"].as_array().unwrap().iter().filter(|r| r["kind"] == "item").count();
+        let rs = call(&mut s, "add_schedule", json!({ "category": "Rooms" }))["id"].as_u64().unwrap();
+        call(&mut s, "set_schedule", json!({ "id": rs, "def": { "category": "Rooms", "fields": [{ "name": "Number", "kind": "instance" }, { "name": "Area", "kind": "instance" }] } }));
+        let t = call(&mut s, "schedule_table", json!({ "id": rs }));
+        assert_eq!(items(&t), 1);
+        assert_eq!(t["rows"].as_array().unwrap().iter().find(|r| r["kind"] == "item").unwrap()["ids"][0].as_u64(), Some(new));
+        call(&mut s, "set_view_phase", json!({ "id": rs, "patch": { "phase": phase("Existing") } }));
+        let t = call(&mut s, "schedule_table", json!({ "id": rs }));
+        assert_eq!(t["rows"].as_array().unwrap().iter().find(|r| r["kind"] == "item").unwrap()["ids"][0].as_u64(), Some(old));
+        let srows = call(&mut s, "describe", json!({ "id": rs }))["groups"].as_array().unwrap().iter().find(|g| g["name"] == "Phasing").unwrap()["rows"].clone();
+        assert_eq!(srows[1]["value"], "Existing");
+        let ws = call(&mut s, "add_schedule", json!({ "category": "Walls" }))["id"].as_u64().unwrap();
+        call(&mut s, "set_schedule", json!({ "id": ws, "def": { "category": "Walls", "fields": [{ "name": "Phase Created", "kind": "instance" }] } }));
+        assert_eq!(items(&call(&mut s, "schedule_table", json!({ "id": ws }))), 5);
+        call(&mut s, "set_view_phase", json!({ "id": ws, "patch": { "phase": phase("Existing") } }));
+        assert_eq!(items(&call(&mut s, "schedule_table", json!({ "id": ws }))), 4);
+        // IFC: New Construction has both walls' kinds and its own room; Existing leaves the new wall out
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("New Construction") } }));
+        call(&mut s, "demolish", json!({ "view_id": view, "ids": [box_walls[1]] }));
+        let dir = std::env::temp_dir().join(format!("openarch-phase-ifc-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let export = |s: &mut Session, phase: Option<u64>| {
+            let path = dir.join("p.ifc");
+            call(s, "export_ifc", json!({ "path": path.to_string_lossy(), "phase": phase }));
+            std::fs::read_to_string(&path).unwrap()
+        };
+        let f = export(&mut s, None);
+        assert_eq!(f.matches("IFCSPACE(").count(), 1);
+        assert!(f.contains("'Status',$,(IFCLABEL('NEW'))") && f.contains("'Status',$,(IFCLABEL('EXISTING'))") && f.contains("'Status',$,(IFCLABEL('DEMOLISH'))"));
+        assert!(f.contains("'OpenArch_Phasing'") && f.contains("'Phase Demolished',$,IFCLABEL('New Construction')"));
+        let e = export(&mut s, Some(phase("Existing")));
+        assert_eq!(e.matches("IFCSPACE(").count(), 1);
+        // in the Existing phase the old walls are its new work, and nothing is demolished yet
+        assert!(e.contains("IFCLABEL('NEW')") && !e.contains("IFCLABEL('EXISTING')") && !e.contains("IFCLABEL('DEMOLISH')"));
+        assert!(e.matches("IFCWALL").count() < f.matches("IFCWALL").count());
+        std::fs::remove_dir_all(&dir).ok();
     }
 
     #[test]

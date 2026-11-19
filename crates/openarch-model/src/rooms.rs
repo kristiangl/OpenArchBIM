@@ -52,7 +52,7 @@ pub enum RoomStatus { Placed, NotPlaced, NotEnclosed, Redundant }
 pub struct RoomCalculation { pub status: RoomStatus, pub region: Option<Region>, pub area_mm2: f64, pub perimeter_mm: f64, pub volume_mm3: Option<f64>, pub height_mm: f64 }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<Id,Arc<Vec<Region>>>, pub area_lines: BTreeMap<Id,Arc<Vec<(Id,Curve)>>>, pub area_faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,RoomCalculation>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
+pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<(Id,Option<Id>),Arc<Vec<Region>>>, pub area_lines: BTreeMap<Id,Arc<Vec<(Id,Curve)>>>, pub area_faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,RoomCalculation>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
 
 /// The faces left when `clips` are cut out of the plane: the enclosed ones, and the holes of the outside face (the
 /// outlines the outside meets).
@@ -95,31 +95,36 @@ impl Document {
     pub fn room_height(&self,r:&Room)->f64{let base=self.level(r.level).map_or(0.0,|l|l.elevation_mm);let top=r.upper_level.and_then(|id|self.level(id)).map_or(base,|l|l.elevation_mm)+r.limit_offset_mm;top-base-r.base_offset_mm}
 
     /// Enclosed free-space faces after subtracting room-bounding wall bodies and separation lines.
-    pub fn room_faces(&self,level:Id)->Arc<Vec<Region>>{
-        self.room_cache_reset();if let Some(f)=self.room_cache.borrow().faces.get(&level){return f.clone();}
+    /// In the active view's phase.
+    pub fn room_faces(&self,level:Id)->Arc<Vec<Region>>{self.room_faces_in(level,self.active_spatial_phase())}
+
+    /// The enclosed faces of a phase: only what stands (New or Existing) in it bounds its rooms, and only its own
+    /// separation lines (spec 6.1). None: everything (no phasing).
+    pub fn room_faces_in(&self,level:Id,phase:Option<Id>)->Arc<Vec<Region>>{
+        self.room_cache_reset();if let Some(f)=self.room_cache.borrow().faces.get(&(level,phase)){return f.clone();}
         let z=self.level(level).map_or(0.0,|l|l.elevation_mm+l.computation_height_mm);
-        let faces=Arc::new(self.enclosed_faces(level,z,self.room_settings().boundary,true));self.room_cache.borrow_mut().faces.insert(level,faces.clone());faces
+        let faces=Arc::new(faces_of_clips(&self.enclosure_clips(level,z,self.room_settings().boundary,true,phase)).0);self.room_cache.borrow_mut().faces.insert((level,phase),faces.clone());faces
     }
 
     /// The free-space faces walls (that reach height `z`), room-bounding columns and families, and (with `separators`)
     /// room separation lines enclose on a level: what rooms and automatic ceilings fill.
     pub fn enclosed_faces(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Region>{
-        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators)).0
+        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators,None)).0
     }
 
     /// The outline of the building on a level at height `z`: the outer faces of the walls (and bounding columns)
     /// that the outside meets, one ring per separate building.
     pub fn building_outlines(&self,level:Id,z:f64)->Vec<Vec<Point>>{
-        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false)).1
+        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false,None)).1
     }
 
     /// What bounds rooms on a level at height `z`: wall bodies (to the boundary location), separation lines when
-    /// asked, and the plan sections of room-bounding columns and families.
-    pub(crate) fn enclosure_clips(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Vec<Point>>{
+    /// asked, and the plan sections of room-bounding columns and families. With `phase`, only what stands in it.
+    pub(crate) fn enclosure_clips(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool,phase:Option<Id>)->Vec<Vec<Point>>{
         let settings=RoomSettings{boundary,..Default::default()};
         let mut walls=vec![];
         for (id,w) in self.iter().filter_map(|(id,e)|if let Element::Wall(w)=e{Some((id,w))}else{None}){
-            let (lo,hi)=self.wall_extent(w);if !w.room_bounding||z<lo-0.01||z>=hi-0.001{continue;}
+            let (lo,hi)=self.wall_extent(w);if !w.room_bounding||z<lo-0.01||z>=hi-0.001||!self.stands_in(id,phase){continue;}
             let mut facets=self.wall_facets(id,w);
             if settings.boundary!=RoomBoundary::Finish{
                 let (left,right)=self.wall_extents(w);let mut before=0.0;let mut after=0.0;
@@ -132,32 +137,34 @@ impl Document {
             for f in &mut facets{f.level=level;}walls.extend(facets);
         }
         let mut clips:Vec<Vec<Point>>=crate::join::join_walls(&walls).into_values().map(|q|q.to_vec()).collect();
-        for (_,e) in self.iter().filter(|_|separators){if let Element::RoomSeparation(s)=e{if s.level==level{let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
+        for (_,e) in self.iter().filter(|_|separators){if let Element::RoomSeparation(s)=e{if s.level==level&&(phase.is_none()||self.spatial_phase(s.phase)==phase){let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
         // Columns and explicitly room-bounding loadable families contribute their actual horizontal mesh section.
-        for (id,i) in self.instances(){let Some((family,_))=self.instance_family(i)else{continue};let bounded=family.settings.room_bounding.unwrap_or(matches!(family.category,crate::family::FamilyCategory::Columns|crate::family::FamilyCategory::StructuralColumns));if !bounded{continue;}if let Some((_,solid,_))=crate::mesh::instance_meshes(self,id){clips.extend(horizontal_rings(&solid,z+0.001));}}
+        for (id,i) in self.instances(){if !self.stands_in(id,phase){continue;}let Some((family,_))=self.instance_family(i)else{continue};let bounded=family.settings.room_bounding.unwrap_or(matches!(family.category,crate::family::FamilyCategory::Columns|crate::family::FamilyCategory::StructuralColumns));if !bounded{continue;}if let Some((_,solid,_))=crate::mesh::instance_meshes(self,id){clips.extend(horizontal_rings(&solid,z+0.001));}}
         clips
     }
 
     pub fn room_calculation(&self,id:Id)->Option<RoomCalculation>{
         self.room_cache_reset();if let Some(c)=self.room_cache.borrow().calculations.get(&id){return Some(c.clone());}let r=self.room(id)?;
         let mut c=RoomCalculation{status:RoomStatus::NotPlaced,region:None,area_mm2:0.0,perimeter_mm:0.0,volume_mm3:None,height_mm:self.room_height(r)};
-        if let Some(at)=r.at{c.status=RoomStatus::NotEnclosed;if let Some(region)=self.room_faces(r.level).iter().find(|f|contains(f,at)).cloned(){
-            if self.rooms().iter().any(|(other,room)|*other<id&&room.level==r.level&&room.phase==r.phase&&room.at.is_some_and(|p|contains(&region,p))){c.status=RoomStatus::Redundant;}else{c.status=RoomStatus::Placed;c.area_mm2=region.area();c.perimeter_mm=std::iter::once(&region.outer).chain(&region.holes).map(|ring|ring.iter().enumerate().map(|(i,p)|p.dist(&ring[(i+1)%ring.len()])).sum::<f64>()).sum();if self.room_settings().volumes{c.volume_mm3=Some(self.room_volume(r,&region));}c.region=Some(region);}
+        if let Some(at)=r.at{c.status=RoomStatus::NotEnclosed;let phase=self.spatial_phase(r.phase);if let Some(region)=self.room_faces_in(r.level,phase).iter().find(|f|contains(f,at)).cloned(){
+            if self.rooms().iter().any(|(other,room)|*other<id&&room.level==r.level&&self.spatial_phase(room.phase)==phase&&room.at.is_some_and(|p|contains(&region,p))){c.status=RoomStatus::Redundant;}else{c.status=RoomStatus::Placed;c.area_mm2=region.area();c.perimeter_mm=std::iter::once(&region.outer).chain(&region.holes).map(|ring|ring.iter().enumerate().map(|(i,p)|p.dist(&ring[(i+1)%ring.len()])).sum::<f64>()).sum();if self.room_settings().volumes{c.volume_mm3=Some(self.room_volume(r,&region));}c.region=Some(region);}
         }}self.room_cache.borrow_mut().calculations.insert(id,c.clone());Some(c)
     }
-    pub fn room_at(&self,level:Id,point:Point)->Option<Id>{let face=self.room_faces(level);let region=face.iter().find(|f|contains(f,point))?;self.rooms().into_iter().filter(|(_,r)|r.level==level&&r.at.is_some_and(|p|contains(region,p))).map(|(id,_)|id).min()}
+    /// The room at a point, in the active view's phase.
+    pub fn room_at(&self,level:Id,point:Point)->Option<Id>{self.room_at_in(level,point,self.active_spatial_phase())}
+    pub fn room_at_in(&self,level:Id,point:Point,phase:Option<Id>)->Option<Id>{let face=self.room_faces_in(level,phase);let region=face.iter().find(|f|contains(f,point))?;self.rooms().into_iter().filter(|(_,r)|r.level==level&&(phase.is_none()||self.spatial_phase(r.phase)==phase)&&r.at.is_some_and(|p|contains(region,p))).map(|(id,_)|id).min()}
 
     pub fn add_room(&mut self,level:Id,at:Option<Point>,view:Option<Id>)->Result<Id,String>{
         let base=self.level(level).ok_or("Unknown room level")?.elevation_mm;if at.is_some_and(|p|!p.x.is_finite()||!p.y.is_finite()){return Err("Invalid room location".into());}
         let upper=self.levels().into_iter().filter(|(_,l)|l.elevation_mm>base+0.1).min_by(|a,b|a.1.elevation_mm.total_cmp(&b.1.elevation_mm)).map(|(id,_)|id);
         let mut number=self.rooms().last().map(|(_,r)|r.number.clone()).unwrap_or("0".into());let start=number.char_indices().rev().take_while(|(_,c)|c.is_ascii_digit()).last().map(|(i,_)|i).unwrap_or(number.len());let prefix=number[..start].to_string();let width=number.len()-start;let mut n=number[start..].parse::<u64>().unwrap_or(0)+1;loop{number=format!("{prefix}{n:0width$}",width=width);if !self.rooms().iter().any(|(_,r)|r.number==number){break;}n+=1;}
-        let r=Room{level,at,number,name:"Room".into(),upper_level:upper,limit_offset_mm:if upper.is_some(){0.0}else{default_height()},base_offset_mm:0.0,comments:String::new(),occupancy:String::new(),department:String::new(),occupant:String::new(),base_finish:String::new(),floor_finish:String::new(),wall_finish:String::new(),ceiling_finish:String::new(),phase:None,pinned:false,ifc:crate::element::IfcParams{guid:crate::element::new_ifc_guid(),..Default::default()}};
+        let r=Room{level,at,number,name:"Room".into(),upper_level:upper,limit_offset_mm:if upper.is_some(){0.0}else{default_height()},base_offset_mm:0.0,comments:String::new(),occupancy:String::new(),department:String::new(),occupant:String::new(),base_finish:String::new(),floor_finish:String::new(),wall_finish:String::new(),ceiling_finish:String::new(),phase:self.new_spatial_phase(),pinned:false,ifc:crate::element::IfcParams{guid:crate::element::new_ifc_guid(),..Default::default()}};
         self.grouped("Place room",|d|{let id=d.transact("Room",|tx|Ok(tx.add(Element::Room(r))))?;if let(Some(view),Some(at))=(view,at){d.add_room_tag(view,id,at)?;}Ok(id)})
     }
     pub fn patch_room(&mut self,id:Id,patch:&serde_json::Value)->Result<(),String>{let old=self.room(id).cloned().ok_or("not a room")?;let mut new:Room=crate::doc::apply_patch(&old,patch)?;new.level=old.level;if old.pinned&&new.at!=old.at{return Err("Unpin the room before moving it.".into());}if new.number.trim().is_empty()||new.name.trim().is_empty(){return Err("A room needs a name and number.".into());}if !new.limit_offset_mm.is_finite()||!new.base_offset_mm.is_finite()||self.room_height(&new)<=0.0{return Err("The room upper boundary must be above its base.".into());}if new.upper_level.is_some_and(|id|self.level(id).is_none())||new.at.is_some_and(|p|!p.x.is_finite()||!p.y.is_finite()){return Err("Invalid room boundary or location.".into());}self.transact("Room properties",|tx|tx.update(id,Element::Room(new)))}
     pub fn unplace_room(&mut self,id:Id)->Result<(),String>{let tags:Vec<_>=self.iter().filter_map(|(tid,e)|matches!(e,Element::RoomTag(t)if t.room==id).then_some(tid)).collect();self.grouped("Unplace room",|d|{d.patch_room(id,&serde_json::json!({"at":null}))?;d.transact("Remove room tags",|tx|{for tid in tags{tx.remove(tid)?;}Ok(())})})}
     pub fn place_unplaced_room(&mut self,id:Id,level:Id,at:Point)->Result<(),String>{let mut room=self.room(id).cloned().ok_or("not a room")?;if room.at.is_some(){return Err("That room is already placed.".into());}if self.level(level).is_none(){return Err("Unknown room level".into());}if !at.x.is_finite()||!at.y.is_finite(){return Err("Invalid room location".into());}let height=self.room_height(&room);room.level=level;if self.room_height(&room)<=0.0{room.upper_level=None;room.limit_offset_mm=height+room.base_offset_mm;}room.at=Some(at);self.transact("Place unplaced room",|tx|tx.update(id,Element::Room(room)))}
-    pub fn add_room_separators(&mut self,level:Id,curves:Vec<Curve>)->Result<Vec<Id>,String>{if self.level(level).is_none(){return Err("Unknown level".into());}for c in &curves{let p=c.tessellate(1.5);if p.len()<2||p.iter().any(|p|!p.x.is_finite()||!p.y.is_finite())||c.length()<0.1{return Err("Invalid separation curve".into());}}self.transact("Room separation",|tx|Ok(curves.into_iter().map(|curve|tx.add(Element::RoomSeparation(RoomSeparation{level,curve,phase:None,pinned:false}))).collect()))}
+    pub fn add_room_separators(&mut self,level:Id,curves:Vec<Curve>)->Result<Vec<Id>,String>{let phase=self.new_spatial_phase();if self.level(level).is_none(){return Err("Unknown level".into());}for c in &curves{let p=c.tessellate(1.5);if p.len()<2||p.iter().any(|p|!p.x.is_finite()||!p.y.is_finite())||c.length()<0.1{return Err("Invalid separation curve".into());}}self.transact("Room separation",|tx|Ok(curves.into_iter().map(|curve|tx.add(Element::RoomSeparation(RoomSeparation{level,curve,phase,pinned:false}))).collect()))}
 
     pub fn add_room_tag(&mut self,view:Id,room:Id,at:Point)->Result<Id,String>{if self.room(room).is_none()||self.view(view).is_none(){return Err("Unknown room or view".into());}let family=self.ensure_room_tag_family();self.transact("Tag room",|tx|Ok(tx.add(Element::RoomTag(RoomTag{view,room,at,family:Some(family),leader:false,pinned:false}))))}
     pub fn patch_room_tag(&mut self,id:Id,patch:&serde_json::Value)->Result<(),String>{let Some(Element::RoomTag(t))=self.get(id)else{return Err("not a room tag".into())};let old=t;let t:RoomTag=crate::doc::apply_patch(t,patch)?;if old.pinned&&t.at!=old.at{return Err("Unpin the tag before moving it.".into());}if !t.at.x.is_finite()||!t.at.y.is_finite()||t.family.is_some_and(|id|self.annotation_family(id).is_none_or(|f|f.kind!=crate::annotation::AnnotationKind::RoomTag)){return Err("Invalid room tag family or location.".into());}if self.room(t.room).is_none()||self.view(t.view).is_none(){return Err("Unknown room or view".into());}self.transact("Room tag properties",|tx|tx.update(id,Element::RoomTag(t)))}

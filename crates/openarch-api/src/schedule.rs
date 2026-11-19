@@ -462,7 +462,9 @@ impl Session {
                 rows.push((vec![row.id], cells));
             }
         }
-        for id in self.category_elements(&def.category).into_iter().filter(|id| only.is_none_or(|o| o.contains(id))) {
+        // what the schedule's phase and phase filter show (spec 6.2)
+        let phased = !matches!(def.category.as_str(), SHEETS | VIEWS);
+        for id in self.category_elements(&def.category).into_iter().filter(|id| only.is_none_or(|o| o.contains(id)) && (!phased || self.doc.phase_lists(v, *id))) {
             if def.key.is_some() { break; }
             let p = self.params(id, &mut types);
             let base: Vec<Cell> = def

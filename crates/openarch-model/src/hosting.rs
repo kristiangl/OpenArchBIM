@@ -365,7 +365,7 @@ impl Document {
                 continue;
             }
             // in a view, a door or window its phase leaves out (not built yet, demolished, or not shown) is not a hole
-            if drawing.is_some_and(|v| self.phase_hides(v, id)) {
+            if drawing.is_some_and(|v| self.phase_hides(v, id)) || self.out_of_phase(id, self.export_phase.get()) {
                 continue;
             }
             let Some(f) = self.instance_frame(id) else { continue };

@@ -31,7 +31,11 @@ impl Session {
     pub(crate) fn handle_phasing(&mut self, method: &str, p: &Value) -> Option<Res> {
         Some(match method {
             // the phasing, made with its starting phases and filters the first time
+            // { peek: true } answers null for a project without phasing instead of giving it phasing
             "phasing" => (|| {
+                if p.get("peek").and_then(|v| v.as_bool()) == Some(true) {
+                    return Ok(phasing_json(&self.doc));
+                }
                 self.doc.ensure_phasing()?;
                 Ok(phasing_json(&self.doc))
             })(),

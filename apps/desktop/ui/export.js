@@ -343,7 +343,7 @@ const ExportFlow = (() => {
     }
     if (set.ifc) {
       report("Writing IFC...");
-      const r = await Backend.call("export_ifc", { path: join(folder, `${fill(set.ifcName, set, ctx)}.ifc`), schedules: !!set.ifcScheduleSets, selected_only: set.ifcScheduleSelected !== false, named_only: !!set.ifcScheduleNamed });
+      const r = await Backend.call("export_ifc", { path: join(folder, `${fill(set.ifcName, set, ctx)}.ifc`), schedules: !!set.ifcScheduleSets, selected_only: set.ifcScheduleSelected !== false, named_only: !!set.ifcScheduleNamed, phase: set.ifcPhase ? Number(set.ifcPhase) : undefined });
       written.push(r.path);
     }
     return { folder, written };
@@ -437,6 +437,8 @@ const ExportFlow = (() => {
         ifcPrev.textContent = `Preview: ${fill(set.ifcName, set, c)}.ifc`;
       };
       projectDir().then((d) => { dir = d; preview(); });
+      let phases = [];
+      Backend.call("phasing", { peek: true }).then((r) => { phases = r?.phases || []; if (tab === "ifc") tabsDraw(); }).catch(() => {});
       const folder = inp("folder");
       const browse = button("Browse...", async () => { const d = await Backend.pickFolder(); if (d) { folder.value = `${d}\\{Date}_`; set.folder = folder.value; preview(); } });
       const tabsBar = el("div", { className: "ex-tabs" });
@@ -469,7 +471,8 @@ const ExportFlow = (() => {
           chk("ifcScheduleSets", "Export schedules as property and quantity sets"),
           chk("ifcScheduleSelected", "Only schedules enabled in Schedule Properties"),
           chk("ifcScheduleNamed", "Only titles containing IFC, Pset or Common"),
-          el("div", { className: "ex-note", textContent: "The whole model as IFC4, once per export." }),
+          row("Phase:", sel("ifcPhase", [["", "The active view's phase"], ...phases.map((p) => [String(p.id), p.name])])),
+          el("div", { className: "ex-note", textContent: "The whole model as IFC4, once per export, as it stands in the phase: what is built later or demolished before it is left out, and each element's status (new, existing, demolished, temporary) is in its Common property set." }),
         );
         preview();
       };

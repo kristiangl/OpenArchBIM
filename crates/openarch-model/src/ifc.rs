@@ -135,6 +135,8 @@ struct Step {
     axis: u64,
     /// Each material written, and the surface style of its colour.
     materials: BTreeMap<String, (u64, Option<u64>)>,
+    /// Each element's phase status in the exported phase, as IFC's element status (Pset_*Common.Status).
+    status: BTreeMap<u64, &'static str>,
 }
 
 impl Step {
@@ -284,7 +286,11 @@ impl Step {
 
     /// A property set `name` of `props` for `ent`.
     fn pset(&mut self, ent: u64, key: u64, name: &str, props: &[u64]) {
-        let set = self.add(format!("IFCPROPERTYSET({},$,{},$,({}))", s(&derived(PSET, key)), s(name), refs(props)));
+        let mut props = props.to_vec();
+        if let Some(st) = self.status.get(&key).filter(|_| name.starts_with("Pset_") && name.ends_with("Common")) {
+            props.push(self.add(format!("IFCPROPERTYENUMERATEDVALUE('Status',$,(IFCLABEL('{st}')),$)")));
+        }
+        let set = self.add(format!("IFCPROPERTYSET({},$,{},$,({}))", s(&derived(PSET, key)), s(name), refs(&props)));
         self.add(format!("IFCRELDEFINESBYPROPERTIES({},$,$,$,(#{ent}),#{set})", s(&derived(PSET_DEFINES, key))));
     }
 
@@ -384,7 +390,27 @@ impl Document {
     pub fn export_ifc(&self, name: &str) -> String { self.export_ifc_with_properties(name, &[]) }
 
     pub fn export_ifc_with_properties(&self, name: &str, properties: &[crate::ifc_properties::IfcPropertySet]) -> String {
-        let mut w = Step { out: String::new(), next: 0, z: 0, world: 0, context: 0, body: 0, axis: 0, materials: BTreeMap::new() };
+        self.export_ifc_phase(name, properties, None)
+    }
+
+    /// The model as it stands in `phase` (None: the default phase, New Construction in a new project): what is
+    /// built after it or demolished before it is left out, rooms are its rooms, and each element says whether it
+    /// is new, existing, demolished or temporary there (Status in its Pset_*Common, and OpenArch_Phasing).
+    pub fn export_ifc_phase(&self, name: &str, properties: &[crate::ifc_properties::IfcPropertySet], phase: Option<Id>) -> String {
+        let phase = self.spatial_phase(phase);
+        let _export = self.exporting(phase);
+        let status: BTreeMap<u64, &'static str> = match phase {
+            Some(p) => self
+                .iter()
+                .filter_map(|(id, _)| {
+                    use crate::phasing::PhaseStatus as S;
+                    let st = match self.status_in(id, p)? { S::New => "NEW", S::Existing => "EXISTING", S::Demolished => "DEMOLISH", S::Temporary => "TEMPORARY" };
+                    Some((id, st))
+                })
+                .collect(),
+            None => BTreeMap::new(),
+        };
+        let mut w = Step { out: String::new(), next: 0, z: 0, world: 0, context: 0, body: 0, axis: 0, materials: BTreeMap::new(), status };
         let origin = w.add("IFCCARTESIANPOINT((0.,0.,0.))");
         w.z = w.add("IFCDIRECTION((0.,0.,1.))");
         w.world = w.add(format!("IFCAXIS2PLACEMENT3D(#{origin},$,$)"));
@@ -445,7 +471,7 @@ impl Document {
         let mut openings: BTreeMap<Id, (u64, f64, f64)> = BTreeMap::new(); // instance: (opening, width, height)
         let mut wall_uses: BTreeMap<(Id, String, bool), Vec<u64>> = BTreeMap::new(); // (type, offset, flipped): walls
         let mut floor_uses: BTreeMap<(Id, String), Vec<u64>> = BTreeMap::new();
-        let skip = |ifc: &IfcParams| ifc.export == IfcExport::No;
+        let skip = |id: Id, ifc: &IfcParams| ifc.export == IfcExport::No || self.out_of_phase(id, phase);
         // curtain walls: each its IfcCurtainWall and the plates, members and doors it aggregates
         let mut curtains: BTreeMap<Id, (u64, Vec<u64>)> = BTreeMap::new();
         let mut part_materials: BTreeMap<String, Vec<u64>> = BTreeMap::new();
@@ -455,7 +481,7 @@ impl Document {
         let polygons = self.wall_polygons();
         for (id, e) in self.iter() {
             let Element::Wall(wl) = e else { continue };
-            if skip(&wl.ifc) {
+            if skip(id, &wl.ifc) {
                 continue;
             }
             let lv = storey_of(wl.base_level);
@@ -604,12 +630,15 @@ impl Document {
 
         // Placed rooms are spatial elements, aggregated by their building storey.
         let mut spaces:BTreeMap<Id,Vec<u64>>=BTreeMap::new();
-        for (id,r) in self.rooms(){let Some(calc)=self.room_calculation(id)else{continue};let Some(region)=calc.region else{continue};if skip(&r.ifc){continue;}let lv=storey_of(r.level);let(_,parent,sz)=storeys[&lv];let base=self.level(r.level).map_or(0.0,|l|l.elevation_mm)+r.base_offset_mm;let at=w.place(Some(parent),(0.0,0.0,0.0),None);let profile=w.profile(&region.outer,&region.holes);let shape=w.swept(&[(profile,base-sz,calc.height_mm)],&[]);let opt=|t:&str|if t.trim().is_empty(){"$".to_string()}else{s(t)};let ent=w.add(format!("IFCSPACE({},$,{},{},$,#{at},#{shape},{},.ELEMENT.,.INTERNAL.,$)",s(&if valid_guid(&r.ifc.guid){r.ifc.guid.clone()}else{derived(ELEMENT,id)}),s(&r.number),opt(&r.comments),opt(&r.name)));products.insert(id,ent);spaces.entry(lv).or_default().push(ent);}
+        for (id,r) in self.rooms(){let Some(calc)=self.room_calculation(id)else{continue};let Some(region)=calc.region else{continue};if skip(id, &r.ifc){continue;}let lv=storey_of(r.level);let(_,parent,sz)=storeys[&lv];let base=self.level(r.level).map_or(0.0,|l|l.elevation_mm)+r.base_offset_mm;let at=w.place(Some(parent),(0.0,0.0,0.0),None);let profile=w.profile(&region.outer,&region.holes);let shape=w.swept(&[(profile,base-sz,calc.height_mm)],&[]);let opt=|t:&str|if t.trim().is_empty(){"$".to_string()}else{s(t)};let ent=w.add(format!("IFCSPACE({},$,{},{},$,#{at},#{shape},{},.ELEMENT.,.INTERNAL.,$)",s(&if valid_guid(&r.ifc.guid){r.ifc.guid.clone()}else{derived(ELEMENT,id)}),s(&r.number),opt(&r.comments),opt(&r.name)));products.insert(id,ent);spaces.entry(lv).or_default().push(ent);}
         for(lv,ents)in spaces{let parent=storeys[&lv].0;w.add(format!("IFCRELAGGREGATES({},$,$,$,#{parent},({}))",s(&derived(SPACES,lv)),refs(&ents)));}
 
         // floors: flat ones their regions swept down from the top, sloped ones their 3D mesh
         for (id, e) in self.iter() {
             let Element::Floor(f) = e else { continue };
+            if self.out_of_phase(id, phase) {
+                continue;
+            }
             let lv = storey_of(f.level);
             let (_, storey_at, sz) = storeys[&lv];
             let Some(ft) = self.floor_type(f.floor_type) else { continue };
@@ -649,7 +678,7 @@ impl Document {
 
         // ceilings: IfcCovering CEILING, their 3D mesh (a basic ceiling is a plane)
         for (id, c) in self.ceilings() {
-            if skip(&c.ifc) {
+            if skip(id, &c.ifc) {
                 continue;
             }
             let lv = storey_of(c.level);
@@ -667,7 +696,7 @@ impl Document {
 
         // toposolids: IfcGeographicElement TERRAIN, their 3D mesh
         for (id, t) in self.toposolids() {
-            if skip(&t.ifc) {
+            if skip(id, &t.ifc) {
                 continue;
             }
             let lv = storey_of(t.level);
@@ -823,7 +852,7 @@ impl Document {
         // roofs: their 3D mesh
         for (id, e) in self.iter() {
             let Element::Roof(r) = e else { continue };
-            if skip(&r.ifc) {
+            if skip(id, &r.ifc) {
                 continue;
             }
             let lv = storey_of(r.level);
@@ -841,7 +870,7 @@ impl Document {
         // doors, windows and components: what the 3D view draws, glass in a see-through style
         let mut glass_style: Option<u64> = None;
         for (id, i) in self.instances() {
-            if skip(&i.ifc) {
+            if skip(id, &i.ifc) {
                 continue;
             }
             let Some((cat, solid, glass)) = crate::mesh::instance_meshes(self, id) else { continue };
@@ -887,7 +916,7 @@ impl Document {
         // LANDING) per landing, each with the pieces it is made of
         for (id, st) in self.stairs() {
             use crate::stairs::StairPart;
-            if skip(&st.ifc) {
+            if skip(id, &st.ifc) {
                 continue;
             }
             let Some(lay) = self.stair_layout(st) else { continue };
@@ -989,7 +1018,7 @@ impl Document {
             // its railings are parts of it too
             for rid in self.stair_railings(id) {
                 let Some(r) = self.railing(rid) else { continue };
-                if skip(&r.ifc) { continue; }
+                if skip(rid, &r.ifc) { continue; }
                 if let Some(e) = write_railing(&mut w, self, rid, r, storey_at, sz, &mut part_materials) {
                     products.insert(rid, e);
                     parts.push(e);
@@ -1003,7 +1032,7 @@ impl Document {
         // its railings
         for (id, rp) in self.ramps() {
             use crate::stairs::StairPart;
-            if skip(&rp.ifc) {
+            if skip(id, &rp.ifc) {
                 continue;
             }
             let Some(lay) = self.ramp_layout(rp) else { continue };
@@ -1059,7 +1088,7 @@ impl Document {
             }
             for rid in self.stair_railings(id) {
                 let Some(r) = self.railing(rid) else { continue };
-                if skip(&r.ifc) { continue; }
+                if skip(rid, &r.ifc) { continue; }
                 if let Some(e) = write_railing(&mut w, self, rid, r, storey_at, sz, &mut part_materials) {
                     products.insert(rid, e);
                     parts.push(e);
@@ -1071,7 +1100,7 @@ impl Document {
         }
         // railings on their own, in their storey
         for (id, r) in self.railings() {
-            if skip(&r.ifc) || r.host.is_some() {
+            if skip(id, &r.ifc) || r.host.is_some() {
                 continue;
             }
             let lv = storey_of(r.level);
@@ -1122,6 +1151,21 @@ impl Document {
             let set = w.layer_set(self, &t.name, &t.layers);
             let usage = w.add(format!("IFCMATERIALLAYERSETUSAGE(#{set},.AXIS3.,.NEGATIVE.,{top},$)"));
             w.add(format!("IFCRELASSOCIATESMATERIAL({},$,$,$,({}),#{usage})", s(&derived(MATERIALS, 1_000_000 + k as u64)), refs(&ents)));
+        }
+
+        // phases: each phased product's Phase Created and Phase Demolished, and its status in the exported phase
+        if let (Some(p), Some((_, ph))) = (phase, self.phasing()) {
+            let name_of = |id: Id| ph.phase(id).map_or(String::new(), |x| x.name.clone());
+            for (&id, &ent) in &products {
+                let Some(st) = self.status_in(id, p) else { continue };
+                let mut props = vec![w.add(format!("IFCPROPERTYSINGLEVALUE('Phase Created',$,IFCLABEL({}),$)", s(&name_of(ph.created_of(id)))))];
+                if let Some(d) = ph.demolished.get(&id) {
+                    props.push(w.add(format!("IFCPROPERTYSINGLEVALUE('Phase Demolished',$,IFCLABEL({}),$)", s(&name_of(*d)))));
+                }
+                props.push(w.add(format!("IFCPROPERTYSINGLEVALUE('Phase Status',$,IFCLABEL({}),$)", s(st.label()))));
+                let set = w.add(format!("IFCPROPERTYSET({},$,'OpenArch_Phasing',$,({}))", s(&derived(PSET, (2 << 48) | id)), refs(&props)));
+                w.add(format!("IFCRELDEFINESBYPROPERTIES({},$,$,$,(#{ent}),#{set})", s(&derived(PSET_DEFINES, (2 << 48) | id))));
+            }
         }
 
         // groups: an IfcGroup each, holding the products (and groups) in it

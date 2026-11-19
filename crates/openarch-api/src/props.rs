@@ -275,7 +275,7 @@ fn kind_label(k: ViewKind) -> &'static str {
 
 pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
     if let Some(s) = &v.schedule {
-        return schedule_props(id, v, s);
+        return schedule_props(d, id, v, s);
     }
     let eff = d.effective_settings(id).unwrap_or_else(|| v.settings.clone());
     let tpl = v.template.and_then(|t| d.view_template(t));
@@ -383,9 +383,7 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
     }
     let on_sheet = d.viewports().into_iter().find(|(_, vp)| vp.view == id).and_then(|(_, vp)| d.sheet(vp.sheet));
     // a model view shows one phase of the project
-    if v.schedule.is_none() {
-        groups.push(crate::phasing::view_phase_group(d, id, v));
-    }
+    groups.push(crate::phasing::view_phase_group(d, id, v));
     groups.push(group("Identity Data", vec![
         select("View Template", tpl_opts),
         text("View Name", "name", &v.name),
@@ -1588,9 +1586,9 @@ pub fn viewport_props(d: &Document, id: Id, v: &openarch_model::sheet::Viewport)
 }
 
 /// A schedule: its name and category, and the Schedule Properties tabs.
-fn schedule_props(id: Id, v: &View, s: &openarch_model::schedule::ScheduleDef) -> Value {
+fn schedule_props(d: &Document, id: Id, v: &View, s: &openarch_model::schedule::ScheduleDef) -> Value {
     let n = |k: usize, what: &str| if k == 0 { "Edit...".to_string() } else { format!("Edit... ({k} {what}{})", if k == 1 { "" } else { "s" }) };
-    json!({
+    let mut p = json!({
         "id": id, "kind": "Schedule",
         "title": format!("Schedule: {}", v.name),
         "target": { "method": "patch_view", "id": id },
@@ -1604,7 +1602,12 @@ fn schedule_props(id: Id, v: &View, s: &openarch_model::schedule::ScheduleDef) -
                 dialog("Appearance", "schedule_appearance", "Edit..."),
             ]),
         ],
-    })
+    });
+    // a schedule of model elements lists one phase of the project (spec 6.2): not key schedules or sheet lists
+    if s.key.is_none() && !matches!(s.category.as_str(), "Sheets" | "Views" | "Revisions") {
+        p["groups"].as_array_mut().unwrap().insert(1, crate::phasing::view_phase_group(d, id, v));
+    }
+    p
 }
 
 /// A schedule on a sheet: its segments and headings, and the schedule's Filter by Sheet.

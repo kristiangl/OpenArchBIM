@@ -204,7 +204,7 @@ impl Document {
             ColorCategory::Rooms => {
                 let v = view.and_then(|v| self.view(v));
                 for (id, r) in self.rooms() {
-                    if let Some(v) = v { if Some(r.level) != v.level || (r.phase.is_some() && v.phase.is_some() && r.phase != v.phase) { continue; } }
+                    if let Some(v) = v { if Some(r.level) != v.level || !self.view_shows_phase(v, r.phase) { continue; } }
                     let Some(c) = self.room_calculation(id) else { continue };
                     out.push((id, c.region));
                 }
