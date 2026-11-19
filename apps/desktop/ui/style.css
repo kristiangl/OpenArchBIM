@@ -696,3 +696,8 @@ button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent)
 .cs-tools { display: flex; gap: 4px; flex-wrap: wrap; margin-top: 6px; }
 .cs-edit { flex: 1; display: flex; flex-direction: column; gap: 6px; }
 .cs-table input[type=color] { width: 44px; height: 22px; padding: 0; border: 0; }
+/* Manage > Phasing (phases.js) */
+.grid-table { border-collapse: collapse; margin: 4px 0 8px; }
+.grid-table th { text-align: left; font-weight: 600; padding: 3px 8px; border-bottom: 1px solid var(--line); }
+.grid-table td { padding: 2px 8px; border-bottom: 1px solid var(--line); }
+.grid-table tr.picked td { background: var(--panel-2); }

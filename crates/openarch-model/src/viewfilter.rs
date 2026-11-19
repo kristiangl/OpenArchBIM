@@ -269,6 +269,10 @@ impl Document {
     /// view's filters that match it.
     pub fn graphics_of(&self, view: &View, id: &Id) -> Option<CategoryOverride> {
         let own = view.element_overrides.get(id);
+        // what the view's phase leaves out draws nowhere, whatever else says
+        if self.phase_hides(view, *id) {
+            return Some(CategoryOverride { visible: false, ..Default::default() });
+        }
         // the phase's override lies under the filters', which lie under the element's own (phasing.rs)
         let under = match (self.filter_override(view, *id), self.phase_override(view, *id)) {
             (Some(f), Some(p)) => Some(f.over(&p)),
@@ -289,9 +293,15 @@ impl Document {
 
     /// The elements a view's filters hide.
     pub fn filter_hidden(&self, view: Id) -> BTreeSet<Id> {
+        // what the view's phase leaves out (phasing.rs)
+        let mut out: BTreeSet<Id> = match (self.view(view), self.phasing()) {
+            (Some(v), Some(_)) => self.iter().filter(|(id, e)| crate::phasing::is_phased(e) && self.phase_hides(v, *id)).map(|(id, _)| id).collect(),
+            _ => BTreeSet::new(),
+        };
         let c = self.filter_cache.borrow();
-        if c.revision != Some(self.revision()) { return BTreeSet::new(); }
-        c.by_view.get(&view).map(|m| m.iter().filter(|(_, o)| !o.visible).map(|(i, _)| *i).collect()).unwrap_or_default()
+        if c.revision != Some(self.revision()) { return out; }
+        out.extend(c.by_view.get(&view).map(|m| m.iter().filter(|(_, o)| !o.visible).map(|(i, _)| *i).collect::<Vec<_>>()).unwrap_or_default());
+        out
     }
 }
 

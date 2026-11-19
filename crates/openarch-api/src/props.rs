@@ -165,7 +165,6 @@ pub fn wall_props(d: &Document, id: Id, w: &Wall) -> Value {
                 ro_measure("Volume", format!("{:.3} m\u{b3}", area * thick / 1000.0), area * thick / 1000.0),
             ]),
             group("Identity Data", vec![text("Comments", "comments", &w.comments), text("Mark", "mark", &w.mark)]),
-            group("Phasing", vec![ro("Phase Created", "New Construction"), ro("Phase Demolished", "None")]),
             group("IFC Parameters", vec![
                 enum_select("Export to IFC", "ifc.export", &name_of(&w.ifc.export), &[("by_type", "By Type"), ("yes", "Yes"), ("no", "No")]),
                 text("Export to IFC As", "ifc.export_as", &w.ifc.export_as),
@@ -383,6 +382,10 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         }
     }
     let on_sheet = d.viewports().into_iter().find(|(_, vp)| vp.view == id).and_then(|(_, vp)| d.sheet(vp.sheet));
+    // a model view shows one phase of the project
+    if v.schedule.is_none() {
+        groups.push(crate::phasing::view_phase_group(d, id, v));
+    }
     groups.push(group("Identity Data", vec![
         select("View Template", tpl_opts),
         text("View Name", "name", &v.name),
@@ -404,7 +407,6 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         controls["target"] = json!({ "method": "patch_section", "id": sid });
         groups.push(controls);
     }
-    groups.push(group("Phasing", vec![ro("Phase Filter", "Show All"), ro("Phase", "New Construction")]));
     json!({
         "id": id, "kind": "View",
         "title": format!("{}: {}", kind_label(v.view_kind), v.name),
@@ -554,8 +556,6 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
         add("Constraints", boolean("Flip Hand", "flip_hand", i.flip_hand, true));
     }
     add("Constraints", boolean("Pinned", "pinned", i.pinned, true));
-    add("Phasing", ro("Phase Created", "New Construction"));
-    add("Phasing", ro("Phase Demolished", "None"));
     add("IFC Parameters", enum_select("Export to IFC", "ifc.export", &name_of(&i.ifc.export), &[("by_type", "By Type"), ("yes", "Yes"), ("no", "No")]));
     add("IFC Parameters", text("Export to IFC As", "ifc.export_as", &i.ifc.export_as));
     add("IFC Parameters", text("IFC Predefined Type", "ifc.predefined_type", &i.ifc.predefined_type));

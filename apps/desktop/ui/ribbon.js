@@ -46,7 +46,8 @@ const MODIFY_TAB = [
     modifyItem("Pin", "pin", {"project":"pin","family":null,"annotation":null}, { iconOnly: true, secondary: true }),
     modifyItem("Trim/Extend Single", "trim", {"project":"ts","family":"f-ts","annotation":"a-ts"}, { iconOnly: true, secondary: true }),
     modifyItem("Trim/Extend Multiple", "trim", {"project":"tm","family":"f-tm","annotation":"a-tm"}, { iconOnly: true, secondary: true }),
-    modifyItem("Delete", "delete", {"project":"del","family":"f-del","annotation":"a-del"}, { iconOnly: true, secondary: true }) ] },
+    modifyItem("Delete", "delete", {"project":"del","family":"f-del","annotation":"a-del"}, { iconOnly: true, secondary: true }),
+    modifyItem("Demolish", "demolish", {"project":"demolish","family":null,"annotation":null}, { iconOnly: true, secondary: true }) ] },
   { label: "View", items: [
     modifyItem("Hide in View", "showHidden", { project: "hide-el" }, { iconOnly: true, menu: [
       modifyItem("Hide Elements (EH)", "showHidden", { project: "hide-el" }),

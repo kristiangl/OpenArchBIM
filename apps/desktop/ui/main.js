@@ -178,6 +178,8 @@ const COMMANDS = {
   "v-vg": () => openVG(),
   "v-filters": () => Filters.open(),
   "m-styles": () => openObjectStyles(),
+  "m-phases": () => Phases.open(),
+  demolish: () => Phases.demolish(),
   "m-snaps": () => openSnaps(),
   "m-families": () => FamModel.list(),
   "load-family": () => FamModel.loadFile(),
@@ -1159,6 +1161,7 @@ async function openView(kind, viewId, opt = {}) {
   const changed = app.view.kind !== kind || target !== app.view.viewId;
   if (changed) saveCamera();
   app.view = { kind, viewId: target };
+  Backend.call("active_view", { view_id: target }).catch(() => {});
   if (kind === "plan") app.lastPlanId = target;
   if (kind !== "plan" && Plan.tool !== "select") Plan.setTool("select");
   if (kind !== "elevation" && Elev.tool !== "select") Elev.setTool("select");
@@ -1350,6 +1353,8 @@ function updateTitle() {
 }
 
 async function refresh(force = false) {
+  // new elements are built in the active view's phase (phasing.rs)
+  if (app.view && app.view.viewId != null) Backend.call("active_view", { view_id: app.view.viewId }).catch(() => {});
   const info = await run("doc_info", {});
   if (!info) return;
   app.info = info;

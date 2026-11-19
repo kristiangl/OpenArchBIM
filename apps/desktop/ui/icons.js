@@ -191,6 +191,7 @@ const ICONS = {
   pin: '<path d="M9 3h6l-1 5 4 4H6l4-4z"/><path class="a2" d="M12 12v9"/>',
   unpin: '<path d="M9 3h6l-1 5 4 4H6l4-4z"/><path d="M12 12v9"/><path class="a2" d="M4 4l16 16"/>',
   delete: '<path d="M4.5 7h15M10 7V4h4v3M7 7l1 13h8l1-13"/><path class="a2" d="M10 11l4 5M14 11l-4 5"/>',
+  demolish: '<path d="M5 9l5-5 4 4-5 5z"/><path class="a2" d="M10.5 10.5L20 20"/><path d="M3 21h8"/>',
   measure: '<path d="M3 14h18v5H3z"/><path d="M6 14v2.5M9 14v2.5M12 14v3.5M15 14v2.5M18 14v2.5"/><path class="a2" d="M4 9h16M4 7v4M20 7v4"/>',
   editBoundary: '<path d="M4 4h12v4" stroke-dasharray="3 2"/><path d="M4 4v16h8" stroke-dasharray="3 2"/><path class="a2" d="M13 21l1-4 5.5-5.5 3 3L17 20z"/>',
   wallJoins: '<path d="M3 5h16v16M3 11h10v10"/><rect class="af" x="13" y="5" width="6" height="6"/>',

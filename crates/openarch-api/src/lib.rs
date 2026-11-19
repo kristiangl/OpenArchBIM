@@ -27,6 +27,7 @@ mod rooms;
 mod revisions;
 mod tags;
 mod ceilings;
+mod phasing;
 mod topo;
 mod propline;
 mod cad;
@@ -290,6 +291,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_ceilings(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_phasing(method, p) {
             return r;
         }
         if let Some(r) = self.handle_structural(method, p) {
@@ -681,6 +685,7 @@ impl Session {
             "describe_multi" => {
                 let ids = ids_of(p, "ids")?;
                 let mut props = props::multi_props(&self.doc, &ids)?;
+                self.add_phase_properties(&ids, &mut props);
                 self.add_key_properties(&ids, &mut props);
                 Ok(props)
             },
@@ -3289,6 +3294,7 @@ impl Session {
     fn describe(&self, id: Id) -> Res {
         let mut props = self.describe_base(id)?;
         if matches!(self.doc.get(id),Some(Element::FamilyInstance(_))){props["groups"].as_array_mut().unwrap().push(json!({"name":"Room","rows":self.component_room_fields(id)}));}
+        self.add_phase_properties(&[id], &mut props);
         self.add_key_properties(&[id], &mut props);
         Ok(props)
     }
@@ -4993,6 +4999,45 @@ mod tests {
         assert!(g["model"].as_array().unwrap().iter().any(|c| c["name"] == "Walls"));
         // and a plan can still be drawn through a template
         assert_eq!(call(&mut s, "plan", json!({"view_id": view}))["view"]["scale"], 50);
+    }
+
+    #[test]
+    fn phasing_through_the_api_existing_demolished_and_new_walls_by_the_views_filter() {
+        let (mut s, lvl, wt, view) = setup();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [5000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        // the wall's Properties have Phase Created (New Construction until the project has phasing) and Demolished
+        let groups = |s: &mut Session, id: u64| call(s, "describe", json!({ "id": id }))["groups"].as_array().unwrap().clone();
+        let phasing_rows = |s: &mut Session, id: u64| groups(s, id).into_iter().find(|g| g["name"] == "Phasing").unwrap()["rows"].as_array().unwrap().clone();
+        let rows = phasing_rows(&mut s, w);
+        assert_eq!((rows[0]["value"].as_str(), rows[1]["value"].as_str()), (Some("New Construction"), Some("None")));
+        let ph = call(&mut s, "phasing", json!({}));
+        let phase = |n: &str| ph["phases"].as_array().unwrap().iter().find(|p| p["name"] == n).unwrap()["id"].as_u64().unwrap();
+        let filter = |n: &str| ph["filters"].as_array().unwrap().iter().find(|f| f["name"] == n).unwrap()["id"].as_u64().unwrap();
+        // the wall stood before: Existing, demolished in this view's phase (New Construction)
+        call(&mut s, "set_element_phases", json!({ "id": w, "ids": [w], "patch": { "created": phase("Existing") } }));
+        call(&mut s, "demolish", json!({ "view_id": view, "ids": [w] }));
+        let rows = phasing_rows(&mut s, w);
+        assert_eq!((rows[0]["value"].as_str(), rows[1]["value"].as_str()), (Some("Existing"), Some("New Construction")));
+        let wall_in = |s: &mut Session| call(s, "plan", json!({ "view_id": view }))["walls"].as_array().unwrap().iter().find(|x| x["id"] == w).cloned();
+        // Show All: drawn as its category; Show Complete: gone; Show Previous + Demo: dashed
+        assert!(wall_in(&mut s).is_some());
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Complete") } }));
+        assert!(wall_in(&mut s).is_none());
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + Demo") } }));
+        assert_eq!(wall_in(&mut s).unwrap()["style"]["line"]["pattern"], "Dash");
+        // the view's Properties show its Phasing
+        let vrows = phasing_rows(&mut s, view);
+        assert_eq!((vrows[0]["value"].as_str(), vrows[1]["value"].as_str()), (Some("Show Previous + Demo"), Some("New Construction")));
+        // a wall drawn while an Existing view is active is Existing
+        call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase": phase("Existing"), "phase_filter": filter("Show All") } }));
+        assert_eq!(call(&mut s, "active_view", json!({ "view_id": view }))["phase"].as_u64(), Some(phase("Existing")));
+        let w2 = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 3000], "end": [5000, 3000], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        assert_eq!(phasing_rows(&mut s, w2)[0]["value"], "Existing");
+        // a phase added and combined back through the dialog's calls
+        let r = call(&mut s, "phase_op", json!({ "op": "insert", "after": phase("New Construction"), "name": "Stage 2" }));
+        let stage = r["phases"].as_array().unwrap().iter().find(|p| p["name"] == "Stage 2").unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "phase_op", json!({ "op": "combine", "id": stage, "into": phase("New Construction") }));
+        assert_eq!(call(&mut s, "phasing", json!({}))["phases"].as_array().unwrap().len(), 2);
     }
 
     #[test]
