@@ -424,6 +424,7 @@ impl Document {
                 let (d, _) = unit(w.start, w.end)?;
                 Some(DimLines { origin: [w.start.x, w.start.y], axis: [d.x, d.y], own: self.opening_ref_lines(Some(id), h.wall, true), targets: self.opening_ref_lines(Some(id), h.wall, false) })
             }
+            Element::Grid(g) => self.grid_lines(id, g),
             _ => None,
         }
     }
@@ -573,6 +574,9 @@ impl Document {
                 return self.apply_component_pins(id, i, dims, pins);
             }
         }
+        if let Some(Element::Grid(_)) = self.get(id) {
+            return self.apply_grid_pins(id, dims, pins);
+        }
         let (host, instance, w) = match self.get(id) {
             Some(Element::Wall(w)) => (id, None, w),
             Some(Element::FamilyInstance(i)) => match (i.host, i.host.and_then(|h| self.get(h.wall))) {
@@ -665,6 +669,7 @@ impl Document {
         match self.get(id) {
             Some(Element::Wall(w)) if w.curve.is_some() => self.curved_wall_dims(id, w),
             Some(Element::Wall(w)) => self.wall_dims(id, w, s, refs),
+            Some(Element::Grid(g)) => self.grid_dims(id, g, refs),
             Some(Element::FamilyInstance(i)) => match i.host {
                 Some(h) => {
                     let (width, _, _) = self.instance_opening_size(i);
@@ -674,6 +679,135 @@ impl Document {
             },
             _ => vec![],
         }
+    }
+
+    /// A straight grid's lines across it: the grid itself, and as targets the other straight grids and the faces and
+    /// layers of straight walls running the same way.
+    fn grid_lines(&self, id: Id, g: &crate::grid::Grid) -> Option<DimLines> {
+        let (a, b) = g.line()?;
+        let (d, _) = unit(a, b)?;
+        let n = Point::new(-d.y, d.x);
+        let pos = |p: Point, q: Point| ((p.x + q.x) / 2.0 - a.x) * n.x + ((p.y + q.y) / 2.0 - a.y) * n.y;
+        let line = |spec: RefSpec, p: Point, q: Point, label: String| RefLine { pos: pos(p, q), spec, a: [p.x, p.y], b: [q.x, q.y], label };
+        let parallel = |e: Point| (d.x * e.y - d.y * e.x).abs() < 0.0087;
+        let own = vec![line(RefSpec::Grid { id }, a, b, format!("Grid {}", g.name))];
+        let mut targets = vec![];
+        for (oid, e) in self.iter() {
+            match e {
+                Element::Grid(o) if oid != id => {
+                    let Some((p, q)) = o.line() else { continue };
+                    if unit(p, q).is_some_and(|(e, _)| parallel(e)) {
+                        targets.push(line(RefSpec::Grid { id: oid }, p, q, format!("Grid {}", o.name)));
+                    }
+                }
+                Element::Wall(w) if w.curve.is_none() => {
+                    let Some((wd, _)) = unit(w.start, w.end) else { continue };
+                    if !parallel(wd) {
+                        continue;
+                    }
+                    let wn = Point::new(-wd.y, wd.x);
+                    for (off, name) in self.wall_boundaries(w) {
+                        let (p, q) = (Point::new(w.start.x + wn.x * off, w.start.y + wn.y * off), Point::new(w.end.x + wn.x * off, w.end.y + wn.y * off));
+                        targets.push(line(RefSpec::Wall { id: oid, offset: off }, p, q, name));
+                    }
+                }
+                _ => {}
+            }
+        }
+        targets.retain(|l| l.pos.abs() <= TEMP_DIM_REACH_MM);
+        Some(DimLines { origin: [a.x, a.y], axis: [n.x, n.y], own, targets })
+    }
+
+    /// A selected straight grid: the distance to the nearest parallel straight grid on each side, measured where
+    /// the two overlap (the middle of the selected grid when they don't). Editing one moves the grid.
+    fn grid_dims(&self, id: Id, g: &crate::grid::Grid, refs: &BTreeMap<String, Id>) -> Vec<TempDim> {
+        let mut out = vec![];
+        let Some((a, b)) = g.line() else { return out };
+        let Some((d, len)) = unit(a, b) else { return out };
+        let n = Point::new(-d.y, d.x);
+        let along = |p: Point| (p.x - a.x) * d.x + (p.y - a.y) * d.y;
+        let across = |p: Point| (p.x - a.x) * n.x + (p.y - a.y) * n.y;
+        let mut best: [Option<(f64, Id, f64)>; 2] = [None, None]; // up (left of the grid), down: (offset, grid, middle)
+        for (oid, o) in self.grids() {
+            if oid == id {
+                continue;
+            }
+            let Some((p, q)) = o.line() else { continue };
+            let Some((od, _)) = unit(p, q) else { continue };
+            if (d.x * od.y - d.y * od.x).abs() > 0.0087 {
+                continue;
+            }
+            let off = across(p);
+            let (t0, t1) = (along(p).min(along(q)), along(p).max(along(q)));
+            let (lo, hi) = (t0.max(0.0), t1.min(len));
+            let mid = if hi >= lo { (lo + hi) / 2.0 } else { len / 2.0 };
+            for (k, key, ok) in [(0, "up", off > 0.5), (1, "down", off < -0.5)] {
+                if !ok || off.abs() > TEMP_DIM_REACH_MM || refs.get(key).is_some_and(|f| *f != oid) {
+                    continue;
+                }
+                if best[k].map_or(true, |x| off.abs() < x.0.abs()) {
+                    best[k] = Some((off, oid, mid));
+                }
+            }
+        }
+        let at = |t: f64, o: f64| [a.x + d.x * t + n.x * o, a.y + d.y * t + n.y * o];
+        for (k, key) in [(0, "up"), (1, "down")] {
+            let Some((off, oid, mid)) = best[k] else { continue };
+            let sign = off.signum();
+            out.push(TempDim {
+                key: key.into(),
+                a: at(mid, 0.0),
+                b: at(mid, off),
+                value: off.abs(),
+                normal: [n.x * sign, n.y * sign],
+                to: Some(oid),
+                // growing the dimension moves the grid away from its neighbour
+                edit: Some(DimEdit::Move { ids: vec![id], dir: [-n.x * sign, -n.y * sign] }),
+            });
+        }
+        out
+    }
+
+    /// A grid's dimensions with their far end moved to another grid or a wall's line.
+    fn apply_grid_pins(&self, id: Id, mut dims: Vec<TempDim>, pins: &Pins) -> Vec<TempDim> {
+        let Some(Element::Grid(g)) = self.get(id) else { return dims };
+        let Some(lines) = self.grid_lines(id, g) else { return dims };
+        let (Some((a, b)), o) = (g.line(), Point::new(lines.origin[0], lines.origin[1])) else { return dims };
+        let Some((d, len)) = unit(a, b) else { return dims };
+        let n = Point::new(lines.axis[0], lines.axis[1]);
+        let along = |p: [f64; 2]| (p[0] - o.x) * d.x + (p[1] - o.y) * d.y;
+        for (key, pin) in pins {
+            if key != "up" && key != "down" {
+                continue;
+            }
+            let Some(tgt) = pin.target.as_ref().and_then(|sp| lines.targets.iter().find(|l| l.spec.same(sp))).cloned() else { continue };
+            let existing = dims.iter().position(|x| &x.key == key);
+            // measured where the target overlaps the grid
+            let (t0, t1) = (along(tgt.a).min(along(tgt.b)), along(tgt.a).max(along(tgt.b)));
+            let (lo, hi) = (t0.max(0.0), t1.min(len));
+            let mid = if hi >= lo { (lo + hi) / 2.0 } else { existing.map_or(len / 2.0, |k| along(dims[k].a)) };
+            let off = tgt.pos;
+            if off.abs() < 0.5 {
+                dims.retain(|x| &x.key != key);
+                continue;
+            }
+            let sign = off.signum();
+            let at = |t: f64, w: f64| [o.x + d.x * t + n.x * w, o.y + d.y * t + n.y * w];
+            let dim = TempDim {
+                key: key.clone(),
+                a: at(mid, 0.0),
+                b: at(mid, off),
+                value: off.abs(),
+                normal: [n.x * sign, n.y * sign],
+                to: Some(tgt.spec.element()),
+                edit: Some(DimEdit::Move { ids: vec![id], dir: [-n.x * sign, -n.y * sign] }),
+            };
+            match existing {
+                Some(k) => dims[k] = dim,
+                None => dims.push(dim),
+            }
+        }
+        dims
     }
 
     /// A component dimension's direction from the component, and the side it is drawn on: left and right as one
@@ -1418,6 +1552,37 @@ mod tests {
         assert!((value(&d) - 600.0).abs() < 0.01);
         d.transform_elements(&[c], Xform::Move { dx: -100.0, dy: 0.0 }, EditOptions::default()).unwrap();
         assert!((value(&d) - 700.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn a_grid_measures_to_its_neighbours_and_its_far_end_can_go_to_a_wall_face() {
+        let (mut d, ids) = room();
+        let line = |x: f64| vec![Curve::Line { a: p(x, -1000.0), b: p(x, 5000.0) }];
+        let g1 = d.add_grid(line(1500.0), None, Some("1")).unwrap();
+        let g2 = d.add_grid(line(3500.0), None, Some("2")).unwrap();
+        let g3 = d.add_grid(line(4500.0), None, Some("3")).unwrap();
+        let s = TempDimSettings::default();
+        let dims = d.temp_dimensions(g2, s, &BTreeMap::new());
+        let get = |dims: &[TempDim], k: &str| dims.iter().find(|x| x.key == k).map(|x| (x.value, x.to));
+        // the grid runs up the page, so its left (up) is -x: grid 1, 2000 away; its right (down) grid 3, 1000 away
+        assert_eq!(get(&dims, "up").map(|v| v.1), Some(Some(g1)), "{dims:?}");
+        assert!((get(&dims, "up").unwrap().0 - 2000.0).abs() < 0.01 && (get(&dims, "down").unwrap().0 - 1000.0).abs() < 0.01);
+        assert_eq!(get(&dims, "down").unwrap().1, Some(g3));
+        // typing moves the grid
+        let down = dims.iter().find(|x| x.key == "down").unwrap().clone();
+        d.apply_temp_dimension(down.edit.as_ref().unwrap(), down.value, 1200.0).unwrap();
+        let after = d.temp_dimensions(g2, s, &BTreeMap::new());
+        assert!((get(&after, "down").unwrap().0 - 1200.0).abs() < 0.01 && (get(&after, "up").unwrap().0 - 1800.0).abs() < 0.01, "{after:?}");
+        // the far end to the east wall's inside face (the wall on x = 6000 runs up, its left facing in)
+        let lines = d.dim_lines(g2).unwrap();
+        let east = ids[1];
+        let face = lines.targets.iter().filter(|l| matches!(l.spec, RefSpec::Wall { id, .. } if id == east)).min_by(|a, b| a.pos.abs().total_cmp(&b.pos.abs())).unwrap().clone();
+        let mut pins = Pins::new();
+        pins.insert("down".into(), DimPin { own: None, target: Some(face.spec.clone()) });
+        let pinned = d.temp_dimensions_pinned(g2, s, &BTreeMap::new(), &pins);
+        let (wl, _) = d.wall_extents(&wall(&d, east));
+        assert!((get(&pinned, "down").unwrap().0 - (6000.0 - wl - 3300.0)).abs() < 0.01, "{pinned:?}");
+        assert_eq!(get(&pinned, "down").unwrap().1, Some(east));
     }
 
     #[test]
