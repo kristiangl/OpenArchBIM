@@ -3304,7 +3304,8 @@ impl Session {
         }
         json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style),
             // the Graphic Display Options the 3D view draws (shadows and the sun come with `sun`)
-            "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "silhouettes": s.graphic_display.silhouettes, "transparency": s.graphic_display.transparency, "background": s.graphic_display.background })) })
+            "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "silhouettes": s.graphic_display.silhouettes, "transparency": s.graphic_display.transparency, "background": s.graphic_display.background,
+                "sketchy": s.graphic_display.sketchy_lines.then(|| json!({ "jitter": s.graphic_display.sketchy_jitter, "extension": s.graphic_display.sketchy_extension })) })) })
     }
 
     /// A member of a group (at any depth) outside Edit Group: only the values that vary by group instance

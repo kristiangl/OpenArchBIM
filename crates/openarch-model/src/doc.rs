@@ -1827,6 +1827,9 @@ fn check_depth_cue(s: &ViewSettings) -> Result<(), String> {
     if g.transparency > 100 {
         return Err("transparency is a percentage from 0 to 100".into());
     }
+    if g.sketchy_jitter > 10 || g.sketchy_extension > 10 {
+        return Err("sketchy lines' jitter and extension are 0 to 10".into());
+    }
     Ok(())
 }
 

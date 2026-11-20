@@ -114,8 +114,10 @@ struct LOut { @builtin(position) pos: vec4<f32>, @location(0) c: vec3<f32> };
 
 // edges of the model: the instance buffer carries the selection tint in its w
 struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
+// u.edge.w: how far (m) edges are brought towards the eye, so sketchy edges moved off their faces stay in front
+// (the near plane is 0.1 m, so a depth of z changes by 0.1 k / z² for k metres)
 @vertex fn vs_edge(@location(0) p: vec3<f32>, @location(2) off: vec4<f32>) -> EOut {
-  var o: EOut; o.pos = u.vp * vec4<f32>(p, 1.0); o.tint = off.w; return o;
+  var o: EOut; o.pos = u.vp * vec4<f32>(p, 1.0); o.pos.z -= 0.1 * u.edge.w / max(o.pos.w, 0.1); o.tint = off.w; return o;
 }
 @fragment fn fs_edge(i: EOut) -> @location(0) vec4<f32> {
   if (i.tint >= 0.99) { return vec4<f32>(0.85, 0.35, 0.08, 1.0); }
@@ -320,7 +322,7 @@ void main() { o = vec4(vc, 1.0); }`;
   const GL_EDGE_VS = `#version 300 es
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 2) in vec4 off; out float vtint;
-void main() { gl_Position = vp * vec4(p, 1.0); vtint = off.w; }`;
+void main() { gl_Position = vp * vec4(p, 1.0); gl_Position.z -= 0.2 * edge.w / max(gl_Position.w, 0.1); vtint = off.w; }`;
   const GL_EDGE_FS = `#version 300 es
 precision highp float;
 ${GL_UNIFORMS}
@@ -1026,7 +1028,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       // Show Silhouettes (Graphic Display Options): outlines drawn in the same pass over the frame
       const sil = !!graphics.silhouettes && !stress && lineMode !== 2 && meshes.length > 0;
       const u = new Float32Array(60); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, glassShadow ? 1 : 0], 20);
-      u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
+      // edges' colour, and (w) how far sketchy edges are brought forward: a little more than their jitter
+      const pull = graphics.sketchy ? graphics.sketchy.jitter * 0.004 + 0.02 : 0;
+      u.set(dark ? [0.88, 0.9, 0.92, pull] : [0.08, 0.09, 0.1, pull], 24);
       if (shadow) u.set(sunMatrix(L), 28);
       u.set([amb, dif, sun ? sun.shadowStrength ?? 0.5 : 0.5, shadow ? 1 : 0], 44);
       // ambient shadows: strength and reach, and what turns a depth back into a distance
@@ -1211,6 +1215,36 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     // how see-through a mesh is: its material's transparency (glass half), a selection at least 30%, and then the
     // view's Transparency (Graphic Display Options) over the whole model
     let graphics = {};
+    // Sketchy Lines: each edge carried on past its ends by up to `extension` (0 to 10) and its ends moved off the
+    // line by up to `jitter` (0 to 10), the same way every time for the same edge (seeded by where it is)
+    const sketchKey = () => (graphics.sketchy ? `${graphics.sketchy.jitter}|${graphics.sketchy.extension}` : "");
+    let shownSketch = "";
+    function sketchify(e, jitter, extension) {
+      const out = new Float32Array(e.length);
+      const rnd = (x, y, z, k) => { const s = Math.sin(x * 12.9898 + y * 78.233 + z * 37.719 + k * 4.581) * 43758.5453; return (s - Math.floor(s)) * 2 - 1; };
+      for (let i = 0; i + 5 < e.length; i += 6) {
+        const a = [e[i], e[i + 1], e[i + 2]], b = [e[i + 3], e[i + 4], e[i + 5]];
+        const d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]], L = Math.hypot(...d) || 1, u = d.map((v) => v / L);
+        const ext = Math.min(L * 0.25, extension * 0.025), amp = Math.min(L * 0.1, jitter * 0.004);
+        const seed = a[0] + b[0] * 1.3, s2 = a[1] + b[1] * 1.7, s3 = a[2] + b[2] * 1.1;
+        for (let k = 0; k < 3; k++) {
+          out[i + k] = a[k] - u[k] * ext * (0.5 + 0.5 * Math.abs(rnd(seed, s2, s3, 1))) + amp * rnd(seed, s2, s3, 2 + k);
+          out[i + 3 + k] = b[k] + u[k] * ext * (0.5 + 0.5 * Math.abs(rnd(seed, s2, s3, 5))) + amp * rnd(seed, s2, s3, 6 + k);
+        }
+      }
+      return out;
+    }
+    // the meshes' edge buffers again, sketchy or plain, when Sketchy Lines changes
+    function resketch() {
+      const key = sketchKey();
+      if (key === shownSketch) return;
+      shownSketch = key;
+      for (const m of meshes) {
+        be.free(m.g);
+        m.g = be.mesh(m.data, key ? sketchify(m.edges, graphics.sketchy.jitter, graphics.sketchy.extension) : m.edges);
+        writeTint(m, !!m.selected);
+      }
+    }
     const writeTint = (m, selected) => {
       m.selected = selected;
       const t = 1 - (1 - Math.max(m.transparency, selected ? 0.3 : 0)) * (1 - (graphics.transparency || 0) / 100);
@@ -1234,8 +1268,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       setSunLines(a) { sunLines = a && a.length ? a : null; allLines = null; dirty = true; },
       /** The view's sun, or null for the fixed light: see `sun` above. */
       setSun(s) { sun = s; dirty = true; },
-      /** The view's Graphic Display Options the renderer follows: { showEdges, silhouettes, transparency (0-100), background ("none", "sky", "gradient") }. */
-      setGraphics(g) { graphics = g || {}; for (const m of meshes) writeTint(m, !!m.selected); dirty = true; },
+      /** The view's Graphic Display Options the renderer follows: { showEdges, silhouettes, transparency (0-100), background ("none", "sky", "gradient"), sketchy ({ jitter, extension } or null) }. */
+      setGraphics(g) { graphics = g || {}; resketch(); for (const m of meshes) writeTint(m, !!m.selected); dirty = true; },
       /** The model's bounding box, metres: [lo, hi]. */
       bounds() { return [sceneLo.slice(), sceneHi.slice()]; },
       /** Replace the displayed model meshes: [{ id, kind, verts: [x y z nx ny nz ...] }]. */
@@ -1249,10 +1283,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           const data = datas[i];
           const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
           for (let i = 0; i < data.length; i += 6) for (let k = 0; k < 3; k++) { bounds[0][k] = Math.min(bounds[0][k], data[i + k]); bounds[1][k] = Math.max(bounds[1][k], data[i + k]); }
-          const out = { g: be.mesh(data, edges[i]), edges: edges[i], id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
+          const out = { g: be.mesh(data, graphics.sketchy ? sketchify(edges[i], graphics.sketchy.jitter, graphics.sketchy.extension) : edges[i]), edges: edges[i], id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
           writeTint(out, sel.has(m.id));
           return out;
         });
+        shownSketch = sketchKey();
         sceneLo = [Infinity, Infinity, Infinity]; sceneHi = [-Infinity, -Infinity, -Infinity];
         for (const m of meshes) for (let k = 0; k < 3; k++) { sceneLo[k] = Math.min(sceneLo[k], m.bounds[0][k]); sceneHi[k] = Math.max(sceneHi[k], m.bounds[1][k]); }
         if (!isFinite(sceneLo[0])) { sceneLo = [0, 0, 0]; sceneHi = [0, 0, 0]; }

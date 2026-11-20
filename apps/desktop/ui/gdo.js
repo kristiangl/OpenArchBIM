@@ -21,6 +21,7 @@ const GDO = (() => {
         check("Show Edges", "show_edges"),
         ...(three ? [pct("Transparency (%)", "transparency")] : []),
         check("Show Silhouettes", "silhouettes"),
+        ...(three ? [check("Sketchy Lines", "sketchy_lines"), pct("Jitter (0 to 10)", "sketchy_jitter"), pct("Extension (0 to 10)", "sketchy_extension")] : []),
         head("Shadows"),
         check("Cast Shadows", "cast_shadows"),
         check("Ambient Shadows", "ambient_shadows"),
@@ -45,7 +46,8 @@ const GDO = (() => {
         );
       }
       foot.append(button("Cancel", close), button("OK", async () => {
-        const keys = ["show_edges", "transparency", "silhouettes", "cast_shadows", "ambient_shadows", "sun_intensity", "ambient_intensity", "background", "depth_cue", "depth_cue_start", "depth_cue_end", "depth_cue_fade"];
+        for (const k of ["sketchy_jitter", "sketchy_extension"]) g[k] = Math.min(10, g[k] || 0);
+        const keys = ["sketchy_lines", "sketchy_jitter", "sketchy_extension", "show_edges", "transparency", "silhouettes", "cast_shadows", "ambient_shadows", "sun_intensity", "ambient_intensity", "background", "depth_cue", "depth_cue_start", "depth_cue_end", "depth_cue_fade"];
         const patch = {};
         for (const k of keys) if (g[k] !== r.graphic_display[k]) patch[k] = g[k];
         const settings = {};
