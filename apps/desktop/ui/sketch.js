@@ -1282,7 +1282,8 @@ function makeSketch() {
     return out;
   }
 
-  function setSlope(spec) { if (!S || !S.slope) return; snapshot(); S.slope = { ...S.slope, spec }; cb.change(); host.render(); }
+  // `levels` ({ tail_level, head_level }, each a level id or null for the floor's own) when the dialog sets them
+  function setSlope(spec, levels) { if (!S || !S.slope) return; snapshot(); S.slope = { ...S.slope, spec, ...(levels || {}) }; cb.change(); host.render(); }
   function removeSlope() { if (!S || !S.slope) return; snapshot(); S.slope = null; cb.change(); host.render(); }
   function removeSpan() { if (!S || !S.span) return; snapshot(); S.span = null; cb.change(); host.render(); }
 

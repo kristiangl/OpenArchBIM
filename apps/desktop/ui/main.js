@@ -3475,13 +3475,17 @@ function openSlopeDialog() {
     const tail = el("input", { type: "number", step: "any", value: spec.tail_offset_mm ?? 0 });
     const pct = el("input", { type: "number", step: "any", value: spec.percent ?? 2 });
     const head = el("input", { type: "number", step: "any", value: spec.head_offset_mm ?? 150 });
+    // the level each height is measured from: the floor's own unless one is chosen
+    const levelPick = (cur) => el("select", {}, [new Option("Default (the floor's level)", ""), ...((app.info && app.info.levels) || []).map((l) => new Option(l.name, String(l.id), false, cur === l.id))]);
+    const tailLevel = levelPick(sp.tail_level), headLevel = levelPick(sp.head_level);
     const rows = el("div", { className: "dlg-rows" });
     const draw = () => {
       rows.replaceChildren(
         el("label", {}, ["Specify ", by]),
+        el("label", {}, ["Level at Tail ", tailLevel]),
         el("label", {}, ["Height Offset at Tail (mm) ", tail]),
-        by.value === "slope" ? el("label", {}, ["Slope (%) ", pct]) : el("label", {}, ["Height Offset at Head (mm) ", head]),
-        el("p", { className: "note", textContent: "Heights are measured from the floor's own level. The top of the floor rises along the arrow from the tail to the head." }),
+        ...(by.value === "slope" ? [el("label", {}, ["Slope (%) ", pct])] : [el("label", {}, ["Level at Head ", headLevel]), el("label", {}, ["Height Offset at Head (mm) ", head])]),
+        el("p", { className: "note", textContent: "Heights are measured from the level chosen (the floor's own by default). The top of the floor rises along the arrow from the tail to the head." }),
       );
     };
     by.onchange = draw;
@@ -3489,7 +3493,9 @@ function openSlopeDialog() {
     body.append(rows);
     foot.append(button("Cancel", close), button("OK", () => {
       const t = parseFloat(tail.value) || 0;
-      Sketch.setSlope(by.value === "slope" ? { by: "slope", tail_offset_mm: t, percent: parseFloat(pct.value) || 0 } : { by: "height_at_tail", tail_offset_mm: t, head_offset_mm: parseFloat(head.value) || 0 });
+      const lv = (s) => (s.value ? Number(s.value) : null);
+      Sketch.setSlope(by.value === "slope" ? { by: "slope", tail_offset_mm: t, percent: parseFloat(pct.value) || 0 } : { by: "height_at_tail", tail_offset_mm: t, head_offset_mm: parseFloat(head.value) || 0 },
+        { tail_level: lv(tailLevel), head_level: by.value === "slope" ? null : lv(headLevel) });
       close();
     }, true));
   });
