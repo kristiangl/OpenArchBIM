@@ -1314,8 +1314,7 @@ impl Session {
                 let id = if moves.is_empty() { self.doc.add_wall_with(w)? } else {
                     self.doc.grouped("Wall", |d| { let id = d.add_wall_with(w)?; for (o, k, x) in moves { d.move_wall_end(o, k, x)?; } Ok(id) })?
                 };
-                let warning = self.doc.wall_overlap(id).map(|other| format!("The wall overlaps another wall ({other}). One of them may be a mistake."));
-                Ok(json!({ "id": id, "warning": warning }))
+                Ok(json!({ "id": id, "warning": self.doc.walls_overlap_warning(&[id]) }))
             }
             "move_wall_end" => {
                 let end = p.get("end").and_then(|v| v.as_u64()).ok_or("missing end")?;
@@ -1335,12 +1334,13 @@ impl Session {
                     Some((x, other)) => self.doc.grouped("Move wall end", |d| { d.move_wall_end(id, end as u8, x)?; if let Some((o, k)) = other { d.move_wall_end(o, k, x)?; } Ok(()) })?,
                     None => self.doc.move_wall_end(id, end as u8, to)?,
                 }
-                Ok(json!({}))
+                Ok(json!({ "warning": self.doc.walls_overlap_warning(&[id]) }))
             }
             "move_wall_ends" => {
                 let ends: Vec<(Id, u8)> = p.get("ends").and_then(|v| v.as_array()).ok_or("missing ends")?.iter().map(|e| Ok((id_of(e, "id")?, e.get("end").and_then(|v| v.as_u64()).ok_or("missing end")? as u8))).collect::<Result<_, String>>()?;
                 self.doc.move_wall_ends(&ends, point_of(p.get("point").ok_or("missing point")?)?)?;
-                Ok(json!({}))
+                let ids: Vec<Id> = ends.iter().map(|e| e.0).collect();
+                Ok(json!({ "warning": self.doc.walls_overlap_warning(&ids) }))
             }
             "reshape_wall" => {
                 // drag point `k` of a curved wall (see `Document::wall_grips`); with `preview` only the new location line comes back
@@ -1391,7 +1391,8 @@ impl Session {
                         walls.push(w);
                     }
                 }
-                Ok(json!({ "ids": self.doc.add_walls_with(walls)? }))
+                let ids = self.doc.add_walls_with(walls)?;
+                Ok(json!({ "ids": ids, "warning": self.doc.walls_overlap_warning(&ids) }))
             }
             "add_floor" => {
                 let pts = p
@@ -1619,7 +1620,7 @@ impl Session {
                 let (marks, rest): (Vec<Id>, Vec<Id>) = ids.iter().copied().partition(|i| is_site(i) || is_section(i) || self.doc.elevation_marker(*i).is_some());
                 if marks.is_empty() {
                     let out = self.doc.transform_elements(&ids, x, EditOptions { copy: flag("copy"), disjoin: flag("disjoin") })?;
-                    return Ok(json!({ "ids": out }));
+                    return Ok(json!({ "ids": out, "warning": self.doc.walls_overlap_warning(&out) }));
                 }
                 let (copy, mirror) = (flag("copy"), matches!(x, Xform::Mirror { .. }));
                 if marks.iter().any(|m| !is_section(m)) {
@@ -1675,7 +1676,7 @@ impl Session {
                 let mut all: Vec<Id> = if copy { vec![] } else { marks.clone() };
                 all.extend(made);
                 all.extend(out);
-                Ok(json!({ "ids": all }))
+                Ok(json!({ "ids": all, "warning": self.doc.walls_overlap_warning(&all) }))
             }
             "annotation_family" => {
                 let id = id_of(p, "id")?;
@@ -3283,7 +3284,9 @@ impl Session {
                 }
             }
         }
-        json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style) })
+        json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style),
+            // the Graphic Display Options the 3D view draws (shadows and the sun come with `sun`)
+            "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "transparency": s.graphic_display.transparency })) })
     }
 
     /// A member of a group (at any depth) outside Edit Group: only the values that vary by group instance
@@ -4451,6 +4454,44 @@ mod tests {
     }
 
     #[test]
+    fn overlapping_walls_warn_when_drawn_as_shapes_curved_moved_or_copied() {
+        let (mut s, lvl, wt, _) = setup();
+        let warned = |r: &Value| r["warning"].as_str().is_some_and(|w| w.contains("overlaps another wall"));
+        let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0]}));
+        assert!(!warned(&a));
+        // a rectangle with one side along the first wall
+        let r = call(&mut s, "add_walls", json!({"type_id": wt, "level_id": lvl, "segments": [[[2000, 0], [4000, 0]], [[4000, 0], [4000, 3000]], [[4000, 3000], [2000, 3000]], [[2000, 3000], [2000, 0]]]}));
+        assert!(warned(&r), "{r}");
+        // a wall moved onto another, and one copied where it stands
+        let b = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 8000], "end": [3000, 8000]}))["id"].as_u64().unwrap();
+        let m = call(&mut s, "transform", json!({"ids": [b], "kind": "move", "dx": 1000, "dy": -8000}));
+        assert!(warned(&m), "{m}");
+        call(&mut s, "undo", json!({}));
+        let c = call(&mut s, "transform", json!({"ids": [b], "kind": "move", "dx": 0, "dy": 500, "copy": true}));
+        assert!(!warned(&c), "500 apart is not an overlap: {c}");
+        // the same arc drawn twice, and a shorter arc on the same circle
+        let arc = json!({"type": "arc", "start": {"x": 23000, "y": 0}, "end": {"x": 20000, "y": 3000}, "centre": {"x": 20000, "y": 0}, "ccw": true});
+        assert!(!warned(&call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "curve": arc}))));
+        let r = call(&mut s, "add_walls", json!({"type_id": wt, "level_id": lvl, "segments": [{"curve": {"type": "arc", "start": {"x": 22121.32, "y": 2121.32}, "end": {"x": 20000, "y": 3000}, "centre": {"x": 20000, "y": 0}, "ccw": true}}]}));
+        assert!(warned(&r), "{r}");
+        // a concentric arc 100 out does not
+        let r = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "curve": {"type": "arc", "start": {"x": 23100, "y": 0}, "end": {"x": 20000, "y": 3100}, "centre": {"x": 20000, "y": 0}, "ccw": true}}));
+        assert!(!warned(&r), "{r}");
+        // an existing wall demolished in New Construction and its replacement built in the same place
+        s.doc.ensure_phasing().unwrap();
+        let phases: Vec<u64> = s.doc.phasing().unwrap().1.phases.iter().map(|p| p.id).collect();
+        let old = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 20000], "end": [5000, 20000]}))["id"].as_u64().unwrap();
+        s.doc.set_element_phases(&[old], Some(phases[0]), Some(Some(phases[1]))).unwrap();
+        let r = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 20000], "end": [5000, 20000]}));
+        let new = r["id"].as_u64().unwrap();
+        s.doc.set_element_phases(&[new], Some(phases[1]), Some(None)).unwrap();
+        assert_eq!(s.doc.wall_overlap(new), None);
+        // while both stand it does
+        s.doc.set_element_phases(&[old], None, Some(None)).unwrap();
+        assert!(s.doc.wall_overlap(new).is_some());
+    }
+
+    #[test]
     fn round_dimensions_preview_place_and_follow_a_curved_wall_over_the_api() {
         let mut s = Session::new();
         let info = call(&mut s, "doc_info", json!({}));
@@ -5095,6 +5136,33 @@ mod tests {
         // proposed (Show Previous + New): the new door cuts it, the old opening is filled in by the infill
         call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + New") } }));
         assert_eq!(look(&mut s), (3, vec![new], 1));
+        // a host that wraps its layers at inserts stops them square at the filled opening (the infill closes it),
+        // so near the old door the wall draws the same with wrapping on or off
+        let near_old = |s: &mut Session| -> Vec<(i64, i64)> {
+            fn pts(v: &Value, out: &mut Vec<(i64, i64)>) {
+                match v {
+                    Value::Array(a) if a.len() == 2 && a.iter().all(|x| x.is_f64() || x.is_i64()) => {
+                        let (x, y) = (a[0].as_f64().unwrap(), a[1].as_f64().unwrap());
+                        if (900.0..2100.0).contains(&x) { out.push((x.round() as i64, y.round() as i64)); }
+                    }
+                    Value::Array(a) => a.iter().for_each(|x| pts(x, out)),
+                    Value::Object(o) => o.values().for_each(|x| pts(x, out)),
+                    _ => {}
+                }
+            }
+            let plan = call(s, "plan", json!({ "view_id": view }));
+            let mut out = vec![];
+            pts(&plan["wall_groups"], &mut out);
+            out.sort();
+            out.dedup();
+            out
+        };
+        let bv = s.doc.iter().find_map(|(_, e)| match e { Element::WallType(t) if t.name == "Brick Veneer" => Some(t.layers.clone()), _ => None }).unwrap();
+        s.doc.patch_system_type(wt, &json!({ "layers": bv, "wrap_inserts": "none" })).unwrap();
+        let square = near_old(&mut s);
+        s.doc.patch_system_type(wt, &json!({ "wrap_inserts": "both" })).unwrap();
+        assert!(!square.is_empty());
+        assert_eq!(near_old(&mut s), square);
         // demolition (Show Previous + Demo): the old door shows, the new one and the infill are not there yet
         call(&mut s, "set_view_phase", json!({ "id": view, "patch": { "phase_filter": filter("Show Previous + Demo") } }));
         assert_eq!(look(&mut s), (2, vec![old], 0));

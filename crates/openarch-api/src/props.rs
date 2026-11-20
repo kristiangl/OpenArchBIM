@@ -319,6 +319,10 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         locked(boolean("Ambient Shadows", "settings.graphic_display.ambient_shadows", s.graphic_display.ambient_shadows, true), inc(TemplateProp::GraphicDisplay)),
         locked(boolean("Sketchy Lines", "settings.graphic_display.sketchy_lines", s.graphic_display.sketchy_lines, true), inc(TemplateProp::GraphicDisplay)),
     ]);
+    if v.view_kind == ViewKind::ThreeD {
+        // the whole model see-through by this much (Graphic Display Options' Transparency)
+        graphics.push(locked(num("Transparency (%)", "settings.graphic_display.transparency", s.graphic_display.transparency as f64, true), inc(TemplateProp::GraphicDisplay)));
+    }
     if matches!(v.view_kind, ViewKind::Elevation | ViewKind::Section) {
         // Depth Cueing (Graphic Display Options): fade from a start to an end along the view depth, down to a limit
         let g = &s.graphic_display;

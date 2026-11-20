@@ -353,12 +353,22 @@ impl Document {
 
     /// Openings cut in a wall by the doors and windows hosted in it, in order
     /// along the wall, clipped to the wall's length and height.
+    /// Whether the drawing being made leaves this element out: its phase or design option is not shown.
+    pub(crate) fn insert_gone(&self, x: Id) -> bool {
+        let drawing = self.drawing_view.get().and_then(|v| self.view(v));
+        drawing.is_some_and(|v| self.phase_hides(v, x)) || self.out_of_phase(x, self.export_phase.get()) || (!self.all_openings.get() && self.option_hides(drawing, x))
+    }
+
+    /// Whether an opening is kept only because an infill wall fills it (its door or window is gone from the drawing).
+    pub(crate) fn opening_filled(&self, instance: Id) -> bool {
+        self.insert_gone(instance) && self.infill_of(instance).is_some()
+    }
+
     pub fn wall_openings(&self, wall: Id) -> Vec<Opening> {
         let Some(Element::Wall(w)) = self.get(wall) else { return vec![] };
         let len = w.length();
         let (wz0, wz1) = self.wall_extent(w);
         let mut out = vec![];
-        let drawing = self.drawing_view.get().and_then(|v| self.view(v));
         for (id, i) in self.instances() {
             let Some(h) = i.host else { continue };
             if h.wall != wall {
@@ -367,8 +377,7 @@ impl Document {
             // in a view, a door or window its phase leaves out (not built yet, demolished, or not shown) is not a hole
             // (where its infill stands in its place, the opening stays and the infill fills it)
             // nor is one of a design option the view does not show
-            let gone = |x: Id| drawing.is_some_and(|v| self.phase_hides(v, x)) || self.out_of_phase(x, self.export_phase.get()) || (!self.all_openings.get() && self.option_hides(drawing, x));
-            if gone(id) && self.infill_of(id).is_none_or(|x| gone(x)) {
+            if self.insert_gone(id) && self.infill_of(id).is_none_or(|x| self.insert_gone(x)) {
                 continue;
             }
             let Some(f) = self.instance_frame(id) else { continue };

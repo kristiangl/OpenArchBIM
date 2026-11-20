@@ -290,8 +290,18 @@ const SunUI = (() => {
   async function exportStudy() {
     if (!s || !s.frames.length) return;
     stop(false);
+    let perFrame = 1;
+    try { perFrame = Number(localStorage.getItem("openarch.sunVideoSeconds")) || 1; } catch {}
     const kind = await new Promise((res) => openModal("Export Solar Study", (body, foot, close) => {
-      body.append(el("p", { textContent: `${s.frames.length} frames, each with its date and time. Images go in a folder as PNG files; a video plays them a second each.` }));
+      body.append(el("p", { textContent: `${s.frames.length} frames, each with its date and time. Images go in a folder as PNG files; a video shows each frame in turn.` }));
+      // how long a video shows each frame
+      const pick = document.createElement("select");
+      for (const [v, t] of [[0.25, "0.25 s (4 a second)"], [0.5, "0.5 s (2 a second)"], [1, "1 s"], [2, "2 s"], [3, "3 s"]]) {
+        const o = document.createElement("option"); o.value = String(v); o.textContent = t; if (v === perFrame) o.selected = true; pick.append(o);
+      }
+      pick.onchange = () => { perFrame = Number(pick.value); try { localStorage.setItem("openarch.sunVideoSeconds", pick.value); } catch {} };
+      const row = el("label", { textContent: "Video: each frame shows for " }); row.append(pick);
+      body.append(row);
       foot.append(button("Images…", () => { close(); res("png"); }, true), button("Video…", () => { close(); res("video"); }), button("Cancel", () => { close(); res(null); }));
     }));
     if (!kind) return;
@@ -335,12 +345,12 @@ const SunUI = (() => {
         rec.ondataavailable = (e) => { if (e.data.size) parts.push(e.data); };
         const done = new Promise((res) => (rec.onstop = res));
         rec.start();
-        for (const f of frames) { g.drawImage(f.canvas, 0, 0); track.requestFrame?.(); await new Promise((r) => setTimeout(r, 1000)); }
+        for (const f of frames) { g.drawImage(f.canvas, 0, 0); track.requestFrame?.(); await new Promise((r) => setTimeout(r, perFrame * 1000)); }
         rec.stop(); await done;
         const blob = new Blob(parts, { type: mp4 ? "video/mp4" : "video/webm" });
         const b64 = await new Promise((res) => { const fr = new FileReader(); fr.onload = () => res(String(fr.result).split(",")[1]); fr.readAsDataURL(blob); });
         await Backend.call("write_file", { path: target, base64: b64 });
-        setPrompt(`Exported the study to ${target}.`);
+        setPrompt(`Exported the study to ${target} (${perFrame} s a frame).`);
       }
     } catch (e) {
       setPrompt(`The export stopped: ${e.message || e}`, true);

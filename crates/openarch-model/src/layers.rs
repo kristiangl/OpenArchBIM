@@ -742,6 +742,10 @@ impl Document {
     fn gap_closure(&self, wall: Id, w: &crate::element::Wall, g: (f64, f64), z: f64) -> Closure {
         let Some(o) = self.wall_openings(wall).into_iter().find(|o| o.z0 < z && z < o.z1 && o.u0 < g.1 && g.0 < o.u1) else { return Closure::default() };
         let Some(Element::FamilyInstance(inst)) = self.get(o.instance) else { return Closure::default() };
+        // an opening an infill wall fills is closed by it: the host's layers stop square there
+        if self.opening_filled(o.instance) {
+            return Closure { wrap: Some(Wrap::None), to: None };
+        }
         let wrap = match self.instance_param(inst, "Wall Closure").as_ref().and_then(|v| v.as_text()) {
             Some("Neither") => Some(Wrap::None),
             Some("Interior") => Some(Wrap::Interior),

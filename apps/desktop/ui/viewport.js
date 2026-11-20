@@ -585,13 +585,13 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         if (f.shadow) {
           const sp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: shadowView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
           sp.setPipeline(shadowPipe); sp.setBindGroup(0, bind);
-          for (const g of f.meshes) { if (g.alpha < 0.999) continue; sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
+          for (const g of f.meshes) { if (!g.solid) continue; sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
           sp.end();
           // and the glass, for tinted shadows
           if (f.glassShadow) {
             const gp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: glassView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
             gp.setPipeline(shadowPipe); gp.setBindGroup(0, bind);
-            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; gp.setVertexBuffer(0, g.vbuf); gp.setVertexBuffer(1, g.ibuf); gp.draw(g.count, 1); }
+            for (const g of f.meshes) { if (g.solid) continue; gp.setVertexBuffer(0, g.vbuf); gp.setVertexBuffer(1, g.ibuf); gp.draw(g.count, 1); }
             gp.end();
           }
         }
@@ -625,14 +625,14 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           pass.setVertexBuffer(0, boxBuf); pass.setVertexBuffer(1, stressBuf); pass.draw(36, st.stress.length / 12);
         } else {
           if (f.lineMode !== 2) {
-            pass.setPipeline(f.lineMode === 1 ? boxBiasPipe : boxPipe);
+            pass.setPipeline(f.lineMode === 1 || f.edges ? boxBiasPipe : boxPipe);
             for (const g of f.meshes) { if (g.alpha < 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
             // the ground plane that catches shadows
             if (f.ground) { pass.setVertexBuffer(0, f.ground.vbuf); pass.setVertexBuffer(1, f.ground.ibuf); pass.draw(f.ground.count, 1); }
             pass.setPipeline(boxSeePipe);
             for (const g of f.meshes) { if (g.alpha >= 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
           }
-          if (f.lineMode) {
+          if (f.lineMode || f.edges) {
             pass.setPipeline(f.lineMode === 2 ? wirePipe : edgePipe);
             for (const g of f.meshes) { if (!g.ecount) continue; pass.setVertexBuffer(0, g.ebuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.ecount, 1); }
           }
@@ -763,11 +763,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
           gl.disable(gl.CULL_FACE); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 2);
           gl.useProgram(shadowProg.p); gl.uniformMatrix4fv(shadowProg.vp, false, toGL(f.uniforms.subarray(28, 44)));
-          for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          for (const g of f.meshes) { if (!g.solid) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
           // and the glass, for tinted shadows
           if (f.glassShadow) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, glassT.fbo); gl.clear(gl.DEPTH_BUFFER_BIT);
-            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            for (const g of f.meshes) { if (g.solid) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
           }
           gl.disable(gl.POLYGON_OFFSET_FILL);
           gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -827,7 +827,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         } else {
           if (f.lineMode !== 2) {
             use(boxProg);
-            if (f.lineMode === 1) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); }
+            if (f.lineMode === 1 || f.edges) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); }
             for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
             // the ground plane that catches shadows
             if (f.ground) { gl.bindVertexArray(f.ground.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, f.ground.count, 1); }
@@ -838,7 +838,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
             gl.disable(gl.BLEND); gl.depthMask(true);
             gl.disable(gl.POLYGON_OFFSET_FILL);
           }
-          if (f.lineMode) {
+          if (f.lineMode || f.edges) {
             use(edgeProg);
             if (f.lineMode === 2) { gl.depthMask(false); gl.depthFunc(gl.ALWAYS); } else gl.depthFunc(gl.LEQUAL);
             for (const g of f.meshes) { if (!g.lines) continue; gl.bindVertexArray(g.lines); gl.drawArraysInstanced(gl.LINES, 0, g.ecount, 1); }
@@ -960,7 +960,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         shadow = !!sun.shadows && lineMode !== 2 && L[2] > 0.02 && meshes.length > 0;
       }
       // glass casts a tinted shadow in Realistic, passes the light otherwise
-      const glassShadow = shadow && lineMode === 0 && style === "realistic" && meshes.some((m) => m.g.alpha < 0.999);
+      const glassShadow = shadow && lineMode === 0 && style === "realistic" && meshes.some((m) => !m.g.solid);
+      // Show Edges (Graphic Display Options): Shaded, Consistent Colours and Realistic draw the model's edges over the faces
+      const edges = lineMode === 0 && !stress && graphics.showEdges !== false;
       const ao = !!sun?.ambientShadows && !stress && lineMode !== 2 && meshes.length > 0;
       const u = new Float32Array(60); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, glassShadow ? 1 : 0], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
@@ -976,7 +978,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gnd = groundMesh(sun.groundZ - 0.003, c, Math.round(R), dark ? [0.2, 0.22, 0.24] : [0.93, 0.93, 0.91]);
       }
       if (!allLines) allLines = extraLines && sunLines ? (() => { const a = new Float32Array(extraLines.length + sunLines.length); a.set(extraLines); a.set(sunLines, extraLines.length); return a; })() : extraLines || sunLines;
-      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao, ground: gnd });
+      be.render({ uniforms: u, clear: page, stress, lineMode, edges, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao, ground: gnd });
       if (afterRender) afterRender();
     }
 
@@ -1135,10 +1137,14 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     requestAnimationFrame(frame);
 
     const TINT = { Wall: 0.0, Floor: 0.3, Roof: 0.15, Ceiling: 0.35, Stair: 0.25, Railing: 0.1, Ramp: 0.25, Door: 0.45, Window: 0.0, Glass: -1.0 };
-    // how see-through a mesh is: its material's transparency (glass half), a selection at least 30%
+    // how see-through a mesh is: its material's transparency (glass half), a selection at least 30%, and then the
+    // view's Transparency (Graphic Display Options) over the whole model
+    let graphics = {};
     const writeTint = (m, selected) => {
-      const t = Math.max(m.transparency, selected ? 0.3 : 0);
+      m.selected = selected;
+      const t = 1 - (1 - Math.max(m.transparency, selected ? 0.3 : 0)) * (1 - (graphics.transparency || 0) / 100);
       m.g.alpha = 1 - t;
+      m.g.solid = m.transparency < 0.001;
       be.instance(m.g, new Float32Array([0, 0, 0, selected ? 1.0 : m.color ? 0 : TINT[m.kind] ?? 0, 1, 1, 1, t, ...(m.color || [0, 0, 0]), m.color ? 1 : 0]));
     };
 
@@ -1157,6 +1163,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       setSunLines(a) { sunLines = a && a.length ? a : null; allLines = null; dirty = true; },
       /** The view's sun, or null for the fixed light: see `sun` above. */
       setSun(s) { sun = s; dirty = true; },
+      /** The view's Graphic Display Options the renderer follows: { showEdges, transparency (0-100) }. */
+      setGraphics(g) { graphics = g || {}; for (const m of meshes) writeTint(m, !!m.selected); dirty = true; },
       /** The model's bounding box, metres: [lo, hi]. */
       bounds() { return [sceneLo.slice(), sceneHi.slice()]; },
       /** Replace the displayed model meshes: [{ id, kind, verts: [x y z nx ny nz ...] }]. */

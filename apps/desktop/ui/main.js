@@ -1293,6 +1293,7 @@ async function refreshView(force) {
       if (!scene) return;
       app.sceneRevision = scene.revision;
       app.sceneStyle = scene.visual_style || "shaded";
+      app.sceneGraphics = scene.graphics || {};
       app.vp.setMeshes(scene.meshes, app.selection);
       app.sceneIds = new Set(scene.meshes.map((m) => m.id).filter((i) => typeof i === "number"));
       // imported CAD drawings, as lines at their levels
@@ -1301,6 +1302,7 @@ async function refreshView(force) {
       if (force) app.vp.fit();
     }
     app.vp.setStyle(app.sceneStyle || "shaded");
+    app.vp.setGraphics(app.sceneGraphics);
     // the view's sun: its light, shadows and sun path
     await SunUI.load();
     app.vp.poke();
@@ -1445,11 +1447,11 @@ Plan.callbacks.addWall = async (a, b) => {
 };
 Plan.callbacks.moveWallEnd = async (id, end, point) => {
   const r = await run("move_wall_end", { id, end, point });
-  if (r) { await refresh(); renderProperties(); }
+  if (r) { await refresh(); renderProperties(); if (r.warning) setPrompt(r.warning, true); }
 };
 Plan.callbacks.moveWallEnds = async (ends, point) => {
   const r = await run("move_wall_ends", { ends, point });
-  if (r) { await refresh(); renderProperties(); }
+  if (r) { await refresh(); renderProperties(); if (r.warning) setPrompt(r.warning, true); }
 };
 Plan.callbacks.reshapeWall = async (id, k, point) => {
   const r = await run("reshape_wall", { id, k, point });
@@ -1461,7 +1463,7 @@ Plan.callbacks.reshapePreview = async (id, k, point) => {
 Plan.callbacks.addWalls = async (segments) => {
   // a segment is two points, or { curve } for a curved wall (a closed circle goes round in two)
   const r = await run("add_walls", { type_id: app.wallTypeId, level_id: curLevelId(), segments, ...wallTopParams(curLevelId()), location_line: app.locationLine, flipped: !!app.flipped });
-  if (r) await refresh();
+  if (r) { await refresh(); if (r.warning) setPrompt(r.warning, true); }
 };
 Plan.callbacks.editFloor = (id) => { app.selection = [id]; Plan.setSelection([id]); startFloorSketch(id); };
 Plan.callbacks.editRoof = (id) => { app.selection = [id]; Plan.setSelection([id]); startRoofSketch(id); };
@@ -2287,7 +2289,7 @@ Plan.callbacks.edit = async (p) => {
   Plan.setSelection(r.ids);
   app.vp?.setSelection(r.ids);
   await refresh();
-  setPrompt(p.copy ? "Copied." : "Done.");
+  setPrompt(r.warning ? `${p.copy ? "Copied." : "Done."} ${r.warning}` : (p.copy ? "Copied." : "Done."), !!r.warning);
 };
 Plan.callbacks.offset = async (p) => {
   const r = await run("offset", p);

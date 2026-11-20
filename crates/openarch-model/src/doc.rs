@@ -1420,35 +1420,96 @@ impl Document {
     // ---- derived values ---------------------------------------------------
 
     /// Base and top elevation of a wall, mm.
-    /// A straight wall that lies along another on the same level, over some of its length and height: what a wall
-    /// drawn twice by mistake looks like. Gives the other wall's type name, for a warning (it is not refused).
+    /// A wall that lies along another on the same level, over some of its length and height: what a wall
+    /// drawn twice by mistake looks like. Straight or curved, either way round. Walls that never stand at
+    /// the same time (one demolished in a phase before the other is built) or that sit in different options
+    /// of a design option set do not count, nor do the walls that fill demolished openings. Gives the other
+    /// wall's type name, for a warning (it is not refused).
     pub fn wall_overlap(&self, id: Id) -> Option<String> {
         let Some(Element::Wall(w)) = self.get(id) else { return None };
-        if w.curve.is_some() {
+        if w.infill.is_some() {
             return None;
         }
-        let (a, b) = (w.start, w.end);
-        let len = a.dist(&b);
-        if len < 1.0 {
+        // the wall's location line as points; a closed curve comes back to its start
+        let line = |w: &Wall| -> Vec<Point> {
+            match &w.curve {
+                None => vec![w.start, w.end],
+                Some(c) => {
+                    let mut v = c.tessellate(0.5);
+                    if c.is_closed() && !v.is_empty() {
+                        v.push(v[0]);
+                    }
+                    v
+                }
+            }
+        };
+        let bbox = |v: &[Point]| v.iter().fold((f64::MAX, f64::MAX, f64::MIN, f64::MIN), |b, p| (b.0.min(p.x), b.1.min(p.y), b.2.max(p.x), b.3.max(p.y)));
+        let mine = line(w);
+        // points along this wall every 25 mm or less, each with the length it stands for
+        let mut samples: Vec<(Point, f64)> = vec![];
+        for s in mine.windows(2) {
+            let len = s[0].dist(&s[1]);
+            let n = (len / 25.0).ceil().max(1.0);
+            for i in 0..n as usize {
+                let t = (i as f64 + 0.5) / n;
+                samples.push((Point::new(s[0].x + (s[1].x - s[0].x) * t, s[0].y + (s[1].y - s[0].y) * t), len / n));
+            }
+        }
+        if samples.iter().map(|s| s.1).sum::<f64>() < 1.0 {
             return None;
         }
-        let (dx, dy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+        let near = |p: Point, v: &[Point]| v.windows(2).map(|s| {
+            let (dx, dy) = (s[1].x - s[0].x, s[1].y - s[0].y);
+            let l2 = dx * dx + dy * dy;
+            let t = if l2 < 1e-9 { 0.0 } else { (((p.x - s[0].x) * dx + (p.y - s[0].y) * dy) / l2).clamp(0.0, 1.0) };
+            p.dist(&Point::new(s[0].x + dx * t, s[0].y + dy * t))
+        }).fold(f64::MAX, f64::min);
+        let b0 = bbox(&mine);
         let (z0, z1) = self.wall_extent(w);
-        // how far a point is off this wall's line, and how far along it
-        let off = |p: Point| ((p.x - a.x) * dy - (p.y - a.y) * dx).abs();
-        let along = |p: Point| (p.x - a.x) * dx + (p.y - a.y) * dy;
+        // the phases a wall stands in, by index: from its Phase Created up to (not including) its Phase Demolished
+        let ph = self.phasing().map(|(_, ph)| ph);
+        let span = |x: Id| -> (usize, usize) {
+            match (ph, self.element_phases(x)) {
+                (Some(ph), Some((c, d))) => (ph.index(c).unwrap_or(0), d.and_then(|d| ph.index(d)).unwrap_or(usize::MAX)),
+                _ => (0, usize::MAX),
+            }
+        };
+        let (s0, s1) = span(id);
+        let opt = self.option_of(id);
         self.iter().find_map(|(other, e)| {
             let Element::Wall(o) = e else { return None };
-            if other == id || o.curve.is_some() || o.base_level != w.base_level || off(o.start) > 1.0 || off(o.end) > 1.0 {
+            if other == id || o.infill.is_some() || o.base_level != w.base_level {
                 return None;
             }
-            let (s, t) = (along(o.start).min(along(o.end)), along(o.start).max(along(o.end)));
+            if matches!((opt, self.option_of(other)), (Some(a), Some(b)) if a != b) {
+                return None;
+            }
+            let (t0, t1) = span(other);
+            if t0.max(s0) >= t1.min(s1) {
+                return None;
+            }
             let (y0, y1) = self.wall_extent(o);
-            let shared = t.min(len) - s.max(0.0);
-            (shared > 10.0 && y1.min(z1) - y0.max(z0) > 10.0).then(|| self.wall_type(o.wall_type).map_or_else(|| "another wall".to_string(), |t| t.name.clone()))
+            if y1.min(z1) - y0.max(z0) <= 10.0 {
+                return None;
+            }
+            let theirs = line(o);
+            let b1 = bbox(&theirs);
+            if b1.0 > b0.2 + 2.0 || b0.0 > b1.2 + 2.0 || b1.1 > b0.3 + 2.0 || b0.1 > b1.3 + 2.0 {
+                return None;
+            }
+            // two straight walls must lie on one line; a curve is drawn from facets, so allow for them
+            let tol = if w.curve.is_none() && o.curve.is_none() { 1.0 } else { 1.5 };
+            let shared: f64 = samples.iter().filter(|(p, _)| near(*p, &theirs) <= tol).map(|s| s.1).sum();
+            (shared > 10.0).then(|| self.wall_type(o.wall_type).map_or_else(|| "another wall".to_string(), |t| t.name.clone()))
         })
     }
 
+    /// The first of these elements that is a wall overlapping another, as a warning for the status bar.
+    pub fn walls_overlap_warning(&self, ids: &[Id]) -> Option<String> {
+        ids.iter().find_map(|&i| self.wall_overlap(i)).map(|other| format!("The wall overlaps another wall ({other}). One of them may be a mistake."))
+    }
+
+    /// Base and top elevation of a wall, mm.
     pub fn wall_extent(&self, w: &Wall) -> (f64, f64) {
         let base = self.level(w.base_level).map_or(0.0, |l| l.elevation_mm) + w.base_offset_mm;
         let top = match w.top_level.and_then(|t| self.level(t)) {
@@ -1753,6 +1814,9 @@ fn check_depth_cue(s: &ViewSettings) -> Result<(), String> {
     }
     if g.depth_cue_start > g.depth_cue_end {
         return Err("depth cueing must start no further back than it ends".into());
+    }
+    if g.transparency > 100 {
+        return Err("transparency is a percentage from 0 to 100".into());
     }
     Ok(())
 }
