@@ -112,4 +112,19 @@ fn sketched_railings_and_copies_of_stairs_with_theirs() {
     let on_new = plan["railings"].as_array().unwrap().iter().filter(|r| ids.contains(&r["id"].as_u64().unwrap())).count();
     assert_eq!(on_new, 2);
     assert!(new_stair != st);
+    // the Copy tool does the same: the copied stair has its own two railings, hosted on it
+    let before = call(&mut m.s, "plan", json!({ "view_id": m.p1 }))["railings"].as_array().unwrap().len();
+    let out: Vec<u64> = call(&mut m.s, "transform", json!({ "ids": [st], "kind": "move", "dx": -9000, "dy": 0, "copy": true }))["ids"].as_array().unwrap().iter().map(|v| v.as_u64().unwrap()).collect();
+    assert_eq!(out.len(), 3, "{out:?}");
+    let copied = out.iter().copied().find(|i| call(&mut m.s, "describe", json!({ "id": i }))["kind"] == "Stair").unwrap();
+    let rails: Vec<u64> = out.iter().copied().filter(|i| *i != copied).collect();
+    for r in &rails { assert_eq!(row(&mut m.s, *r, "Host"), "Stair"); }
+    assert_eq!(call(&mut m.s, "plan", json!({ "view_id": m.p1 }))["railings"].as_array().unwrap().len(), before + 2);
+    // the copy's railings stand on the copy: deleting the copy takes them with it
+    call(&mut m.s, "delete", json!({ "ids": [copied] }));
+    assert_eq!(call(&mut m.s, "plan", json!({ "view_id": m.p1 }))["railings"].as_array().unwrap().len(), before);
+    // a railing on a stair alone is still refused
+    let all: Vec<u64> = call(&mut m.s, "plan", json!({ "view_id": m.p1 }))["railings"].as_array().unwrap().iter().map(|r| r["id"].as_u64().unwrap()).collect();
+    let one = all.into_iter().find(|r| row(&mut m.s, *r, "Host") == "Stair").unwrap();
+    assert!(m.s.handle("transform", &json!({ "ids": [one], "kind": "move", "dx": 100, "dy": 0, "copy": true })).is_err());
 }

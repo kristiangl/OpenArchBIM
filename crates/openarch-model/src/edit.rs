@@ -356,6 +356,14 @@ impl Document {
                 None => return Err(format!("no element {id}")),
             }
         }
+        if opt.copy {
+            // a copied stair or ramp takes the railings on it, whether they were picked or not
+            let picked: BTreeSet<Id> = details.iter().copied().filter(|i| matches!(self.get(*i), Some(Element::Stair(_)) | Some(Element::Ramp(_)))).collect();
+            if !picked.is_empty() {
+                let on: Vec<Id> = self.iter().filter(|(id, e)| !set.contains(id) && matches!(e, Element::Railing(r) if r.host.is_some_and(|h| picked.contains(&h.stair)))).map(|(id, _)| id).collect();
+                details.extend(on);
+            }
+        }
         if opt.copy && !walls.is_empty() {
             // a copied wall takes the doors and windows it hosts with it, whether they were picked or not
             let picked: BTreeSet<Id> = walls.iter().copied().collect();
@@ -488,7 +496,7 @@ impl Document {
                 Some(Element::Railing(r)) => {
                     let mut r = r.clone();
                     if r.host.is_some() && !opt.copy { continue; }
-                    if r.host.is_some() { return Err("A railing on a stair is copied with its stair (copy and paste them together).".into()); }
+                    if r.host.is_some_and(|h| !details.contains(&h.stair)) { return Err("A railing on a stair is copied with its stair: select the stair too.".into()); }
                     r.path = r.path.iter().map(|p| x.apply(*p)).collect();
                     r.curves = r.curves.iter().map(|c| c.transform(x)).collect();
                     if mirror { r.flipped = !r.flipped; }
@@ -738,7 +746,7 @@ impl Document {
             }
             let mut detail_map=BTreeMap::new();let mut added_details=vec![];
             for (orig,e) in new_details {let id=tx.add(e.clone());tx.copy_parameter_data(orig,id)?;detail_map.insert(orig,id);added_details.push((id,e));result.push(id);}
-            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},Element::AreaTag(t)=>if let Some(a)=detail_map.get(&t.area){t.area=*a;true}else{false},Element::Toposolid(t)=>if let Some(h)=t.host.and_then(|h|detail_map.get(&h)){t.host=Some(*h);true}else{false},_=>false};if changed{tx.update(id,e)?;}}
+            for(id,mut e)in added_details{let changed=match &mut e{Element::RoomTag(t)=>if let Some(room)=detail_map.get(&t.room){t.room=*room;true}else{false},Element::RevisionTag(t)=>if let Some(cloud)=detail_map.get(&t.cloud){t.cloud=*cloud;true}else{false},Element::AreaTag(t)=>if let Some(a)=detail_map.get(&t.area){t.area=*a;true}else{false},Element::Toposolid(t)=>if let Some(h)=t.host.and_then(|h|detail_map.get(&h)){t.host=Some(*h);true}else{false},Element::Railing(r)=>if let Some(h)=r.host.as_mut().filter(|h|detail_map.contains_key(&h.stair)){h.stair=detail_map[&h.stair];true}else{false},_=>false};if changed{tx.update(id,e)?;}}
             for mut g in new_grids {
                 g.name = tx.doc_ref().next_grid_name();
                 result.push(tx.add(Element::Grid(g)));
