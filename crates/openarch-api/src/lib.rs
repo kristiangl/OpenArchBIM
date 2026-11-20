@@ -5634,6 +5634,18 @@ mod tests {
         let l1 = data["levels"].as_array().unwrap().iter().find(|l| l["name"] == "Level 1").unwrap();
         assert_eq!(l1["head"]["labels"][0]["lines"][0][0], "Level 1");
         assert_eq!(l1["head"]["labels"][1]["lines"][0][0], "3000 AHD");
+        // the level type's line: Centre, weight 1, black by default; then weight 5, red, Dash
+        assert_eq!((l1["line_pattern"].as_str(), l1["line_color"].clone()), (Some("Centre"), json!([0, 0, 0])));
+        let thin = l1["line_width_mm"].as_f64().unwrap();
+        call(&mut s, "patch_level_type", json!({ "id": ty, "patch": { "line_weight": 5, "line_color": [200, 0, 0], "line_pattern": "Dash" } }));
+        let data = call(&mut s, "elevation", json!({ "view_id": ev }));
+        let l = data["levels"].as_array().unwrap().iter().find(|l| l["name"] == "Level 1").unwrap().clone();
+        assert!(l["line_width_mm"].as_f64().unwrap() > thin);
+        assert_eq!((l["line_pattern"].as_str(), l["line_color"].clone()), (Some("Dash"), json!([200, 0, 0])));
+        assert!(s.handle("patch_level_type", &json!({ "id": ty, "patch": { "line_weight": 17 } })).is_err());
+        assert!(s.handle("patch_level_type", &json!({ "id": ty, "patch": { "line_pattern": "Wiggly" } })).is_err());
+        let rows: Vec<String> = call(&mut s, "describe_any_type", json!({ "id": ty }))["groups"][0]["rows"].as_array().unwrap().iter().map(|r| r["label"].as_str().unwrap().to_string()).collect();
+        assert_eq!(rows, ["Symbol", "Line Weight", "Line Color", "Line Pattern"]);
         // the level number is a label parameter; the family editor saves the whole family
         let mut f = call(&mut s, "annotation_family", json!({ "id": head }));
         assert!(f["params"].as_array().unwrap().iter().any(|p| p == "Level Number"));

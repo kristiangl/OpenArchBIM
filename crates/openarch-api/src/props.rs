@@ -1338,7 +1338,18 @@ pub fn level_type_props(d: &Document, id: Id, t: &openarch_model::annotation::Le
         "id": id, "kind": "LevelType", "title": t.name, "head": t.head,
         "siblings": d.level_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
         "groups": [
-            group("Graphics", vec![select("Symbol", heads)]),
+            group("Graphics", {
+                let hex = |c: [u8; 3]| format!("#{:02x}{:02x}{:02x}", c[0], c[1], c[2]);
+                let weights: Vec<(String, Value, bool)> = (1..=16u8).map(|w| (w.to_string(), json!({ "line_weight": w }), w == t.line_weight)).collect();
+                let mut pats: Vec<(String, Value, bool)> = vec![("Solid".to_string(), json!({ "line_pattern": "Solid" }), t.line_pattern == "Solid")];
+                pats.extend(d.line_patterns().iter().filter(|(_, p)| p.name != "Solid").map(|(_, p)| (p.name.clone(), json!({ "line_pattern": p.name }), p.name == t.line_pattern)));
+                vec![
+                    select("Symbol", heads),
+                    select("Line Weight", weights),
+                    json!({ "label": "Line Color", "value": hex(t.line_color), "raw": t.line_color, "kind": "color", "path": "line_color" }),
+                    select("Line Pattern", pats),
+                ]
+            }),
             group("Plan View Symbols", vec![
                 boolean("End 1 Default", "end_default.0", t.end_default[0], true),
                 boolean("End 2 Default", "end_default.1", t.end_default[1], true),

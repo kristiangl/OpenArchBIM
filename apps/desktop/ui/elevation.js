@@ -585,11 +585,15 @@ const Elev = (() => {
   function drawLevel(l, mode) {
     const text = css("--text"), accent = css("--accent");
     const { a, b } = levelParts(l);
-    const col = mode === "sel" ? accent : mode === "hover" ? accent : text;
+    // the level type's colour (black follows the theme's text colour), weight and pattern
+    const own = l.line_color && (l.line_color[0] || l.line_color[1] || l.line_color[2]) ? `rgb(${l.line_color.join(",")})` : text;
+    const col = mode === "sel" ? accent : mode === "hover" ? accent : printing ? (own === text ? "#000" : own) : own;
     ctx.save();
     if (ctx.oaTag) ctx.oaTag({ cat: "Levels", sub: null, kind: "projection" });
-    ctx.strokeStyle = col; ctx.lineWidth = mode === "sel" ? 1.8 : 1;
-    ctx.setLineDash([14, 4, 3, 4]);
+    const w = Plan.thinLines ? 1 : Math.max(1, Pen.w(l.line_width_mm || 0.18, k()));
+    ctx.strokeStyle = col; ctx.lineWidth = mode === "sel" ? Math.max(1.8, w) : w;
+    const pat = l.line_pattern || "Centre";
+    ctx.setLineDash(pat === "Solid" ? [] : (((data.line_patterns || {})[pat]) || [12, 2.5, 2.5, 2.5]).map((v) => Math.max(v * ((data.scale || 100) * cam.s), 1)));
     ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
     ctx.setLineDash([]);
     ctx.restore();

@@ -469,10 +469,20 @@ pub struct LevelType {
     pub head: Option<Id>,
     #[serde(default = "end_default")]
     pub end_default: [bool; 2],
+    /// How the level's line is drawn in elevations and sections: line weight (1 to 16), colour and pattern name.
+    #[serde(default = "one")]
+    pub line_weight: u8,
+    #[serde(default)]
+    pub line_color: [u8; 3],
+    #[serde(default = "centre")]
+    pub line_pattern: String,
 }
 
 fn end_default() -> [bool; 2] {
     [false, true]
+}
+fn centre() -> String {
+    "Centre".into()
 }
 
 fn line(a: [f64; 2], b: [f64; 2]) -> AnnShape {
@@ -1241,7 +1251,7 @@ impl Document {
                 tx.add(Element::AnnotationFamily(AnnotationFamily::title_block("A3 Title Block", [420.0, 297.0], 80.0, 0.6)));
             }
             if tx.doc_ref().level_types().is_empty() {
-                tx.add(Element::LevelType(LevelType { name: "Level".into(), head, end_default: end_default() }));
+                tx.add(Element::LevelType(LevelType { name: "Level".into(), head, end_default: end_default(), line_weight: 1, line_color: [0, 0, 0], line_pattern: centre() }));
             }
             Ok(())
         });
@@ -1499,6 +1509,12 @@ impl Document {
                 return Err("the head must be a level head family".into());
             }
         }
+        if !(1..=16).contains(&new.line_weight) {
+            return Err("line weight is 1 to 16".into());
+        }
+        if new.line_pattern != "Solid" && !self.line_patterns().iter().any(|(_, p)| p.name == new.line_pattern) {
+            return Err(format!("there is no line pattern '{}'", new.line_pattern));
+        }
         if new == old {
             return Ok(());
         }
@@ -1593,7 +1609,8 @@ mod tests {
         assert!(d.marker_pointer_labels(&m, (0..4).find(|&j| m.slots[j].is_none()).unwrap_or(9)).is_empty());
     }
 
-    #[test]
+    #[test]
+
     fn a_section_mark_a_section_draws_with_cannot_be_deleted() {
         let mut d = Document::new_project();
         let lvl = d.levels()[0].0;

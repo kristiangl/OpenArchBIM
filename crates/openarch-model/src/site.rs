@@ -170,6 +170,10 @@ pub struct LevelLine {
     pub locks: crate::datum::EndLocks,
     /// The head drawn at each end that shows one, with its labels worked out.
     pub head: Option<crate::annotation::DrawnHead>,
+    /// The line as its level type says: width on paper (mm), colour, and pattern name ("Solid" for none).
+    pub line_width_mm: f64,
+    pub line_color: [u8; 3],
+    pub line_pattern: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -1244,8 +1248,11 @@ impl Document {
             .into_iter()
             .map(|(id, l)| {
                 let ext = l.extent.map(|[a, b]| (u_of(a), u_of(b)));
+                // the level type's line (a level with no type takes the first one's)
+                let look = l.level_type.and_then(|t| self.level_type(t)).or_else(|| self.level_types().first().map(|(_, t)| *t));
+                let lw = |w: u8| self.line_weights().map_or(0.18, |(_, x)| x.annotation_width(w));
                 let (u0, u1) = ext.map_or((-frame.left_mm, frame.right_mm), |(a, b)| (a.min(b), a.max(b)));
-                LevelLine { id, name: l.name.clone(), z: l.elevation_mm, elev: self.level_display_elevation(l), bubbles: l.bubbles, head_offsets: l.head_offsets, pinned: l.pinned, story: l.building_story, u0, u1, custom_extent: ext.is_some(), end_left: ext.map_or(0, |(a, b)| if a <= b { 0 } else { 1 }), locks: l.end_locks.clone(), head: self.drawn_head(l) }
+                LevelLine { id, name: l.name.clone(), z: l.elevation_mm, elev: self.level_display_elevation(l), bubbles: l.bubbles, head_offsets: l.head_offsets, pinned: l.pinned, story: l.building_story, u0, u1, custom_extent: ext.is_some(), end_left: ext.map_or(0, |(a, b)| if a <= b { 0 } else { 1 }), locks: l.end_locks.clone(), head: self.drawn_head(l), line_width_mm: lw(look.map_or(1, |t| t.line_weight)), line_color: look.map_or([0, 0, 0], |t| t.line_color), line_pattern: look.map_or_else(|| "Centre".to_string(), |t| t.line_pattern.clone()) }
             })
             .collect();
         let settings = self.effective_settings_of(v);
