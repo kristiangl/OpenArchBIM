@@ -143,10 +143,26 @@ fn viewAt(px: vec2<i32>) -> vec4<f32> {
   let ndc = vec2<f32>((f32(q.x) + 0.5) / u.screen.x * 2.0 - 1.0, 1.0 - (f32(q.y) + 0.5) / u.screen.y * 2.0);
   return vec4<f32>(ndc.x * u.proj.z * dist, ndc.y * u.proj.w * dist, -dist, 1.0);
 }
+// Silhouettes (u.ao.w): a jump in depth between this pixel and one beside it is the outline of a surface against
+// what lies behind it; both sides darken, so the line is a few pixels wide
+fn silAt(px: vec2<i32>, p: vec4<f32>) -> f32 {
+  let d0 = select(1e9, -p.z, p.w > 0.5);
+  for (var dy = -1; dy <= 1; dy++) {
+    for (var dx = -1; dx <= 1; dx++) {
+      let q = viewAt(px + vec2<i32>(dx, dy));
+      let dq = select(1e9, -q.z, q.w > 0.5);
+      let near = min(d0, dq);
+      if (max(d0, dq) - near > max(0.25, near * 0.04)) { return 0.12; }
+    }
+  }
+  return 1.0;
+}
 @fragment fn fs_ao(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
   let px = vec2<i32>(fc.xy);
   let p = viewAt(px);
-  if (p.w < 0.5) { return vec4<f32>(1.0); }
+  var sil = 1.0;
+  if (u.ao.w > 0.5) { sil = silAt(px, p); }
+  if (p.w < 0.5 || u.ao.x < 0.5) { return vec4<f32>(sil, sil, sil, 1.0); }
   let px1 = viewAt(px + vec2<i32>(1, 0));
   let py1 = viewAt(px + vec2<i32>(0, 1));
   var n = normalize(cross(px1.xyz - p.xyz, py1.xyz - p.xyz));
@@ -164,7 +180,7 @@ fn viewAt(px: vec2<i32>) -> vec4<f32> {
     let v = s.xyz - p.xyz; let vv = dot(v, v);
     occ += max(0.0, dot(v, n) - 0.01 * dist) / (vv + 0.02) * (1.0 - smoothstep(R * R, 4.0 * R * R, vv));
   }
-  let ao = pow(clamp(1.0 - u.ao.y * R * occ / 16.0, 0.0, 1.0), 1.5);
+  let ao = pow(clamp(1.0 - u.ao.y * R * occ / 16.0, 0.0, 1.0), 1.5) * sil;
   return vec4<f32>(ao, ao, ao, 1.0);
 }
 // the view's Background (Graphic Display Options): u.screen.z is where the horizon is (NDC y), u.screen.w 1 Sky, 2 Gradient
@@ -264,10 +280,20 @@ vec4 viewAt(ivec2 px) {
   vec2 ndc = (vec2(q) + 0.5) / screen.xy * 2.0 - 1.0;
   return vec4(ndc.x * proj.z * dist, ndc.y * proj.w * dist, -dist, 1.0);
 }
+float silAt(ivec2 px, vec4 p) {
+  float d0 = p.w > 0.5 ? -p.z : 1e9;
+  for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++) {
+    vec4 q = viewAt(px + ivec2(dx, dy));
+    float dq = q.w > 0.5 ? -q.z : 1e9, near = min(d0, dq);
+    if (max(d0, dq) - near > max(0.25, near * 0.04)) return 0.12;
+  }
+  return 1.0;
+}
 void main() {
   ivec2 px = ivec2(gl_FragCoord.xy);
   vec4 p = viewAt(px);
-  if (p.w < 0.5) { o = vec4(1.0); return; }
+  float sil = ao.w > 0.5 ? silAt(px, p) : 1.0;
+  if (p.w < 0.5 || ao.x < 0.5) { o = vec4(sil, sil, sil, 1.0); return; }
   vec3 n = normalize(cross(viewAt(px + ivec2(1, 0)).xyz - p.xyz, viewAt(px + ivec2(0, 1)).xyz - p.xyz));
   if (dot(n, -p.xyz) < 0.0) n = -n;
   float dist = -p.z, R = ao.z;
@@ -280,7 +306,7 @@ void main() {
     vec3 v = s.xyz - p.xyz; float vv = dot(v, v);
     occ += max(0.0, dot(v, n) - 0.01 * dist) / (vv + 0.02) * (1.0 - smoothstep(R * R, 4.0 * R * R, vv));
   }
-  float a = pow(clamp(1.0 - ao.y * R * occ / 16.0, 0.0, 1.0), 1.5);
+  float a = pow(clamp(1.0 - ao.y * R * occ / 16.0, 0.0, 1.0), 1.5) * sil;
   o = vec4(a, a, a, 1.0);
 }`;
   const GL_LINE_VS = `#version 300 es
@@ -630,7 +656,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         if (f.ao && aoView) {
           const dp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: aoView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
           dp.setPipeline(depthPipe); dp.setBindGroup(0, bind);
-          for (const g of [...f.meshes, ...(f.ground ? [f.ground] : [])]) { if (g.alpha < 0.999) continue; dp.setVertexBuffer(0, g.vbuf); dp.setVertexBuffer(1, g.ibuf); dp.draw(g.count, 1); }
+          for (const g of [...f.meshes, ...(f.ground && f.aoGround ? [f.ground] : [])]) { if (g.alpha < 0.999) continue; dp.setVertexBuffer(0, g.vbuf); dp.setVertexBuffer(1, g.ibuf); dp.draw(g.count, 1); }
           dp.end();
         }
         const tex = ctx.getCurrentTexture();
@@ -812,7 +838,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
           gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
           gl.useProgram(shadowProg.p); gl.uniformMatrix4fv(shadowProg.vp, false, toGL(f.uniforms.subarray(0, 16)));
-          for (const g of [...f.meshes, ...(f.ground ? [f.ground] : [])]) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          for (const g of [...f.meshes, ...(f.ground && f.aoGround ? [f.ground] : [])]) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
           gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         }
         gl.viewport(0, 0, lastW || canvas.width, lastH || canvas.height);
@@ -997,13 +1023,15 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       // Show Edges (Graphic Display Options): Shaded, Consistent Colours and Realistic draw the model's edges over the faces
       const edges = lineMode === 0 && !stress && graphics.showEdges !== false;
       const ao = !!sun?.ambientShadows && !stress && lineMode !== 2 && meshes.length > 0;
+      // Show Silhouettes (Graphic Display Options): outlines drawn in the same pass over the frame
+      const sil = !!graphics.silhouettes && !stress && lineMode !== 2 && meshes.length > 0;
       const u = new Float32Array(60); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, glassShadow ? 1 : 0], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
       if (shadow) u.set(sunMatrix(L), 28);
       u.set([amb, dif, sun ? sun.shadowStrength ?? 0.5 : 0.5, shadow ? 1 : 0], 44);
       // ambient shadows: strength and reach, and what turns a depth back into a distance
       const near = 0.1, far = 4000, th = Math.tan(0.45);
-      u.set([ao ? 1 : 0, 1.3, 0.6, 0], 48); u.set([far / (near - far), (near * far) / (near - far), th * aspect, th], 52); 
+      u.set([ao ? 1 : 0, 1.3, 0.6, sil ? 1 : 0], 48); u.set([far / (near - far), (near * far) / (near - far), th * aspect, th], 52); 
       // the background, and where the horizon falls on screen (a point far off level with the eye)
       const background = graphics.background === "sky" ? 1 : graphics.background === "gradient" ? 2 : 0;
       let horizon = 0;
@@ -1021,7 +1049,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gnd = groundMesh(sun.groundZ - 0.003, c, Math.round(R), dark ? [0.2, 0.22, 0.24] : [0.93, 0.93, 0.91]);
       }
       if (!allLines) allLines = extraLines && sunLines ? (() => { const a = new Float32Array(extraLines.length + sunLines.length); a.set(extraLines); a.set(sunLines, extraLines.length); return a; })() : extraLines || sunLines;
-      be.render({ uniforms: u, clear: page, stress, lineMode, edges, background, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao, ground: gnd });
+      be.render({ uniforms: u, clear: page, stress, lineMode, edges, background, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao: ao || sil, aoGround: ao, ground: gnd });
       if (afterRender) afterRender();
     }
 
@@ -1206,7 +1234,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       setSunLines(a) { sunLines = a && a.length ? a : null; allLines = null; dirty = true; },
       /** The view's sun, or null for the fixed light: see `sun` above. */
       setSun(s) { sun = s; dirty = true; },
-      /** The view's Graphic Display Options the renderer follows: { showEdges, transparency (0-100), background ("none", "sky", "gradient") }. */
+      /** The view's Graphic Display Options the renderer follows: { showEdges, silhouettes, transparency (0-100), background ("none", "sky", "gradient") }. */
       setGraphics(g) { graphics = g || {}; for (const m of meshes) writeTint(m, !!m.selected); dirty = true; },
       /** The model's bounding box, metres: [lo, hi]. */
       bounds() { return [sceneLo.slice(), sceneHi.slice()]; },
