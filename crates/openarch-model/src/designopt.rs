@@ -187,7 +187,30 @@ impl Document {
         self.view_option(view, s) != o
     }
 
-    /// Whether the element is in a secondary option: left out of exports and of what the main model's rooms see.
+    /// The option of each set a view shows, in set order (no view: what Automatic shows).
+    pub fn options_shown(&self, view: Option<&View>) -> Vec<Id> {
+        let Some((_, d)) = self.design_options() else { return vec![] };
+        d.sets.iter().map(|s| self.view_option(view, s)).collect()
+    }
+
+    /// What a room sees (spec 5.3): the options `view` shows (or Automatic), with the room's own option in place of
+    /// its set's when it is in one.
+    pub fn room_options(&self, room: Id, view: Option<&View>) -> Vec<Id> {
+        let mut v = self.options_shown(view);
+        if let (Some(o), Some((_, d))) = (self.option_of(room), self.design_options()) {
+            if let Some(k) = d.sets.iter().position(|s| s.has(o)) {
+                v[k] = o;
+            }
+        }
+        v
+    }
+
+    /// Whether an element counts where `options` are shown: it is in the main model or one of them.
+    pub fn in_options(&self, id: Id, options: &[Id]) -> bool {
+        self.option_of(id).is_none_or(|o| options.contains(&o))
+    }
+
+    /// Whether the element is in a secondary option: left out of exports.
     pub fn in_secondary_option(&self, id: Id) -> bool {
         let Some((_, d)) = self.design_options() else { return false };
         let Some(&o) = d.member.get(&id) else { return false };
@@ -582,6 +605,41 @@ mod tests {
         // all of it is one undo step each way
         d.undo();
         assert!(d.get(wb).is_some() && d.option_of(main) == Some(a));
+    }
+
+    #[test]
+    fn rooms_see_the_main_model_and_the_options_shown_and_conflicts_are_flagged() {
+        let (mut d, lvl, wt) = setup();
+        for (a, b) in [((0.0, 0.0), (6000.0, 0.0)), ((6000.0, 0.0), (6000.0, 4000.0)), ((6000.0, 4000.0), (0.0, 4000.0)), ((0.0, 4000.0), (0.0, 0.0))] {
+            d.add_wall(wt, lvl, Point::new(a.0, a.1), Point::new(b.0, b.1), 2700.0).unwrap();
+        }
+        let (set, a) = d.add_option_set("Layout").unwrap();
+        let b = d.add_design_option(set, None).unwrap();
+        // option A splits the box in two; option B leaves it open
+        d.set_active_option(Some(a)).unwrap();
+        d.add_wall(wt, lvl, Point::new(3000.0, 0.0), Point::new(3000.0, 4000.0), 2700.0).unwrap();
+        d.set_active_option(None).unwrap();
+        let room = d.add_room(lvl, Some(Point::new(1000.0, 2000.0)), None).unwrap();
+        let area = |d: &Document| d.room_calculation(room).unwrap().area_mm2 / 1e6;
+        let half = area(&d);
+        assert!(half > 10.0 && half < 12.5, "{half}");
+        // a plan set to B draws the room across the whole box
+        let view = d.views().iter().find(|(_, v)| v.view_kind == crate::view::ViewKind::FloorPlan).unwrap().0;
+        d.set_view_option(view, set, Some(b)).unwrap();
+        let whole = d.room_region_in(room, d.view(view).unwrap()).unwrap().area() / 1e6;
+        assert!(whole > half * 1.8, "{whole} {half}");
+        // editing B, Automatic is B: the room fills the box
+        d.set_active_option(Some(b)).unwrap();
+        assert!(area(&d) > half * 1.8);
+        // a room placed in B in the same space as the main-model room: both are flagged
+        let other = d.add_room(lvl, Some(Point::new(2000.0, 2000.0)), None).unwrap();
+        assert_eq!(d.option_of(other), Some(b));
+        assert_eq!(d.room_calculation(other).unwrap().option_conflict, Some(room));
+        assert_eq!(d.room_calculation(other).unwrap().status, crate::rooms::RoomStatus::Placed);
+        assert_eq!(d.room_calculation(room).unwrap().option_conflict, Some(other));
+        // in the main model (A shown) the main room does not see B's room
+        d.set_active_option(None).unwrap();
+        assert_eq!(d.room_calculation(room).unwrap().option_conflict, None);
     }
 
     #[test]

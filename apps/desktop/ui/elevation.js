@@ -1289,7 +1289,9 @@ const Elev = (() => {
   function pick(ev) {
     const hadSelection = sel.size > 0 || cropSel;
     // the nearest thing under the cursor, or the one Tab stepped to
-    const h = hoverPick(ev.offsetX, ev.offsetY);
+    const h0 = hoverPick(ev.offsetX, ev.offsetY);
+    // design options: what is locked cannot be picked
+    const h = h0 !== null && typeof DesignOpts !== "undefined" && DesignOpts.locked(h0) ? null : h0;
     const target = h !== null ? [h] : [];
     cropSel = h === null && onCrop(ev.offsetX, ev.offsetY);
     tabIdx = 0;

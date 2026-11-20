@@ -2,7 +2,8 @@
 // Edit, and the status bar's option being edited and Exclude Options. The core keeps the rules (designopt.rs);
 // private notes: design-options.md.
 const DesignOpts = (() => {
-  let state = { sets: [], active: null, member: {} };
+  let state = { sets: [], active: null, member: {}, outside: [] };
+  let outside = new Set();
   let exclude = true;
   try { exclude = localStorage.getItem("openarch.excludeOptions") !== "0"; } catch {}
   let picking = false;
@@ -11,6 +12,7 @@ const DesignOpts = (() => {
 
   async function load() {
     try { state = (await Backend.call("design_options", {})) || state; } catch {}
+    outside = new Set(state.outside || []);
     renderBar();
   }
 
@@ -18,9 +20,8 @@ const DesignOpts = (() => {
   // is in an option while Exclude Options is on (spec 3.1).
   function locked(id, category) {
     if (picking || !state.sets.length || FREE.has(category)) return false;
-    const o = state.member[String(id)];
-    if (state.active != null) return o !== state.active;
-    return exclude && o != null;
+    if (state.active != null) return outside.has(id);
+    return exclude && state.member[String(id)] != null;
   }
 
   const label = (s, o) => `${s.name}: ${o.name}${o.primary ? " (primary)" : ""}`;

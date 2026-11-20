@@ -104,6 +104,8 @@ impl Session {
         let mut types = BTreeMap::new();
         let tags: Vec<Value> = d.element_tags(view).into_iter().filter_map(|(id, t)| {
             if v.hidden_elements.contains(&id) || v.hidden_elements.contains(&t.element) { return None; }
+            // a tag goes with what it tags where the view's phase or design options leave that out (spec 5.4)
+            if d.filter_hides(v, id) || d.filter_hides(v, t.element) { return None; }
             let kind = d.tag_kind(t.element)?;
             if !visible(kind.category(), false) || !visible(&self.schedule_category(t.element)?, true) { return None; }
             let p = d.tag_point(view, t.element)?;

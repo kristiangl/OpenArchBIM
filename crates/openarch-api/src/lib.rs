@@ -3041,6 +3041,8 @@ impl Session {
             d.dimensions_in(vid)
                 .into_iter()
                 .filter(|(id, _)| !view.hidden_elements.contains(id))
+                // one measuring to an element of a design option the view does not show goes with it (spec 5.4)
+                .filter(|(_, dm)| !dm.refs.iter().any(|r| d.option_hides(Some(view), r.spec.element())))
                 .filter_map(|(id, dm)| {
                     let style = style_for(d, &settings, "Dimensions", None, d.graphics_of(view, &id).as_ref(), "normal", &Hint::default())?;
                     let draw = d.dimension_draw(id)?;

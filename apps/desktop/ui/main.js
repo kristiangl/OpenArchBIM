@@ -3881,6 +3881,8 @@ async function initViewport() {
     // clicking in the 3D view selects like the plan does: Shift or Ctrl adds, empty space clears
     vp.onClick((x, y) => { if (!ed3) return false; click3DEdit(x, y); return true; });
     vp.onPick((id, additive) => {
+      // design options: what is locked cannot be picked here either
+      if (id !== null && DesignOpts.locked(id)) id = null;
       const hadSelection = app.selection.length > 0;
       let ids = additive ? [...app.selection] : [];
       if (id !== null) ids = ids.includes(id) ? ids.filter((x) => x !== id) : [...ids, id];
@@ -3890,6 +3892,7 @@ async function initViewport() {
     // a box dragged with the select button
     vp.setPickByFace(Plan.selectOptions().face);
     vp.onBand((picked, additive) => {
+      picked = picked.filter((i) => !DesignOpts.locked(i));
       const ids = additive ? [...new Set([...app.selection, ...picked])] : picked;
       app.selection = ids; vp.setSelection(ids); Plan.setSelection(ids); renderProperties(); updateRibbonContext(); refreshGrips3D();
     });

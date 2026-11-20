@@ -49,10 +49,12 @@ pub struct RoomTag { pub view: Id, pub room: Id, pub at: Point, #[serde(default)
 pub enum RoomStatus { Placed, NotPlaced, NotEnclosed, Redundant }
 
 #[derive(Debug, Clone)]
-pub struct RoomCalculation { pub status: RoomStatus, pub region: Option<Region>, pub area_mm2: f64, pub perimeter_mm: f64, pub volume_mm3: Option<f64>, pub height_mm: f64 }
+pub struct RoomCalculation { pub status: RoomStatus, pub region: Option<Region>, pub area_mm2: f64, pub perimeter_mm: f64, pub volume_mm3: Option<f64>, pub height_mm: f64,
+    /// A room of the main model and one of a design option in the same space (spec 5.3): the other room.
+    pub option_conflict: Option<Id> }
 
 #[derive(Debug, Clone, Default)]
-pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<(Id,Option<Id>),Arc<Vec<Region>>>, pub area_lines: BTreeMap<Id,Arc<Vec<(Id,Curve)>>>, pub area_faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,RoomCalculation>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
+pub(crate) struct RoomCache { pub edit: u64, pub faces: BTreeMap<(Id,Option<Id>,Vec<Id>),Arc<Vec<Region>>>, pub area_lines: BTreeMap<Id,Arc<Vec<(Id,Curve)>>>, pub area_faces: BTreeMap<Id,Arc<Vec<Region>>>, pub calculations: BTreeMap<Id,(Vec<Id>,RoomCalculation)>, pub caps: Option<Arc<Vec<[[f64;3];3]>>> }
 
 /// The faces left when `clips` are cut out of the plane: the enclosed ones, and the holes of the outside face (the
 /// outlines the outside meets).
@@ -100,17 +102,28 @@ impl Document {
 
     /// The enclosed faces of a phase: only what stands (New or Existing) in it bounds its rooms, and only its own
     /// separation lines (spec 6.1). None: everything (no phasing).
-    pub fn room_faces_in(&self,level:Id,phase:Option<Id>)->Arc<Vec<Region>>{
-        self.room_cache_reset();if let Some(f)=self.room_cache.borrow().faces.get(&(level,phase)){return f.clone();}
+    pub fn room_faces_in(&self,level:Id,phase:Option<Id>)->Arc<Vec<Region>>{self.room_faces_for(level,phase,&self.options_shown(None))}
+
+    /// The enclosed faces of a phase with these design options shown (one per set): the main model and those options
+    /// bound rooms (spec 5.3).
+    pub fn room_faces_for(&self,level:Id,phase:Option<Id>,options:&[Id])->Arc<Vec<Region>>{
+        self.room_cache_reset();let key=(level,phase,options.to_vec());if let Some(f)=self.room_cache.borrow().faces.get(&key){return f.clone();}
         let z=self.level(level).map_or(0.0,|l|l.elevation_mm+l.computation_height_mm);
-        let faces=Arc::new(faces_of_clips(&self.enclosure_clips(level,z,self.room_settings().boundary,true,phase)).0);self.room_cache.borrow_mut().faces.insert((level,phase),faces.clone());faces
+        let faces=Arc::new(faces_of_clips(&self.enclosure_clips(level,z,self.room_settings().boundary,true,phase,options)).0);self.room_cache.borrow_mut().faces.insert(key,faces.clone());faces
+    }
+
+    /// A room's outline as a view shows it: bounded by the options the view shows (its own option's set aside).
+    pub fn room_region_in(&self,id:Id,view:&crate::view::View)->Option<Region>{
+        let r=self.room(id)?;let at=r.at?;let options=self.room_options(id,Some(view));
+        if options==self.room_options(id,None){return self.room_calculation(id)?.region;}
+        self.room_faces_for(r.level,self.spatial_phase(r.phase),&options).iter().find(|f|contains(f,at)).cloned()
     }
 
     /// The free-space faces walls (that reach height `z`), room-bounding columns and families, and (with `separators`)
     /// room separation lines enclose on a level: what rooms and automatic ceilings fill. Only what stands in the
     /// active view's phase.
     pub fn enclosed_faces(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool)->Vec<Region>{
-        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators,self.active_spatial_phase())).0
+        faces_of_clips(&self.enclosure_clips(level,z,boundary,separators,self.active_spatial_phase(),&self.options_shown(None))).0
     }
 
     /// The outline of the building on a level at height `z`: the outer faces of the walls (and bounding columns)
@@ -121,16 +134,17 @@ impl Document {
 
     /// The building's outline as it stands in `phase` (None: everything).
     pub fn building_outlines_in(&self,level:Id,z:f64,phase:Option<Id>)->Vec<Vec<Point>>{
-        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false,phase)).1
+        faces_of_clips(&self.enclosure_clips(level,z,RoomBoundary::Finish,false,phase,&self.options_shown(None))).1
     }
 
     /// What bounds rooms on a level at height `z`: wall bodies (to the boundary location), separation lines when
     /// asked, and the plan sections of room-bounding columns and families. With `phase`, only what stands in it.
-    pub(crate) fn enclosure_clips(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool,phase:Option<Id>)->Vec<Vec<Point>>{
+    /// With `options`, only the main model and those design options.
+    pub(crate) fn enclosure_clips(&self,level:Id,z:f64,boundary:RoomBoundary,separators:bool,phase:Option<Id>,options:&[Id])->Vec<Vec<Point>>{
         let settings=RoomSettings{boundary,..Default::default()};
         let mut walls=vec![];
         for (id,w) in self.iter().filter_map(|(id,e)|if let Element::Wall(w)=e{Some((id,w))}else{None}){
-            let (lo,hi)=self.wall_extent(w);if !w.room_bounding||z<lo-0.01||z>=hi-0.001||!self.stands_in(id,phase){continue;}
+            let (lo,hi)=self.wall_extent(w);if !w.room_bounding||z<lo-0.01||z>=hi-0.001||!self.stands_in(id,phase)||!self.in_options(id,options){continue;}
             let mut facets=self.wall_facets(id,w);
             if settings.boundary!=RoomBoundary::Finish{
                 let (left,right)=self.wall_extents(w);let mut before=0.0;let mut after=0.0;
@@ -143,22 +157,28 @@ impl Document {
             for f in &mut facets{f.level=level;}walls.extend(facets);
         }
         let mut clips:Vec<Vec<Point>>=crate::join::join_walls(&walls).into_values().map(|q|q.to_vec()).collect();
-        for (_,e) in self.iter().filter(|_|separators){if let Element::RoomSeparation(s)=e{if s.level==level&&(phase.is_none()||self.spatial_phase(s.phase)==phase){let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
+        for (sid,e) in self.iter().filter(|_|separators){if let Element::RoomSeparation(s)=e{if s.level==level&&(phase.is_none()||self.spatial_phase(s.phase)==phase)&&self.in_options(sid,options){let pts=s.curve.tessellate(1.5);for p in pts.windows(2){clips.push(strip(p[0],p[1],0.005,0.005,0.02));}}}}
         // Columns and explicitly room-bounding loadable families contribute their actual horizontal mesh section.
-        for (id,i) in self.instances(){if !self.stands_in(id,phase){continue;}let Some((family,_))=self.instance_family(i)else{continue};let bounded=family.settings.room_bounding.unwrap_or(matches!(family.category,crate::family::FamilyCategory::Columns|crate::family::FamilyCategory::StructuralColumns));if !bounded{continue;}if let Some((_,solid,_))=crate::mesh::instance_meshes(self,id){clips.extend(horizontal_rings(&solid,z+0.001));}}
+        for (id,i) in self.instances(){if !self.stands_in(id,phase)||!self.in_options(id,options){continue;}let Some((family,_))=self.instance_family(i)else{continue};let bounded=family.settings.room_bounding.unwrap_or(matches!(family.category,crate::family::FamilyCategory::Columns|crate::family::FamilyCategory::StructuralColumns));if !bounded{continue;}if let Some((_,solid,_))=crate::mesh::instance_meshes(self,id){clips.extend(horizontal_rings(&solid,z+0.001));}}
         clips
     }
 
     pub fn room_calculation(&self,id:Id)->Option<RoomCalculation>{
-        self.room_cache_reset();if let Some(c)=self.room_cache.borrow().calculations.get(&id){return Some(c.clone());}let r=self.room(id)?;
-        let mut c=RoomCalculation{status:RoomStatus::NotPlaced,region:None,area_mm2:0.0,perimeter_mm:0.0,volume_mm3:None,height_mm:self.room_height(r)};
-        if let Some(at)=r.at{c.status=RoomStatus::NotEnclosed;let phase=self.spatial_phase(r.phase);if let Some(region)=self.room_faces_in(r.level,phase).iter().find(|f|contains(f,at)).cloned(){
-            if self.rooms().iter().any(|(other,room)|*other<id&&room.level==r.level&&self.spatial_phase(room.phase)==phase&&room.at.is_some_and(|p|contains(&region,p))){c.status=RoomStatus::Redundant;}else{c.status=RoomStatus::Placed;c.area_mm2=region.area();c.perimeter_mm=std::iter::once(&region.outer).chain(&region.holes).map(|ring|ring.iter().enumerate().map(|(i,p)|p.dist(&ring[(i+1)%ring.len()])).sum::<f64>()).sum();if self.room_settings().volumes{c.volume_mm3=Some(self.room_volume(r,&region));}c.region=Some(region);}
-        }}self.room_cache.borrow_mut().calculations.insert(id,c.clone());Some(c)
+        // a room sees the main model and the options shown (its own in place of its set's): what it sees can change
+        // with the option being edited, so the cached calculation says which options it was for
+        self.room_cache_reset();let options=self.room_options(id,None);if let Some((o,c))=self.room_cache.borrow().calculations.get(&id){if *o==options{return Some(c.clone());}}let r=self.room(id)?;
+        let mut c=RoomCalculation{status:RoomStatus::NotPlaced,region:None,area_mm2:0.0,perimeter_mm:0.0,volume_mm3:None,height_mm:self.room_height(r),option_conflict:None};
+        if let Some(at)=r.at{c.status=RoomStatus::NotEnclosed;let phase=self.spatial_phase(r.phase);if let Some(region)=self.room_faces_for(r.level,phase,&options).iter().find(|f|contains(f,at)).cloned(){
+            let mine=self.option_of(id);
+            let others:Vec<Id>=self.rooms().iter().filter(|(other,room)|*other!=id&&room.level==r.level&&self.spatial_phase(room.phase)==phase&&self.in_options(*other,&options)&&room.at.is_some_and(|p|contains(&region,p))).map(|(o,_)|*o).collect();
+            // a main-model room and an option's room in one space conflict (spec 5.3); two of one kind, the later is redundant
+            c.option_conflict=others.iter().copied().find(|o|self.option_of(*o)!=mine);
+            if others.iter().any(|o|*o<id&&self.option_of(*o)==mine){c.status=RoomStatus::Redundant;}else{c.status=RoomStatus::Placed;c.area_mm2=region.area();c.perimeter_mm=std::iter::once(&region.outer).chain(&region.holes).map(|ring|ring.iter().enumerate().map(|(i,p)|p.dist(&ring[(i+1)%ring.len()])).sum::<f64>()).sum();if self.room_settings().volumes{c.volume_mm3=Some(self.room_volume(r,&region));}c.region=Some(region);}
+        }}self.room_cache.borrow_mut().calculations.insert(id,(options,c.clone()));Some(c)
     }
     /// The room at a point, in the active view's phase.
     pub fn room_at(&self,level:Id,point:Point)->Option<Id>{self.room_at_in(level,point,self.active_spatial_phase())}
-    pub fn room_at_in(&self,level:Id,point:Point,phase:Option<Id>)->Option<Id>{let face=self.room_faces_in(level,phase);let region=face.iter().find(|f|contains(f,point))?;self.rooms().into_iter().filter(|(_,r)|r.level==level&&(phase.is_none()||self.spatial_phase(r.phase)==phase)&&r.at.is_some_and(|p|contains(region,p))).map(|(id,_)|id).min()}
+    pub fn room_at_in(&self,level:Id,point:Point,phase:Option<Id>)->Option<Id>{let options=self.options_shown(None);let face=self.room_faces_for(level,phase,&options);let region=face.iter().find(|f|contains(f,point))?;self.rooms().into_iter().filter(|(id,r)|r.level==level&&(phase.is_none()||self.spatial_phase(r.phase)==phase)&&self.in_options(*id,&options)&&r.at.is_some_and(|p|contains(region,p))).map(|(id,_)|id).min()}
 
     pub fn add_room(&mut self,level:Id,at:Option<Point>,view:Option<Id>)->Result<Id,String>{
         let base=self.level(level).ok_or("Unknown room level")?.elevation_mm;if at.is_some_and(|p|!p.x.is_finite()||!p.y.is_finite()){return Err("Invalid room location".into());}

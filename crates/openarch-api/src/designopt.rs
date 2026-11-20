@@ -21,6 +21,8 @@ pub(crate) fn design_options_json(d: &Document) -> Value {
         })).collect::<Vec<_>>(),
         "active": d.active_option(),
         "active_label": d.active_option().and_then(|a| o.label(a)),
+        // while an option is edited, what cannot be picked: everything that could be in an option but is outside it
+        "outside": if d.active_option().is_some() { d.iter().filter(|(id, _)| d.option_locked(*id)).map(|(id, _)| id).collect::<Vec<_>>() } else { vec![] },
         "member": o.member.iter().filter(|(e, x)| d.get(**e).is_some() && o.set_of(**x).is_some()).map(|(e, x)| (e.to_string(), json!(x))).collect::<serde_json::Map<_, _>>(),
     })
 }
