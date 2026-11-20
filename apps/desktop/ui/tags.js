@@ -22,11 +22,66 @@ const Tags = (() => {
     return out;
   }
 
+  // ---- a selected tag's leader grips (plans): the end, dragged off the element to free it (back onto the
+  // element's point it attaches again), and the elbow, a grip midway that adds one (dragged back onto the straight
+  // line it goes)
+  let gdrag = null; // { id, kind: "end" | "elbow", p (view mm), moved, sx, sy }
+  const shown = (t) => (gdrag && gdrag.id === t.id && gdrag.moved ? (gdrag.kind === "end" ? { ...t, end: gdrag.p } : { ...t, elbow: gdrag.p }) : t);
+  function grips(t, toScreen) {
+    const end = toScreen(t.end), head = toScreen(t.at);
+    return { end, elbow: t.elbow ? toScreen(t.elbow) : { x: (end.x + head.x) / 2, y: (end.y + head.y) / 2 }, hasElbow: !!t.elbow, head };
+  }
+  const selectedTag = (data, sel) => (sel.size === 1 ? (data?.element_tags || []).find((t) => sel.has(t.id) && t.leader && !t.pinned) : null);
+  function drawGrips(ctx, data, toScreen, sel) {
+    const t0 = selectedTag(data, sel);
+    if (!t0) return;
+    const g = grips(shown(t0), toScreen);
+    ctx.save(); ctx.strokeStyle = "#2e6f9e"; ctx.fillStyle = "#2e6f9e"; ctx.lineWidth = 1.2; ctx.setLineDash([]);
+    ctx.beginPath(); ctx.arc(g.end.x, g.end.y, 4, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "#fff"; ctx.beginPath(); ctx.arc(g.elbow.x, g.elbow.y, g.hasElbow ? 4 : 3, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.restore();
+  }
+  function gripDown(sx, sy, H) {
+    const t = selectedTag(H.data(), H.selection());
+    if (!t) return false;
+    const g = grips(t, H.toScreen);
+    const kind = Math.hypot(sx - g.end.x, sy - g.end.y) <= 7 ? "end" : Math.hypot(sx - g.elbow.x, sy - g.elbow.y) <= 7 ? "elbow" : null;
+    if (!kind) return false;
+    gdrag = { id: t.id, kind, sx, sy, p: H.toWorld(sx, sy), moved: false, H };
+    return true;
+  }
+  function gripMove(sx, sy) {
+    if (!gdrag) return;
+    if (!gdrag.moved && Math.hypot(sx - gdrag.sx, sy - gdrag.sy) > 4) gdrag.moved = true;
+    gdrag.p = gdrag.H.toWorld(sx, sy);
+    gdrag.H.render();
+  }
+  async function gripUp(sx, sy) {
+    const g = gdrag; gdrag = null;
+    if (!g) return;
+    const H = g.H, t = (H.data()?.element_tags || []).find((x) => x.id === g.id);
+    if (!t || !g.moved) { H.render(); return; }
+    const p = H.toWorld(sx, sy), pt = t.point, sp = H.toScreen(p), r2 = (v) => Math.round(v * 10) / 10;
+    let patch;
+    if (g.kind === "end") {
+      const e = H.toScreen(pt);
+      patch = Math.hypot(sp.x - e.x, sp.y - e.y) <= 8 ? { leader_end: "attached", end_offset: null } : { leader_end: "free", end_offset: [r2(p.x - pt.x), r2(p.y - pt.y)] };
+    } else {
+      // near the straight line from the end to the head the elbow goes
+      const a = H.toScreen(t.end), b = H.toScreen(t.at), dx = b.x - a.x, dy = b.y - a.y, L = Math.hypot(dx, dy) || 1;
+      const off = Math.abs((sp.x - a.x) * dy - (sp.y - a.y) * dx) / L;
+      patch = off <= 6 ? { elbow: null } : { elbow: [r2(p.x - pt.x), r2(p.y - pt.y)] };
+    }
+    await run("patch_tag", { id: t.id, patch });
+    await refresh();
+  }
+
   function draw(ctx, data, toScreen, k, sel = new Set()) {
     if (!data || !(data.element_tags || []).length) return;
     const s = scaleOf(data);
     ctx.save();
-    for (const t of data.element_tags) {
+    for (const t0 of data.element_tags) {
+      const t = shown(t0);
       const col = sel.has(t.id) ? "#2e6f9e" : null;
       const head = toScreen(t.at);
       if (t.leader) {
@@ -136,5 +191,5 @@ const Tags = (() => {
     });
   }
 
-  return { elements, draw, start, taggable, place, placed, context, placementGroups, flipSelected, tagAll };
+  return { elements, draw, start, taggable, place, placed, context, placementGroups, flipSelected, tagAll, drawGrips, gripDown, gripMove, gripUp, get dragging() { return !!gdrag; } };
 })();

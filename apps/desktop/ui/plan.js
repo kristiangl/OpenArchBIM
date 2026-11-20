@@ -1735,6 +1735,7 @@ const Plan = (() => {
       Areas.draw(ctx, data, toScreen, cam.s, sel, printing);
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
       Tags.draw(ctx, data, toScreen, cam.s, sel);
+      if (!printing) Tags.drawGrips(ctx, data, toScreen, sel);
       Det.drawNotes(sel, hov, accent, tool === "select");
       if (tool === "text") Det.preview(hover);
       if (tool === "paste") Clip.drawPreview(ctx, toScreen, hover);
@@ -2609,6 +2610,7 @@ const Plan = (() => {
     if (e.button === 0 && Dims.lockDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Dims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Spots.down(e.offsetX, e.offsetY)) { down = null; return; }
+    if (tool === "select" && e.button === 0 && Tags.gripDown(e.offsetX, e.offsetY, { data: () => data, selection: () => sel, toScreen, toWorld: (x, y) => toWorld(x, y), render })) { down = null; return; }
     if (tool === "select" && e.button === 0 && Det.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && e.button === 0 && Sections.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "sketch" && e.button === 0 && Sketch.gripDown(e.offsetX, e.offsetY)) { down = null; return; }
@@ -2794,6 +2796,7 @@ const Plan = (() => {
     }
     if (Dims.dragging) { Dims.dragMove(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { Spots.dragMove(e.offsetX, e.offsetY); return; }
+    if (Tags.dragging) { Tags.gripMove(e.offsetX, e.offsetY); return; }
     if (Det.dragging) { Det.gripMove(e.offsetX, e.offsetY); return; }
     if (Sections.dragging) { Sections.dragMove(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging) { lastMouse = { x: e.offsetX, y: e.offsetY }; hover = snap(e.offsetX, e.offsetY); cb.cursor(hover); Sketch.gripMove(e.offsetX, e.offsetY, hover); return; }
@@ -2844,6 +2847,7 @@ const Plan = (() => {
     if (tool === "shapeedit" && !pan && ShapeEdit.up(toScreen)) { down = null; hover = null; render(); return; }
     if (Dims.dragging) { down = null; Dims.up(e.offsetX, e.offsetY); return; }
     if (Spots.dragging) { down = null; Spots.up(e.offsetX, e.offsetY); return; }
+    if (Tags.dragging) { down = null; Tags.gripUp(e.offsetX, e.offsetY); return; }
     if (Det.dragging) { down = null; Det.gripUp(); return; }
     if (Sections.dragging) { down = null; Sections.up(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging) { down = null; Sketch.gripUp(); return; }
