@@ -46,6 +46,20 @@ impl Document {
     }
 
     /// A shaped floor's top surface; None for a floor that isn't shaped (its top is `floor_surface`).
+    /// The area of a floor's top face, mm²: the plan area on a flat floor, more on a sloped or shape-edited one.
+    pub fn floor_top_area(&self, f: &Floor) -> f64 {
+        if let Some(tin) = self.floor_shape(f) {
+            return tin.tris.iter().map(|t| {
+                let (a, b, c) = (tin.verts[t[0]], tin.verts[t[1]], tin.verts[t[2]]);
+                let (u, v) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
+                let n = [u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2], u[0] * v[1] - u[1] * v[0]];
+                (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt() / 2.0
+            }).sum();
+        }
+        let rise = self.floor_surface(f).map_or(0.0, |s| s.rise);
+        f.area_mm2() * (1.0 + rise * rise).sqrt()
+    }
+
     pub fn floor_shape(&self, f: &Floor) -> Option<Tin> {
         if !f.shaped() { return None; }
         let base = self.floor_base_z(f);

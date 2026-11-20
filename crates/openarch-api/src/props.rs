@@ -202,7 +202,8 @@ pub fn floor_props(d: &Document, id: Id, f: &Floor) -> Value {
             ]),
             group("Structural", vec![boolean("Structural", "structural", f.structural, !f.pinned)]),
             group("Dimensions", vec![
-                ro_measure("Area", format!("{:.2} m\u{b2}", f.area_mm2() / 1e6), f.area_mm2() / 1e6),
+                // the top face's area, so a sloped or shape-edited floor counts its slope
+                ro_measure("Area", format!("{:.2} m\u{b2}", d.floor_top_area(f) / 1e6), d.floor_top_area(f) / 1e6),
                 ro("Thickness", format!("{:.0}", t.map_or(0.0, |t| t.thickness_mm()))),
                 ro("Slope", d.floor_surface(f).map_or("Flat".to_string(), |s| if s.rise.abs() < 1e-9 { "Flat".to_string() } else { format!("{:.2}%", s.percent()) })),
             ]),

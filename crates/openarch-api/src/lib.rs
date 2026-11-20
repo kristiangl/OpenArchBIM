@@ -3567,7 +3567,7 @@ impl Session {
                     let mut f = std::collections::BTreeMap::new();
                     f.insert("Type".to_string(), PValue::Text(d.floor_type(fl.floor_type).map_or("?".into(), |t| t.name.clone())));
                     f.insert("Level".to_string(), PValue::Text(d.level(fl.level).map_or("?".into(), |l| l.name.clone())));
-                    let a = fl.area_mm2() / 1e6;
+                    let a = d.floor_top_area(fl) / 1e6;
                     f.insert("Area".to_string(), PValue::Num((a * 100.0).round() / 100.0));
                     floors.push(Row { id: id.to_string(), fields: f });
                 }
@@ -4321,6 +4321,9 @@ mod tests {
         call(&mut s, "set_floor_sketch", json!({"id": id, "curves": got["curves"].as_array().unwrap().iter().map(|c| c["curve"].clone()).collect::<Vec<_>>(), "slope": slope}));
         let again = call(&mut s, "floor_sketch", json!({"id": id}));
         assert_eq!(again["slope"]["spec"]["percent"], 2.0);
+        // Area is the sloped top face: the plan area (24 m² less the 1 m² opening) times sqrt(1 + 0.02²)
+        let area = call(&mut s, "describe", json!({"id": id}))["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).find(|r| r["label"] == "Area").unwrap()["raw"].as_f64().unwrap();
+        assert!((area - 23.0 * (1.0f64 + 0.0004).sqrt()).abs() < 0.001, "{area}");
         // modify tools return replacement curves
         let off = call(&mut s, "sketch_edit", json!({"op": "offset", "curve": curves[0], "towards": [3000, 2000], "dist": 100}));
         assert_eq!(off["curves"].as_array().unwrap().len(), 1);
