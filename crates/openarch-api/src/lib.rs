@@ -2523,6 +2523,11 @@ impl Session {
         v["items"] = Value::Array(items);
         v["fill_patterns"] = graphics::fill_pattern_defs(d);
         v["line_patterns"] = graphics::line_pattern_defs(d);
+        // grids in the Grids object style (and the view's overrides), as plans draw them
+        for g in v["grids"].as_array_mut().into_iter().flatten() {
+            let Some(id) = g["id"].as_u64() else { continue };
+            if let Some(style) = style_for(d, &settings, "Grids", None, d.graphics_of(view, &id).as_ref(), "normal", &Hint::default()) { g["style"] = style; }
+        }
         v["crop"] = json!({ "enabled": view.crop.enabled, "visible": view.crop.region_visible });
         if view.section.is_none() {
             return Ok(v);
@@ -6788,6 +6793,8 @@ mod tests {
         let north = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "North").unwrap()["id"].as_u64().unwrap();
         let e = call(&mut s, "elevation", json!({"view_id": north}));
         assert_eq!(e["grids"].as_array().unwrap().len(), 3);
+        // in the Grids object style, as plans draw them (Centre by default)
+        assert!(e["grids"].as_array().unwrap().iter().all(|g| g["style"]["line"]["pattern"] == "Centre" && g["style"]["line"]["width_mm"].as_f64().is_some()), "{}", e["grids"]);
         // hide the Grids category in a view: they leave the plan
         call(&mut s, "patch_view", json!({"id": view, "patch": {"settings": {"overrides": {"annotation": {"Grids": {"visible": false}}}}}}));
         assert!(call(&mut s, "plan", json!({"view_id": view}))["grids"].as_array().unwrap().is_empty());

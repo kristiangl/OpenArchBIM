@@ -639,10 +639,16 @@ const Elev = (() => {
     const text = css("--text"), accent = css("--accent");
     for (const g of data.grids || []) {
       const a = toScreen(g.u, g.z1), b = toScreen(g.u, g.z0);
-      const on = sel.has(g.id) || hoverGrid === g.id, col = on ? accent : text;
+      // the Grids object style (and the view's overrides): its colour (black follows the theme), weight and pattern
+      const L = (g.style && g.style.line) || {}, black = !L.color || /^#0{6}$/i.test(L.color);
+      const own = black ? (printing ? "#000" : text) : L.color;
+      const on = sel.has(g.id) || hoverGrid === g.id, col = on ? accent : own;
       ctx.save();
       if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "projection" });
-      ctx.strokeStyle = col; ctx.lineWidth = sel.has(g.id) ? 1.8 : 1; ctx.setLineDash([14, 4, 3, 4]);
+      const w = Plan.thinLines ? 1 : Math.max(1, Pen.w(L.width_mm || 0.18, k()));
+      const pat = L.pattern || "Centre";
+      ctx.strokeStyle = col; ctx.lineWidth = sel.has(g.id) ? Math.max(1.8, w) : w;
+      ctx.setLineDash(pat === "Solid" ? [] : (((data.line_patterns || {})[pat]) || [12, 2.5, 2.5, 2.5]).map((v) => Math.max(v * ((data.scale || 100) * cam.s), 1)));
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.setLineDash([]);
       if (ctx.oaTag) ctx.oaTag({ kind: "iden" });
