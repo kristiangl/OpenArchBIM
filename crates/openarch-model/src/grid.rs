@@ -73,6 +73,10 @@ pub struct Grid {
     /// How far each head sits to the side of the line end (the bubble offset and elbow), mm.
     #[serde(default)]
     pub head_offsets: [Option<Point>; 2],
+    /// In elevations and sections, by view: how far the head sits to the side of the line's top (an elbow), paper mm
+    /// along the view's right. Each view keeps its own, as the side flips between opposite views.
+    #[serde(default, skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub view_head_offsets: std::collections::BTreeMap<crate::element::Id, f64>,
     /// The ends of other grids each end of this one is locked in line with (the alignment pin).
     #[serde(default)]
     pub end_locks: crate::datum::EndLocks,
@@ -251,7 +255,7 @@ impl Document {
                 None => tx.add(Element::GridType(GridType::standard())),
             };
             let bubbles = tx.doc_ref().grid_type(t).map_or(bubble_default(), |g| g.bubble_default);
-            Ok(tx.add(Element::Grid(Grid { name, curves, grid_type: t, bubbles, scope_box: None, pinned: false, head_offsets: [None, None], end_locks: Default::default() })))
+            Ok(tx.add(Element::Grid(Grid { name, curves, grid_type: t, bubbles, scope_box: None, pinned: false, head_offsets: [None, None], view_head_offsets: Default::default(), end_locks: Default::default() })))
         })
     }
 

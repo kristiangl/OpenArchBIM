@@ -2629,6 +2629,8 @@ Elev.callbacks.editElevation = (id, elev) => levelPatch(id, { display_elevation_
 Elev.callbacks.renameLevel = (id, name) => levelPatch(id, { name });
 Elev.callbacks.toggleBubble = (id, end, bubbles) => { const b = bubbles.slice(); b[end] = !b[end]; return levelPatch(id, { bubbles: b }); };
 Elev.callbacks.levelElbow = (id, offsets) => levelPatch(id, { head_offsets: offsets });
+// a grid's elbow in this elevation or section (null takes it off); each view keeps its own
+Elev.callbacks.gridElbow = async (id, off) => { await run("patch_grid", { id, patch: { view_head_offsets: { [app.view.viewId]: off } } }); await refresh(); };
 // Dragging the end of a level. `end` is the side in this view (0 left, 1 right); a level that fitted the view gets an
 // extent of its own from the view's ends, and an end that lined up with another level's end is locked to it.
 Elev.callbacks.setExtent = async (id, end, u, l, align) => {

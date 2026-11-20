@@ -9,7 +9,7 @@ const Elev = (() => {
   // renderTo: drawing a view onto a sheet or a page, at another size, with nothing selected and no tool showing
   let printing = false, printSize = null;
   const cb = {
-    select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {}, levelElbow: () => {},
+    select: () => {}, addLevel: () => {}, moveLevel: () => {}, setExtent: () => {}, toggleBubble: () => {}, levelElbow: () => {}, gridElbow: () => {},
     prompt: () => {}, cursor: () => {}, renameLevel: () => {}, editElevation: () => {},
     addGrid: () => {}, addSection: () => {}, cropSection: () => {}, moveBy: () => {}, toggleLevelLock: () => {}, tempSettings: () => ({}),
     dimCall: () => null, dimRefresh: () => {}, dimText: () => {}, place: () => {}, placeSize: () => null,
@@ -435,8 +435,22 @@ const Elev = (() => {
     const by = (end) => heads[end].h.y, bx = (end) => heads[end].h.x + (end === 0 ? -hw : hw);
     return { a, b, heads, boxes: [{ end: 0, x: bx(0), y: by(0) }, { end: 1, x: bx(1), y: by(1) }] };
   }
+  // a grid's head in this view: at the top of its line, or with an elbow to the side past a jog
+  let gridElbowDrag = null; // { id, off, x0 } while a grid head's elbow is dragged: off in paper mm to the right
+  function gridParts(g) {
+    const P = toScreen(g.u, g.z1), r = Math.max(6, 2.5 * k());
+    const off = gridElbowDrag && gridElbowDrag.id === g.id ? gridElbowDrag.off : g.head_offset;
+    if (off == null) return { P, h: P, elbow: false, control: { x: P.x + 12, y: P.y + 18 } };
+    const dx = off * k(), j1 = { x: P.x, y: P.y - r * 0.8 }, j2 = { x: P.x + dx, y: P.y - r * 1.6 };
+    return { P, j1, j2, h: { x: P.x + dx, y: P.y - r * 2.4 }, elbow: true, control: { x: (j1.x + j2.x) / 2, y: (j1.y + j2.y) / 2 } };
+  }
   function gripAt(sx, sy) {
     if (!data) return null;
+    for (const g of data.grids || []) {
+      if (!sel.has(g.id) || g.pinned) continue;
+      const gp = gridParts(g);
+      if (Math.hypot(sx - gp.control.x, sy - gp.control.y) <= 7) return { id: g.id, kind: gp.elbow ? "grid-elbow" : "grid-add-elbow", g };
+    }
     for (const l of data.levels) {
       if (!sel.has(l.id)) continue;
       const { a, b, boxes, heads } = levelParts(l);
@@ -652,16 +666,25 @@ const Elev = (() => {
       ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
       ctx.setLineDash([]);
       if (ctx.oaTag) ctx.oaTag({ kind: "iden" });
-      const R = gridR(g);
-      ctx.beginPath(); ctx.arc(a.x, a.y - R, R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
+      const R = gridR(g), gp = gridParts(g), hp = gp.h;
+      if (gp.elbow) { ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(gp.j1.x, gp.j1.y); ctx.lineTo(gp.j2.x, gp.j2.y); ctx.lineTo(hp.x, hp.y); ctx.stroke(); }
+      ctx.beginPath(); ctx.arc(hp.x, hp.y - R, R, 0, Math.PI * 2); ctx.fillStyle = css("--view-bg"); ctx.fill(); ctx.stroke();
       if (ctx.oaTag) ctx.oaTag({ cat: "Grids", sub: null, kind: "iden" });
       let size = R * 0.95;
       ctx.font = `600 ${size}px system-ui, sans-serif`;
       const tw = ctx.measureText(g.name).width;
       if (tw > R * 1.7) size = (size * R * 1.7) / tw;
       ctx.font = `600 ${size}px system-ui, sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = col;
-      ctx.fillText(g.name, a.x, a.y - R);
+      ctx.fillText(g.name, hp.x, hp.y - R);
       ctx.restore();
+      // Add Elbow (a small jog) below the head of a selected grid, or a grip on the jog of one that has an elbow
+      if (sel.has(g.id) && !g.pinned && !printing) {
+        const e = gp.control;
+        ctx.save(); ctx.strokeStyle = accent; ctx.fillStyle = css("--view-bg"); ctx.lineWidth = 1.2;
+        if (gp.elbow) { ctx.beginPath(); ctx.arc(e.x, e.y, 4, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+        else { ctx.beginPath(); ctx.moveTo(e.x - 2, e.y + 6); ctx.lineTo(e.x - 2, e.y + 1); ctx.lineTo(e.x + 3, e.y - 1); ctx.lineTo(e.x + 3, e.y - 6); ctx.stroke(); }
+        ctx.restore();
+      }
     }
   }
 
@@ -1339,6 +1362,9 @@ const Elev = (() => {
       if (dh) { down = null; dimDown = dh; return; } // the box opens on release, so the click does not take its focus back
       const g = gripAt(e.offsetX, e.offsetY);
       if (g && g.kind === "bubble") { down = null; cb.toggleBubble(g.id, g.end, g.l.bubbles); return; }
+      // a grid's elbow in this view: a new one moves the head one bubble and a bit across, to the right
+      if (g && g.kind === "grid-add-elbow") { down = null; cb.gridElbow(g.id, Math.round((g.g.head_dia_mm || 8) * 1.25 * 10) / 10); return; }
+      if (g && g.kind === "grid-elbow") { down = null; gridElbowDrag = { id: g.id, off: g.g.head_offset, x0: toScreen(g.g.u, g.g.z1).x }; return; }
       if (g && g.kind === "add-elbow") {
         // a new elbow lifts the head clear of the line by about its own height
         down = null;
@@ -1410,6 +1436,13 @@ const Elev = (() => {
       return;
     }
     if (tgrip) { tgrip.x = e.offsetX; tgrip.y = e.offsetY; tgrip.cand = gripCand(tgrip.grip, e.offsetX, e.offsetY); canvas.style.cursor = tgrip.cand ? "crosshair" : "default"; render(); return; }
+    if (gridElbowDrag) {
+      // the head follows the cursor across; near the line the elbow goes
+      const off = (e.offsetX - gridElbowDrag.x0) / k();
+      gridElbowDrag.off = Math.abs(off) < 1.5 ? null : Math.round(off * 10) / 10;
+      render();
+      return;
+    }
     if (elbowDrag) {
       // the head follows the cursor up and down; near the line the elbow goes
       const off = (elbowDrag.y0 - e.offsetY) / k();
@@ -1537,6 +1570,11 @@ const Elev = (() => {
         render();
         return;
       }
+    }
+    if (gridElbowDrag) {
+      const g = gridElbowDrag; gridElbowDrag = null;
+      cb.gridElbow(g.id, g.off);
+      return;
     }
     if (elbowDrag) {
       const g = elbowDrag; elbowDrag = null;

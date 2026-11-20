@@ -6795,6 +6795,13 @@ mod tests {
         assert_eq!(e["grids"].as_array().unwrap().len(), 3);
         // in the Grids object style, as plans draw them (Centre by default)
         assert!(e["grids"].as_array().unwrap().iter().all(|g| g["style"]["line"]["pattern"] == "Centre" && g["style"]["line"]["width_mm"].as_f64().is_some()), "{}", e["grids"]);
+        // an elbow in this elevation only: South keeps the head on the line; null takes it off
+        let south = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "South").unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "patch_grid", json!({"id": g1, "patch": {"view_head_offsets": {north.to_string(): 10.0}}}));
+        let off = |s: &mut Session, v: u64| call(s, "elevation", json!({"view_id": v}))["grids"].as_array().unwrap().iter().find(|g| g["id"] == g1).unwrap()["head_offset"].clone();
+        assert_eq!((off(&mut s, north), off(&mut s, south)), (json!(10.0), Value::Null));
+        call(&mut s, "patch_grid", json!({"id": g1, "patch": {"view_head_offsets": {north.to_string(): null}}}));
+        assert_eq!(off(&mut s, north), Value::Null);
         // hide the Grids category in a view: they leave the plan
         call(&mut s, "patch_view", json!({"id": view, "patch": {"settings": {"overrides": {"annotation": {"Grids": {"visible": false}}}}}}));
         assert!(call(&mut s, "plan", json!({"view_id": view}))["grids"].as_array().unwrap().is_empty());

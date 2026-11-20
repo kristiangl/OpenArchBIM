@@ -415,6 +415,8 @@ pub struct GridLine {
     /// The head's diameter on paper (the grid type's Head Diameter), mm.
     pub head_dia_mm: f64,
     pub pinned: bool,
+    /// This view's elbow: the head's offset to the right of the line's top, paper mm.
+    pub head_offset: Option<f64>,
 }
 
 impl Document {
@@ -1304,7 +1306,7 @@ impl Document {
             if section.is_some() && (u < -frame.left_mm || u > frame.right_mm) {
                 continue;
             }
-            grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], head_dia_mm: self.grid_type(g.grid_type).map_or(8.0, |t| t.bubble_dia_mm), pinned: g.pinned });
+            grids.push(GridLine { id: gid, name: g.name.clone(), u, z0: frame.z_min, z1: frame.z_max, head: g.bubbles[0] || g.bubbles[1], head_dia_mm: self.grid_type(g.grid_type).map_or(8.0, |t| t.bubble_dia_mm), pinned: g.pinned, head_offset: g.view_head_offsets.get(&view).copied() });
         }
         // a section is drawn run by run, so its reference lines are worked out across the whole view
         let refs = if section.is_some() { self.elevation_dim_lines(view).map(|e| e.refs).unwrap_or_default() } else { self.elevation_refs(&frame, &wall_pieces, &host_near, &hidden) };
