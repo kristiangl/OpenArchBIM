@@ -2,7 +2,7 @@
 //! Settings dialog's changes.
 use serde_json::{json, Value};
 
-use openarch_model::sun::{parse_date, SunMode, SunSettings};
+use openarch_model::sun::{days_from_civil, date_string, parse_date, sun_position, SunMode, SunSettings};
 use openarch_model::view::TemplateProp;
 use openarch_model::{Document, Id};
 
@@ -19,6 +19,28 @@ pub(crate) fn sun_json(d: &Document, view: Id) -> Result<Value, String> {
     // the ground: the level chosen, else the lowest
     let levels = d.levels();
     let ground = s.ground_level.and_then(|l| d.level(l)).or_else(|| levels.iter().map(|(_, l)| *l).min_by(|a, b| a.elevation_mm.total_cmp(&b.elevation_mm)));
+    // where the sun can be dragged (spec 5.3): along the day (its time, every 5 minutes) and across the year (its date,
+    // every 2 days, at the frame's time); only in a moment or a one-day study, with the path shown
+    let (place, _) = d.sun_place();
+    let draggable = settings.sun_path && !s.manual && matches!(s.mode, SunMode::Still | SunMode::SingleDay);
+    let (track, year) = match cur.filter(|_| draggable) {
+        Some(f) => {
+            let days = parse_date(&f.date).map(|(y, m, dd)| days_from_civil(y, m, dd)).unwrap_or(0);
+            let track: Vec<Value> = (0..288).filter_map(|k| {
+                let p = sun_position(place, days, k as f64 * 5.0);
+                (p.altitude_deg > 0.0).then(|| json!({ "min": k * 5, "dir": d.sun_vector(p.altitude_deg, p.azimuth_deg) }))
+            }).collect();
+            let (y, _, _) = parse_date(&f.date).unwrap_or((2026, 1, 1));
+            let jan1 = days_from_civil(y, 1, 1);
+            let year: Vec<Value> = (0..183).filter_map(|k| {
+                let day = jan1 + k * 2;
+                let p = sun_position(place, day, f.time_min);
+                (p.altitude_deg > 0.0).then(|| json!({ "date": date_string(day), "dir": d.sun_vector(p.altitude_deg, p.azimuth_deg) }))
+            }).collect();
+            (json!(track), json!(year))
+        }
+        None => (json!([]), json!([])),
+    };
     let locked = v.template.and_then(|t| d.view_template(t)).is_some_and(|t| t.included.contains(&TemplateProp::GraphicDisplay));
     Ok(json!({
         "view_id": view,
@@ -30,7 +52,10 @@ pub(crate) fn sun_json(d: &Document, view: Id) -> Result<Value, String> {
             "label": f.label, "altitude": f.altitude_deg, "azimuth": f.azimuth_deg,
             "dir": d.sun_vector(f.altitude_deg, f.azimuth_deg), "above": f.altitude_deg > 0.0,
         })),
-        "place": { "latitude": st.latitude, "longitude": st.longitude, "utc_hours": st.utc_hours, "assumed": st.assumed_place, "true_north": st.true_north_deg },
+        "place": { "latitude": st.latitude, "longitude": st.longitude, "utc_hours": st.utc_hours, "assumed": st.assumed_place, "true_north": st.true_north_deg, "dst": place.dst },
+        "track": track,
+        "year": year,
+        "ambient_shadows": g.ambient_shadows,
         "sun_path": settings.sun_path,
         "cast_shadows": g.cast_shadows,
         "sun_intensity": g.sun_intensity,
@@ -96,6 +121,7 @@ impl Session {
                     match k.as_str() {
                         "sun_path" => n.settings.sun_path = val.as_bool().ok_or("sun_path is true or false")?,
                         "cast_shadows" => n.settings.graphic_display.cast_shadows = val.as_bool().ok_or("cast_shadows is true or false")?,
+                        "ambient_shadows" => n.settings.graphic_display.ambient_shadows = val.as_bool().ok_or("ambient_shadows is true or false")?,
                         "sun_intensity" | "ambient_intensity" => {
                             let x = val.as_u64().filter(|x| *x <= 100).ok_or("intensities are 0 to 100")? as u8;
                             if k == "sun_intensity" { n.settings.graphic_display.sun_intensity = x } else { n.settings.graphic_display.ambient_intensity = x }

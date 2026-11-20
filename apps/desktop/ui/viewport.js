@@ -31,11 +31,13 @@ const Viewport = (() => {
   };
 
   const SHADER = /* wgsl */ `
-struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32>, lvp: mat4x4<f32>, sun: vec4<f32> };
+struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32>, lvp: mat4x4<f32>, sun: vec4<f32>, ao: vec4<f32>, proj: vec4<f32>, screen: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
-// the sun's depth map (cast shadows): u.lvp takes a world point into it; u.sun is (ambient, sun, shadow darkness, on)
+// the sun's depth map (cast shadows): u.lvp takes a world point into it; u.sun is (ambient, sun, shadow darkness, on);
+// u.bg.w on: glass casts a tinted shadow, from its own depth map
 @group(1) @binding(0) var shadowTex: texture_depth_2d;
 @group(1) @binding(1) var shadowSamp: sampler_comparison;
+@group(1) @binding(2) var glassTex: texture_depth_2d;
 
 struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) tint: f32, @location(2) col: vec4<f32>, @location(3) a: f32, @location(4) wp: vec3<f32> };
 
@@ -46,8 +48,9 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @loc
   o.n = n; o.tint = off.w; o.col = col; o.a = 1.0 - sc.w; o.wp = p * sc.xyz + off.xyz;
   return o;
 }
-// how much of the sun reaches a point: 1 lit, 0 in shadow, softened over the 3 x 3 texels round it
-fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 {
+// how much of the sun reaches a point: 1 lit, 0 in shadow, softened over the 3 x 3 texels round it (glass: the
+// glass depth map instead)
+fn shadowIn(wp: vec3<f32>, n: vec3<f32>, glass: bool) -> f32 {
   let c = u.lvp * vec4<f32>(wp + n * 0.03, 1.0);
   let q = c.xyz / c.w;
   let uv = vec2<f32>(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5);
@@ -56,10 +59,16 @@ fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 {
   var s = 0.0;
   for (var x = -1; x <= 1; x++) {
     for (var y = -1; y <= 1; y++) {
-      s += textureSampleCompareLevel(shadowTex, shadowSamp, uv + vec2<f32>(f32(x), f32(y)) * t, q.z - 0.0015);
+      let at = uv + vec2<f32>(f32(x), f32(y)) * t;
+      if (glass) { s += textureSampleCompareLevel(glassTex, shadowSamp, at, q.z - 0.0015); }
+      else { s += textureSampleCompareLevel(shadowTex, shadowSamp, at, q.z - 0.0015); }
     }
   }
   return s / 9.0;
+}
+fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 { return shadowIn(wp, n, false); }
+@vertex fn vs_depth(@location(0) p: vec3<f32>, @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>) -> @builtin(position) vec4<f32> {
+  return u.vp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
 }
 @vertex fn vs_shadow(@location(0) p: vec3<f32>, @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>) -> @builtin(position) vec4<f32> {
   return u.lvp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
@@ -70,6 +79,12 @@ fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 {
     var c = u.bg.rgb;
     if (i.tint >= 0.99) { c = mix(c, vec3<f32>(0.85, 0.62, 0.45), 0.45); }
     if (i.tint < 0.0) { c = mix(c, vec3<f32>(0.55, 0.72, 0.86), 0.25); }
+    // cast shadows in Hidden Line: grey where the sun does not reach
+    if (u.sun.w > 0.5) {
+      let hn = normalize(i.n);
+      let hv = select(shadowAt(i.wp, hn), 1.0, dot(hn, normalize(u.light.xyz)) <= 0.0);
+      c = c * mix(1.0 - 0.45 * u.sun.z, 1.0, hv);
+    }
     return vec4<f32>(c, i.a);
   }
   let nn = normalize(i.n);
@@ -77,11 +92,16 @@ fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 {
   var base = mix(vec3<f32>(0.78, 0.80, 0.83), vec3<f32>(0.85, 0.62, 0.45), clamp(i.tint, 0.0, 1.0));
   if (i.col.w > 0.5 && i.tint < 0.99) { base = i.col.rgb; } // material colour unless selected
   if (i.tint < 0.0) { base = vec3<f32>(0.55, 0.72, 0.86); } // glass
-  var k = u.sun.x + u.sun.y * l;
+  var k = vec3<f32>(u.sun.x + u.sun.y * l);
   if (u.sun.w > 0.5) {
     // a face turned from the sun has only the ambient light already: a cast shadow darkens what the sun reaches
     let vis = select(shadowAt(i.wp, nn), 1.0, l <= 0.0);
     k = mix(k * (1.0 - u.sun.z), k, vis);
+    // through glass (Realistic): the light that passes is tinted and weaker
+    if (u.bg.w > 0.5 && l > 0.0) {
+      let gv = shadowIn(i.wp, nn, true);
+      k = k * mix(mix(vec3<f32>(1.0), vec3<f32>(0.62, 0.75, 0.86), u.sun.z), vec3<f32>(1.0), max(gv, 1.0 - vis));
+    }
   }
   return vec4<f32>(base * k, i.a);
 }
@@ -103,8 +123,54 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
 }
 `;
 
+  // Ambient shadows (screen-space ambient occlusion): from the depth of the solid surfaces, how much of the sky round a
+  // point nearby surfaces hide; drawn over the frame, multiplying. u.ao is (on, strength, radius m, -), u.proj turns a
+  // depth back into a distance (the projection's z terms, tan of half the view across and up), u.screen is the size.
+  const AO_SHADER = /* wgsl */ `
+struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32>, lvp: mat4x4<f32>, sun: vec4<f32>, ao: vec4<f32>, proj: vec4<f32>, screen: vec4<f32> };
+@group(0) @binding(0) var<uniform> u: U;
+@group(1) @binding(0) var depthTex: texture_depth_2d;
+@vertex fn vs_full(@builtin(vertex_index) k: u32) -> @builtin(position) vec4<f32> {
+  var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
+  return vec4<f32>(p[k], 0.0, 1.0);
+}
+fn viewAt(px: vec2<i32>) -> vec4<f32> {
+  let size = vec2<i32>(u.screen.xy);
+  let q = clamp(px, vec2<i32>(0), size - vec2<i32>(1));
+  let d = textureLoad(depthTex, q, 0);
+  if (d >= 0.99999) { return vec4<f32>(0.0, 0.0, 0.0, 0.0); }
+  let dist = u.proj.y / (d + u.proj.x);
+  let ndc = vec2<f32>((f32(q.x) + 0.5) / u.screen.x * 2.0 - 1.0, 1.0 - (f32(q.y) + 0.5) / u.screen.y * 2.0);
+  return vec4<f32>(ndc.x * u.proj.z * dist, ndc.y * u.proj.w * dist, -dist, 1.0);
+}
+@fragment fn fs_ao(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  let px = vec2<i32>(fc.xy);
+  let p = viewAt(px);
+  if (p.w < 0.5) { return vec4<f32>(1.0); }
+  let px1 = viewAt(px + vec2<i32>(1, 0));
+  let py1 = viewAt(px + vec2<i32>(0, 1));
+  var n = normalize(cross(px1.xyz - p.xyz, py1.xyz - p.xyz));
+  if (dot(n, -p.xyz) < 0.0) { n = -n; }
+  let dist = -p.z;
+  let R = u.ao.z;
+  let rp = clamp(R * u.screen.y * 0.5 / (u.proj.w * dist), 2.0, 80.0);
+  let spin = fract(sin(dot(fc.xy, vec2<f32>(12.9898, 78.233))) * 43758.5453) * 6.2832;
+  var occ = 0.0;
+  for (var k = 0; k < 16; k++) {
+    let a = f32(k) * 2.39996 + spin;
+    let r = rp * sqrt((f32(k) + 0.5) / 16.0);
+    let s = viewAt(px + vec2<i32>(i32(cos(a) * r), i32(sin(a) * r)));
+    if (s.w < 0.5) { continue; }
+    let v = s.xyz - p.xyz; let vv = dot(v, v);
+    occ += max(0.0, dot(v, n) - 0.01 * dist) / (vv + 0.02) * (1.0 - smoothstep(R * R, 4.0 * R * R, vv));
+  }
+  let ao = pow(clamp(1.0 - u.ao.y * R * occ / 16.0, 0.0, 1.0), 1.5);
+  return vec4<f32>(ao, ao, ao, 1.0);
+}
+`;
+
   // The same shading in GLSL ES 3.00, for WebGL2
-  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge; uniform mat4 lvp; uniform vec4 sun;";
+  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge; uniform mat4 lvp; uniform vec4 sun; uniform vec4 ao; uniform vec4 proj; uniform vec4 screen;";
   const GL_BOX_VS = `#version 300 es
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 1) in vec3 n;
@@ -114,22 +180,27 @@ void main() { vwp = p * sc.xyz + off.xyz; gl_Position = vp * vec4(vwp, 1.0); vn 
   const GL_BOX_FS = `#version 300 es
 precision highp float;
 ${GL_UNIFORMS}
-uniform highp sampler2DShadow shadowMap;
+uniform highp sampler2DShadow shadowMap; uniform highp sampler2DShadow glassMap;
 in vec3 vn; in float vtint; in vec4 vcol; in float va; in vec3 vwp; out vec4 o;
-float shadowAt(vec3 wp, vec3 n) {
+float shadowIn(vec3 wp, vec3 n, bool glass) {
   vec4 c = lvp * vec4(wp + n * 0.03, 1.0);
   vec3 q = c.xyz / c.w;
   vec2 uv = q.xy * 0.5 + 0.5;
   if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || q.z > 1.0) return 1.0;
   float t = 1.0 / 2048.0, s = 0.0;
-  for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) s += texture(shadowMap, vec3(uv + vec2(float(x), float(y)) * t, q.z - 0.0015));
+  for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) {
+    vec3 at = vec3(uv + vec2(float(x), float(y)) * t, q.z - 0.0015);
+    s += glass ? texture(glassMap, at) : texture(shadowMap, at);
+  }
   return s / 9.0;
 }
+float shadowAt(vec3 wp, vec3 n) { return shadowIn(wp, n, false); }
 void main() {
   if (light.w > 0.5) {
     vec3 c = bg.rgb;
     if (vtint >= 0.99) c = mix(c, vec3(0.85, 0.62, 0.45), 0.45);
     if (vtint < 0.0) c = mix(c, vec3(0.55, 0.72, 0.86), 0.25);
+    if (sun.w > 0.5) { vec3 hn = normalize(vn); float hv = dot(hn, normalize(light.xyz)) <= 0.0 ? 1.0 : shadowAt(vwp, hn); c *= mix(1.0 - 0.45 * sun.z, 1.0, hv); }
     o = vec4(c, va); return;
   }
   vec3 nn = normalize(vn);
@@ -137,8 +208,12 @@ void main() {
   vec3 base = mix(vec3(0.78, 0.80, 0.83), vec3(0.85, 0.62, 0.45), clamp(vtint, 0.0, 1.0));
   if (vcol.w > 0.5 && vtint < 0.99) base = vcol.rgb;
   if (vtint < 0.0) base = vec3(0.55, 0.72, 0.86);
-  float k = sun.x + sun.y * l;
-  if (sun.w > 0.5) { float vis = l <= 0.0 ? 1.0 : shadowAt(vwp, nn); k = mix(k * (1.0 - sun.z), k, vis); }
+  vec3 k = vec3(sun.x + sun.y * l);
+  if (sun.w > 0.5) {
+    float vis = l <= 0.0 ? 1.0 : shadowAt(vwp, nn);
+    k = mix(k * (1.0 - sun.z), k, vis);
+    if (bg.w > 0.5 && l > 0.0) { float gv = shadowIn(vwp, nn, true); k *= mix(mix(vec3(1.0), vec3(0.62, 0.75, 0.86), sun.z), vec3(1.0), max(gv, 1.0 - vis)); }
+  }
   o = vec4(base * k, va);
 }`;
   // the sun's depth map: depth only
@@ -150,6 +225,41 @@ void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); }`;
 precision highp float;
 out vec4 o;
 void main() { o = vec4(1.0); }`;
+  // ambient shadows over the frame (see AO_SHADER)
+  const GL_AO_VS = `#version 300 es
+void main() { vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0); gl_Position = vec4(p, 0.0, 1.0); }`;
+  const GL_AO_FS = `#version 300 es
+precision highp float;
+${GL_UNIFORMS}
+uniform highp sampler2D depthMap;
+out vec4 o;
+vec4 viewAt(ivec2 px) {
+  ivec2 q = clamp(px, ivec2(0), ivec2(screen.xy) - ivec2(1));
+  float d = texelFetch(depthMap, q, 0).r;
+  if (d >= 0.99999) return vec4(0.0);
+  float dist = proj.y / (d + proj.x);
+  vec2 ndc = (vec2(q) + 0.5) / screen.xy * 2.0 - 1.0;
+  return vec4(ndc.x * proj.z * dist, ndc.y * proj.w * dist, -dist, 1.0);
+}
+void main() {
+  ivec2 px = ivec2(gl_FragCoord.xy);
+  vec4 p = viewAt(px);
+  if (p.w < 0.5) { o = vec4(1.0); return; }
+  vec3 n = normalize(cross(viewAt(px + ivec2(1, 0)).xyz - p.xyz, viewAt(px + ivec2(0, 1)).xyz - p.xyz));
+  if (dot(n, -p.xyz) < 0.0) n = -n;
+  float dist = -p.z, R = ao.z;
+  float rp = clamp(R * screen.y * 0.5 / (proj.w * dist), 2.0, 80.0);
+  float spin = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453) * 6.2832, occ = 0.0;
+  for (int k = 0; k < 16; k++) {
+    float a = float(k) * 2.39996 + spin, r = rp * sqrt((float(k) + 0.5) / 16.0);
+    vec4 s = viewAt(px + ivec2(int(cos(a) * r), int(sin(a) * r)));
+    if (s.w < 0.5) continue;
+    vec3 v = s.xyz - p.xyz; float vv = dot(v, v);
+    occ += max(0.0, dot(v, n) - 0.01 * dist) / (vv + 0.02) * (1.0 - smoothstep(R * R, 4.0 * R * R, vv));
+  }
+  float a = pow(clamp(1.0 - ao.y * R * occ / 16.0, 0.0, 1.0), 1.5);
+  o = vec4(a, a, a, 1.0);
+}`;
   const GL_LINE_VS = `#version 300 es
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 1) in vec3 c; out vec3 vc;
@@ -346,18 +456,26 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const info = adapter.info || {};
 
     const module = device.createShaderModule({ code: SHADER });
-    const ubuf = device.createBuffer({ size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const ubuf = device.createBuffer({ size: 240, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} }] });
     const bind = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: ubuf } }] });
     // the sun's depth map, drawn first when shadows are on and read by the shaded surfaces
     const SHADOW = 2048;
     const shadowTex = device.createTexture({ size: [SHADOW, SHADOW], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
     const shadowView = shadowTex.createView();
+    // glass as the sun sees it, for tinted shadows in Realistic
+    const glassTex = device.createTexture({ size: [SHADOW, SHADOW], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    const glassView = glassTex.createView();
     const bgl1 = device.createBindGroupLayout({ entries: [
       { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
       { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "comparison" } },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
     ] });
-    const bind1 = device.createBindGroup({ layout: bgl1, entries: [{ binding: 0, resource: shadowView }, { binding: 1, resource: device.createSampler({ compare: "less-equal" }) }] });
+    const bind1 = device.createBindGroup({ layout: bgl1, entries: [{ binding: 0, resource: shadowView }, { binding: 1, resource: device.createSampler({ compare: "less-equal" }) }, { binding: 2, resource: glassView }] });
+    // ambient shadows: the solid surfaces' depth from the camera, then a pass over the frame that multiplies
+    const aoModule = device.createShaderModule({ code: AO_SHADER });
+    const bglAo = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } }] });
+    let aoTex = null, aoView = null, aoBind = null;
     const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl, bgl1] });
     const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const depthFormat = "depth24plus";
@@ -394,6 +512,21 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       ] },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less", depthBias: 2, depthBiasSlopeScale: 2 },
+    });
+    const depthPipe = device.createRenderPipeline({
+      layout: shadowLayout,
+      vertex: { module, entryPoint: "vs_depth", buffers: [
+        { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+        { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }] },
+      ] },
+      primitive: { topology: "triangle-list", cullMode: "back" },
+      depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less" },
+    });
+    const aoPipe = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [bgl, bglAo] }),
+      vertex: { module: aoModule, entryPoint: "vs_full" },
+      fragment: { module: aoModule, entryPoint: "fs_ao", targets: [{ format, blend: { color: { srcFactor: "zero", dstFactor: "src" }, alpha: { srcFactor: "zero", dstFactor: "one" } } }] },
+      primitive: { topology: "triangle-list" },
     });
     const edgeBuffers = [
       { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
@@ -435,7 +568,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       name: "WebGPU",
       info: [info.vendor, info.architecture, info.description].filter(Boolean).join(" ") || "adapter ok",
       gpuMs: 0,
-      resize(w, h) { depth?.destroy(); depth = device.createTexture({ size: [w, h], format: depthFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT }); },
+      resize(w, h) {
+        depth?.destroy(); depth = device.createTexture({ size: [w, h], format: depthFormat, usage: GPUTextureUsage.RENDER_ATTACHMENT });
+        aoTex?.destroy(); aoTex = device.createTexture({ size: [w, h], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+        aoView = aoTex.createView(); aoBind = device.createBindGroup({ layout: bglAo, entries: [{ binding: 0, resource: aoView }] });
+      },
       mesh(data, edges) {
         return { vbuf: mk(data, GPUBufferUsage.VERTEX), ebuf: edges.length ? mk(edges, GPUBufferUsage.VERTEX) : null, ibuf: device.createBuffer({ size: 48, usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST }), count: data.length / 6, ecount: edges.length / 3 };
       },
@@ -450,6 +587,20 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           sp.setPipeline(shadowPipe); sp.setBindGroup(0, bind);
           for (const g of f.meshes) { if (g.alpha < 0.999) continue; sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
           sp.end();
+          // and the glass, for tinted shadows
+          if (f.glassShadow) {
+            const gp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: glassView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
+            gp.setPipeline(shadowPipe); gp.setBindGroup(0, bind);
+            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; gp.setVertexBuffer(0, g.vbuf); gp.setVertexBuffer(1, g.ibuf); gp.draw(g.count, 1); }
+            gp.end();
+          }
+        }
+        // ambient shadows: the solid surfaces' depth from the camera
+        if (f.ao && aoView) {
+          const dp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: aoView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
+          dp.setPipeline(depthPipe); dp.setBindGroup(0, bind);
+          for (const g of [...f.meshes, ...(f.ground ? [f.ground] : [])]) { if (g.alpha < 0.999) continue; dp.setVertexBuffer(0, g.vbuf); dp.setVertexBuffer(1, g.ibuf); dp.draw(g.count, 1); }
+          dp.end();
         }
         const tex = ctx.getCurrentTexture();
         const pass = enc.beginRenderPass({
@@ -487,6 +638,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           }
         }
         pass.end();
+        // ambient shadows over the frame
+        if (f.ao && aoBind) {
+          const ap = enc.beginRenderPass({ colorAttachments: [{ view: tex.createView(), loadOp: "load", storeOp: "store" }] });
+          ap.setPipeline(aoPipe); ap.setBindGroup(0, bind); ap.setBindGroup(1, aoBind); ap.draw(3); ap.end();
+        }
         const t0 = performance.now();
         // the read-back copy (if asked for) goes in the same submission
         if (be.pending) {
@@ -528,9 +684,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       gl.linkProgram(p);
       if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("WebGL2 program: " + gl.getProgramInfoLog(p));
       const at = (n) => gl.getUniformLocation(p, n);
-      return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap") };
+      return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap"), glassMap: at("glassMap"), ao: at("ao"), proj: at("proj"), screen: at("screen"), depthMap: at("depthMap") };
     };
-    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS);
+    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS), aoProg = program(GL_AO_VS, GL_AO_FS);
     // the sun's depth map
     const SHADOW = 2048;
     const shadowTex = gl.createTexture();
@@ -539,11 +695,28 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+    // a depth texture and its framebuffer (`compare`: read as a shadow map)
+    const depthTarget = (w, h, compare) => {
+      const tex = gl.createTexture();
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, w, h);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      if (compare) { gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL); }
+      const fbo = gl.createFramebuffer();
+      gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+      gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, tex, 0);
+      gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+      return { tex, fbo, w, h };
+    };
     const shadowFbo = gl.createFramebuffer();
     gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
     gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
     gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    const glassT = depthTarget(SHADOW, SHADOW, true);
+    let aoT = null;
     const buf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
     const st = STATIC();
     // a vertex array per shape of input: positions with normals (or colours), positions only, plus instance data
@@ -591,7 +764,23 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           gl.disable(gl.CULL_FACE); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 2);
           gl.useProgram(shadowProg.p); gl.uniformMatrix4fv(shadowProg.vp, false, toGL(f.uniforms.subarray(28, 44)));
           for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          // and the glass, for tinted shadows
+          if (f.glassShadow) {
+            gl.bindFramebuffer(gl.FRAMEBUFFER, glassT.fbo); gl.clear(gl.DEPTH_BUFFER_BIT);
+            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          }
           gl.disable(gl.POLYGON_OFFSET_FILL);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
+        // ambient shadows: the solid surfaces' depth from the camera
+        const W = lastW || canvas.width, H = lastH || canvas.height;
+        if (f.ao) {
+          if (!aoT || aoT.w !== W || aoT.h !== H) { if (aoT) { gl.deleteTexture(aoT.tex); gl.deleteFramebuffer(aoT.fbo); } aoT = depthTarget(W, H, false); }
+          gl.bindFramebuffer(gl.FRAMEBUFFER, aoT.fbo); gl.viewport(0, 0, W, H);
+          gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true); gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+          gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK);
+          gl.useProgram(shadowProg.p); gl.uniformMatrix4fv(shadowProg.vp, false, toGL(f.uniforms.subarray(0, 16)));
+          for (const g of [...f.meshes, ...(f.ground ? [f.ground] : [])]) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
           gl.bindFramebuffer(gl.FRAMEBUFFER, null);
         }
         gl.viewport(0, 0, lastW || canvas.width, lastH || canvas.height);
@@ -610,6 +799,10 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           if (pr.lvp) gl.uniformMatrix4fv(pr.lvp, false, f.uniforms.subarray(28, 44));
           if (pr.sun) gl.uniform4fv(pr.sun, f.uniforms.subarray(44, 48));
           if (pr.shadowMap) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shadowTex); gl.uniform1i(pr.shadowMap, 0); }
+          if (pr.glassMap) { gl.activeTexture(gl.TEXTURE1); gl.bindTexture(gl.TEXTURE_2D, glassT.tex); gl.uniform1i(pr.glassMap, 1); gl.activeTexture(gl.TEXTURE0); }
+          if (pr.ao) gl.uniform4fv(pr.ao, f.uniforms.subarray(48, 52));
+          if (pr.proj) gl.uniform4fv(pr.proj, f.uniforms.subarray(52, 56));
+          if (pr.screen) gl.uniform4fv(pr.screen, f.uniforms.subarray(56, 60));
         };
         gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
         gl.disable(gl.CULL_FACE); gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -651,6 +844,15 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
             for (const g of f.meshes) { if (!g.lines) continue; gl.bindVertexArray(g.lines); gl.drawArraysInstanced(gl.LINES, 0, g.ecount, 1); }
             gl.depthMask(true); gl.depthFunc(gl.LESS);
           }
+        }
+        // ambient shadows over the frame, multiplying
+        if (f.ao && aoT) {
+          use(aoProg);
+          gl.activeTexture(gl.TEXTURE2); gl.bindTexture(gl.TEXTURE_2D, aoT.tex); gl.uniform1i(aoProg.depthMap, 2); gl.activeTexture(gl.TEXTURE0);
+          gl.disable(gl.DEPTH_TEST); gl.disable(gl.CULL_FACE);
+          gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.ONE);
+          gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3);
+          gl.disable(gl.BLEND); gl.enable(gl.DEPTH_TEST);
         }
         gl.bindVertexArray(null);
         // the drawing buffer is cleared once the frame is shown, so read it back now
@@ -755,12 +957,18 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         amb = 0.18 + (sun.ambient / 100) * 0.8; dif = (sun.intensity / 100) * 1.24;
         // the sun below the horizon: no sunlight and no shadows, an even light to work by
         if (L[2] <= 0) { dif = 0; amb = Math.max(amb, 0.6); }
-        shadow = !!sun.shadows && lineMode === 0 && L[2] > 0.02 && meshes.length > 0;
+        shadow = !!sun.shadows && lineMode !== 2 && L[2] > 0.02 && meshes.length > 0;
       }
-      const u = new Float32Array(48); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, 1], 20);
+      // glass casts a tinted shadow in Realistic, passes the light otherwise
+      const glassShadow = shadow && lineMode === 0 && style === "realistic" && meshes.some((m) => m.g.alpha < 0.999);
+      const ao = !!sun?.ambientShadows && !stress && lineMode !== 2 && meshes.length > 0;
+      const u = new Float32Array(60); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, glassShadow ? 1 : 0], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
       if (shadow) u.set(sunMatrix(L), 28);
       u.set([amb, dif, sun ? sun.shadowStrength ?? 0.5 : 0.5, shadow ? 1 : 0], 44);
+      // ambient shadows: strength and reach, and what turns a depth back into a distance
+      const near = 0.1, far = 4000, th = Math.tan(0.45);
+      u.set([ao ? 1 : 0, 1.3, 0.6, 0], 48); u.set([far / (near - far), (near * far) / (near - far), th * aspect, th], 52); u.set([canvas.width, canvas.height, 0, 0], 56);
       let gnd = null;
       if (shadow) {
         const c = [(sceneLo[0] + sceneHi[0]) / 2, (sceneLo[1] + sceneHi[1]) / 2];
@@ -768,7 +976,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gnd = groundMesh(sun.groundZ - 0.003, c, Math.round(R), dark ? [0.2, 0.22, 0.24] : [0.93, 0.93, 0.91]);
       }
       if (!allLines) allLines = extraLines && sunLines ? (() => { const a = new Float32Array(extraLines.length + sunLines.length); a.set(extraLines); a.set(sunLines, extraLines.length); return a; })() : extraLines || sunLines;
-      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g), lines: allLines, shadow, ground: gnd });
+      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao, ground: gnd });
       if (afterRender) afterRender();
     }
 

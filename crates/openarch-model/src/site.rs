@@ -54,6 +54,9 @@ pub struct ProjectLocation {
     /// Hours from UTC (Perth +8); none: the nearest hour to the longitude's solar time (sun.rs).
     #[serde(default)]
     pub time_zone_hours: Option<f64>,
+    /// When clocks go forward an hour (sun.rs).
+    #[serde(default)]
+    pub daylight_saving: crate::sun::DstRule,
 }
 
 fn yes_() -> bool {
@@ -74,6 +77,7 @@ impl Default for ProjectLocation {
             latitude_deg: None,
             longitude_deg: None,
             time_zone_hours: None,
+            daylight_saving: crate::sun::DstRule::None,
         }
     }
 }

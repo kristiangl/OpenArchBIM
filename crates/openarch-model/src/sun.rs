@@ -89,16 +89,72 @@ pub struct SunPos {
     pub azimuth_deg: f64,
 }
 
-/// A place on the earth: degrees (south and west negative) and hours from UTC.
+/// When clocks go forward an hour. Taken a day at a time: the hour of the change itself is not modelled.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DstRule {
+    /// No daylight saving (Western Australia, Queensland, the Northern Territory).
+    #[default]
+    None,
+    /// The first Sunday in October to the first Sunday in April (NSW, Victoria, the ACT, SA, Tasmania).
+    Australia,
+    /// The last Sunday in September to the first Sunday in April.
+    NewZealand,
+    /// The last Sunday in March to the last Sunday in October.
+    Europe,
+    /// The second Sunday in March to the first Sunday in November.
+    NorthAmerica,
+}
+
+/// Sunday 0 .. Saturday 6 of a day since 1970 (a Thursday).
+fn weekday(days: i64) -> i64 {
+    (days + 4).rem_euclid(7)
+}
+
+/// The `n`th Sunday of a month (n = 1 first), or with n = 0 the last.
+fn sunday(y: i32, m: u32, n: i64) -> i64 {
+    if n == 0 {
+        let last = days_from_civil(y, m, days_in_month(y, m));
+        return last - weekday(last);
+    }
+    let first = days_from_civil(y, m, 1);
+    first + (7 - weekday(first)) % 7 + 7 * (n - 1)
+}
+
+impl DstRule {
+    /// Whether clocks are an hour forward on a day.
+    pub fn in_effect(self, days: i64) -> bool {
+        let (y, _, _) = civil_from_days(days);
+        let within = |a: i64, b: i64| days >= a && days < b;
+        match self {
+            DstRule::None => false,
+            // southern: from spring to the next autumn, across the new year
+            DstRule::Australia => !within(sunday(y, 4, 1), sunday(y, 10, 1)),
+            DstRule::NewZealand => !within(sunday(y, 4, 1), sunday(y, 9, 0)),
+            DstRule::Europe => within(sunday(y, 3, 0), sunday(y, 10, 0)),
+            DstRule::NorthAmerica => within(sunday(y, 3, 2), sunday(y, 11, 1)),
+        }
+    }
+}
+
+/// A place on the earth: degrees (south and west negative), hours from UTC, and its daylight saving.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct Place {
     pub latitude: f64,
     pub longitude: f64,
     pub utc_hours: f64,
+    pub dst: DstRule,
+}
+
+impl Place {
+    /// The place as its clocks read on a day: an hour further from UTC while daylight saving is in effect.
+    pub fn on(self, days: i64) -> Place {
+        Place { utc_hours: self.utc_hours + if self.dst.in_effect(days) { 1.0 } else { 0.0 }, dst: DstRule::None, ..self }
+    }
 }
 
 /// Perth, for a project whose location has not been set.
-pub const PERTH: Place = Place { latitude: -31.9523, longitude: 115.8613, utc_hours: 8.0 };
+pub const PERTH: Place = Place { latitude: -31.9523, longitude: 115.8613, utc_hours: 8.0, dst: DstRule::None };
 
 /// "YYYY-MM-DD" as (year, month, day), checked.
 pub fn parse_date(s: &str) -> Option<(i32, u32, u32)> {
@@ -174,6 +230,7 @@ fn solar_terms(days: i64, minutes_utc: f64) -> (f64, f64) {
 
 /// Where the sun is at a place on a date (days since 1970) at a local clock time (minutes after midnight).
 pub fn sun_position(place: Place, days: i64, local_min: f64) -> SunPos {
+    let place = place.on(days);
     let utc = local_min - place.utc_hours * 60.0;
     let (decl, eq_time) = solar_terms(days, utc);
     let tst = (local_min + eq_time + 4.0 * place.longitude - 60.0 * place.utc_hours).rem_euclid(1440.0);
@@ -192,6 +249,7 @@ pub fn sun_position(place: Place, days: i64, local_min: f64) -> SunPos {
 
 /// Sunrise and sunset (local minutes) on a date, or None where the sun does not rise or set that day.
 pub fn sunrise_sunset(place: Place, days: i64) -> Option<(f64, f64)> {
+    let place = place.on(days);
     let (decl, eq_time) = solar_terms(days, 720.0 - place.utc_hours * 60.0);
     let (lat, dec) = (place.latitude.to_radians(), decl.to_radians());
     let c = 90.833f64.to_radians().cos() / (lat.cos() * dec.cos()) - lat.tan() * dec.tan();
@@ -241,7 +299,7 @@ impl Document {
             (Some(latitude), Some(longitude)) => {
                 // without a time zone: the nearest whole hour to the longitude's solar time
                 let utc_hours = l.time_zone_hours.unwrap_or((longitude / 15.0).round());
-                (Place { latitude, longitude, utc_hours }, false)
+                (Place { latitude, longitude, utc_hours, dst: l.daylight_saving }, false)
             }
             _ => (PERTH, true),
         }
@@ -448,6 +506,25 @@ mod tests {
         let (r, s) = sunrise_sunset(PERTH, days_from_civil(2026, 6, 21)).unwrap();
         assert!((r - (7.0 * 60.0 + 16.0)).abs() < 5.0, "{}", clock(r));
         assert!((s - (17.0 * 60.0 + 20.0)).abs() < 5.0, "{}", clock(s));
+    }
+
+    #[test]
+    fn daylight_saving_moves_the_clock_an_hour() {
+        let d = |y, m, dd| days_from_civil(y, m, dd);
+        // Sydney 2026: from 5 October to 5 April (the first Sundays)
+        assert!(DstRule::Australia.in_effect(d(2026, 1, 15)) && DstRule::Australia.in_effect(d(2026, 10, 4)) && DstRule::Australia.in_effect(d(2026, 4, 4)));
+        assert!(!DstRule::Australia.in_effect(d(2026, 4, 5)) && !DstRule::Australia.in_effect(d(2026, 7, 1)) && !DstRule::Australia.in_effect(d(2026, 10, 3)));
+        assert!(DstRule::Europe.in_effect(d(2026, 3, 29)) && !DstRule::Europe.in_effect(d(2026, 3, 28)) && !DstRule::Europe.in_effect(d(2026, 10, 25)));
+        assert!(DstRule::NorthAmerica.in_effect(d(2026, 3, 8)) && !DstRule::NorthAmerica.in_effect(d(2026, 11, 1)));
+        // the same sun is an hour later on the clock: Sydney 13:00 in January is 12:00 standard time
+        let syd = Place { latitude: -33.87, longitude: 151.21, utc_hours: 10.0, dst: DstRule::None };
+        let summer = Place { dst: DstRule::Australia, ..syd };
+        let a = sun_position(syd, d(2026, 1, 15), 12.0 * 60.0);
+        let b = sun_position(summer, d(2026, 1, 15), 13.0 * 60.0);
+        assert!((a.altitude_deg - b.altitude_deg).abs() < 1e-9 && (a.azimuth_deg - b.azimuth_deg).abs() < 1e-9);
+        let (r0, _) = sunrise_sunset(syd, d(2026, 1, 15)).unwrap();
+        let (r1, _) = sunrise_sunset(summer, d(2026, 1, 15)).unwrap();
+        assert!((r1 - r0 - 60.0).abs() < 0.1, "{}", r1 - r0);
     }
 
     #[test]

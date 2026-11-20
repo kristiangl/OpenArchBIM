@@ -316,6 +316,7 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         locked(boolean("Show Edges", "settings.graphic_display.show_edges", s.graphic_display.show_edges, true), inc(TemplateProp::GraphicDisplay)),
         locked(boolean("Show Silhouettes", "settings.graphic_display.silhouettes", s.graphic_display.silhouettes, true), inc(TemplateProp::GraphicDisplay)),
         locked(boolean("Cast Shadows", "settings.graphic_display.cast_shadows", s.graphic_display.cast_shadows, true), inc(TemplateProp::GraphicDisplay)),
+        locked(boolean("Ambient Shadows", "settings.graphic_display.ambient_shadows", s.graphic_display.ambient_shadows, true), inc(TemplateProp::GraphicDisplay)),
         locked(boolean("Sketchy Lines", "settings.graphic_display.sketchy_lines", s.graphic_display.sketchy_lines, true), inc(TemplateProp::GraphicDisplay)),
     ]);
     if matches!(v.view_kind, ViewKind::Elevation | ViewKind::Section) {

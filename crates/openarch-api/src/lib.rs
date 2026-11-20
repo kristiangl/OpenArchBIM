@@ -5175,9 +5175,19 @@ mod tests {
         assert!(!r["place"]["assumed"].as_bool().unwrap());
         assert!(r["current"]["altitude"].as_f64().unwrap() < 26.0, "{}", r["current"]["altitude"]);
         assert!(s.handle("patch_project_location", &json!({ "patch": { "latitude_deg": 95.0 } })).is_err());
+        // where the sun can be dragged: the day's track and the year's at this time
+        assert!(r["track"].as_array().unwrap().len() > 50 && r["year"].as_array().unwrap().len() > 100, "{} {}", r["track"].as_array().unwrap().len(), r["year"].as_array().unwrap().len());
+        // daylight saving: Sydney's clock in January is an hour on, so 13:00 is standard noon
+        call(&mut s, "patch_project_location", json!({ "patch": { "latitude_deg": -33.87, "longitude_deg": 151.21, "time_zone_hours": 10.0, "daylight_saving": "none" } }));
+        let noon = call(&mut s, "set_sun", json!({ "view_id": v3, "patch": { "date": "2026-01-15", "time_min": 720 } }))["current"]["altitude"].as_f64().unwrap();
+        call(&mut s, "patch_project_location", json!({ "patch": { "daylight_saving": "australia" } }));
+        let one = call(&mut s, "set_sun", json!({ "view_id": v3, "patch": { "time_min": 780 } }))["current"]["altitude"].as_f64().unwrap();
+        assert!((noon - one).abs() < 1e-9, "{noon} {one}");
+        // ambient shadows switch on with the sun's other settings
+        assert_eq!(call(&mut s, "set_sun", json!({ "view_id": v3, "patch": { "ambient_shadows": true } }))["ambient_shadows"], true);
         // one undo step takes the last change back
         call(&mut s, "undo", json!({}));
-        assert_eq!(call(&mut s, "sun", json!({ "view_id": v3 }))["settings"]["mode"], "single_day");
+        assert_eq!(call(&mut s, "sun", json!({ "view_id": v3 }))["ambient_shadows"], false);
     }
 
     #[test]
