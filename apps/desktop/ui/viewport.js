@@ -31,17 +31,38 @@ const Viewport = (() => {
   };
 
   const SHADER = /* wgsl */ `
-struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32> };
+struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32>, lvp: mat4x4<f32>, sun: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
+// the sun's depth map (cast shadows): u.lvp takes a world point into it; u.sun is (ambient, sun, shadow darkness, on)
+@group(1) @binding(0) var shadowTex: texture_depth_2d;
+@group(1) @binding(1) var shadowSamp: sampler_comparison;
 
-struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) tint: f32, @location(2) col: vec4<f32>, @location(3) a: f32 };
+struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) tint: f32, @location(2) col: vec4<f32>, @location(3) a: f32, @location(4) wp: vec3<f32> };
 
 @vertex fn vs_box(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>,
                   @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>, @location(4) col: vec4<f32>) -> VOut {
   var o: VOut;
   o.pos = u.vp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
-  o.n = n; o.tint = off.w; o.col = col; o.a = 1.0 - sc.w;
+  o.n = n; o.tint = off.w; o.col = col; o.a = 1.0 - sc.w; o.wp = p * sc.xyz + off.xyz;
   return o;
+}
+// how much of the sun reaches a point: 1 lit, 0 in shadow, softened over the 3 x 3 texels round it
+fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 {
+  let c = u.lvp * vec4<f32>(wp + n * 0.03, 1.0);
+  let q = c.xyz / c.w;
+  let uv = vec2<f32>(q.x * 0.5 + 0.5, 0.5 - q.y * 0.5);
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || q.z > 1.0) { return 1.0; }
+  let t = 1.0 / 2048.0;
+  var s = 0.0;
+  for (var x = -1; x <= 1; x++) {
+    for (var y = -1; y <= 1; y++) {
+      s += textureSampleCompareLevel(shadowTex, shadowSamp, uv + vec2<f32>(f32(x), f32(y)) * t, q.z - 0.0015);
+    }
+  }
+  return s / 9.0;
+}
+@vertex fn vs_shadow(@location(0) p: vec3<f32>, @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>) -> @builtin(position) vec4<f32> {
+  return u.lvp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
 }
 @fragment fn fs_box(i: VOut) -> @location(0) vec4<f32> {
   if (u.light.w > 0.5) {
@@ -51,11 +72,18 @@ struct VOut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @loc
     if (i.tint < 0.0) { c = mix(c, vec3<f32>(0.55, 0.72, 0.86), 0.25); }
     return vec4<f32>(c, i.a);
   }
-  let l = max(dot(normalize(i.n), normalize(u.light.xyz)), 0.0);
+  let nn = normalize(i.n);
+  let l = max(dot(nn, normalize(u.light.xyz)), 0.0);
   var base = mix(vec3<f32>(0.78, 0.80, 0.83), vec3<f32>(0.85, 0.62, 0.45), clamp(i.tint, 0.0, 1.0));
   if (i.col.w > 0.5 && i.tint < 0.99) { base = i.col.rgb; } // material colour unless selected
   if (i.tint < 0.0) { base = vec3<f32>(0.55, 0.72, 0.86); } // glass
-  return vec4<f32>(base * (0.38 + 0.62 * l), i.a);
+  var k = u.sun.x + u.sun.y * l;
+  if (u.sun.w > 0.5) {
+    // a face turned from the sun has only the ambient light already: a cast shadow darkens what the sun reaches
+    let vis = select(shadowAt(i.wp, nn), 1.0, l <= 0.0);
+    k = mix(k * (1.0 - u.sun.z), k, vis);
+  }
+  return vec4<f32>(base * k, i.a);
 }
 
 struct LOut { @builtin(position) pos: vec4<f32>, @location(0) c: vec3<f32> };
@@ -76,17 +104,27 @@ struct EOut { @builtin(position) pos: vec4<f32>, @location(0) tint: f32 };
 `;
 
   // The same shading in GLSL ES 3.00, for WebGL2
-  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge;";
+  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge; uniform mat4 lvp; uniform vec4 sun;";
   const GL_BOX_VS = `#version 300 es
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 1) in vec3 n;
 layout(location = 2) in vec4 off; layout(location = 3) in vec4 sc; layout(location = 4) in vec4 col;
-out vec3 vn; out float vtint; out vec4 vcol; out float va;
-void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); vn = n; vtint = off.w; vcol = col; va = 1.0 - sc.w; }`;
+out vec3 vn; out float vtint; out vec4 vcol; out float va; out vec3 vwp;
+void main() { vwp = p * sc.xyz + off.xyz; gl_Position = vp * vec4(vwp, 1.0); vn = n; vtint = off.w; vcol = col; va = 1.0 - sc.w; }`;
   const GL_BOX_FS = `#version 300 es
 precision highp float;
 ${GL_UNIFORMS}
-in vec3 vn; in float vtint; in vec4 vcol; in float va; out vec4 o;
+uniform highp sampler2DShadow shadowMap;
+in vec3 vn; in float vtint; in vec4 vcol; in float va; in vec3 vwp; out vec4 o;
+float shadowAt(vec3 wp, vec3 n) {
+  vec4 c = lvp * vec4(wp + n * 0.03, 1.0);
+  vec3 q = c.xyz / c.w;
+  vec2 uv = q.xy * 0.5 + 0.5;
+  if (uv.x < 0.0 || uv.x > 1.0 || uv.y < 0.0 || uv.y > 1.0 || q.z > 1.0) return 1.0;
+  float t = 1.0 / 2048.0, s = 0.0;
+  for (int x = -1; x <= 1; x++) for (int y = -1; y <= 1; y++) s += texture(shadowMap, vec3(uv + vec2(float(x), float(y)) * t, q.z - 0.0015));
+  return s / 9.0;
+}
 void main() {
   if (light.w > 0.5) {
     vec3 c = bg.rgb;
@@ -94,12 +132,24 @@ void main() {
     if (vtint < 0.0) c = mix(c, vec3(0.55, 0.72, 0.86), 0.25);
     o = vec4(c, va); return;
   }
-  float l = max(dot(normalize(vn), normalize(light.xyz)), 0.0);
+  vec3 nn = normalize(vn);
+  float l = max(dot(nn, normalize(light.xyz)), 0.0);
   vec3 base = mix(vec3(0.78, 0.80, 0.83), vec3(0.85, 0.62, 0.45), clamp(vtint, 0.0, 1.0));
   if (vcol.w > 0.5 && vtint < 0.99) base = vcol.rgb;
   if (vtint < 0.0) base = vec3(0.55, 0.72, 0.86);
-  o = vec4(base * (0.38 + 0.62 * l), va);
+  float k = sun.x + sun.y * l;
+  if (sun.w > 0.5) { float vis = l <= 0.0 ? 1.0 : shadowAt(vwp, nn); k = mix(k * (1.0 - sun.z), k, vis); }
+  o = vec4(base * k, va);
 }`;
+  // the sun's depth map: depth only
+  const GL_SHADOW_VS = `#version 300 es
+uniform mat4 vp;
+layout(location = 0) in vec3 p; layout(location = 2) in vec4 off; layout(location = 3) in vec4 sc;
+void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); }`;
+  const GL_SHADOW_FS = `#version 300 es
+precision highp float;
+out vec4 o;
+void main() { o = vec4(1.0); }`;
   const GL_LINE_VS = `#version 300 es
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 1) in vec3 c; out vec3 vc;
@@ -296,10 +346,20 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const info = adapter.info || {};
 
     const module = device.createShaderModule({ code: SHADER });
-    const ubuf = device.createBuffer({ size: 112, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const ubuf = device.createBuffer({ size: 192, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} }] });
     const bind = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: ubuf } }] });
-    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
+    // the sun's depth map, drawn first when shadows are on and read by the shaded surfaces
+    const SHADOW = 2048;
+    const shadowTex = device.createTexture({ size: [SHADOW, SHADOW], format: "depth32float", usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.TEXTURE_BINDING });
+    const shadowView = shadowTex.createView();
+    const bgl1 = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: "comparison" } },
+    ] });
+    const bind1 = device.createBindGroup({ layout: bgl1, entries: [{ binding: 0, resource: shadowView }, { binding: 1, resource: device.createSampler({ compare: "less-equal" }) }] });
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl, bgl1] });
+    const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const depthFormat = "depth24plus";
     const boxBuffers = [
       { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x3" }] },
@@ -325,6 +385,15 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       fragment: { module, entryPoint: "fs_box", targets: [{ format, blend }] },
       primitive: { topology: "triangle-list", cullMode: "back" },
       depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "less", depthBias: 4, depthBiasSlopeScale: 2 },
+    });
+    const shadowPipe = device.createRenderPipeline({
+      layout: shadowLayout,
+      vertex: { module, entryPoint: "vs_shadow", buffers: [
+        { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
+        { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }] },
+      ] },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less", depthBias: 2, depthBiasSlopeScale: 2 },
     });
     const edgeBuffers = [
       { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
@@ -375,12 +444,19 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       render(f) {
         device.queue.writeBuffer(ubuf, 0, f.uniforms);
         const enc = device.createCommandEncoder();
+        // cast shadows: the opaque surfaces as the sun sees them
+        if (f.shadow) {
+          const sp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: shadowView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
+          sp.setPipeline(shadowPipe); sp.setBindGroup(0, bind);
+          for (const g of f.meshes) { if (g.alpha < 0.999) continue; sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
+          sp.end();
+        }
         const tex = ctx.getCurrentTexture();
         const pass = enc.beginRenderPass({
           colorAttachments: [{ view: tex.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: f.clear[0], g: f.clear[1], b: f.clear[2], a: 1 } }],
           depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
         });
-        pass.setBindGroup(0, bind);
+        pass.setBindGroup(0, bind); pass.setBindGroup(1, bind1);
         const n = clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
         if (n) { device.queue.writeBuffer(gridBuf, 0, clipped, 0, n * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, gridBuf); pass.draw(n); }
         // lines given with setLines (imported CAD drawings), cut to the view like the grid
@@ -400,6 +476,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           if (f.lineMode !== 2) {
             pass.setPipeline(f.lineMode === 1 ? boxBiasPipe : boxPipe);
             for (const g of f.meshes) { if (g.alpha < 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            // the ground plane that catches shadows
+            if (f.ground) { pass.setVertexBuffer(0, f.ground.vbuf); pass.setVertexBuffer(1, f.ground.ibuf); pass.draw(f.ground.count, 1); }
             pass.setPipeline(boxSeePipe);
             for (const g of f.meshes) { if (g.alpha >= 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
           }
@@ -449,9 +527,23 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       gl.attachShader(p, compile(gl.VERTEX_SHADER, vs)); gl.attachShader(p, compile(gl.FRAGMENT_SHADER, fs));
       gl.linkProgram(p);
       if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("WebGL2 program: " + gl.getProgramInfoLog(p));
-      return { p, vp: gl.getUniformLocation(p, "vp"), light: gl.getUniformLocation(p, "light"), bg: gl.getUniformLocation(p, "bg"), edge: gl.getUniformLocation(p, "edge") };
+      const at = (n) => gl.getUniformLocation(p, n);
+      return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap") };
     };
-    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS);
+    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS);
+    // the sun's depth map
+    const SHADOW = 2048;
+    const shadowTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, shadowTex);
+    gl.texStorage2D(gl.TEXTURE_2D, 1, gl.DEPTH_COMPONENT24, SHADOW, SHADOW);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_MODE, gl.COMPARE_REF_TO_TEXTURE); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_COMPARE_FUNC, gl.LEQUAL);
+    const shadowFbo = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.DEPTH_ATTACHMENT, gl.TEXTURE_2D, shadowTex, 0);
+    gl.drawBuffers([gl.NONE]); gl.readBuffer(gl.NONE);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     const buf = (data) => { const b = gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER, b); gl.bufferData(gl.ARRAY_BUFFER, data, gl.STATIC_DRAW); return b; };
     const st = STATIC();
     // a vertex array per shape of input: positions with normals (or colours), positions only, plus instance data
@@ -489,6 +581,19 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       instance(g, inst) { gl.bindBuffer(gl.ARRAY_BUFFER, g.ibuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst); },
       render(f) {
         const t0 = performance.now();
+        const toGL = (m) => { const o = new Float32Array(m); for (let c = 0; c < 4; c++) o[c * 4 + 2] = 2 * o[c * 4 + 2] - o[c * 4 + 3]; return o; };
+        // cast shadows: the opaque surfaces as the sun sees them
+        if (f.shadow) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, shadowFbo);
+          gl.viewport(0, 0, SHADOW, SHADOW);
+          gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS); gl.depthMask(true);
+          gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
+          gl.disable(gl.CULL_FACE); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 2);
+          gl.useProgram(shadowProg.p); gl.uniformMatrix4fv(shadowProg.vp, false, toGL(f.uniforms.subarray(28, 44)));
+          for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          gl.disable(gl.POLYGON_OFFSET_FILL);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        }
         gl.viewport(0, 0, lastW || canvas.width, lastH || canvas.height);
         gl.clearColor(f.clear[0], f.clear[1], f.clear[2], 1); gl.clearDepth(1);
         gl.depthMask(true);
@@ -502,6 +607,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           if (pr.light) gl.uniform4fv(pr.light, f.uniforms.subarray(16, 20));
           if (pr.bg) gl.uniform4fv(pr.bg, f.uniforms.subarray(20, 24));
           if (pr.edge) gl.uniform4fv(pr.edge, f.uniforms.subarray(24, 28));
+          if (pr.lvp) gl.uniformMatrix4fv(pr.lvp, false, f.uniforms.subarray(28, 44));
+          if (pr.sun) gl.uniform4fv(pr.sun, f.uniforms.subarray(44, 48));
+          if (pr.shadowMap) { gl.activeTexture(gl.TEXTURE0); gl.bindTexture(gl.TEXTURE_2D, shadowTex); gl.uniform1i(pr.shadowMap, 0); }
         };
         gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
         gl.disable(gl.CULL_FACE); gl.disable(gl.POLYGON_OFFSET_FILL);
@@ -528,6 +636,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
             use(boxProg);
             if (f.lineMode === 1) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); }
             for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            // the ground plane that catches shadows
+            if (f.ground) { gl.bindVertexArray(f.ground.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, f.ground.count, 1); }
             // see-through surfaces after the rest, blended, leaving depth alone
             gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
             gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
@@ -590,7 +700,35 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       }
     }
 
-    let extraLines = null;
+    let extraLines = null, sunLines = null, allLines = null;
+    // the view's sun (setSun): { dir (toward the sun, or null), relative: { az, alt } (lighting over the viewer's
+    // shoulder), intensity, ambient (0..100), shadows, shadowStrength (0..1), groundZ (metres) }
+    let sun = null, ground = null, groundKey = "";
+    let sceneLo = [0, 0, 0], sceneHi = [0, 0, 0];
+    const groundMesh = (z, c, R, colour) => {
+      const key = `${z}|${c[0]}|${c[1]}|${R}|${colour}`;
+      if (key === groundKey && ground) return ground;
+      if (ground) be.free(ground);
+      const [x0, x1, y0, y1] = [c[0] - R, c[0] + R, c[1] - R, c[1] + R];
+      const v = new Float32Array([x0, y0, z, 0, 0, 1, x1, y0, z, 0, 0, 1, x1, y1, z, 0, 0, 1, x0, y0, z, 0, 0, 1, x1, y1, z, 0, 0, 1, x0, y1, z, 0, 0, 1]);
+      ground = be.mesh(v, new Float32Array(0));
+      be.instance(ground, new Float32Array([0, 0, 0, 0, 1, 1, 1, 0, ...colour, 1]));
+      ground.alpha = 1;
+      groundKey = key;
+      return ground;
+    };
+    // an orthographic box along the sun round the model, WebGPU depth 0..1
+    function sunMatrix(L) {
+      const c = [0, 1, 2].map((k) => (sceneLo[k] + sceneHi[k]) / 2);
+      const R = Math.max(1, Math.hypot(sceneHi[0] - sceneLo[0], sceneHi[1] - sceneLo[1], sceneHi[2] - sceneLo[2]) / 2 * 1.05);
+      const eye = [c[0] + L[0] * R * 2, c[1] + L[1] * R * 2, c[2] + L[2] * R * 2];
+      const up = Math.abs(L[2]) > 0.99 ? [0, 1, 0] : [0, 0, 1];
+      // shadows reach the ground far off when the sun is low: the box runs on past the model to there
+      const near = R * 0.5, far = R * 3 + (sceneHi[2] - Math.min(sceneLo[2], sun.groundZ)) / Math.max(L[2], 0.05) + R;
+      const o = new Float32Array(16);
+      o[0] = 1 / R; o[5] = 1 / R; o[10] = -1 / (far - near); o[14] = -near / (far - near); o[15] = 1;
+      return mat.mul(o, mat.lookAt(eye, c, up));
+    }
     function frame(now) {
       requestAnimationFrame(frame);
       if (stress) { cam.az += 0.0025; dirty = true; }
@@ -606,9 +744,31 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const dark = matchMedia("(prefers-color-scheme: dark)").matches;
       const page = dark ? [0.12, 0.14, 0.16] : [0.98, 0.98, 0.99];
       const lineMode = !stress && style === "hidden_line" ? 1 : !stress && style === "wireframe" ? 2 : 0;
-      const u = new Float32Array(28); u.set(vp, 0); u.set([0.4, -0.5, 0.8, lineMode === 1 ? 1 : 0], 16); u.set([...page, 1], 20);
+      // the light: the view's sun, over the viewer's shoulder, or (no sun given) a fixed one
+      let L = [0.4, -0.5, 0.8], amb = 0.38, dif = 0.62, shadow = false;
+      if (sun && !stress) {
+        if (sun.dir) L = sun.dir;
+        else {
+          const a = sun.relative || { az: 135, alt: 35 }, ang = cam.az - ((a.az - 90) * Math.PI) / 180, al = (a.alt * Math.PI) / 180;
+          L = [Math.cos(al) * Math.cos(ang), Math.cos(al) * Math.sin(ang), Math.sin(al)];
+        }
+        amb = 0.18 + (sun.ambient / 100) * 0.8; dif = (sun.intensity / 100) * 1.24;
+        // the sun below the horizon: no sunlight and no shadows, an even light to work by
+        if (L[2] <= 0) { dif = 0; amb = Math.max(amb, 0.6); }
+        shadow = !!sun.shadows && lineMode === 0 && L[2] > 0.02 && meshes.length > 0;
+      }
+      const u = new Float32Array(48); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, 1], 20);
       u.set(dark ? [0.88, 0.9, 0.92, 1] : [0.08, 0.09, 0.1, 1], 24);
-      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g), lines: extraLines });
+      if (shadow) u.set(sunMatrix(L), 28);
+      u.set([amb, dif, sun ? sun.shadowStrength ?? 0.5 : 0.5, shadow ? 1 : 0], 44);
+      let gnd = null;
+      if (shadow) {
+        const c = [(sceneLo[0] + sceneHi[0]) / 2, (sceneLo[1] + sceneHi[1]) / 2];
+        const R = Math.max(30, Math.hypot(sceneHi[0] - sceneLo[0], sceneHi[1] - sceneLo[1]) * 3);
+        gnd = groundMesh(sun.groundZ - 0.003, c, Math.round(R), dark ? [0.2, 0.22, 0.24] : [0.93, 0.93, 0.91]);
+      }
+      if (!allLines) allLines = extraLines && sunLines ? (() => { const a = new Float32Array(extraLines.length + sunLines.length); a.set(extraLines); a.set(sunLines, extraLines.length); return a; })() : extraLines || sunLines;
+      be.render({ uniforms: u, clear: page, stress, lineMode, meshes: meshes.map((m) => m.g), lines: allLines, shadow, ground: gnd });
       if (afterRender) afterRender();
     }
 
@@ -784,7 +944,13 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         dirty = true;
       },
       /** Lines drawn with the model, hidden where it covers them: a Float32Array of x y z r g b for each end (metres, colours 0 to 1), or null. */
-      setLines(a) { extraLines = a && a.length ? a : null; dirty = true; },
+      setLines(a) { extraLines = a && a.length ? a : null; allLines = null; dirty = true; },
+      /** The sun path diagram's lines (x y z r g b for each end, metres), or null. */
+      setSunLines(a) { sunLines = a && a.length ? a : null; allLines = null; dirty = true; },
+      /** The view's sun, or null for the fixed light: see `sun` above. */
+      setSun(s) { sun = s; dirty = true; },
+      /** The model's bounding box, metres: [lo, hi]. */
+      bounds() { return [sceneLo.slice(), sceneHi.slice()]; },
       /** Replace the displayed model meshes: [{ id, kind, verts: [x y z nx ny nz ...] }]. */
       setMeshes(list, selected = []) {
         for (const m of meshes) be.free(m.g);
@@ -800,6 +966,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           writeTint(out, sel.has(m.id));
           return out;
         });
+        sceneLo = [Infinity, Infinity, Infinity]; sceneHi = [-Infinity, -Infinity, -Infinity];
+        for (const m of meshes) for (let k = 0; k < 3; k++) { sceneLo[k] = Math.min(sceneLo[k], m.bounds[0][k]); sceneHi[k] = Math.max(sceneHi[k], m.bounds[1][k]); }
+        if (!isFinite(sceneLo[0])) { sceneLo = [0, 0, 0]; sceneHi = [0, 0, 0]; }
         dirty = true;
       },
       /** How the surfaces are drawn: shaded (also used for Consistent Colours and Realistic for now), hidden_line or wireframe. */

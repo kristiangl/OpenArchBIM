@@ -51,6 +51,9 @@ pub struct ProjectLocation {
     pub latitude_deg: Option<f64>,
     #[serde(default)]
     pub longitude_deg: Option<f64>,
+    /// Hours from UTC (Perth +8); none: the nearest hour to the longitude's solar time (sun.rs).
+    #[serde(default)]
+    pub time_zone_hours: Option<f64>,
 }
 
 fn yes_() -> bool {
@@ -70,6 +73,7 @@ impl Default for ProjectLocation {
             site_name: String::new(),
             latitude_deg: None,
             longitude_deg: None,
+            time_zone_hours: None,
         }
     }
 }
@@ -657,6 +661,7 @@ impl Document {
         if n == loc {
             return Ok(());
         }
+        check_place(&n)?;
         self.transact("Change project location", |tx| tx.update(id, Element::ProjectLocation(n)))
     }
 
@@ -712,6 +717,7 @@ impl Document {
         if n == loc {
             return Ok(());
         }
+        check_place(&n)?;
         self.transact("Change project location", |tx| tx.update(id, Element::ProjectLocation(n)))
     }
 
@@ -2307,4 +2313,18 @@ mod tests {
         assert!(d.views().iter().filter(|(_, v)| v.view_kind.is_plan()).all(|(_, v)| v.view_type.is_some()));
     }
 
+}
+
+/// A location's latitude, longitude and time zone must be on the earth.
+fn check_place(l: &ProjectLocation) -> Result<(), String> {
+    if l.latitude_deg.is_some_and(|v| !(-90.0..=90.0).contains(&v)) {
+        return Err("Latitude is between -90 (south) and 90 (north).".into());
+    }
+    if l.longitude_deg.is_some_and(|v| !(-180.0..=180.0).contains(&v)) {
+        return Err("Longitude is between -180 (west) and 180 (east).".into());
+    }
+    if l.time_zone_hours.is_some_and(|v| !(-12.0..=14.0).contains(&v)) {
+        return Err("The time zone is between UTC-12 and UTC+14.".into());
+    }
+    Ok(())
 }

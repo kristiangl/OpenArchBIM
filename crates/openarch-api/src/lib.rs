@@ -29,6 +29,7 @@ mod tags;
 mod ceilings;
 mod phasing;
 mod designopt;
+mod sun;
 mod topo;
 mod propline;
 mod cad;
@@ -298,6 +299,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_design_options(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_sun(method, p) {
             return r;
         }
         if let Some(r) = self.handle_structural(method, p) {
@@ -5142,6 +5146,38 @@ mod tests {
         let f = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 5000], "end": [6000, 5000], "flipped": true }))["id"].as_u64().unwrap();
         call(&mut s, "flip_walls", json!({ "ids": [f] }));
         assert!(s.handle("flip_instances", &json!({ "ids": [w] })).is_err(), "walls are not doors");
+    }
+
+    #[test]
+    fn a_3d_views_sun_moments_studies_and_location() {
+        let (mut s, _lvl, _wt, _view) = setup();
+        let v3 = call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+        // a new view: lighting relative to the view, no frames, Perth assumed
+        let r = call(&mut s, "sun", json!({ "view_id": v3 }));
+        assert_eq!(r["settings"]["mode"], "lighting");
+        assert!(r["place"]["assumed"].as_bool().unwrap() && r["frames"].as_array().unwrap().is_empty());
+        // a moment: winter noon in Perth, the sun low in the north
+        let r = call(&mut s, "set_sun", json!({ "view_id": v3, "patch": { "mode": "still", "date": "2026-06-21", "time_min": 720, "sun_path": true, "cast_shadows": true } }));
+        let alt = r["current"]["altitude"].as_f64().unwrap();
+        assert!((alt - 34.5).abs() < 1.0, "{alt}");
+        assert!(r["current"]["dir"][1].as_f64().unwrap() > 0.7, "north is up the plan: {}", r["current"]["dir"]);
+        assert!(r["path"]["ring"].as_array().unwrap().len() > 90 && r["cast_shadows"] == true);
+        // a study: hourly from 9 to 3, stepped
+        let r = call(&mut s, "set_sun", json!({ "view_id": v3, "patch": { "mode": "single_day", "frame": 3 } }));
+        assert_eq!((r["frames"].as_array().unwrap().len(), r["frame"].as_u64()), (7, Some(3)));
+        assert!(r["current"]["label"].as_str().unwrap().ends_with("12:00"));
+        // bad settings are refused
+        assert!(s.handle("set_sun", &json!({ "view_id": v3, "patch": { "interval_min": 20 } })).is_err());
+        assert!(s.handle("set_sun", &json!({ "view_id": v3, "patch": { "date": "2026-02-30" } })).is_err());
+        // the project's location: Hobart (UTC+10), the sun lower at winter noon
+        call(&mut s, "patch_project_location", json!({ "patch": { "latitude_deg": -42.88, "longitude_deg": 147.33, "time_zone_hours": 10.0 } }));
+        let r = call(&mut s, "set_sun", json!({ "view_id": v3, "patch": { "mode": "still" } }));
+        assert!(!r["place"]["assumed"].as_bool().unwrap());
+        assert!(r["current"]["altitude"].as_f64().unwrap() < 26.0, "{}", r["current"]["altitude"]);
+        assert!(s.handle("patch_project_location", &json!({ "patch": { "latitude_deg": 95.0 } })).is_err());
+        // one undo step takes the last change back
+        call(&mut s, "undo", json!({}));
+        assert_eq!(call(&mut s, "sun", json!({ "view_id": v3 }))["settings"]["mode"], "single_day");
     }
 
     #[test]

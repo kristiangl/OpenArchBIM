@@ -99,6 +99,8 @@
         <canvas id="sheet"></canvas>
         <canvas id="viewport"></canvas>
         <canvas id="vp-over"></canvas>
+        <canvas id="vp-sun"></canvas>
+        <div id="sun-bar" hidden></div>
         <div id="activation-bar" hidden><span></span><button type="button">Deactivate View</button></div>
         <div id="schedule-view"></div>
         <div id="gpu-msg" hidden></div>
@@ -112,8 +114,9 @@
         <label>Detail <select id="vb-detail"></select></label>
         <label>Style <select id="vb-style"></select></label>
         <button id="vb-thin" title="Thin Lines: draw every line one pixel wide">Thin Lines</button>
-        <button disabled>Sun Path</button>
-        <button disabled>Shadows</button>
+        <button id="vb-sunpath" disabled title="Sun Path: the sun's paths across the sky round the model (3D views)">Sun Path</button>
+        <button id="vb-shadows" disabled title="Cast Shadows from the view's sun (3D views)">Shadows</button>
+        <button id="vb-sunset" disabled title="Sun Settings: lighting, a moment, or a solar study, and the project's location">Sun…</button>
         <button disabled>Crop</button>
         <button id="vb-temp" disabled title="Temporary Hide/Isolate: hide or isolate the selection for now">Temporary Hide/Isolate</button>
         <button id="vb-reveal" disabled title="Reveal Hidden Elements (RH)">Reveal Hidden</button>
@@ -204,6 +207,7 @@
 <script src="filters.js"></script>
 <script src="phases.js"></script>
 <script src="designopts.js"></script>
+<script src="sunview.js"></script>
 <script src="templates.js"></script>
 </body>
 </html>

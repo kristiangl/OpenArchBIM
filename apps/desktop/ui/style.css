@@ -713,3 +713,13 @@ button.gp-assoc.on { background: var(--accent-soft); border-color: var(--accent)
 .opt-set.picked, .opt-option.picked { background: var(--accent); color: #fff; }
 .opt-buttons { display: flex; flex-direction: column; gap: 3px; width: 140px; }
 .opt-head { font-weight: 600; margin-top: 6px; }
+/* the sun of 3D views: labels over the view, the sun bar, Sun Settings */
+#vp-sun { position: absolute; inset: 0; pointer-events: none; display: none; }
+#viewport-wrap.v-3d > #vp-sun.on { display: block; }
+#sun-bar { position: absolute; top: 8px; left: 8px; z-index: 3; display: flex; align-items: center; gap: 6px; flex-wrap: wrap; max-width: calc(100% - 16px); padding: 4px 8px; background: var(--panel); border: 1px solid var(--line); border-radius: 4px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.15); }
+#sun-bar[hidden] { display: none; }
+#sun-bar input[type=range] { width: 160px; }
+#sun-bar .sun-time { font-variant-numeric: tabular-nums; min-width: 40px; text-align: center; }
+#sun-bar .sun-where { color: var(--muted); }
+.sun-dlg .row { display: flex; align-items: center; gap: 8px; margin: 3px 0; }
+.sun-dlg .row > label:first-child { width: 190px; }

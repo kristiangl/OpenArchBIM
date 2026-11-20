@@ -1276,6 +1276,8 @@ async function ensurePlan(what) {
 
 async function refreshView(force) {
   const k = app.view.kind;
+  // a study playing in one view stops when another is shown
+  if (k !== "3d") { SunUI.stop(); SunUI.load(); }
   if (k === "plan") {
     const data = await run("plan", { view_id: app.view.viewId });
     if (data) { Plan.setData(data); if (force) Plan.fit(); await refreshTempDims(); }
@@ -1299,6 +1301,8 @@ async function refreshView(force) {
       if (force) app.vp.fit();
     }
     app.vp.setStyle(app.sceneStyle || "shaded");
+    // the view's sun: its light, shadows and sun path
+    await SunUI.load();
     app.vp.poke();
   } else if (k === "schedule") {
     if (app.view.viewId != null) await Sched.render(app.view.viewId);
@@ -1413,6 +1417,10 @@ function syncViewBar() {
     sc.onchange = send("settings", () => ({ scale: Number(sc.value), custom_scale: false }));
     dl.onchange = send("settings", () => ({ detail_level: dl.value }));
     st.onchange = send("settings", () => ({ visual_style: st.value }));
+    // the sun of a 3D view (sunview.js)
+    $("#vb-sunpath").onclick = async () => { const r = await SunUI.set({ sun_path: !$("#vb-sunpath").classList.contains("on") }); if (r) { renderProperties(); if (r.sun_path && r.settings.mode === "lighting") setPrompt("The sun path shows for a moment or a study: choose one in Sun Settings (Sun… on the view bar)."); } };
+    $("#vb-shadows").onclick = async () => { if (await SunUI.set({ cast_shadows: !$("#vb-shadows").classList.contains("on") })) renderProperties(); };
+    $("#vb-sunset").onclick = () => SunUI.open();
     const tl = $("#vb-thin");
     // Thin Lines is one setting for every view: the open one draws again
     tl.onclick = () => {
@@ -3898,7 +3906,7 @@ async function initViewport() {
     });
     vp.onMenu((x, y) => showMenu(x, y, [...selectionMenuItems(), { label: "Mouse Buttons...", run: () => mouseButtonsDialog(vp) }]));
     // what is drawn over the view follows the camera
-    vp.onRender(() => { if (ed3 || grips3.length) draw3DEdit(); });
+    vp.onRender(() => { if (ed3 || grips3.length) draw3DEdit(); SunUI.draw(); });
     pill.textContent = `GPU: ${vp.info}`;
     pill.classList.add("ok");
     const btn = $("#stress");

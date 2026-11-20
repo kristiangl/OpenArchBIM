@@ -471,6 +471,8 @@ pub struct GraphicDisplay {
     pub sun_intensity: u8,
     pub ambient_intensity: u8,
     pub background: Background,
+    /// The sun: lighting relative to the view, a moment, or a study (sun.rs).
+    pub sun: crate::sun::SunSettings,
 }
 
 impl Default for GraphicDisplay {
@@ -493,6 +495,7 @@ impl Default for GraphicDisplay {
             sun_intensity: 50,
             ambient_intensity: 25,
             background: Background::default(),
+            sun: crate::sun::SunSettings::default(),
         }
     }
 }
