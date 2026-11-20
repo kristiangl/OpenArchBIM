@@ -180,6 +180,7 @@ const COMMANDS = {
   "m-styles": () => openObjectStyles(),
   "m-phases": () => Phases.open(),
   "m-options": () => DesignOpts.open(),
+  "m-warnings": () => Warnings.open(),
   "m-addset": () => DesignOpts.addToSet(),
   "m-pickedit": () => DesignOpts.pickToEdit(),
   demolish: () => Phases.demolish(),

@@ -30,6 +30,7 @@ mod ceilings;
 mod phasing;
 mod designopt;
 mod sun;
+mod warnings;
 mod topo;
 mod propline;
 mod cad;
@@ -302,6 +303,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_sun(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_warnings(method, p) {
             return r;
         }
         if let Some(r) = self.handle_structural(method, p) {
@@ -3286,7 +3290,7 @@ impl Session {
         }
         json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style),
             // the Graphic Display Options the 3D view draws (shadows and the sun come with `sun`)
-            "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "transparency": s.graphic_display.transparency })) })
+            "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "transparency": s.graphic_display.transparency, "background": s.graphic_display.background })) })
     }
 
     /// A member of a group (at any depth) outside Edit Group: only the values that vary by group instance
@@ -4489,6 +4493,13 @@ mod tests {
         // while both stand it does
         s.doc.set_element_phases(&[old], None, Some(None)).unwrap();
         assert!(s.doc.wall_overlap(new).is_some());
+        // Review Warnings lists each overlapping pair once, with both walls
+        let w = call(&mut s, "review_warnings", json!({}));
+        let pairs: Vec<Vec<u64>> = w["warnings"].as_array().unwrap().iter().filter(|x| x["message"].as_str().unwrap().contains("overlap")).map(|x| x["ids"].as_array().unwrap().iter().map(|i| i.as_u64().unwrap()).collect()).collect();
+        assert!(pairs.iter().any(|p| p.contains(&old) && p.contains(&new)), "{w}");
+        assert_eq!(pairs.iter().filter(|p| p.contains(&old) && p.contains(&new)).count(), 1);
+        assert_eq!(pairs.len(), 3, "the rectangle's side, the two arcs, and these: {w}");
+        assert!(w["warnings"][0]["labels"][0].as_str().unwrap().starts_with("Wall: "));
     }
 
     #[test]

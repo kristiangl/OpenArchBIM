@@ -167,6 +167,16 @@ fn viewAt(px: vec2<i32>) -> vec4<f32> {
   let ao = pow(clamp(1.0 - u.ao.y * R * occ / 16.0, 0.0, 1.0), 1.5);
   return vec4<f32>(ao, ao, ao, 1.0);
 }
+// the view's Background (Graphic Display Options): u.screen.z is where the horizon is (NDC y), u.screen.w 1 Sky, 2 Gradient
+@fragment fn fs_bg(@builtin(position) fc: vec4<f32>) -> @location(0) vec4<f32> {
+  let d = 1.0 - fc.y / u.screen.y * 2.0 - u.screen.z;
+  if (u.screen.w > 1.5) {
+    if (d >= 0.0) { return vec4<f32>(mix(vec3<f32>(0.97, 0.97, 0.97), vec3<f32>(0.55, 0.70, 0.88), clamp(d * 0.8, 0.0, 1.0)), 1.0); }
+    return vec4<f32>(mix(vec3<f32>(0.97, 0.97, 0.97), vec3<f32>(0.60, 0.60, 0.60), clamp(-d * 1.5, 0.0, 1.0)), 1.0);
+  }
+  if (d >= 0.0) { return vec4<f32>(mix(vec3<f32>(0.86, 0.91, 0.96), vec3<f32>(0.33, 0.56, 0.85), pow(clamp(d * 0.7, 0.0, 1.0), 0.7)), 1.0); }
+  return vec4<f32>(mix(vec3<f32>(0.80, 0.82, 0.80), vec3<f32>(0.55, 0.57, 0.50), clamp(-d * 2.0, 0.0, 1.0)), 1.0);
+}
 `;
 
   // The same shading in GLSL ES 3.00, for WebGL2
@@ -226,6 +236,19 @@ precision highp float;
 out vec4 o;
 void main() { o = vec4(1.0); }`;
   // ambient shadows over the frame (see AO_SHADER)
+  const GL_BG_FS = `#version 300 es
+precision highp float;
+${GL_UNIFORMS}
+out vec4 o;
+void main() {
+  float d = 1.0 - gl_FragCoord.y / screen.y * 2.0;
+  d = -d - screen.z;
+  if (screen.w > 1.5) {
+    o = d >= 0.0 ? vec4(mix(vec3(0.97), vec3(0.55, 0.70, 0.88), clamp(d * 0.8, 0.0, 1.0)), 1.0) : vec4(mix(vec3(0.97), vec3(0.60), clamp(-d * 1.5, 0.0, 1.0)), 1.0);
+  } else {
+    o = d >= 0.0 ? vec4(mix(vec3(0.86, 0.91, 0.96), vec3(0.33, 0.56, 0.85), pow(clamp(d * 0.7, 0.0, 1.0), 0.7)), 1.0) : vec4(mix(vec3(0.80, 0.82, 0.80), vec3(0.55, 0.57, 0.50), clamp(-d * 2.0, 0.0, 1.0)), 1.0);
+  }
+}`;
   const GL_AO_VS = `#version 300 es
 void main() { vec2 p = vec2(gl_VertexID == 1 ? 3.0 : -1.0, gl_VertexID == 2 ? 3.0 : -1.0); gl_Position = vec4(p, 0.0, 1.0); }`;
   const GL_AO_FS = `#version 300 es
@@ -528,6 +551,14 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       fragment: { module: aoModule, entryPoint: "fs_ao", targets: [{ format, blend: { color: { srcFactor: "zero", dstFactor: "src" }, alpha: { srcFactor: "zero", dstFactor: "one" } } }] },
       primitive: { topology: "triangle-list" },
     });
+    // the background: drawn first, behind everything, leaving depth alone
+    const bgPipe = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [bgl] }),
+      vertex: { module: aoModule, entryPoint: "vs_full" },
+      fragment: { module: aoModule, entryPoint: "fs_bg", targets: [{ format }] },
+      primitive: { topology: "triangle-list" },
+      depthStencil: { format: depthFormat, depthWriteEnabled: false, depthCompare: "always" },
+    });
     const edgeBuffers = [
       { arrayStride: 12, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
       { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }] },
@@ -607,6 +638,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           colorAttachments: [{ view: tex.createView(), loadOp: "clear", storeOp: "store", clearValue: { r: f.clear[0], g: f.clear[1], b: f.clear[2], a: 1 } }],
           depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
         });
+        if (f.background && !f.stress) { pass.setPipeline(bgPipe); pass.setBindGroup(0, bind); pass.draw(3); }
         pass.setBindGroup(0, bind); pass.setBindGroup(1, bind1);
         const n = clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
         if (n) { device.queue.writeBuffer(gridBuf, 0, clipped, 0, n * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, gridBuf); pass.draw(n); }
@@ -686,7 +718,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const at = (n) => gl.getUniformLocation(p, n);
       return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap"), glassMap: at("glassMap"), ao: at("ao"), proj: at("proj"), screen: at("screen"), depthMap: at("depthMap") };
     };
-    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS), aoProg = program(GL_AO_VS, GL_AO_FS);
+    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS), aoProg = program(GL_AO_VS, GL_AO_FS), bgProg = program(GL_AO_VS, GL_BG_FS);
     // the sun's depth map
     const SHADOW = 2048;
     const shadowTex = gl.createTexture();
@@ -804,6 +836,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           if (pr.proj) gl.uniform4fv(pr.proj, f.uniforms.subarray(52, 56));
           if (pr.screen) gl.uniform4fv(pr.screen, f.uniforms.subarray(56, 60));
         };
+        if (f.background && !f.stress) { use(bgProg); gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3); }
         gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
         gl.disable(gl.CULL_FACE); gl.disable(gl.POLYGON_OFFSET_FILL);
         use(lineProg);
@@ -970,7 +1003,17 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       u.set([amb, dif, sun ? sun.shadowStrength ?? 0.5 : 0.5, shadow ? 1 : 0], 44);
       // ambient shadows: strength and reach, and what turns a depth back into a distance
       const near = 0.1, far = 4000, th = Math.tan(0.45);
-      u.set([ao ? 1 : 0, 1.3, 0.6, 0], 48); u.set([far / (near - far), (near * far) / (near - far), th * aspect, th], 52); u.set([canvas.width, canvas.height, 0, 0], 56);
+      u.set([ao ? 1 : 0, 1.3, 0.6, 0], 48); u.set([far / (near - far), (near * far) / (near - far), th * aspect, th], 52); 
+      // the background, and where the horizon falls on screen (a point far off level with the eye)
+      const background = graphics.background === "sky" ? 1 : graphics.background === "gradient" ? 2 : 0;
+      let horizon = 0;
+      if (background) {
+        const fx = cam.target[0] - eye[0], fy = cam.target[1] - eye[1], fl = Math.hypot(fx, fy) || 1;
+        const q = [eye[0] + (fx / fl) * 3000, eye[1] + (fy / fl) * 3000, eye[2]];
+        const cy = vp[1] * q[0] + vp[5] * q[1] + vp[9] * q[2] + vp[13], cw = vp[3] * q[0] + vp[7] * q[1] + vp[11] * q[2] + vp[15];
+        horizon = cw > 1e-6 ? Math.max(-4, Math.min(4, cy / cw)) : cam.el > 0 ? 4 : -4;
+      }
+      u.set([canvas.width, canvas.height, horizon, background], 56);
       let gnd = null;
       if (shadow) {
         const c = [(sceneLo[0] + sceneHi[0]) / 2, (sceneLo[1] + sceneHi[1]) / 2];
@@ -978,7 +1021,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gnd = groundMesh(sun.groundZ - 0.003, c, Math.round(R), dark ? [0.2, 0.22, 0.24] : [0.93, 0.93, 0.91]);
       }
       if (!allLines) allLines = extraLines && sunLines ? (() => { const a = new Float32Array(extraLines.length + sunLines.length); a.set(extraLines); a.set(sunLines, extraLines.length); return a; })() : extraLines || sunLines;
-      be.render({ uniforms: u, clear: page, stress, lineMode, edges, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao, ground: gnd });
+      be.render({ uniforms: u, clear: page, stress, lineMode, edges, background, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao, ground: gnd });
       if (afterRender) afterRender();
     }
 
@@ -1163,7 +1206,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       setSunLines(a) { sunLines = a && a.length ? a : null; allLines = null; dirty = true; },
       /** The view's sun, or null for the fixed light: see `sun` above. */
       setSun(s) { sun = s; dirty = true; },
-      /** The view's Graphic Display Options the renderer follows: { showEdges, transparency (0-100) }. */
+      /** The view's Graphic Display Options the renderer follows: { showEdges, transparency (0-100), background ("none", "sky", "gradient") }. */
       setGraphics(g) { graphics = g || {}; for (const m of meshes) writeTint(m, !!m.selected); dirty = true; },
       /** The model's bounding box, metres: [lo, hi]. */
       bounds() { return [sceneLo.slice(), sceneHi.slice()]; },

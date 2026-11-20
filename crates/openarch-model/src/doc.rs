@@ -1426,6 +1426,15 @@ impl Document {
     /// of a design option set do not count, nor do the walls that fill demolished openings. Gives the other
     /// wall's type name, for a warning (it is not refused).
     pub fn wall_overlap(&self, id: Id) -> Option<String> {
+        let other = self.wall_overlap_with(id)?;
+        Some(match self.get(other) {
+            Some(Element::Wall(o)) => self.wall_type(o.wall_type).map_or_else(|| "another wall".to_string(), |t| t.name.clone()),
+            _ => "another wall".to_string(),
+        })
+    }
+
+    /// The wall this one overlaps (see `wall_overlap`).
+    pub fn wall_overlap_with(&self, id: Id) -> Option<Id> {
         let Some(Element::Wall(w)) = self.get(id) else { return None };
         if w.infill.is_some() {
             return None;
@@ -1500,7 +1509,7 @@ impl Document {
             // two straight walls must lie on one line; a curve is drawn from facets, so allow for them
             let tol = if w.curve.is_none() && o.curve.is_none() { 1.0 } else { 1.5 };
             let shared: f64 = samples.iter().filter(|(p, _)| near(*p, &theirs) <= tol).map(|s| s.1).sum();
-            (shared > 10.0).then(|| self.wall_type(o.wall_type).map_or_else(|| "another wall".to_string(), |t| t.name.clone()))
+            (shared > 10.0).then_some(other)
         })
     }
 

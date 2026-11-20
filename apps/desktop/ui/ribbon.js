@@ -176,6 +176,8 @@ const RIBBON = {
       { id: "m-pickedit", label: "Pick to Edit", big: true } ] },
     { label: "Project", items: [
       { id: "project-info", label: "Project Information", big: true } ] },
+    { label: "Inquiry", items: [
+      { id: "m-warnings", label: "Warnings", big: true } ] },
   ],
   Modify: MODIFY_TAB,
 };

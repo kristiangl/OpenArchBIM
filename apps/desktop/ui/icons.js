@@ -162,6 +162,7 @@ const ICONS = {
   options: '<path d="M4 12h5"/><path d="M9 12l4-5h6M9 12l4 5h6"/><circle class="af" cx="19" cy="7" r="1.6"/><circle cx="19" cy="17" r="1.6"/>',
   addSet: '<rect x="3" y="5" width="9" height="9" rx="1"/><path d="M14 9h4l3 3-3 3h-4"/><path class="af" d="M7.5 7.5v4M5.5 9.5h4"/>',
   pickEdit: '<path d="M5 4l6 15 2-6 6-2z"/><path class="af" d="M15 16l4 4"/>',
+  warnings: '<path d="M12 3.5L21.5 20h-19z"/><path class="af" d="M12 9.5v5"/><circle cx="12" cy="17.2" r="0.6"/>',
   phases: '<circle cx="5" cy="12" r="2.5"/><circle class="af" cx="12" cy="12" r="2.5"/><circle cx="19" cy="12" r="2.5"/><path d="M7.5 12h2M14.5 12h2"/>',
   revisions: '<path d="M5 18a3 3 0 0 1 .5-5.9A4 4 0 0 1 13 9.5a3.5 3.5 0 0 1 6 3 2.8 2.8 0 0 1 0 5.5z"/><path class="af" d="M12 11l3 5H9z"/>',
   snaps: '<path d="M6 4v8a6 6 0 0 0 12 0V4h-4v8a2 2 0 0 1-4 0V4z"/><path class="af" d="M6 4h4v3H6zM14 4h4v3h-4z"/>',
@@ -342,7 +343,7 @@ const ICON_ALIAS = {
   "v-draft": "drafting", "v-legend": "legend", "v-sched": "schedule", "v-sched-qty": "schedule", "v-sched-mto": "schedule", "v-sched-sheets": "sheet", "v-sched-views": "schedule", "v-sheet": "sheet", "v-dup": "dupView", "v-vg": "visibility",
   "v-filters": "filters", "v-template": "template",
   // manage
-  "m-materials": "materials", "m-units": "units", "m-params": "params", "m-globals": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases", "m-options": "options", "m-addset": "addSet", "m-pickedit": "pickEdit",
+  "m-materials": "materials", "m-units": "units", "m-params": "params", "m-globals": "params", "m-shared": "shared", "m-styles": "styles", "m-phases": "phases", "m-options": "options", "m-addset": "addSet", "m-pickedit": "pickEdit", "m-warnings": "warnings",
   "m-revisions": "revisions", "m-snaps": "snaps", "m-linestyles": "lineStyles", "m-lineweights": "lineWeights", "m-linepatterns": "linePatterns", "m-fillpatterns": "fillPatterns",
   "m-tempdim": "tempDim", "m-annfam": "annFamily", "m-families": "families", export: "exportSheets", "project-info": "projectInfo",
   // help

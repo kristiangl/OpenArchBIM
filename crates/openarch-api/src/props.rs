@@ -322,6 +322,8 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
     if v.view_kind == ViewKind::ThreeD {
         // the whole model see-through by this much (Graphic Display Options' Transparency)
         graphics.push(locked(num("Transparency (%)", "settings.graphic_display.transparency", s.graphic_display.transparency as f64, true), inc(TemplateProp::GraphicDisplay)));
+        // what is behind the model (Image is not offered: there is nowhere to keep the picture yet)
+        graphics.push(locked(enum_select("Background", "settings.graphic_display.background", &name_of(&s.graphic_display.background), &[("none", "None"), ("sky", "Sky"), ("gradient", "Gradient")]), inc(TemplateProp::GraphicDisplay)));
     }
     if matches!(v.view_kind, ViewKind::Elevation | ViewKind::Section) {
         // Depth Cueing (Graphic Display Options): fade from a start to an end along the view depth, down to a limit
