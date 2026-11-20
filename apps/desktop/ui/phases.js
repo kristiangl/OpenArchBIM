@@ -10,6 +10,7 @@ const Phases = (() => {
     if (!ph) return;
     const std = await run("standards", {});
     const linePats = std ? std.line_patterns.map((p) => p.pattern.name) : ["Solid", "Dash"];
+    const matNames = std ? std.materials.map((m) => m.material.name).sort((a, b) => a.localeCompare(b)) : [];
     let tab = startTab, picked = ph.phases[ph.phases.length - 1]?.id;
     const op = async (args) => {
       const r = await run("phase_op", args);
@@ -61,7 +62,7 @@ const Phases = (() => {
 
     function drawOverrides() {
       const t = el("table", { className: "grid-table" });
-      t.append(el("tr", {}, ["Phase Status", "Projection Lines", "Cut Lines", "Halftone", "Transparency"].map((h) => el("th", { textContent: h }))));
+      t.append(el("tr", {}, ["Phase Status", "Projection Lines", "Cut Lines", "Halftone", "Transparency", "Material (3D)"].map((h) => el("th", { textContent: h }))));
       for (const o of ph.overrides) {
         const ov = o.override;
         const pat = (key) => {
@@ -72,7 +73,11 @@ const Phases = (() => {
         };
         const half = el("input", { type: "checkbox", checked: !!ov.halftone, onchange: () => op({ op: "set_override", status: o.status, override: { ...ov, halftone: half.checked } }) });
         const tr = el("input", { type: "number", min: "0", max: "100", step: "10", value: ov.transparency || 0, style: "width:60px", onchange: () => op({ op: "set_override", status: o.status, override: { ...ov, transparency: Math.max(0, Math.min(100, parseInt(tr.value) || 0)) } }) });
-        t.append(el("tr", {}, [el("td", { textContent: o.label }), el("td", {}, [pat("projection_lines")]), el("td", {}, [pat("cut_lines")]), el("td", {}, [half]), el("td", {}, [tr])]));
+        // the material the status takes in 3D views instead of each element's own
+        const mat = el("select", { onchange: () => op({ op: "set_material", status: o.status, material: mat.value || null }) });
+        mat.add(new Option("By element", ""));
+        for (const n of matNames) { const x = new Option(n, n); x.selected = o.material === n; mat.add(x); }
+        t.append(el("tr", {}, [el("td", { textContent: o.label }), el("td", {}, [pat("projection_lines")]), el("td", {}, [pat("cut_lines")]), el("td", {}, [half]), el("td", {}, [tr]), el("td", {}, [mat])]));
       }
       host.append(el("p", { className: "note", textContent: "Used where a view's phase filter says Overridden for that status." }), t);
     }

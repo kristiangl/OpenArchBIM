@@ -97,6 +97,9 @@ pub struct PhaseOverrides {
     pub demolished: CategoryOverride,
     #[serde(default)]
     pub temporary: CategoryOverride,
+    /// The material each status takes in 3D views instead of its own (spec 4.2), by material name.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub materials: BTreeMap<PhaseStatus, String>,
 }
 
 impl PhaseOverrides {
@@ -321,6 +324,17 @@ impl Document {
             return None;
         }
         Some(self.phasing()?.1.overrides.get(s).clone())
+    }
+
+    /// The material a 3D view draws the element in instead of its own: its status's phase material, where the
+    /// view's filter overrides that status and the material is in the project.
+    pub fn phase_material(&self, view: &View, id: Id) -> Option<String> {
+        let PhaseState::Status(s) = self.phase_state(view, id) else { return None };
+        let (_, filter) = self.view_phase(view)?;
+        if filter?.get(s) != Presentation::Overridden {
+            return None;
+        }
+        self.phasing()?.1.overrides.materials.get(&s).filter(|m| self.material(m).is_some()).cloned()
     }
 
     /// Phase Created and Phase Demolished of an element (None: not phased, or no phasing yet).

@@ -22,7 +22,7 @@ fn phasing_json(d: &Document) -> Value {
             "views": d.views().iter().filter(|(_, v)| v.phase.unwrap_or(ph.default_phase) == p.id && v.schedule.is_none()).count(),
         })).collect::<Vec<_>>(),
         "filters": ph.filters,
-        "overrides": PhaseStatus::ALL.iter().map(|s| json!({ "status": s, "label": s.label(), "override": ph.overrides.get(*s) })).collect::<Vec<_>>(),
+        "overrides": PhaseStatus::ALL.iter().map(|s| json!({ "status": s, "label": s.label(), "override": ph.overrides.get(*s), "material": ph.overrides.materials.get(s) })).collect::<Vec<_>>(),
         "default_phase": ph.default_phase,
     })
 }
@@ -98,6 +98,20 @@ impl Session {
                         let o: CategoryOverride = serde_json::from_value(p.get("override").cloned().ok_or("missing override")?).map_err(|e| format!("bad override: {e}"))?;
                         self.doc.edit_phasing("Phase graphic overrides", |ph| {
                             *ph.overrides.get_mut(s) = CategoryOverride { visible: true, ..o };
+                            Ok(())
+                        })?;
+                    }
+                    // the material a status takes in 3D views (null: its own)
+                    "set_material" => {
+                        let s: PhaseStatus = serde_json::from_value(p.get("status").cloned().ok_or("missing status")?).map_err(|_| "unknown status".to_string())?;
+                        let m = p.get("material").and_then(|v| v.as_str()).map(|m| m.trim().to_string()).filter(|m| !m.is_empty());
+                        if let Some(m) = &m {
+                            if self.doc.material(m).is_none() {
+                                return Err(format!("there is no material '{m}'"));
+                            }
+                        }
+                        self.doc.edit_phasing("Phase material", |ph| {
+                            match m { Some(m) => { ph.overrides.materials.insert(s, m); } None => { ph.overrides.materials.remove(&s); } }
                             Ok(())
                         })?;
                     }

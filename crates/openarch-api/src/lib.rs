@@ -3275,8 +3275,17 @@ impl Session {
             }
         }
         // an element's overrides in this view (Override by Element, and the view's filters): its surface colour,
-        // transparency and halftone
+        // transparency and halftone; first its phase status's material where the phase filter overrides it
         if let Some(v) = view.and_then(|v| d.view(v)) {
+            for m in meshes.iter_mut() {
+                let Some(id) = m["id"].as_u64() else { continue };
+                if m["kind"] == "Glass" { continue; }
+                let Some(name) = d.phase_material(v, id) else { continue };
+                let Some(mat) = d.material(&name) else { continue };
+                m["material"] = json!(name);
+                m["color"] = json!(mat.graphics.shading_color);
+                if mat.graphics.shading_transparency > 0 { m["transparency"] = json!(mat.graphics.shading_transparency); } else if let Some(o) = m.as_object_mut() { o.remove("transparency"); }
+            }
             for m in meshes.iter_mut() {
                 let Some(id) = m["id"].as_u64() else { continue };
                 let Some(o) = d.graphics_of(v, &id) else { continue };
@@ -5109,6 +5118,39 @@ mod tests {
         let stage = r["phases"].as_array().unwrap().iter().find(|p| p["name"] == "Stage 2").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "phase_op", json!({ "op": "combine", "id": stage, "into": phase("New Construction") }));
         assert_eq!(call(&mut s, "phasing", json!({}))["phases"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_phase_status_material_colours_3d_views_where_the_filter_overrides_it() {
+        let (mut s, lvl, wt, _) = setup();
+        let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0], "height_mm": 2700 }))["id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        let v3 = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "{3D}").unwrap()["id"].as_u64().unwrap();
+        let ph = call(&mut s, "phasing", json!({}));
+        let phase = |n: &str| ph["phases"].as_array().unwrap().iter().find(|p| p["name"] == n).unwrap()["id"].as_u64().unwrap();
+        let filter = |n: &str| ph["filters"].as_array().unwrap().iter().find(|f| f["name"] == n).unwrap()["id"].as_u64().unwrap();
+        call(&mut s, "set_element_phases", json!({ "ids": [w], "patch": { "created": phase("Existing") } }));
+        call(&mut s, "set_view_phase", json!({ "id": v3, "patch": { "phase_filter": filter("Show Previous + New") } }));
+        let wall_mats = |s: &mut Session| -> Vec<(String, Value)> {
+            call(s, "scene", json!({ "view_id": v3 }))["meshes"].as_array().unwrap().iter().filter(|m| m["id"] == w).map(|m| (m["material"].as_str().unwrap_or("").to_string(), m["color"].clone())).collect()
+        };
+        let own = wall_mats(&mut s);
+        assert!(!own.is_empty() && own.iter().all(|(m, _)| m != "Steel"), "{own:?}");
+        // Existing takes Steel: every piece of the wall is Steel in its shading colour
+        let r = call(&mut s, "phase_op", json!({ "op": "set_material", "status": "existing", "material": "Steel" }));
+        assert_eq!(r["overrides"].as_array().unwrap().iter().find(|o| o["status"] == "existing").unwrap()["material"], "Steel");
+        // (the Existing override is halftone too, so the colour is Steel's lightened)
+        let half: Vec<u64> = s.doc.material("Steel").unwrap().graphics.shading_color.iter().map(|x| (*x as u64 + 255) / 2).collect();
+        assert!(wall_mats(&mut s).iter().all(|(m, c)| m == "Steel" && *c == json!(half)));
+        // a filter that shows Existing by category leaves it alone
+        call(&mut s, "set_view_phase", json!({ "id": v3, "patch": { "phase_filter": filter("Show Complete") } }));
+        let names = |v: &[(String, Value)]| v.iter().map(|x| x.0.clone()).collect::<Vec<_>>();
+        assert_eq!(names(&wall_mats(&mut s)), names(&own));
+        // a material that is not in the project is refused; null puts the element's own back
+        assert!(s.handle("phase_op", &json!({ "op": "set_material", "status": "existing", "material": "Unobtainium" })).is_err());
+        call(&mut s, "set_view_phase", json!({ "id": v3, "patch": { "phase_filter": filter("Show Previous + New") } }));
+        call(&mut s, "phase_op", json!({ "op": "set_material", "status": "existing", "material": null }));
+        assert_eq!(wall_mats(&mut s), own);
     }
 
     #[test]
