@@ -5287,6 +5287,11 @@ mod tests {
     fn a_3d_views_sun_moments_studies_and_location() {
         let (mut s, _lvl, _wt, _view) = setup();
         let v3 = call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+        // the Graphic Display Options box reads the view's settings; its Properties have the Edit... row
+        let g = call(&mut s, "graphic_display", json!({ "view_id": v3 }));
+        assert_eq!((g["kind"].as_str(), g["locked"].as_bool(), g["graphic_display"]["show_edges"].as_bool()), (Some("three_d"), Some(false), Some(true)));
+        let rows: Vec<Value> = call(&mut s, "describe", json!({ "id": v3 }))["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
+        assert!(rows.iter().any(|r| r["label"] == "Graphic Display Options" && r["dialog"] == "graphic_display"));
         // a new view: lighting relative to the view, no frames, Perth assumed
         let r = call(&mut s, "sun", json!({ "view_id": v3 }));
         assert_eq!(r["settings"]["mode"], "lighting");

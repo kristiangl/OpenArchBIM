@@ -105,6 +105,15 @@ impl Session {
     pub(crate) fn handle_sun(&mut self, method: &str, p: &Value) -> Option<Res> {
         Some(match method {
             "sun" => sun_json(&self.doc, id_of(p, "view_id").ok().or_else(|| self.doc.views().iter().find(|(_, v)| v.view_kind == openarch_model::view::ViewKind::ThreeD).map(|(id, _)| *id)).unwrap_or(0)),
+            // the Graphic Display Options box: the view's settings as it draws with them (its template's where the
+            // template holds them), its kind and visual style, and whether the template holds them
+            "graphic_display" => (|| {
+                let view = id_of(p, "view_id")?;
+                let v = self.doc.view(view).ok_or("no such view")?;
+                let s = self.doc.effective_settings(view).ok_or("no such view")?;
+                let locked = v.template.and_then(|t| self.doc.view_template(t)).is_some_and(|t| t.included.contains(&TemplateProp::GraphicDisplay));
+                Ok(json!({ "kind": v.view_kind, "visual_style": s.visual_style, "graphic_display": s.graphic_display, "locked": locked }))
+            })(),
             // the Sun Settings dialog and the 3D view's sun bar: { view_id, patch: { sun fields, sun_path?, cast_shadows?,
             // sun_intensity?, ambient_intensity? } }, one undo step
             "set_sun" => (|| {

@@ -313,6 +313,10 @@ pub fn view_props(d: &Document, id: Id, v: &View) -> Value {
         ]);
     }
 
+    if matches!(v.view_kind, ViewKind::ThreeD | ViewKind::Elevation | ViewKind::Section) {
+        // all of the view's Graphic Display Options in one box, as Revit's
+        graphics.push(locked(dialog("Graphic Display Options", "graphic_display", "Edit..."), inc(TemplateProp::GraphicDisplay)));
+    }
     graphics.extend([
         locked(boolean("Show Edges", "settings.graphic_display.show_edges", s.graphic_display.show_edges, true), inc(TemplateProp::GraphicDisplay)),
         locked(boolean("Show Silhouettes", "settings.graphic_display.silhouettes", s.graphic_display.silhouettes, true), inc(TemplateProp::GraphicDisplay)),
