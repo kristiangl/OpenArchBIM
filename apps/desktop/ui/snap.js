@@ -42,6 +42,7 @@ const Snap = (() => {
   const CELL = 1000;
 
   let segs = [];
+  let circles = []; // round curves of the geometry: { c, r, a0, sweep } (sweep 2π for a whole circle), and ellipses { c, ends }
   let extSegs = []; // the faces and straight lines in the index, for their extensions
   let index = new Map();
   let override = null; // one-shot override: a kind, or "off"
@@ -52,6 +53,7 @@ const Snap = (() => {
   function build(list, who = "plan") {
     owner = who;
     segs = list;
+    circles = list.curves || [];
     extSegs = list.filter((sg) => EXTENDS.has(sg[4]));
     index = new Map();
     list.forEach((sg, i) => {
@@ -69,9 +71,22 @@ const Snap = (() => {
 
   /** Segments of a polygon ring given as [[x, y], ...], marked `flag` (a face) when given. */
   function ringSegs(ring, out, flag) {
-    for (let i = 0; i < ring.length; i++) {
-      const a = ring[i], b = ring[(i + 1) % ring.length];
-      if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) > 0.5) out.push(flag ? [a[0], a[1], b[0], b[1], flag] : [a[0], a[1], b[0], b[1]]);
+    const n = ring.length;
+    // a corner a curve was drawn through: short pieces either side, turning a little (not a straight run split in
+    // two). The pieces beside it are a curve's (marked 2: no ends, middles or extensions of their own).
+    const facet = (i) => {
+      const p = ring[(i - 1 + n) % n], q = ring[i], r = ring[(i + 1) % n];
+      const ux = q[0] - p[0], uy = q[1] - p[1], vx = r[0] - q[0], vy = r[1] - q[1], lu = Math.hypot(ux, uy), lv = Math.hypot(vx, vy);
+      if (lu < 1e-6 || lv < 1e-6 || lu > 800 || lv > 800) return false;
+      const turn = Math.abs(Math.atan2(ux * vy - uy * vx, ux * vx + uy * vy));
+      return turn > 1e-4 && turn < 0.2;
+    };
+    const smooth = ring.map((_, i) => n > 3 && facet(i));
+    for (let i = 0; i < n; i++) {
+      const a = ring[i], b = ring[(i + 1) % n];
+      if (Math.abs(a[0] - b[0]) + Math.abs(a[1] - b[1]) <= 0.5) continue;
+      const f = smooth[i] || smooth[(i + 1) % n] ? 2 : flag;
+      out.push(f ? [a[0], a[1], b[0], b[1], f] : [a[0], a[1], b[0], b[1]]);
     }
   }
 
@@ -83,10 +98,28 @@ const Snap = (() => {
       for (const shape of g.outline) for (const ring of shape) ringSegs(ring, out, 3);
       for (const f of g.fills) for (const shape of f.shapes) for (const ring of shape) ringSegs(ring, out);
     }
+    const curves = [];
     for (const w of data.walls) {
       if (!w.layered) for (const q of w.pieces || [w.corners]) ringSegs(q, out, 3);
-      out.push([w.start[0], w.start[1], w.end[0], w.end[1], 1]); // 5th item marks a location line
+      const k = w.curve && roundCurve(w.curve);
+      if (k && k.r) {
+        // a curved wall's location line: its arc in short pieces (no ends or middles of their own), and its circle
+        // with the arc's own ends and middle
+        if (Math.abs(k.sweep) < Math.PI * 2 - 1e-9) {
+          const m = k.a0 + k.sweep / 2;
+          k.tips = [{ x: w.start[0], y: w.start[1] }, { x: w.end[0], y: w.end[1] }];
+          k.mid = { x: k.c.x + k.r * Math.cos(m), y: k.c.y + k.r * Math.sin(m) };
+        }
+        curves.push(k);
+        const n = Math.max(8, Math.ceil(Math.abs(k.sweep) / 0.05));
+        for (let i = 0; i < n; i++) {
+          const a = k.a0 + (k.sweep * i) / n, b = k.a0 + (k.sweep * (i + 1)) / n;
+          out.push([k.c.x + k.r * Math.cos(a), k.c.y + k.r * Math.sin(a), k.c.x + k.r * Math.cos(b), k.c.y + k.r * Math.sin(b), 2]);
+        }
+      } else if (k) curves.push(k);
+      else if (!w.curve) out.push([w.start[0], w.start[1], w.end[0], w.end[1], 1]); // 5th item marks a location line
     }
+    out.curves = curves;
     const det = data.detail, ds = (data.view && data.view.scale) || 100;
     if (det) for (const st of det.strokes) {
       if (held && held(st)) continue;
@@ -115,6 +148,38 @@ const Snap = (() => {
     for (const s of Structure.snapSegs(data)) out.push(s);
     for (const p of data.property_lines || []) for (const l of p.lines || []) for (let i = 0; i + 1 < l.length; i++) out.push([l[i][0], l[i][1], l[i + 1][0], l[i + 1][1], l.length === 2 ? 4 : 2]);
     return out;
+  }
+
+  // a wall's curve (as the model writes it) as snap geometry: an arc or circle { c, r, a0, sweep }, an ellipse { c, ends }
+  // (its centre and the ends of its axes that it reaches); a spline gives nothing
+  function roundCurve(cv) {
+    const P = (q) => ({ x: q.x, y: q.y });
+    if (cv.type === "circle") return { c: P(cv.centre), r: cv.radius, a0: 0, sweep: Math.PI * 2 };
+    if (cv.type === "arc") {
+      const c = P(cv.centre), r = Math.hypot(cv.start.x - c.x, cv.start.y - c.y);
+      const a0 = Math.atan2(cv.start.y - c.y, cv.start.x - c.x), a1 = Math.atan2(cv.end.y - c.y, cv.end.x - c.x);
+      let sw = a1 - a0;
+      if (cv.ccw) { while (sw <= 0) sw += Math.PI * 2; } else { while (sw >= 0) sw -= Math.PI * 2; }
+      return { c, r, a0, sweep: sw };
+    }
+    if (cv.type === "ellipse") {
+      const c = P(cv.centre), rot = ((cv.rotation_deg || 0) * Math.PI) / 180, partial = cv.t0_deg != null || cv.t1_deg != null;
+      const t0 = ((cv.t0_deg || 0) * Math.PI) / 180, t1 = ((cv.t1_deg ?? 360) * Math.PI) / 180;
+      let sw = partial ? (cv.ccw ? t1 - t0 : -(t0 - t1)) : Math.PI * 2;
+      if (partial) { if (cv.ccw) { while (sw <= 0) sw += Math.PI * 2; } else { while (sw >= 0) sw -= Math.PI * 2; } }
+      const ends = [0, 0.5, 1, 1.5].map((f) => f * Math.PI).filter((t) => !partial || onArc(t, t0, sw)).map((t) => {
+        const x = cv.rx * Math.cos(t), y = cv.ry * Math.sin(t);
+        return { x: c.x + x * Math.cos(rot) - y * Math.sin(rot), y: c.y + x * Math.sin(rot) + y * Math.cos(rot) };
+      });
+      return { c, ends };
+    }
+    return null;
+  }
+  // whether angle `a` lies on the arc from `a0` sweeping `sweep` (signed)
+  function onArc(a, a0, sweep) {
+    if (Math.abs(sweep) >= Math.PI * 2 - 1e-9) return true;
+    const t = (((a - a0) * Math.sign(sweep)) % (Math.PI * 2) + Math.PI * 2) % (Math.PI * 2);
+    return t <= Math.abs(sweep) + 1e-9;
   }
 
   function nearby(x, y, r) {
@@ -164,6 +229,22 @@ const Snap = (() => {
     // exact points of curves (centres, quadrants, ends); `extra` segments marked 2 are only the
     // flattened shape of a curve, good for nearest, perpendicular and intersection but not for ends
     for (const q of pts || []) consider(q.x, q.y, q.kind);
+    // round curves in the geometry: centres, quadrants (on the curve), and from the last point the tangents to them
+    for (const k of circles) {
+      consider(k.c.x, k.c.y, "center");
+      for (const q of k.tips || []) consider(q.x, q.y, "endpoint");
+      if (k.mid) consider(k.mid.x, k.mid.y, "midpoint");
+      if (k.ends) { for (const q of k.ends) consider(q.x, q.y, "quadrant"); continue; }
+      if (Math.abs(Math.hypot(w.x - k.c.x, w.y - k.c.y) - k.r) > tol * 2 + 1) continue;
+      for (let i = 0; i < 4; i++) { const a = (i * Math.PI) / 2; if (onArc(a, k.a0, k.sweep)) consider(k.c.x + k.r * Math.cos(a), k.c.y + k.r * Math.sin(a), "quadrant"); }
+      if (last) {
+        const d = Math.hypot(last.x - k.c.x, last.y - k.c.y);
+        if (d > k.r + 1e-6) {
+          const base = Math.atan2(last.y - k.c.y, last.x - k.c.x), off = Math.acos(k.r / d);
+          for (const a of [base + off, base - off]) if (onArc(a, k.a0, k.sweep)) consider(k.c.x + k.r * Math.cos(a), k.c.y + k.r * Math.sin(a), "tangent");
+        }
+      }
+    }
     for (const sg of near) {
       if (sg[4] !== 2 && sg[4] !== 5) {
         consider(sg[0], sg[1], "endpoint");
