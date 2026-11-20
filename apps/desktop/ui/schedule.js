@@ -254,7 +254,7 @@ const Sched = (() => {
     const embeddedCategories=await Backend.call("embedded_categories",{});
     const globals = ((await run("global_params", {})) || { params: [] }).params.map((g) => g.name);
     const unitOf = (f) => (f.kind === "count" ? "integer" : f.kind === "formula" ? f.unit : f.kind === "percentage" ? "number" : f.kind === "combined" ? "text" : ((avail.find((a) => a.name === f.name) || {}).unit || "text"));
-    const blank = (name, kind) => ({ name, kind, heading: "", hidden: false, totals: "none", align: "left", formula: "", unit: "number", of: "", parts: [], highlights: [], highlight_on_sheets: false });
+    const blank = (name, kind) => ({ name, kind, heading: "", hidden: false, totals: "none", align: "left", formula: "", unit: "number", of: "", parts: [], highlights: [], highlight_on_sheets: false, width_mm: null });
     // a filter's or highlight's value: a global parameter's name for the global tests, nothing for the presence
     // tests, else text
     const valueBox = (op, value, onchange) => {
@@ -462,6 +462,9 @@ const Sched = (() => {
           hidden.onchange = () => { f.hidden = hidden.checked; };
           const totals = el("select", {}, opts(TOTALS, f.totals));
           totals.onchange = () => { f.totals = totals.value; };
+          // the column's width on sheets: blank fits the widest text
+          const width = el("input", { type: "number", min: "5", max: "300", step: "1", value: f.width_mm ?? "", placeholder: "Fit to text", style: "width:90px" });
+          width.oninput = () => { const v = parseFloat(width.value); f.width_mm = v > 0 ? Math.max(5, Math.min(300, v)) : null; };
           totals.disabled = !numeric(unitOf(f)) || f.kind === "count";
           const n = (f.highlights || []).length;
           const cond = button(n ? `Conditional Format... (${n})` : "Conditional Format...", () => conditional(f, show));
@@ -470,6 +473,7 @@ const Sched = (() => {
             el("label", { className: "new-row" }, [el("span", { textContent: "Alignment" }), align]),
             el("label", { className: "new-row" }, [el("span", { textContent: "Hidden field" }), hidden]),
             el("label", { className: "new-row" }, [el("span", { textContent: "Totals" }), totals]),
+            el("label", { className: "new-row" }, [el("span", { textContent: "Width on sheets (mm)" }), width]),
             el("div", { className: "new-row" }, [el("span", { textContent: "" }), cond]),
             el("div", { className: "modal-note", textContent: f.kind === "count" ? "Count always totals." : `Measures: ${(UNITS.find((u) => u[0] === unitOf(f)) || [0, "Text"])[1]}` }),
           );

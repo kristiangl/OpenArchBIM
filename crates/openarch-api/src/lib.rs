@@ -4031,6 +4031,12 @@ mod tests {
         assert_eq!((text(11, 4), text(11, 5)), ("5".into(), "7.96 m²".into()));
         // the share of the total opening area
         assert_eq!(text(1, 6), format!("{:.1}%", 1.4688 / 7.956 * 100.0));
+        // a column given a width on sheets says so; the others fit their text
+        assert!(t["columns"].as_array().unwrap().iter().all(|c| c["width_mm"].is_null()));
+        def["fields"][0]["width_mm"] = json!(40.0);
+        call(&mut s, "set_schedule", json!({"id": id, "def": def}));
+        let t = call(&mut s, "schedule_table", json!({"id": id}));
+        assert_eq!((t["columns"][0]["width_mm"].as_f64(), t["columns"][1]["width_mm"].is_null()), (Some(40.0), true));
         // filtered to the wide doors, not itemised: one row of three
         def["filters"] = json!([{"field": "Width", "op": "greater", "value": "800"}]);
         def["itemize"] = json!(false);

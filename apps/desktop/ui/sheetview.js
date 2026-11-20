@@ -128,6 +128,8 @@ const SheetView = (() => {
   function schedLayout(p) {
     const t = p.table || { columns: [], rows: [], title: "", show_title: false, show_headers: false };
     const cols = t.columns.map((c, i) => {
+      // a width set on the field (Schedule Properties > Formatting) wins over the text's
+      if (c.width_mm > 0) return Math.max(5, c.width_mm);
       let w = textMm(c.heading, S.text, true);
       for (const r of t.rows) if (r.kind !== "header" && r.cells[i]) w = Math.max(w, textMm(r.cells[i].text, S.text, r.kind !== "item"));
       return Math.max(10, w + 2 * S.pad);

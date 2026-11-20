@@ -677,7 +677,7 @@ impl Session {
         if def.grand_totals {
             out.push(totals_row("grand", format!("{}:", def.grand_title), &rows));
         }
-        let mut columns: Vec<Value> = shown.iter().map(|&i| { let f = &def.fields[i]; json!({ "name": f.name, "heading": f.heading(), "align": f.align, "unit": unit_of(f), "highlight_on_sheets": f.highlight_on_sheets }) }).collect();
+        let mut columns: Vec<Value> = shown.iter().map(|&i| { let f = &def.fields[i]; json!({ "name": f.name, "heading": f.heading(), "align": f.align, "unit": unit_of(f), "highlight_on_sheets": f.highlight_on_sheets, "width_mm": f.width_mm }) }).collect();
         self.embed_room_contents(view,def,&mut columns,&mut out,only)?;
         Ok(json!({
             "id": view, "name": v.name, "category": def.category, "title": v.name, "show_title": def.show_title, "show_headers": def.show_headers,

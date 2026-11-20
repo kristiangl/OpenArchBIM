@@ -121,6 +121,9 @@ pub struct SchedField {
     /// The colours on sheets as well as in the schedule view.
     #[serde(default)]
     pub highlight_on_sheets: bool,
+    /// The column's width on sheets, paper mm; None fits its widest text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub width_mm: Option<f64>,
 }
 
 /// A conditional format: a cell's background when a field of its row passes a test.
@@ -599,7 +602,7 @@ mod tests {
     use super::*;
 
     fn f(name: &str, kind: FieldKind) -> SchedField {
-        SchedField { name: name.into(), kind, heading: String::new(), hidden: false, totals: Totals::None, align: Align::Left, formula: String::new(), unit: Unit::Number, of: String::new(), parts: vec![], highlights: vec![], highlight_on_sheets: false }
+        SchedField { name: name.into(), kind, heading: String::new(), hidden: false, totals: Totals::None, align: Align::Left, formula: String::new(), unit: Unit::Number, of: String::new(), parts: vec![], highlights: vec![], highlight_on_sheets: false, width_mm: None }
     }
 
     #[test]
