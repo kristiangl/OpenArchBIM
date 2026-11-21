@@ -679,6 +679,9 @@ pub struct View {
     /// An area plan's area scheme (Gross Building, Rentable...).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub area_scheme: Option<Id>,
+    /// The work plane Set chose for drawing model lines in the view (workplane.rs); a plan's is its level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub work_plane: Option<crate::workplane::WorkPlane>,
 }
 
 /// A view type: what the New Plan dialog's Type list offers. Each kind of plan has at least one, and a type can
@@ -755,6 +758,7 @@ impl View {
             view_type: None,
             schedule: None,
             area_scheme: None,
+            work_plane: None,
         }
     }
 

@@ -1073,6 +1073,7 @@ const Elev = (() => {
     render();
   }
 
+  let showWP = false; // Work Plane > Show
   function render() {
     if (!printing) resize();
     const { w, h } = size();
@@ -1210,6 +1211,18 @@ const Elev = (() => {
     Tags.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
     Symbols.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
     Images.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
+    // Work Plane > Show: the work plane as a light grid over the view, and its name
+    if (showWP && data.work_plane) {
+      const { w, h } = size();
+      const a = toWorld(0, h), b = toWorld(w, 0);
+      let g = 1000; while (g * cam.s < 12) g *= 5;
+      ctx.save(); ctx.strokeStyle = "rgba(60,120,200,0.22)"; ctx.lineWidth = 1; ctx.beginPath();
+      for (let u = Math.floor(a.u / g) * g; u <= b.u; u += g) { const s = toScreen(u, 0); ctx.moveTo(s.x, 0); ctx.lineTo(s.x, h); }
+      for (let z = Math.floor(a.z / g) * g; z <= b.z; z += g) { const s = toScreen(0, z); ctx.moveTo(0, s.y); ctx.lineTo(w, s.y); }
+      ctx.stroke();
+      ctx.fillStyle = "rgba(40,90,160,0.9)"; ctx.font = "12px system-ui, sans-serif"; ctx.fillText(`Work Plane: ${data.work_plane.name}`, 10, h - 10);
+      ctx.restore();
+    }
     if (!printing) Tags.drawGrips(ctx, data, (p) => toScreen(p.x, p.y), sel);
     Det.drawNotes(selD, hov, accent, tool === "select", sel);
     if (tool === "text") Det.preview(hover);
@@ -1728,10 +1741,11 @@ const Elev = (() => {
   // ---- detail items, snapping and the sketch's host ------------------------------------------------------------------
   const P = (p) => toScreen(p.x, p.y);
   const W = (sx, sy) => { const w = toWorld(sx, sy); return { x: w.u, y: w.z }; };
-  // detail items a sketch here is holding: the view's detail lines while Detail Line is on, a region's edges in Edit Boundary
+  // detail items a sketch here is holding: the view's detail lines while Detail Line is on (its work plane's model
+  // lines while Model Line is), a region's edges in Edit Boundary
   function heldBySketch(x) {
     if (tool !== "sketch" || !Sketch.active) return false;
-    if (Sketch.kind === "detail") return x.line != null;
+    if (Sketch.kind === "detail") return x.line != null && ((data && data.model_lines) || []).some((l) => l.id === x.line) === (app.lineSession === "model");
     return Sketch.kind === "region" && Sketch.editingId != null && x.region === Sketch.editingId;
   }
   const inRing = (p, r) => {
@@ -1886,7 +1900,7 @@ const Elev = (() => {
     setTool,
     setData(d, refit) {
       data = d;
-      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || []),...(d.revision_clouds||[]),...(d.revision_tags||[]),...(d.element_tags||[])].map((x) => x.id)]);
+      const ids = new Set([...d.items.map((i) => i.id), ...d.levels.map((l) => l.id), ...(d.grids || []).map((g) => g.id), ...[...(d.detail_lines || []), ...(d.model_lines || []), ...(d.regions || []), ...(d.text_notes || []), ...(d.dimensions || []), ...(d.spots || []),...(d.revision_clouds||[]),...(d.revision_tags||[]),...(d.element_tags||[])].map((x) => x.id)]);
       modelGroups.forEach((g) => ids.add(g.id));
       for (const it of d.items) if (it.part != null) ids.add(it.part);
       for (const f of d.curtains || []) for (const l of f.lines) ids.add(l.id);
@@ -1961,6 +1975,10 @@ const Elev = (() => {
     startSpot(kind) { setTool("spot"); ESpots.start(kind); cb.prompt(promptText()); },
     spotTool: () => ESpots,
     detailLines: () => (data && data.detail_lines) || [],
+    modelLines: () => (data && data.model_lines) || [],
+    workPlane: () => (data && data.work_plane) || null,
+    get showWorkPlane() { return showWP; },
+    setShowWorkPlane(v) { showWP = !!v; render(); },
     regions: () => (data && data.regions) || [],
     setEditingNote(id) { Det.setEditing(id); },
     startNoteLeader(id, side, arc) { setTool("noteleader"); Det.startLeader(id, side, arc); sel = new Set([id]); cb.prompt(promptText()); render(); },

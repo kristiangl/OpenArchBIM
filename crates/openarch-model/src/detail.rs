@@ -670,8 +670,8 @@ impl Document {
                 }
             }
             // a plan's model lines (modelline.rs) draw as its detail lines do, in model mm round the same origin
-            for (id, l) in self.model_lines_in(view) {
-                out.strokes.extend(stroke(&l.curve, &l.style, Some(id), None));
+            for (id, l, c) in self.model_lines_drawn(view, None) {
+                out.strokes.extend(stroke(&c, &l.style, Some(id), None));
             }
         }
         out

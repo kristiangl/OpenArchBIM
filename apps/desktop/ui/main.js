@@ -159,7 +159,15 @@ const COMMANDS = {
     if (!t) { setPrompt("Select an element with a boundary (a floor or a roof) to edit it.", true); return; }
     t.run();
   },
-  "show-wp": () => { Plan.setShowWorkGrid(!Plan.showWorkGrid); setPrompt(Plan.showWorkGrid ? "Work plane grid shown." : "Work plane grid hidden."); },
+  "show-wp": () => {
+    if (app.view.kind === "elevation") {
+      if (!Elev.workPlane()) { setPrompt("This view has no work plane: Set one first.", true); return; }
+      Elev.setShowWorkPlane(!Elev.showWorkPlane); setPrompt(Elev.showWorkPlane ? "Work plane shown." : "Work plane hidden.");
+      return;
+    }
+    Plan.setShowWorkGrid(!Plan.showWorkGrid); setPrompt(Plan.showWorkGrid ? "Work plane grid shown." : "Work plane grid hidden.");
+  },
+  "set-wp": () => setWorkPlane(),
   level: () => startLevelTool(),
   "curtain-grid": () => startCurtainGridTool(),
   grid: () => startGridTool(),
@@ -3686,6 +3694,37 @@ const detailPayload = (curves) => curves.map((c) => ({ id: c.attr.id ?? null, cu
 
 // Model Line (Architecture > Model Line) is the same session on the plan's model lines (modelline.rs): they belong to
 // the plan's level, so every floor plan of it and 3D views show them. `app.lineSession` says which.
+// Work Plane > Set: a plan draws on its level; an elevation or section on a reference plane parallel to it, named
+// here (the core: workplane.rs). `then` starts Model Line once one is set.
+async function setWorkPlane(then = false) {
+  if (!["plan", "elevation"].includes(app.view.kind)) { setPrompt("Work planes are set in plans, elevations and sections.", true); return; }
+  const r = await run("work_plane", { view_id: app.view.viewId });
+  if (!r) return;
+  openModal("Work Plane", (body, foot, close) => {
+    body.append(el("p", { textContent: `Current: ${r.current ? r.current.name : "<none>"}` }));
+    if (app.view.kind === "plan") {
+      body.append(el("p", { className: "muted", textContent: "A plan draws model lines on its own level. To draw on a reference plane, open an elevation or section that looks square at it and Set it there." }));
+      foot.append(button("Close", close, true));
+      return;
+    }
+    if (!r.choices.length) {
+      body.append(el("p", { className: "muted", textContent: "No reference plane is parallel to this view. Draw one in a plan (Architecture > Ref Plane) square to the way this view looks, and give it a name." }));
+      foot.append(button("Close", close, true));
+      return;
+    }
+    const s = el("select", { style: "width:100%" }, r.choices.map((c, i) => new Option(c.name, String(i), false, r.current && JSON.stringify(c.plane) === JSON.stringify(r.current.plane))));
+    body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), s]));
+    foot.append(button("Cancel", close), button("OK", async () => {
+      const c = r.choices[Number(s.value)];
+      if (!(await run("set_work_plane", { view_id: app.view.viewId, plane: c.plane }))) return;
+      close();
+      await refresh();
+      setPrompt(`Work plane: ${c.name}.`);
+      if (then) startDetailLines(null, "line", true);
+    }, true));
+  });
+}
+
 // View > Legend > Keynote Legend: a schedule of the keynotes placed, opened at once (the core: schedule.rs)
 async function newKeynoteLegend() {
   const taken = new Set((app.info.views || []).map((v) => v.name));
@@ -3704,8 +3743,13 @@ async function startDetailLines(selectId, tool, model = false) {
     if (Sketch.kind === "detail") await leaveDetailLines();
     else { setPrompt("Finish or cancel the sketch first.", true); return; }
   }
-  if (model ? !(await ensurePlan("A model line")) : !(await ensureDetailView("A detail line"))) return;
-  if (model && !["floor_plan", "structural_plan"].includes((app.info.views || []).find((v) => v.id === app.view.viewId)?.view_kind)) { setPrompt("Model lines are drawn in a floor or structural plan.", true); return; }
+  // Model Line draws in a floor or structural plan on its level, or in an elevation or section on its work plane
+  if (model && app.view.kind === "elevation") {
+    if (!Elev.workPlane()) { setPrompt("Set a work plane first: a reference plane parallel to this view.", true); await setWorkPlane(true); return; }
+  } else {
+    if (model ? !(await ensurePlan("A model line")) : !(await ensureDetailView("A detail line"))) return;
+    if (model && !["floor_plan", "structural_plan"].includes((app.info.views || []).find((v) => v.id === app.view.viewId)?.view_kind)) { setPrompt("Model lines are drawn in a floor or structural plan, or in an elevation or section on a work plane.", true); return; }
+  }
   app.lineSession = model ? "model" : "detail";
   app.lineStyle ||= "Thin Lines";
   app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]);

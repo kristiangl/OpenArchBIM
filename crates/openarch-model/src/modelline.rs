@@ -15,8 +15,12 @@ fn thin() -> String {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelLine {
     pub level: Id,
-    /// In plan, model mm; it lies at the level's elevation.
+    /// In plan, model mm; it lies at the level's elevation. On a reference plane, in the plane's own frame: x along
+    /// the plane from its first point toward its second, y the height (model mm).
     pub curve: Curve,
+    /// The reference plane it is drawn on (Set in an elevation or section), else it lies on its level.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plane: Option<Id>,
     #[serde(default = "thin")]
     pub style: String,
     #[serde(default)]
@@ -45,14 +49,33 @@ impl Document {
         self.iter().filter_map(|(id, e)| match e { Element::ModelLine(l) if l.level == level => Some((id, l)), _ => None }).collect()
     }
 
-    /// The model lines a view shows: a floor or structural plan, those on its level.
+    /// The model lines a plan shows: a floor or structural plan, those lying on its level.
     pub fn model_lines_in(&self, view: Id) -> Vec<(Id, &ModelLine)> {
         let Some(v) = self.view(view) else { return vec![] };
         if !matches!(v.view_kind, crate::view::ViewKind::FloorPlan | crate::view::ViewKind::StructuralPlan) {
             return vec![];
         }
         let Some(level) = v.level else { return vec![] };
-        self.model_lines_on(level).into_iter().filter(|(id, _)| !self.hidden_in(view, *id)).collect()
+        self.model_lines_on(level).into_iter().filter(|(id, l)| l.plane.is_none() && !self.hidden_in(view, *id)).collect()
+    }
+
+    /// The model lines a view draws, each with its curve in the view's own frame: a plan's (in plan), or in an
+    /// elevation or section those on reference planes parallel to it (along the view, and height). `only` keeps those
+    /// on one plane (the Model Line session's work plane).
+    pub fn model_lines_drawn(&self, view: Id, only: Option<Id>) -> Vec<(Id, &ModelLine, Curve)> {
+        let Some(v) = self.view(view) else { return vec![] };
+        if v.view_kind.is_plan() {
+            return self.model_lines_in(view).into_iter().filter(|_| only.is_none()).map(|(id, l)| (id, l, l.curve.clone())).collect();
+        }
+        self.iter()
+            .filter_map(|(id, e)| match e {
+                Element::ModelLine(l) if l.plane.is_some() && only.is_none_or(|p| l.plane == Some(p)) && !self.hidden_in(view, id) => {
+                    let x = self.plane_to_view(view, l.plane?)?;
+                    Some((id, l, l.curve.transform(x)))
+                }
+                _ => None,
+            })
+            .collect()
     }
 
     /// Every model line as points in 3D (model mm, at its level's elevation) in its line style's colour, for 3D views;
@@ -61,8 +84,20 @@ impl Document {
         self.iter()
             .filter_map(|(id, e)| match e {
                 Element::ModelLine(l) if !hidden(id) && l.style != crate::annotation::INVISIBLE_LINES => {
-                    let z = self.level(l.level)?.elevation_mm;
-                    Some((id, self.line_style(&l.style).color, l.curve.tessellate(5.0).iter().map(|q| [q.x, q.y, z]).collect()))
+                    let pts = match l.plane {
+                        // on a reference plane: along it from its first point, at the height
+                        Some(p) => {
+                            let r = self.ref_plane(p)?;
+                            let len = r.a.dist(&r.b).max(1e-9);
+                            let d = ((r.b.x - r.a.x) / len, (r.b.y - r.a.y) / len);
+                            l.curve.tessellate(5.0).iter().map(|q| [r.a.x + d.0 * q.x, r.a.y + d.1 * q.x, q.y]).collect()
+                        }
+                        None => {
+                            let z = self.level(l.level)?.elevation_mm;
+                            l.curve.tessellate(5.0).iter().map(|q| [q.x, q.y, z]).collect()
+                        }
+                    };
+                    Some((id, self.line_style(&l.style).color, pts))
                 }
                 _ => None,
             })
@@ -85,7 +120,7 @@ impl Document {
             }
         }
         self.transact("Model lines", |tx| {
-            Ok(curves.into_iter().map(|curve| tx.add(Element::ModelLine(ModelLine { level, curve, style: style.into(), pinned: false }))).collect())
+            Ok(curves.into_iter().map(|curve| tx.add(Element::ModelLine(ModelLine { level, curve, plane: None, style: style.into(), pinned: false }))).collect())
         })
     }
 
@@ -93,6 +128,10 @@ impl Document {
     /// level as they are now. Lines with an id are changed, new ones added, the plan's others deleted; one undo step.
     /// Lines hidden in the view are left alone. Returns each line's id in order.
     pub fn set_model_lines(&mut self, view: Id, lines: Vec<ModelLineEdit>) -> Result<Vec<Id>, String> {
+        // in an elevation or section, on the view's work plane (a reference plane parallel to it)
+        if !self.view(view).is_some_and(|v| v.view_kind.is_plan()) {
+            return self.set_plane_model_lines(view, lines);
+        }
         let level = self
             .view(view)
             .filter(|v| matches!(v.view_kind, crate::view::ViewKind::FloorPlan | crate::view::ViewKind::StructuralPlan))
@@ -112,7 +151,7 @@ impl Document {
             .map(|l| {
                 let id = l.id.filter(|i| have.contains(i) && used.insert(*i));
                 let pinned = id.and_then(|i| self.model_line(i)).is_some_and(|m| m.pinned);
-                (id, ModelLine { level, curve: l.curve, style: l.style, pinned })
+                (id, ModelLine { level, curve: l.curve, plane: None, style: l.style, pinned })
             })
             .collect();
         let gone: Vec<Id> = have.iter().copied().filter(|i| !used.contains(i)).collect();

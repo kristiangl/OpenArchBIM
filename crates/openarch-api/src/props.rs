@@ -1066,7 +1066,10 @@ pub fn model_line_props(d: &Document, id: Id, l: &openarch_model::modelline::Mod
         "target": { "method": "patch_model_line", "id": id },
         "groups": [
             group("Graphics", vec![select("Line Style", styles)]),
-            group("Constraints", vec![ro("Work Plane", d.level(l.level).map_or_else(String::new, |v| format!("Level : {}", v.name))), boolean("Pinned", "pinned", l.pinned, true)]),
+            group("Constraints", vec![ro("Work Plane", match l.plane {
+                Some(p) => d.ref_plane(p).map_or_else(String::new, |r| format!("Reference Plane : {}", r.name)),
+                None => d.level(l.level).map_or_else(String::new, |v| format!("Level : {}", v.name)),
+            }), boolean("Pinned", "pinned", l.pinned, true)]),
             group("Dimensions", vec![ro("Length", format!("{:.0}", l.curve.length()))]),
         ],
     })

@@ -962,6 +962,10 @@ impl Document {
             if let Element::SlabEdge(s) = e {
                 if ids.contains(&s.floor) && !ids.contains(&i) { ids.push(i); }
             }
+            // model lines on a reference plane go with it
+            if let Element::ModelLine(l) = e {
+                if l.plane.is_some_and(|p| ids.contains(&p)) && !ids.contains(&i) { ids.push(i); }
+            }
             // a property line's tags go with it
             if let Element::PropertyLineTag(t) = e {
                 if ids.contains(&t.line) && !ids.contains(&i) { ids.push(i); }

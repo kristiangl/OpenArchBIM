@@ -630,6 +630,7 @@ impl Document {
                 }
                 // a copy of a reference plane is unnamed (names are unique)
                 Some(Element::RefPlane(r)) => Element::RefPlane(crate::refplane::RefPlane { a: x.apply(r.a), b: x.apply(r.b), pinned: r.pinned && !opt.copy, name: if opt.copy { String::new() } else { r.name.clone() } }),
+                Some(Element::ModelLine(l)) if l.plane.is_some() => return Err("Model lines on a reference plane are changed in the Model Line tool, in a view of their plane.".into()),
                 Some(Element::ModelLine(l)) => Element::ModelLine(crate::modelline::ModelLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
                 // an image moves by its centre; it does not turn or mirror
                 Some(Element::ImageItem(i)) => {

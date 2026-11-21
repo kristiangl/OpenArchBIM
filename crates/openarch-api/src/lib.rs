@@ -168,6 +168,15 @@ fn images_json(d: &Document, view: Id) -> Value {
 }
 
 /// The symbols placed in a view or on a sheet: where, turned how far, and their family's drawing (paper mm).
+/// A view's work plane, with its name ({ plane, name }), or null.
+fn work_plane_json(d: &Document, view: Id) -> Value {
+    match d.work_plane_of(view) {
+        Some(w @ openarch_model::workplane::WorkPlane::Level { id }) => json!({ "plane": w, "name": d.level(id).map_or(String::new(), |l| format!("Level : {}", l.name)) }),
+        Some(w @ openarch_model::workplane::WorkPlane::RefPlane { id }) => json!({ "plane": w, "name": d.ref_plane(id).map_or(String::new(), |r| format!("Reference Plane : {}", if r.name.is_empty() { format!("({id})") } else { r.name.clone() })) }),
+        None => Value::Null,
+    }
+}
+
 fn symbols_json(d: &Document, view: Id) -> Value {
     // a scale bar is drawn for the view's scale
     let scale = d.view(view).and_then(|_| d.effective_settings(view)).map_or(1.0, |st| st.scale as f64);
@@ -188,7 +197,11 @@ fn detail_json(d: &Document, vid: Id, settings: &openarch_model::view::ViewSetti
     let v = json!({
         "detail": d.detail_paths(vid, scale, ann_shown("Lines"), ann_shown("Detail Items")),
         "detail_lines": d.detail_lines(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "insulation": l.insulation, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
-        "model_lines": d.model_lines_in(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+        // the Model Line session's lines: a plan's, or those on an elevation's or section's work plane, in its frame
+        "model_lines": d.model_lines_drawn(vid, match d.work_plane_of(vid) { Some(openarch_model::workplane::WorkPlane::RefPlane { id }) => Some(id), _ => None })
+            .iter().filter(|_| d.view(vid).is_some_and(|v| v.view_kind.is_plan()) || d.work_plane_of(vid).is_some())
+            .map(|(id, l, c)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(c) })).collect::<Vec<_>>(),
+        "work_plane": work_plane_json(d, vid),
         "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, scale) } else { vec![] },
         "regions": d.detail_regions(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
         "line_styles": d.line_styles(),
@@ -684,6 +697,16 @@ impl Session {
             }
             "patch_ref_plane" => {
                 self.doc.patch_ref_plane(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            // Work Plane > Set: { view_id } lists the choices and the current one; set_work_plane { view_id, plane }
+            "work_plane" => {
+                let vid = id_of(p, "view_id")?;
+                Ok(json!({ "current": work_plane_json(&self.doc, vid), "choices": self.doc.work_plane_choices(vid).into_iter().map(|(w, n)| json!({ "plane": w, "name": n })).collect::<Vec<_>>() }))
+            }
+            "set_work_plane" => {
+                let plane: openarch_model::workplane::WorkPlane = serde_json::from_value(p.get("plane").cloned().ok_or("missing plane")?).map_err(|e| format!("bad plane: {e}"))?;
+                self.doc.set_work_plane(id_of(p, "view_id")?, plane)?;
                 Ok(json!({}))
             }
             "set_model_lines" => {
@@ -5094,6 +5117,28 @@ mod tests {
             .map(|r| (r["cells"][0]["text"].as_str().unwrap().to_string(), r["cells"][1]["text"].as_str().unwrap().to_string())).collect();
         assert_eq!(items, vec![("W".to_string(), "Walls".to_string()), ("W10".to_string(), "Brick veneer".to_string())]);
         assert!(s.handle("add_keynote_legend", &json!({ "name": "Keynote Legend" })).is_err());
+    }
+
+    #[test]
+    fn a_work_plane_set_in_an_elevation_takes_model_lines() {
+        let (mut s, _lvl, _wt, view) = setup();
+        let south = s.doc.views().into_iter().find(|(_, v)| v.name == "South").unwrap().0;
+        let rp = call(&mut s, "add_ref_plane", json!({ "a": [0.0, -200.0], "b": [6000.0, -200.0], "name": "Facade" }))["id"].as_u64().unwrap();
+        let wp = call(&mut s, "work_plane", json!({ "view_id": south }));
+        assert!(wp["current"].is_null());
+        assert_eq!(wp["choices"][0]["name"], "Reference Plane : Facade");
+        assert_eq!(call(&mut s, "work_plane", json!({ "view_id": view }))["current"]["plane"]["kind"], "level");
+        assert!(s.handle("set_model_lines", &json!({ "view_id": south, "lines": [] })).is_err());
+        call(&mut s, "set_work_plane", json!({ "view_id": south, "plane": wp["choices"][0]["plane"] }));
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let id = call(&mut s, "set_model_lines", json!({ "view_id": south, "lines": [{ "curve": line([0.0, 2000.0], [1000.0, 2000.0]) }] }))["ids"][0].as_u64().unwrap();
+        let e = call(&mut s, "elevation", json!({ "view_id": south }));
+        assert_eq!((e["model_lines"][0]["id"].as_u64(), e["work_plane"]["name"].as_str()), (Some(id), Some("Reference Plane : Facade")));
+        assert!(call(&mut s, "describe", json!({ "id": id }))["groups"].to_string().contains("Reference Plane : Facade"));
+        assert!(call(&mut s, "plan", json!({ "view_id": view }))["model_lines"].as_array().unwrap().is_empty());
+        assert!(s.handle("set_work_plane", &json!({ "view_id": view, "plane": { "kind": "ref_plane", "id": rp } })).is_err());
+        call(&mut s, "delete", json!({ "ids": [rp] }));
+        assert!(s.doc.model_line(id).is_none());
     }
 
     #[test]
