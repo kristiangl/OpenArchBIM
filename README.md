@@ -6,34 +6,58 @@ A free, open-source building information modelling (BIM) application for archite
 
 **Status: early development. Not ready for real project work.** Project files will change between versions until a stable file format is announced.
 
+## Screenshots
+
+| | |
+|---|---|
+| ![Floor plan with rooms, doors and strip footings](docs/screenshots/plan.png) | ![3D view, realistic style with shadows](docs/screenshots/3d.png) |
+| Floor plan: layered walls, doors, rooms with areas, strip footings dashed below | 3D view in the Realistic style with shadows |
+| ![South elevation](docs/screenshots/elevation.png) | ![Door schedule](docs/screenshots/schedule.png) |
+| Elevation, with levels and the footings below ground | A door schedule with from and to rooms |
+| ![Sheet with title block, plan, elevation and schedule](docs/screenshots/sheet.png) | ![Family editor](docs/screenshots/family-editor.png) |
+| A sheet with its title block, views and a schedule | The family editor: reference planes, labelled dimensions and a door swing |
+
 ## What it does today
 
+Modelling
 - Levels and grids, with datum alignment locks and a project base point and survey point
-- Layered walls with wall types, mitred and butted joins and join cleanup, plus curved walls and curtain walls (grids, panels, mullions, doors)
-- Floors, roofs and ceilings drawn from sketch boundaries, with slopes and slope arrows
+- Layered walls with wall types, mitred and butted joins and join cleanup, plus curved walls, split walls and curtain walls (grids, panels, mullions, doors)
+- Floors, roofs and ceilings drawn from sketch boundaries, with slopes, slope arrows and shape editing
 - Stairs with runs and automatic landings, ramps, and railings
-- Toposolids for the site: sketched or imported from a survey points file, shaped with points and split lines (added, dragged with snapping, given heights, deleted, simplified), excavated by floors, roofs and other toposolids (the hole follows them and the volume drops), sub-divided into regions with their own type that follow the ground above or below it (a road, a path, a kerbed island), split along a sketched line or loop and merged again, made graded regions whose cut and fill are measured from the ground as it was (with its contours shown dashed), with contours by type and contour labels, spot elevations and slopes on the ground, cut through their layers in sections and where a plan's cut plane passes through the ground, and a variable layer that keeps the underside flat
-- Property lines: sketched, or typed from a survey's distances and bearings (whole circle or quadrant, lines and arcs, from true north), with their area when closed and each segment labelled with its bearing and distance
 - Doors and windows from loadable families, with tags and mark numbering
-- A family editor: reference planes, parameters, types, lookup tables, nested families, and extrusions, blends, sweeps and voids
-- Plan, elevation, section and 3D views, with jogged sections, depth cueing, view ranges, templates, graphic display options, and hide and isolate
-- Permanent and temporary dimensions, spot elevations, coordinates and slopes, text notes, detail lines and filled regions
-- Rooms and areas (with colour fills), and schedules with calculated columns, key schedules, material takeoffs and cross-schedule totals
-- Sheets with schedules on them, and export of sheets and views to PDF and DXF, and DXF and DWG drawings imported or linked into plans
+- Structural columns, beams, beam systems and trusses, strip footings that follow their walls, pad footings (also under selected columns) and thickened slab edges
+- Model lines on a level, or on a reference plane set as the work plane in an elevation or section; model text, flat or upright
+- Reference planes in plans that the snaps find
+- Phases, design options, groups, arrays, copy and paste, Match Type, and Move, Copy, Rotate and Mirror in plans and in 3D
+
+Site
+- Toposolids sketched or imported from survey points, shaped with points and split lines, excavated by floors and roofs, sub-divided, split and merged, with graded regions measuring cut and fill, contours and contour labels
+- Property lines sketched or typed from a survey's bearings and distances, with their area and labelled segments
+- Parking bays, kerbs, kerb ramps and line marking
+
+Views and documentation
+- Plan, ceiling, elevation, section, drafting, legend and 3D views, with jogged sections, view ranges, depth cueing, view templates, filters, graphic display options (shadows, transparency, sketchy lines), sun path, and hide and isolate
+- Permanent and temporary dimensions, spot elevations, coordinates and slopes, text notes, detail lines, insulation, filled and masking regions, symbols, a north arrow that points to true north and a scale bar
+- Tags for doors, windows, rooms and areas, material tags, and keynotes from a keynote file with a keynote legend
+- Legends with wall, floor, roof and family components, and images (PNG, JPEG) in views and on sheets
+- Rooms and areas (with colour fills), and schedules with calculated columns, key schedules, material takeoffs, embedded schedules and cross-schedule totals
+- Project Units: length, area, volume and angle formats, decimal symbol and digit grouping, followed by dimensions, tags and schedules
+- Sheets with title blocks, viewports, schedules and revisions, exported to PDF and DXF; DXF and DWG drawings imported or linked into plans
 - IFC4 export and IFC import
-- Groups, arrays, copy and paste, Match Type, and Move, Copy, Rotate and Mirror in the 3D view
-- Undo and redo, and a single-file project format (`.oab`) with loadable family files (`.oaf`)
+
+Families and the file
+- A family editor: reference planes, parameters, types, formulas, lookup tables, nested families, extrusions, blends, revolves, sweeps and voids, model text and model lines, and an annotation family editor for tags, heads and title blocks
+- Starter doors and windows built on Australian frames (pressed metal and timber), bundled as editable family files
+- Undo and redo, autosave backups, a review-warnings list, and a single-file project format (`.oab`) with loadable family files (`.oaf`)
+- Installers for Windows, Mac and Linux that update themselves from signed GitHub releases
 
 ## What is planned
 
 - Roofs by extrusion and by face, plus soffits, fascias and gutters
-- Legends and 2D drafting views
-- Columns, beams and other structural elements
 - Linked models in the app, on top of the engine already built for large masterplans
-- More site tools: excavation by buildings, sub-divisions, graded regions with cut and fill, property lines, parking and kerbs
-- Phases, view filters and scope boxes
-- Sun path, shadows and render export
-- Worksharing, structural and MEP tools, once the architectural basics are in
+- Scope boxes and work planes on faces
+- Render export
+- Worksharing, structural analysis and MEP tools, once the architectural basics are in
 
 Australian standards and metric units come first. Other regions are welcome later.
 
@@ -77,7 +101,7 @@ then open http://127.0.0.1:8765. Windows previews use the Explorer file picker; 
 
 Selecting a section line shows its view properties. Edit Type selects a Section Tag; Marker Type Properties edits or duplicates its head and tail symbol choices. Elevation view types similarly select an Elevation Mark. Section end grips lengthen or shorten along the current cut plane, with a perpendicular range box throughout the drag; Align and Rotate can change its angle. New projects include separate Section Head and Section Tail families, anchored where their reference planes cross. The editable source families are in `crates/openarch-model/families`. Existing project families keep their saved artwork and type choices.
 
-Projects saved with this build use file format 15, which adds contour labels and split lines on toposolids (format 14 added toposolids, format 13 added project instance parameters, key schedules, rooms, revisions, door and window tags, ceilings, areas and colour fill schemes). Older projects are upgraded on opening, preserving existing marker choices, but earlier app builds cannot open files saved in this format.
+Project files change format as features are added (format 33 at the time of writing). Older projects are upgraded on opening, but earlier app builds cannot open files saved by newer ones. File compatibility will settle before the first alpha.
 
 For a key schedule, choose Schedule keys in New Schedule, select a category and name the key selector. Add instance fields or use Add Parameter for a project/shared parameter. Insert Data Row creates a key; edit its values, then assign it to elements in Properties or an ordinary schedule. Set the selector to (none) to unlock the values while keeping them.
 
