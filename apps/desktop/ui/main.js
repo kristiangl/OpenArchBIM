@@ -205,6 +205,8 @@ const COMMANDS = {
   "m-linestyles": () => openLineStyles(),
   "m-globals": () => openGlobalParams(),
   "m-params": () => ProjParams.open(),
+  // View > 3D View: the default {3D} view (made again when it has been deleted)
+  "v-3d": async () => { const r = await run("default_3d_view", {}); if (!r) return; if (r.made) await refresh(); await openView("3d", r.id); },
   "m-lineweights": () => openLineWeights(),
   "m-linepatterns": () => openPatterns("line"),
   "m-fillpatterns": () => openPatterns("fill"),

@@ -422,6 +422,15 @@ impl Session {
                 Ok(json!({}))
             }
             "duplicate_view" => Ok(json!({ "id": self.doc.duplicate_view(id_of(p, "id")?)? })),
+            // View > 3D View: the default {3D} view, made again if it has been deleted
+            "default_3d_view" => {
+                use openarch_model::view::ViewKind;
+                if let Some((id, _)) = self.doc.views().into_iter().find(|(_, v)| v.view_kind == ViewKind::ThreeD && v.name == "{3D}") {
+                    return Ok(json!({ "id": id, "made": false }));
+                }
+                let id = self.doc.transact("Default 3D view", |tx| Ok(tx.add(Element::View(openarch_model::view::View::three_d("{3D}")))))?;
+                Ok(json!({ "id": id, "made": true }))
+            }
             "create_plan_views" => {
                 let levels: Vec<Id> = p.get("levels").and_then(|v| v.as_array()).ok_or("missing levels")?.iter().filter_map(|v| v.as_u64()).collect();
                 let skip = p.get("skip_existing").and_then(|v| v.as_bool()).unwrap_or(true);
@@ -5353,6 +5362,14 @@ mod tests {
     fn a_3d_views_sun_moments_studies_and_location() {
         let (mut s, _lvl, _wt, _view) = setup();
         let v3 = call(&mut s, "doc_info", json!({}))["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+        // View > 3D View opens {3D}, and makes it again once deleted
+        assert_eq!(call(&mut s, "default_3d_view", json!({}))["id"].as_u64(), Some(v3));
+        call(&mut s, "delete", json!({ "ids": [v3] }));
+        let again = call(&mut s, "default_3d_view", json!({}));
+        assert_eq!(again["made"], true);
+        call(&mut s, "undo", json!({}));
+        call(&mut s, "undo", json!({}));
+        assert!(s.doc.view(v3).is_some());
         // the Graphic Display Options box reads the view's settings; its Properties have the Edit... row
         let g = call(&mut s, "graphic_display", json!({ "view_id": v3 }));
         assert_eq!((g["kind"].as_str(), g["locked"].as_bool(), g["graphic_display"]["show_edges"].as_bool()), (Some("three_d"), Some(false), Some(true)));
