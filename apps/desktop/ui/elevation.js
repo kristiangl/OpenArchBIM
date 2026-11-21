@@ -1208,6 +1208,7 @@ const Elev = (() => {
     }
     Revisions.draw(ctx,data,p=>toScreen(p.x,p.y),cam.s,sel);
     Tags.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
+    if (!printing) Tags.drawGrips(ctx, data, (p) => toScreen(p.x, p.y), sel);
     Det.drawNotes(selD, hov, accent, tool === "select", sel);
     if (tool === "text") Det.preview(hover);
     if (detDrag) drawGhost(detDrag.d.x, detDrag.d.y);
@@ -1348,6 +1349,8 @@ const Elev = (() => {
     if (data && e.button === 0 && EDims.lockDown(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data && e.button === 0 && EDims.down(e.offsetX, e.offsetY)) { down = null; return; }
     if (tool === "select" && data && e.button === 0 && ESpots.down(e.offsetX, e.offsetY)) { down = null; return; }
+    // a selected tag's leader end and elbow, as in plans (tags here are in view mm along the view and up)
+    if (tool === "select" && data && e.button === 0 && Tags.gripDown(e.offsetX, e.offsetY, { data: () => data, selection: () => sel, toScreen: (p) => toScreen(p.x, p.y), toWorld: (x, y) => { const w = toWorld(x, y); return { x: w.u, y: w.z }; }, render })) { down = null; return; }
     if (tool === "select" && data) {
       // pressing on a selected detail line, region or text note and moving carries the selected ones
       const dids = new Set([...Det.elements(),...Revisions.elements(data,cam.s),...Tags.elements(data)].map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
@@ -1402,6 +1405,7 @@ const Elev = (() => {
     if (Det.dragging) { Det.gripMove(e.offsetX, e.offsetY); return; }
     if (EDims.dragging) { EDims.dragMove(e.offsetX, e.offsetY); return; }
     if (ESpots.dragging) { ESpots.dragMove(e.offsetX, e.offsetY); return; }
+    if (Tags.dragging) { Tags.gripMove(e.offsetX, e.offsetY); return; }
     if (tool === "spot") { ESpots.move(e.offsetX, e.offsetY); return; }
     if (tool === "dimension") { const p = toWorld(e.offsetX, e.offsetY); cb.cursor(`${Math.round(p.u)}, ${fmtElev(p.z - datum())}`); EDims.move(e.offsetX, e.offsetY); return; }
     if (tool === "door" || tool === "window") { const p = toWorld(e.offsetX, e.offsetY); cb.cursor(`${Math.round(p.u)}, ${fmtElev(p.z - datum())}`); render(); return; }
@@ -1503,6 +1507,7 @@ const Elev = (() => {
     if (Det.dragging) { down = null; Det.gripUp(); return; }
     if (EDims.dragging) { down = null; EDims.up(e.offsetX, e.offsetY); return; }
     if (ESpots.dragging) { down = null; ESpots.up(e.offsetX, e.offsetY); return; }
+    if (Tags.dragging) { down = null; Tags.gripUp(e.offsetX, e.offsetY); return; }
     if (Sketch.gripDragging && tool === "sketch") { down = null; Sketch.gripUp(); return; }
     if (detDrag) {
       const d = detDrag; detDrag = null; down = null; hover = null;
