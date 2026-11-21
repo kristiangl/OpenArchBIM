@@ -1906,7 +1906,7 @@ Plan.callbacks.array = async (p) => {
 };
 
 // ---- Place Wall: the draw palette, appended to the Modify tab ---------------
-const WALL_SHAPES = ["line", "rectangle", "polygon_in", "polygon_out", "circle", "arc_3pt", "arc_centre", "ellipse", "partial_ellipse", "spline"];
+const WALL_SHAPES = ["pick_lines", "line", "rectangle", "polygon_in", "polygon_out", "circle", "arc_3pt", "arc_centre", "ellipse", "partial_ellipse", "spline"];
 function wallContext() {
   if (app.view.kind !== "plan" || Plan.tool !== "wall" || Sketch.active) return null;
   const cur = Plan.wallOptions().shape;

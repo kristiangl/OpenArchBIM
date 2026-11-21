@@ -1735,6 +1735,10 @@ const Plan = (() => {
       Areas.draw(ctx, data, toScreen, cam.s, sel, printing);
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
       Tags.draw(ctx, data, toScreen, cam.s, sel);
+      if (tool === "wall" && wallShape === "pick_lines" && pickHover && !printing) {
+        const a = toScreen(pickHover.a), b = toScreen(pickHover.b);
+        ctx.save(); ctx.strokeStyle = "#e07b00"; ctx.lineWidth = 3; ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
+      }
       if (!printing) Tags.drawGrips(ctx, data, toScreen, sel);
       Det.drawNotes(sel, hov, accent, tool === "select");
       if (tool === "text") Det.preview(hover);
@@ -1974,6 +1978,7 @@ const Plan = (() => {
     if (tool === "secsplit") return Sections.splitPrompt();
     if (tool === "section") return draw ? "Click the end of the section line. Shift keeps to 45 degrees. The view looks to the left of the direction you draw; flip it after. Esc cancels." : "Click the start of the section line.";
     if (tool === "elevation") return "Click to place the elevation marker. Space turns it 90 degrees. Tick the pointers you want views for in the options bar. Esc to stop.";
+    if (tool === "wall" && wallShape === "pick_lines") return "Click a line to put a wall on it: a detail or CAD line, an edge or a grid. The wall's location line follows it.";
     if (tool === "wall") return draw ? "Click to place the next wall point. Esc finishes the chain. Hold Shift for 45 degree angles. Right-click for snap overrides." : "Click to start a wall. Esc to stop; right-click for Cancel and snap overrides.";
     if (ed) return editPrompt();
     if (tool === "joins") return "Click a wall end to edit its join. Use Next / Previous to step through the configurations. Esc to stop.";
@@ -2491,7 +2496,28 @@ const Plan = (() => {
     render();
   }
 
+  // Pick Lines for walls: the straight line under the cursor (a detail or CAD line, a face, an edge, a grid)
+  let pickHover = null;
+  function pickLineAt(sx, sy) {
+    const p = toWorld(sx, sy), tol = 8 / cam.s;
+    let best = null, bd = tol;
+    const s = Snap.segmentAt(p.x, p.y, tol);
+    if (s) { best = { a: { x: s[0], y: s[1] }, b: { x: s[2], y: s[3] } }; bd = segDist(p, [s[0], s[1]], [s[2], s[3]]); }
+    for (const g of data.grids || []) for (let i = 0; i + 1 < (g.path || []).length; i++) {
+      const d = segDist(p, g.path[i], g.path[i + 1]);
+      if (d < bd) { bd = d; best = { a: { x: g.path[i][0], y: g.path[i][1] }, b: { x: g.path[i + 1][0], y: g.path[i + 1][1] } }; }
+    }
+    return best;
+  }
+
   function click(sx, sy, ev) {
+    if (tool === "wall" && wallShape === "pick_lines") {
+      const l = pickLineAt(sx, sy);
+      if (!l) { cb.prompt("Click on a line: a detail or CAD line, an edge or a grid.", true); return; }
+      const r = (v) => Math.round(v * 1000) / 1000;
+      cb.addWall([r(l.a.x), r(l.a.y)], [r(l.b.x), r(l.b.y)]);
+      return;
+    }
     if (tool === "sketch") {
       const p = snap(sx, sy);
       Snap.clearOverride();
@@ -2835,6 +2861,7 @@ const Plan = (() => {
     if (tool === "shapeline") ShapeEdit.lineHover(hover);
     if (tool === "topolabel") Topo.labelHover(hover);
     if (tool === "propplace") { PropLines.hover(hover); render(); }
+    if (tool === "wall" && wallShape === "pick_lines") { pickHover = pickLineAt(e.offsetX, e.offsetY); render(); }
     if (tool === "parkrow" || tool === "kerbramp") { Traffic.hover(hover); render(); }
     if (Structure.owns(tool)) { Structure.hover(hover); render(); }
     cb.cursor(hover);

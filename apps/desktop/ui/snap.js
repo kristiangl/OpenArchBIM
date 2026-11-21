@@ -182,6 +182,21 @@ const Snap = (() => {
     return t <= Math.abs(sweep) + 1e-9;
   }
 
+  /** The straight line in the geometry nearest (x, y) within r: [x0, y0, x1, y1], or null. Pieces of curves are left
+   * out; so are lines shorter than a millimetre. */
+  function segmentAt(x, y, r) {
+    let best = null, bd = r;
+    for (const sg of nearby(x, y, r)) {
+      if (sg[4] === 2) continue;
+      const dx = sg[2] - sg[0], dy = sg[3] - sg[1], l2 = dx * dx + dy * dy;
+      if (l2 < 1) continue;
+      const t = Math.max(0, Math.min(1, ((x - sg[0]) * dx + (y - sg[1]) * dy) / l2));
+      const d = Math.hypot(x - (sg[0] + dx * t), y - (sg[1] + dy * t));
+      if (d <= bd) { bd = d; best = sg; }
+    }
+    return best && [best[0], best[1], best[2], best[3]];
+  }
+
   function nearby(x, y, r) {
     const seen = new Set(), out = [];
     for (let cx = Math.floor((x - r) / CELL); cx <= Math.floor((x + r) / CELL); cx++) {
@@ -471,6 +486,7 @@ const Snap = (() => {
   const OVERRIDES = { SE: "endpoint", SM: "midpoint", SN: "nearest", SI: "intersection", SP: "perpendicular", SC: "center", SW: "grid", SO: "off", SS: null };
 
   return {
+    segmentAt,
     LABEL, DEFAULTS,
     get settings() { return s; },
     update(patch) { s = { ...s, ...patch }; save(); },
