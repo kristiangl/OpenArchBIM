@@ -424,7 +424,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) => details.push(id),
+                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -597,6 +597,11 @@ impl Document {
                     Element::ElementTag(t)
                 }
                 Some(Element::DetailLine(l)) => Element::DetailLine(crate::detail::DetailLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
+                // an image moves by its centre; it does not turn or mirror
+                Some(Element::ImageItem(i)) => {
+                    if !matches!(x, Xform::Move { .. }) { return Err("Images move and copy; they do not rotate or mirror.".into()); }
+                    Element::ImageItem(crate::image::ImageItem { at: x.apply(i.at), pinned: i.pinned && !opt.copy, ..i.clone() })
+                }
                 // a symbol moves by its point and turns with a rotate; a mirror is refused (it would read backwards)
                 Some(Element::AnnotationSymbol(s)) => {
                     if matches!(x, Xform::Mirror { .. }) { return Err("Symbols move, copy and rotate; they do not mirror.".into()); }

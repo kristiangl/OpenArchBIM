@@ -224,6 +224,7 @@ const COMMANDS = {
   "m-globals": () => openGlobalParams(),
   "m-params": () => ProjParams.open(),
   symbol: () => Symbols.start(false),
+  "import-image": () => Images.start(),
   north: () => Symbols.start("north"),
   "scale-bar": () => Symbols.start("scale_bar"),
   // Manage > Shared Parameters: the shared parameter file, the same box as the family editor's
@@ -408,7 +409,7 @@ function syncTabLabels(c) {
 // The ribbon and its commands belong to the document showing: the project's, the family editor's, or an annotation family's
 const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : app.doc === "annotation" ? ANN_RIBBON : RIBBON);
 // In a drafting view only what draws in it, edits it, or manages the project runs; a model tool asks for a plan first
-const DRAFTING_OK = new Set(["det-line", "det-insulation", "symbol", "north", "scale-bar", "text", "text-lead-l", "text-lead-r", "text-arc-l", "text-arc-r", "text-lead-rm", "det-filled", "det-masking",
+const DRAFTING_OK = new Set(["det-line", "det-insulation", "symbol", "north", "scale-bar", "import-image", "text", "text-lead-l", "text-lead-r", "text-arc-l", "text-arc-r", "text-lead-rm", "det-filled", "det-masking",
   "edit-boundary", "det-revcloud", "tag-revision", "mi-pick", "mi-draw", "del", "mv", "cp", "ro", "mi", "of", "tr", "al", "me", "ar", "gp", "det-group",
   "pin", "unpin", "det-comp", "clip-copy", "clip-cut", "paste", "paste-same", "paste-current", "match-type", "create-similar", "reveal", "show-wp", "export",
   "export-ifc", "open-ifc", "import-ifc", "project-info", "load-family", "open-log"]);

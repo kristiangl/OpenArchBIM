@@ -157,6 +157,15 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
 
 /// What a 2D view shows of its detail lines, regions and text notes (paper mm, round the view's origin), with the
 /// lists the tools need. Plans, elevations and sections all send it.
+/// The images placed in a view or on a sheet, without their pictures (`image_data` sends those, once): centre,
+/// size on paper, and a key that changes with the picture.
+fn images_json(d: &Document, view: Id) -> Value {
+    json!(d.images_in(view).into_iter().filter(|(id, _)| !d.hidden_in(view, *id)).map(|(id, i)| json!({
+        "id": id, "at": { "x": i.at.x, "y": i.at.y }, "width_mm": i.width_mm, "height_mm": i.height_mm(), "pinned": i.pinned,
+        "name": i.name, "key": format!("{id}:{}:{}", i.data.len(), &i.data[i.data.len().saturating_sub(16)..]),
+    })).collect::<Vec<_>>())
+}
+
 /// The symbols placed in a view or on a sheet: where, turned how far, and their family's drawing (paper mm).
 fn symbols_json(d: &Document, view: Id) -> Value {
     // a scale bar is drawn for the view's scale
@@ -444,6 +453,16 @@ impl Session {
                 let builtin = if p.get("builtin").and_then(|v| v.as_str()) == Some("scale_bar") { openarch_model::annsymbol::BuiltinSymbol::ScaleBar } else { openarch_model::annsymbol::BuiltinSymbol::NorthArrow };
                 Ok(json!({ "id": self.doc.add_symbol_of(id_of(p, "view_id")?, p.get("family_id").and_then(|v| v.as_u64()), builtin, point_of(p.get("point").ok_or("missing point")?)?, p.get("rotation_deg").and_then(|v| v.as_f64()).unwrap_or(0.0))? }))
             }
+            // Insert > Image: { view_id (a view or a sheet), path, point, width_mm? }
+            "add_image" => {
+                let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
+                let bytes = std::fs::read(&path).map_err(|e| format!("could not read {}: {e}", path.display()))?;
+                let name = path.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_default();
+                Ok(json!({ "id": self.doc.add_image(id_of(p, "view_id")?, &bytes, &name, point_of(p.get("point").ok_or("missing point")?)?, p.get("width_mm").and_then(|v| v.as_f64()))? }))
+            }
+            // the picture itself, for drawing: { mime, data (base64) }
+            "image_data" => { let i = self.doc.image(id_of(p, "id")?).ok_or("not an image")?; Ok(json!({ "mime": i.mime, "data": i.data })) }
+            "patch_image" => { self.doc.patch_image(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) }
             "new_symbol_family" => Ok(json!({ "id": self.doc.new_symbol_family(p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "patch_symbol" => { self.doc.patch_symbol(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) }
             // View > Legend: { name?, scale? }
@@ -2323,7 +2342,7 @@ impl Session {
                     schedules.push(json!({ "id": sid, "schedule": p.schedule, "segments": p.segments, "repeat_headers": p.repeat_headers, "table": table }));
                 }
                 Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules, "revision_table":self.revision_table(id), "revision_clouds":revisions::drawing(d,id)["revision_clouds"], "revision_tags":revisions::drawing(d,id)["revision_tags"], "additional_revisions":s.additional_revisions, "applicable_revisions":d.sheet_revisions(id),
-                    "detail": d.detail_paths(id, 1.0, true, true), "text_notes": d.text_note_draws(id, 1.0), "symbols": symbols_json(d, id),
+                    "detail": d.detail_paths(id, 1.0, true, true), "text_notes": d.text_note_draws(id, 1.0), "symbols": symbols_json(d, id), "images": images_json(d, id),
                     "detail_lines": d.detail_lines(id).iter().map(|(i, l)| json!({ "id": i, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
                     "regions": d.detail_regions(id).iter().map(|(i, r)| json!({ "id": i, "masking": r.masking, "region_type": r.region_type })).collect::<Vec<_>>(),
                     "fill_patterns": graphics::fill_pattern_defs(d), "line_styles": d.line_styles() }))
@@ -2527,7 +2546,7 @@ impl Session {
         if let Some(o) = v.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
-            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid));
+            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid)); o.insert("images".into(), images_json(d, vid));
         }
         // permanent dimensions, measured in the view's own frame
         let hidden_here = d.view(vid).map(|x| x.hidden_elements.clone()).unwrap_or_default();
@@ -3208,7 +3227,7 @@ impl Session {
             if let Some(c) = colorfill::drawing(d, vid).as_object() { o.extend(c.clone()); }
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
-            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid));
+            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid)); o.insert("images".into(), images_json(d, vid));
         }
         Ok(out)
     }
@@ -3239,7 +3258,7 @@ impl Session {
         if let Some(o) = out.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
             if let Some(r) = revisions::drawing(d, vid).as_object() { o.extend(r.clone()); }
-            o.insert("symbols".into(), symbols_json(d, vid));
+            o.insert("symbols".into(), symbols_json(d, vid)); o.insert("images".into(), images_json(d, vid));
             // a legend's components join the detail drawing (so they print and export the same), with their outlines
             // for picking
             if view.view_kind == openarch_model::view::ViewKind::Legend {
@@ -3501,6 +3520,15 @@ impl Session {
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
             Element::LegendComponent(c) => Ok(props::legend_component_props(d, id, c)),
             Element::AnnotationSymbol(s) => Ok(props::symbol_props(d, id, s)),
+            Element::ImageItem(i) => Ok(json!({
+                "id": id, "kind": "Image", "title": "Raster Image", "type_label": "Raster Image",
+                "target": { "method": "patch_image", "id": id },
+                "groups": [
+                    props::group("Dimensions", vec![props::num("Width", "width_mm", (i.width_mm * 10.0).round() / 10.0, !i.pinned), props::ro("Height", format!("{:.1}", i.height_mm())), props::ro("Pixels", format!("{} x {}", i.px[0], i.px[1]))]),
+                    props::group("Identity Data", vec![props::ro("File", i.name.clone())]),
+                    props::group("Constraints", vec![props::boolean("Pinned", "pinned", i.pinned, true)]),
+                ],
+            })),
             Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
             Element::TextNote(t) => Ok(props::text_note_props(d, id, t)),
             Element::GroupInstance(g) => Ok(props::group_props(d, id, g)),
@@ -5775,6 +5803,35 @@ mod tests {
         call(&mut s, "align", json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 750], [4000, 750]] }));
         assert_eq!(ends(&mut s, o).0, json!([0.0, 900.0]));
         assert!(s.handle("align", &json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 900], [4000, 900]] })).is_err());
+    }
+
+    #[test]
+    fn images_go_in_views_and_on_sheets() {
+        let (mut s, _, _, view) = setup();
+        // a real 1 x 1 PNG
+        let png = base64_decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8DwHwAFBQIAX8jx0gAAAABJRU5ErkJggg==").unwrap();
+        let path = std::env::temp_dir().join(format!("openarch-img-{}.png", std::process::id()));
+        std::fs::write(&path, &png).unwrap();
+        let i = call(&mut s, "add_image", json!({ "view_id": view, "path": path.to_string_lossy(), "point": [1000, 1000] }))["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        let img = plan["images"].as_array().unwrap().iter().find(|x| x["id"] == i).unwrap().clone();
+        assert_eq!((img["width_mm"].as_f64(), img["height_mm"].as_f64()), (Some(10.0), Some(10.0)));
+        assert!(img.get("data").is_none(), "the picture is sent on its own");
+        let d = call(&mut s, "image_data", json!({ "id": i }));
+        assert_eq!((d["mime"].as_str(), base64_decode(d["data"].as_str().unwrap()).unwrap()), (Some("image/png"), png.clone()));
+        // width in Properties; the picture can't be swapped by a patch; move and copy; rotate refused
+        call(&mut s, "patch_image", json!({ "id": i, "patch": { "width_mm": 40, "data": "AAAA" } }));
+        assert_eq!((s.doc.image(i).unwrap().width_mm, s.doc.image(i).unwrap().data.len() > 4), (40.0, true));
+        assert!(s.handle("patch_image", &json!({ "id": i, "patch": { "width_mm": 0 } })).is_err());
+        call(&mut s, "transform", json!({ "ids": [i], "kind": "move", "dx": 500, "dy": 0, "copy": true }));
+        assert!(s.handle("transform", &json!({ "ids": [i], "kind": "rotate", "cx": 0, "cy": 0, "angle_deg": 90 })).is_err());
+        // on a sheet; not a picture refused
+        let sheet = call(&mut s, "add_sheet", json!({ "name": "Cover" }))["id"].as_u64().unwrap();
+        call(&mut s, "add_image", json!({ "view_id": sheet, "path": path.to_string_lossy(), "point": [100, 100], "width_mm": 60 }));
+        assert_eq!(call(&mut s, "sheet", json!({ "id": sheet }))["images"][0]["width_mm"], 60.0);
+        std::fs::write(&path, b"not a picture").unwrap();
+        assert!(s.handle("add_image", &json!({ "view_id": sheet, "path": path.to_string_lossy(), "point": [0, 0] })).is_err());
+        std::fs::remove_file(&path).ok();
     }
 
     #[test]

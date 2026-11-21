@@ -1209,6 +1209,7 @@ const Elev = (() => {
     Revisions.draw(ctx,data,p=>toScreen(p.x,p.y),cam.s,sel);
     Tags.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
     Symbols.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
+    Images.draw(ctx, data, (p) => toScreen(p.x, p.y), cam.s, sel);
     if (!printing) Tags.drawGrips(ctx, data, (p) => toScreen(p.x, p.y), sel);
     Det.drawNotes(selD, hov, accent, tool === "select", sel);
     if (tool === "text") Det.preview(hover);
@@ -1314,7 +1315,7 @@ const Elev = (() => {
     for (const it of data.items || []) test([...it.polys.flat(), ...it.lines.flat()], it.id);
     for (const l of data.levels || []) test([[l.u0, l.z], [l.u1, l.z]], l.id);
     for (const g of data.grids || []) test([[g.u, g.z0], [g.u, g.z1]], g.id);
-    for (const d of [...Det.elements(), ...Revisions.elements(data, cam.s), ...Tags.elements(data), ...Symbols.elements(data)]) test((d.rings || [d.ring]).flat(), d.id);
+    for (const d of [...Det.elements(), ...Revisions.elements(data, cam.s), ...Tags.elements(data), ...Symbols.elements(data), ...Images.elements(data)]) test((d.rings || [d.ring]).flat(), d.id);
     if (ev.shiftKey) ids.forEach((i) => sel.delete(i));
     else if (ev.ctrlKey) ids.forEach((i) => sel.add(i));
     else sel = ids;
@@ -1354,7 +1355,7 @@ const Elev = (() => {
     if (tool === "select" && data && e.button === 0 && Tags.gripDown(e.offsetX, e.offsetY, { data: () => data, selection: () => sel, toScreen: (p) => toScreen(p.x, p.y), toWorld: (x, y) => { const w = toWorld(x, y); return { x: w.u, y: w.z }; }, render })) { down = null; return; }
     if (tool === "select" && data) {
       // pressing on a selected detail line, region or text note and moving carries the selected ones
-      const dids = new Set([...Det.elements(),...Revisions.elements(data,cam.s),...Tags.elements(data), ...Symbols.elements(data)].map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
+      const dids = new Set([...Det.elements(),...Revisions.elements(data,cam.s),...Tags.elements(data), ...Symbols.elements(data), ...Images.elements(data)].map((x) => x.id)), at = detailAt(e.offsetX, e.offsetY);
       if (at.some((i) => sel.has(i)) && [...sel].every((i) => dids.has(i))) down.drag = { ids: [...sel], p0: snap(e.offsetX, e.offsetY) };
       const cg = cropBoxes.find((q) => Math.abs(e.offsetX - q.x) <= 7 && Math.abs(e.offsetY - q.y) <= 7);
       if (cg) { cropDrag = { side: cg.side, v: 0, moved: false }; down = null; return; }
@@ -1607,6 +1608,7 @@ const Elev = (() => {
       }
       if(tool==="revisiontag"){const p=toWorld(e.offsetX,e.offsetY);down=null;Revisions.place({x:p.u,y:p.z});return;}
       if (tool === "symbol") { const p = toWorld(e.offsetX, e.offsetY); down = null; Symbols.place({ x: p.u, y: p.z }); return; }
+      if (tool === "image") { const p = toWorld(e.offsetX, e.offsetY); down = null; Images.place({ x: p.u, y: p.z }); return; }
       // Tag by Category: the door or window under the cursor
       if (tool === "tag") {
         down = null;
@@ -1739,7 +1741,7 @@ const Elev = (() => {
   function detailAt(sx, sy) {
     if (!data) return [];
     const p = W(sx, sy), out = [];
-    for (const e of [...Det.elements(),...Revisions.elements(data,cam.s),...Tags.elements(data), ...Symbols.elements(data)]) {
+    for (const e of [...Det.elements(),...Revisions.elements(data,cam.s),...Tags.elements(data), ...Symbols.elements(data), ...Images.elements(data)]) {
       const rings = e.rings || [e.ring];
       const hit = e.kind === "region" ? rings.reduce((n, r) => n + (inRing(p, r) ? 1 : 0), 0) % 2 === 1 : rings.some((r) => inRing(p, r));
       if (hit && !out.includes(e.id)) out.push(e.id);

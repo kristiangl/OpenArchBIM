@@ -186,7 +186,18 @@ const ExportFlow = (() => {
     }
     strokeText(text, x, y) { this.fillText(text, x, y); }
     createPattern() { return null; }
-    drawImage() {}
+    // a picture (Insert > Image): kept as a JPEG with where its corner and sides fall on the page
+    drawImage(img, x, y, w, h) {
+      const nw = img && (img.naturalWidth || img.width), nh = img && (img.naturalHeight || img.height);
+      if (!nw || !nh || w === undefined) return;
+      const k = Math.min(1, 2000 / Math.max(nw, nh)), cw = Math.max(1, Math.round(nw * k)), ch = Math.max(1, Math.round(nh * k));
+      const cv = document.createElement("canvas"); cv.width = cw; cv.height = ch;
+      const g = cv.getContext("2d"); g.fillStyle = "#fff"; g.fillRect(0, 0, cw, ch); g.drawImage(img, 0, 0, cw, ch);
+      const bin = atob(cv.toDataURL("image/jpeg", 0.9).split(",")[1]), jpeg = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) jpeg[i] = bin.charCodeAt(i);
+      const [a, b, c, d] = this.st.m, o = this.pt(x, y + h);
+      this.ops.push({ t: "image", jpeg, pw: cw, ph: ch, o, u: [a * w, b * w], v: [-c * h, -d * h] });
+    }
   }
 
   // the sheets or views as pages: { paper:[w,h] mm, ops (page units, y down) }, and for the DXF (`semantic`) what the
@@ -197,6 +208,8 @@ const ExportFlow = (() => {
     for (const v of s.views) {
       try { data.set(v.view, await Backend.call(v.drawing === "plan" ? "plan" : "elevation", { view_id: v.view })); } catch { /* drawn empty */ }
     }
+    // pictures fetched before drawing, so the pages have them
+    await Images.preload([...(s.images || []), ...[...data.values()].flatMap((d) => d.images || [])]);
     const [pw, ph] = s.paper;
     const rec = new Recorder(pw * k, ph * k);
     rec.semantic = !!semantic;
@@ -232,6 +245,9 @@ const ExportFlow = (() => {
       else if (o.t === "stroke" && o.subs.length) {
         const cap = o.cap === "round" ? 1 : o.cap === "square" ? 2 : 0, join = o.join === "round" ? 1 : o.join === "bevel" ? 2 : 0;
         out.push(`${rgb(grey(o.colour, mode))} RG ${num(Math.max(o.width, 0.1))} w ${cap} J ${join} j [${o.dash.map(num).join(" ")}] 0 d ${path(o.subs)} S`);
+      } else if (o.t === "image" && o.name) {
+        // the image's unit square: its bottom left corner, its width along u and its height along v (y up)
+        out.push(`q ${num(o.u[0])} ${num(-o.u[1])} ${num(o.v[0])} ${num(-o.v[1])} ${P(o.o)} cm /${o.name} Do Q`);
       } else if (o.t === "text") {
         const c = Math.cos(o.angle), s = Math.sin(o.angle);
         // the baseline runs (c, -s) in the page (y up); the glyphs stand up at right angles to it
@@ -259,11 +275,19 @@ const ExportFlow = (() => {
       const [W, H] = pageSize(pg.paper, set).map((x) => x * PT);
       const sc = pageScale(pg.paper, set);
       const place = { s: (sc * PT) / PDF_K, x: (W - pg.paper[0] * PT * sc) / 2, y: (H - pg.paper[1] * PT * sc) / 2 };
+      // the page's pictures as image objects, each op naming its own
+      const xobjects = [];
+      for (const o of pg.ops) {
+        if (o.t !== "image") continue;
+        const id = add([enc.encode(`<< /Type /XObject /Subtype /Image /Width ${o.pw} /Height ${o.ph} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /DCTDecode /Length ${o.jpeg.length} >>\nstream\n`), o.jpeg, enc.encode("\nendstream")]);
+        o.name = `Im${xobjects.length + 1}`;
+        xobjects.push(`/${o.name} ${id} 0 R`);
+      }
       const raw = enc.encode(pdfContent(pg.ops, pg.paper[1] * PDF_K, place, set.pdfColour));
       const z = await deflate(raw);
       const body = z || raw;
       const content = add([enc.encode(`<< /Length ${body.length}${z ? " /Filter /FlateDecode" : ""} >>\nstream\n`), body, enc.encode("\nendstream")]);
-      kids.push(add([enc.encode(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(W)} ${num(H)}] /Resources << /Font << /F1 ${fonts[0]} 0 R /F2 ${fonts[1]} 0 R >> >> /Contents ${content} 0 R >>`)]));
+      kids.push(add([enc.encode(`<< /Type /Page /Parent ${pagesId} 0 R /MediaBox [0 0 ${num(W)} ${num(H)}] /Resources << /Font << /F1 ${fonts[0]} 0 R /F2 ${fonts[1]} 0 R >>${xobjects.length ? ` /XObject << ${xobjects.join(" ")} >>` : ""} >> /Contents ${content} 0 R >>`)]));
     }
     objs[pagesId - 1] = [enc.encode(`<< /Type /Pages /Kids [${kids.map((k) => `${k} 0 R`).join(" ")}] /Count ${kids.length} >>`)];
     const catalog = add([enc.encode(`<< /Type /Catalog /Pages ${pagesId} 0 R >>`)]);

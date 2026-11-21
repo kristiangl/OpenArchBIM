@@ -748,6 +748,8 @@ pub enum Element {
     LegendComponent(crate::legend::LegendComponent),
     /// A generic annotation placed in a view or on a sheet (annsymbol.rs).
     AnnotationSymbol(crate::annsymbol::AnnotationSymbol),
+    /// A picture placed in a view or on a sheet (image.rs).
+    ImageItem(crate::image::ImageItem),
 }
 
 impl Element {
@@ -797,6 +799,7 @@ impl Element {
             Element::DesignOptions(_) => "Design Options",
             Element::LegendComponent(_) => "Legend Component",
             Element::AnnotationSymbol(_) => "Symbol",
+            Element::ImageItem(_) => "Image",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

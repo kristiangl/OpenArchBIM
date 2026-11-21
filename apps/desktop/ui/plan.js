@@ -299,7 +299,7 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Symbols.elements(data), ...Ceilings.elements(data), ...Structure.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data),
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Symbols.elements(data), ...Images.elements(data), ...Ceilings.elements(data), ...Structure.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data),
       ...(data.legend_components || []).map((c) => ({ id: c.id, kind: "legendcomp", ring: c.ring, pinned: c.pinned, display: "normal" })));
     const sp = data.site_points;
     if (sp) {
@@ -440,7 +440,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, symbol: -1, legendcomp: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, proplinetag: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, symbol: -1, image: 0, legendcomp: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, proplinetag: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1737,6 +1737,7 @@ const Plan = (() => {
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
       Tags.draw(ctx, data, toScreen, cam.s, sel);
       Symbols.draw(ctx, data, toScreen, cam.s, sel);
+      Images.draw(ctx, data, toScreen, cam.s, sel);
       if (tool === "split" || tool === "splitgap") drawSplitHover();
       if (tool === "wall" && wallShape === "pick_lines" && pickHover && !printing) {
         const a = toScreen(pickHover.a), b = toScreen(pickHover.b);
@@ -2564,6 +2565,7 @@ const Plan = (() => {
     }
     if (tool==="revisiontag") { Revisions.place(toWorld(sx,sy));return; }
     if (tool === "symbol") { const p = snap(sx, sy); Symbols.place({ x: p.x, y: p.y }); return; }
+    if (tool === "image") { const p = snap(sx, sy); Images.place({ x: p.x, y: p.y }); return; }
     if (tool === "room" || tool === "roomtag") { Spatial.place(tool,toWorld(sx,sy)); return; }
     if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
@@ -3186,7 +3188,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.symbols || []), ...(data.legend_components || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.symbols || []), ...(data.images || []), ...(data.legend_components || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();

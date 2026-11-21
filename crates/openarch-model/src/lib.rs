@@ -29,6 +29,7 @@ pub mod family;
 pub mod geom;
 pub mod globalparam;
 pub mod grid;
+pub mod image;
 pub mod group;
 pub mod hosting;
 pub mod ifc;
