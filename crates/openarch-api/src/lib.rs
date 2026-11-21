@@ -2252,6 +2252,7 @@ impl Session {
                 }
                 Ok(json!(out))
             }
+            "add_keynote_legend" => Ok(json!({ "id": self.doc.add_keynote_legend(p["name"].as_str().unwrap_or("Keynote Legend"))? })),
             "add_schedule" => {
                 if p["key"].as_bool().unwrap_or(false) { return self.create_key_schedule(p); }
                 let category = p.get("category").and_then(|v| v.as_str()).ok_or("missing category")?;
@@ -5084,6 +5085,15 @@ mod tests {
         assert!(call(&mut s, "describe", json!({ "id": id }))["groups"].to_string().contains("User keynote W10"));
         assert!(s.handle("add_keynote_tag", &json!({ "view_id": view, "element_id": w, "point": [0.0, 0.0], "source": { "kind": "user", "key": "X" } })).is_err());
         assert!(s.handle("load_keynotes", &json!({ "path": "no-such-file.txt" })).is_err());
+        // a keynote legend: a row per key used, in key order (W10 twice and W once make two rows)
+        call(&mut s, "add_keynote_tag", json!({ "view_id": view, "element_id": w, "point": [4000.0, 0.0], "source": { "kind": "user", "key": "W10" } }));
+        call(&mut s, "add_keynote_tag", json!({ "view_id": view, "element_id": w, "point": [500.0, 0.0], "source": { "kind": "user", "key": "W" } }));
+        let legend = call(&mut s, "add_keynote_legend", json!({ "name": "Keynote Legend" }))["id"].as_u64().unwrap();
+        let t = call(&mut s, "schedule_table", json!({ "id": legend }));
+        let items: Vec<(String, String)> = t["rows"].as_array().unwrap().iter().filter(|r| r["kind"] == "item")
+            .map(|r| (r["cells"][0]["text"].as_str().unwrap().to_string(), r["cells"][1]["text"].as_str().unwrap().to_string())).collect();
+        assert_eq!(items, vec![("W".to_string(), "Walls".to_string()), ("W10".to_string(), "Brick veneer".to_string())]);
+        assert!(s.handle("add_keynote_legend", &json!({ "name": "Keynote Legend" })).is_err());
     }
 
     #[test]

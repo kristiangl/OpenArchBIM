@@ -150,7 +150,7 @@ const RIBBON = {
       { id: "v-plan", label: "Plan Views", big: true, menu: [
         { id: "v-floorplan", label: "Floor Plan" }, { id: "v-ceilingplan", label: "Reflected Ceiling Plan" } ] }, { id: "v-3d", label: "3D View", big: true },
       { id: "v-section", label: "Section", big: true }, { id: "v-elev", label: "Elevation", big: true },
-      { id: "v-draft", label: "Drafting View", big: true }, { id: "v-legend", label: "Legend", big: true },
+      { id: "v-draft", label: "Drafting View", big: true }, { id: "v-legend", label: "Legend", big: true, menu: [{ id: "v-legend", label: "Legend" }, { id: "v-keylegend", label: "Keynote Legend" }] },
       { id: "v-sched", label: "Schedules", big: true, menu: [
         { id: "v-sched-qty", label: "Schedule/Quantities" }, { id: "v-sched-mto", label: "Material Takeoff" }, { id: "v-sched-sheets", label: "Sheet List" }, { id: "v-sched-views", label: "View List" } ] }, { id: "v-sheet", label: "Sheet", big: true },
       { id: "v-dup", label: "Duplicate View", big: true } ] },

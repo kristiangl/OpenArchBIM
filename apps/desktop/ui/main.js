@@ -240,6 +240,7 @@ const COMMANDS = {
   "m-shared": () => FamModel.sharedParams(),
   "v-draft": () => newDraftingView(),
   "v-legend": () => newDraftingView("legend"),
+  "v-keylegend": () => newKeynoteLegend(),
   // Annotate > Component: in a legend, Legend Component (detail components are not built yet)
   "det-comp": () => startLegendComponent(),
   // View > 3D View: the default {3D} view (made again when it has been deleted)
@@ -861,7 +862,7 @@ function renderTree() {
       ...byType("elevation", "Elevations"),
       ...byType("section", "Sections"),
       { name: "Drafting Views", menu: [{ label: "New Drafting View...", run: () => newDraftingView() }], children: ofKind("drafting").map(viewLeaf) },
-      { name: "Legends", menu: [{ label: "New Legend...", run: () => newDraftingView("legend") }], children: ofKind("legend").map(viewLeaf) },
+      { name: "Legends", menu: [{ label: "New Legend...", run: () => newDraftingView("legend") }, { label: "New Keynote Legend...", run: () => newKeynoteLegend() }], children: ofKind("legend").map(viewLeaf) },
       { name: "Schedules / Quantities", menu: newScheduleMenu, children: [
         ...ofKind("schedule").map((x) => ({ ...viewLeaf(x), menu: [
           { label: "Open", run: () => openView("schedule", x.id) },
@@ -3685,6 +3686,18 @@ const detailPayload = (curves) => curves.map((c) => ({ id: c.attr.id ?? null, cu
 
 // Model Line (Architecture > Model Line) is the same session on the plan's model lines (modelline.rs): they belong to
 // the plan's level, so every floor plan of it and 3D views show them. `app.lineSession` says which.
+// View > Legend > Keynote Legend: a schedule of the keynotes placed, opened at once (the core: schedule.rs)
+async function newKeynoteLegend() {
+  const taken = new Set((app.info.views || []).map((v) => v.name));
+  let name = "Keynote Legend", n = 1;
+  while (taken.has(name)) name = `Keynote Legend ${++n}`;
+  const r = await run("add_keynote_legend", { name });
+  if (!r) return;
+  await refresh();
+  await openView("schedule", r.id);
+  setPrompt("Keynote legend made: it lists the keynotes placed, a row per key. Put it on a sheet and tick Filter by Sheet to list only that sheet's.");
+}
+
 async function startDetailLines(selectId, tool, model = false) {
   if (Sketch.active) {
     if (Sketch.kind === "detail" && (app.lineSession === "model") === model) { if (tool) Sketch.setTool(tool); return; }

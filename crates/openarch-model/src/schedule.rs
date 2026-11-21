@@ -24,6 +24,8 @@ pub const MAX_SORT: usize = 4;
 pub const MULTI_CATEGORY: &str = "Multi-Category";
 pub const SHEETS: &str = "Sheets";
 pub const VIEWS: &str = "Views";
+/// A keynote legend lists the keynote tags (keynote.rs), a row per key.
+pub const KEYNOTES: &str = "Keynote Tags";
 
 /// What a material takeoff adds to the element's fields: the material's own values and its share of the element.
 pub const MATERIAL_FIELDS: [(&str, Unit); 12] = [
@@ -581,6 +583,24 @@ impl Document {
         def.check(&|_| Unit::Text)?;
         v.schedule = Some(def);
         self.transact("New Schedule", |tx| Ok(tx.add(Element::View(v))))
+    }
+
+    /// View > Legend > Keynote Legend: a schedule of the keynotes placed, Key Value and Keynote Text, a row per key in
+    /// key order (Filter by Sheet lists only the keynotes in the views on the sheet it is on).
+    pub fn add_keynote_legend(&mut self, name: &str) -> Result<Id, String> {
+        let name = name.trim();
+        if name.is_empty() || self.schedules().iter().any(|(_, v)| v.name == name) {
+            return Err("A keynote legend needs a name of its own.".into());
+        }
+        let field = |n: &str| -> Result<SchedField, String> { serde_json::from_value(serde_json::json!({ "name": n, "kind": "instance", "unit": "text" })).map_err(|e| e.to_string()) };
+        let sort: SortKey = serde_json::from_value(serde_json::json!({ "field": "Key Value" })).map_err(|e| e.to_string())?;
+        let def = ScheduleDef { fields: vec![field("Key Value")?, field("Keynote Text")?], sort: vec![sort], itemize: false, ..ScheduleDef::new(KEYNOTES) };
+        def.check(&|_| Unit::Text)?;
+        let mut v = View::floor_plan(name, 0);
+        v.view_kind = ViewKind::Schedule;
+        v.level = None;
+        v.schedule = Some(def);
+        self.transact("New Keynote Legend", |tx| Ok(tx.add(Element::View(v))))
     }
 
     /// Changes a schedule's definition (one undo step), when it holds together.

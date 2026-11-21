@@ -221,6 +221,14 @@ impl Session {
         if let Some(c) = self.schedule_category(id) {
             instance.insert("Category".to_string(), Cell::text(c));
         }
+        // a keynote's key and its text
+        if let Some(Element::ElementTag(t)) = self.doc.get(id) {
+            if t.keynote.is_some() {
+                let key = self.doc.keynote_key(t).unwrap_or_default();
+                instance.insert("Keynote Text".to_string(), Cell::text(self.doc.keynote_text(&key).unwrap_or_default()));
+                instance.insert("Key Value".to_string(), Cell::text(key));
+            }
+        }
         if let Ok(v) = self.describe(id) {
             if let (Some(Element::View(_)), Some(t)) = (self.doc.get(id), v["type_label"].as_str()) {
                 instance.insert("View Type".to_string(), Cell::text(t));
@@ -279,6 +287,8 @@ impl Session {
             MULTI_CATEGORY => d.iter().map(|(id, _)| id).filter(|id| self.schedule_category(*id).is_some()).collect(),
             SHEETS => d.sheets().into_iter().filter(|(_, s)| s.appears_in_list).map(|(id, _)| id).collect(),
             VIEWS => d.views().into_iter().filter(|(_, v)| v.view_kind != openarch_model::view::ViewKind::Schedule).map(|(id, _)| id).collect(),
+            // a keynote legend: the keynotes that show a key
+            KEYNOTES => d.iter().filter_map(|(id, e)| match e { Element::ElementTag(t) if t.keynote.is_some() && d.keynote_key(t).is_some_and(|k| !k.is_empty()) => Some(id), _ => None }).collect(),
             c => d.iter().map(|(id, _)| id).filter(|id| self.schedule_category(*id).as_deref() == Some(c)).collect(),
         }
     }
@@ -435,6 +445,8 @@ impl Session {
             } else if let Ok(e) = self.doc.elevation_data(vp.view) {
                 out.extend(e.items.iter().map(|it| it.id));
             }
+            // the view's tags (a keynote legend filtered by sheet lists the keynotes on it)
+            out.extend(self.doc.element_tags(vp.view).into_iter().map(|(id, _)| id));
         }
         out
     }
