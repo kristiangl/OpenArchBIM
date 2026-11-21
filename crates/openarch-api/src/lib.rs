@@ -159,8 +159,12 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
 /// lists the tools need. Plans, elevations and sections all send it.
 /// The symbols placed in a view or on a sheet: where, turned how far, and their family's drawing (paper mm).
 fn symbols_json(d: &Document, view: Id) -> Value {
+    // a scale bar is drawn for the view's scale
+    let scale = d.view(view).and_then(|_| d.effective_settings(view)).map_or(1.0, |st| st.scale as f64);
     json!(d.symbols_in(view).into_iter().filter(|(id, _)| !d.hidden_in(view, *id)).filter_map(|(id, s)| {
-        let f = d.annotation_family(s.family)?;
+        let fam = d.annotation_family(s.family)?;
+        let bar = fam.scale_bar_mm.map(|_| fam.scale_bar_drawing(scale));
+        let f = bar.as_ref().unwrap_or(fam);
         Some(json!({ "id": id, "at": { "x": s.at.x, "y": s.at.y }, "rotation_deg": s.rotation_deg, "pinned": s.pinned, "name": f.name,
             "family": d.symbol_drawing(f, false), "labels": d.symbol_texts(f, &|_| None, false) }))
     }).collect::<Vec<_>>())
@@ -434,7 +438,10 @@ impl Session {
             // Annotate > Symbol: the generic annotation families (none yet: the North Arrow comes with the first one)
             "symbol_families" => Ok(json!({ "families": self.doc.symbol_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name })).collect::<Vec<_>>() })),
             // { view_id (a view or a sheet), family_id?, point, rotation_deg? }
-            "add_symbol" => Ok(json!({ "id": self.doc.add_symbol(id_of(p, "view_id")?, p.get("family_id").and_then(|v| v.as_u64()), point_of(p.get("point").ok_or("missing point")?)?, p.get("rotation_deg").and_then(|v| v.as_f64()).unwrap_or(0.0))? })),
+            "add_symbol" => {
+                let builtin = if p.get("builtin").and_then(|v| v.as_str()) == Some("scale_bar") { openarch_model::annsymbol::BuiltinSymbol::ScaleBar } else { openarch_model::annsymbol::BuiltinSymbol::NorthArrow };
+                Ok(json!({ "id": self.doc.add_symbol_of(id_of(p, "view_id")?, p.get("family_id").and_then(|v| v.as_u64()), builtin, point_of(p.get("point").ok_or("missing point")?)?, p.get("rotation_deg").and_then(|v| v.as_f64()).unwrap_or(0.0))? }))
+            }
             "patch_symbol" => { self.doc.patch_symbol(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) }
             // View > Legend: { name?, scale? }
             "add_legend_view" => Ok(json!({ "id": self.doc.add_legend_view(p.get("name").and_then(|v| v.as_str()), p.get("scale").and_then(|v| v.as_u64()).unwrap_or(50) as u32)? })),
@@ -5795,7 +5802,16 @@ mod tests {
         let tb = s.doc.annotation_families().iter().find(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::TitleBlock).unwrap().0;
         assert!(s.handle("add_symbol", &json!({ "view_id": view, "family_id": tb, "point": [0, 0] })).is_err());
         call(&mut s, "delete", json!({ "ids": [n] }));
-        assert!(s.doc.symbol(n).is_none());
+        assert!(s.doc.symbol(n).is_none());        // a scale bar reads the view's scale: 5 m at 1:100 (50 mm of paper), 1 m at 1:20; never on a sheet
+        let bar = call(&mut s, "add_symbol", json!({ "view_id": view, "builtin": "scale_bar", "point": [0, -3000] }))["id"].as_u64().unwrap();
+        let texts = |s: &mut Session| -> Vec<String> {
+            let plan = call(s, "plan", json!({ "view_id": view }));
+            plan["symbols"].as_array().unwrap().iter().find(|x| x["id"] == bar).unwrap()["labels"].as_array().unwrap().iter().map(|l| l["lines"][0][0].as_str().unwrap_or("").to_string()).collect()
+        };
+        assert!(texts(&mut s).contains(&"5 m".to_string()) && texts(&mut s).contains(&"1 : 100".to_string()), "{:?}", texts(&mut s));
+        call(&mut s, "patch_view", json!({ "id": view, "patch": { "settings": { "scale": 20 } } }));
+        assert!(texts(&mut s).contains(&"1 m".to_string()), "{:?}", texts(&mut s));
+        assert!(s.handle("add_symbol", &json!({ "view_id": sheet, "builtin": "scale_bar", "point": [0, 0] })).is_err());
     }
 
     #[test]

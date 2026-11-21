@@ -450,6 +450,9 @@ pub struct AnnotationFamily {
     pub paper_mm: Option<[f64; 2]>,
     #[serde(default,skip_serializing_if="Option::is_none")]
     pub revision_schedule: Option<crate::revisions::RevisionTable>,
+    /// A scale bar: drawn from the view's scale each time, about this long on paper (mm), instead of its lines.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scale_bar_mm: Option<f64>,
 }
 
 fn reference_label() -> String {
@@ -516,6 +519,7 @@ impl AnnotationFamily {
             old_pointer: pointer,
             paper_mm: None,
             revision_schedule: None,
+            scale_bar_mm: None,
         };
         f.read_old_drawing();
         f

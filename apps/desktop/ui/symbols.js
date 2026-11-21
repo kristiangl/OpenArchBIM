@@ -37,10 +37,14 @@ const Symbols = (() => {
   }
 
   // the tool: `family` null places the project's North Arrow (made the first time)
-  let family = null;
-  async function start(north) {
-    if (!(await ensureDetailView(north ? "A north arrow" : "A symbol"))) return;
-    if (north) family = ((await run("symbol_families", {})) || { families: [] }).families.find((f) => f.name === "North Arrow")?.id ?? null;
+  let family = null, builtin = "north";
+  // `which`: "north", "scale_bar", or anything else for the Symbol list
+  async function start(which) {
+    const north = which === true || which === "north", bar = which === "scale_bar";
+    if (bar && app.view.kind === "sheet") { setPrompt("A scale bar goes in a view: a sheet has no scale of its own.", true); return; }
+    if (!(await ensureDetailView(bar ? "A scale bar" : north ? "A north arrow" : "A symbol"))) return;
+    builtin = bar ? "scale_bar" : "north";
+    if (north || bar) family = ((await run("symbol_families", {})) || { families: [] }).families.find((f) => f.name === (bar ? "Scale Bar" : "North Arrow"))?.id ?? null;
     else {
       const r = await run("symbol_families", {});
       const fams = (r && r.families) || [];
@@ -58,7 +62,7 @@ const Symbols = (() => {
     setPrompt("Click where the symbol goes; rotate it afterwards with Rotate or its Properties. Esc finishes.");
   }
   async function place(p) {
-    const r = await run("add_symbol", { view_id: app.view.viewId, family_id: family, point: [Math.round(p.x * 100) / 100, Math.round(p.y * 100) / 100] });
+    const r = await run("add_symbol", { view_id: app.view.viewId, family_id: family, builtin, point: [Math.round(p.x * 100) / 100, Math.round(p.y * 100) / 100] });
     if (r) { await refresh(); setPrompt("Placed. Click to place another, Esc finishes."); }
   }
   return { draw, elements, start, place };

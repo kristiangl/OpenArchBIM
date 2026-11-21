@@ -23,7 +23,57 @@ pub struct AnnotationSymbol {
     pub pinned: bool,
 }
 
+/// Which built-in family a symbol with no family of its own is placed from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BuiltinSymbol {
+    NorthArrow,
+    ScaleBar,
+}
+
 impl AnnotationFamily {
+    /// A scale bar about 60 mm long on paper; what it shows comes from the view's scale (`scale_bar_drawing`).
+    pub fn scale_bar() -> AnnotationFamily {
+        let mut f = AnnotationFamily::drawn_with("Scale Bar", AnnotationKind::Symbol, vec![], vec![], vec![]);
+        f.scale_bar_mm = Some(60.0);
+        f
+    }
+
+    /// A scale bar drawn for a view at 1 : `scale`: the longest round length (1, 2 or 5 times a power of ten metres)
+    /// that fits in the family's paper length, cut into 4 or 5 parts filled in turn, numbered at 0, the middle and
+    /// the end, in metres. Starts at its point and runs to the right.
+    pub fn scale_bar_drawing(&self, scale: f64) -> AnnotationFamily {
+        let target = self.scale_bar_mm.unwrap_or(60.0);
+        let s = scale.max(1.0);
+        // the round length in metres
+        let mut best = 0.001;
+        for p in -3..=5 {
+            for m in [1.0, 2.0, 5.0] {
+                let len_m = m * 10f64.powi(p);
+                if len_m * 1000.0 / s <= target + 1e-9 {
+                    best = f64::max(best, len_m);
+                }
+            }
+        }
+        let paper = best * 1000.0 / s;
+        let lead = best / 10f64.powf(best.log10().floor());
+        let parts = if (lead - 2.0).abs() < 1e-6 { 4 } else { 5 };
+        let h = 2.0;
+        let mut shapes = vec![AnnShape::Polygon { pts: vec![[0.0, 0.0], [paper, 0.0], [paper, h], [0.0, h]], filled: false }];
+        for k in 0..parts {
+            let (x0, x1) = (paper * k as f64 / parts as f64, paper * (k + 1) as f64 / parts as f64);
+            shapes.push(AnnShape::Polygon { pts: vec![[x0, 0.0], [x1, 0.0], [x1, h], [x0, h]], filled: k % 2 == 0 });
+        }
+        let mut f = AnnotationFamily::drawn_with(&self.name, AnnotationKind::Symbol, shapes, vec![], vec![]);
+        let fmt = |v: f64| { let t = format!("{v:.3}"); t.trim_end_matches('0').trim_end_matches('.').to_string() };
+        let text = |x: f64, t: String| AnnText { x, y: h + 1.0, text: t, text_type: "2.5mm".into(), halign: HAlign::Center, valign: VAlign::Bottom, width_mm: 0.0, keep_readable: false, visible: true };
+        f.texts.push(text(0.0, "0".into()));
+        f.texts.push(text(paper / 2.0, fmt(best / 2.0)));
+        f.texts.push(text(paper, format!("{} m", fmt(best))));
+        f.texts.push(AnnText { x: paper / 2.0, y: -1.0, text: format!("1 : {}", s.round()), text_type: "2.5mm".into(), halign: HAlign::Center, valign: VAlign::Top, width_mm: 0.0, keep_readable: false, visible: true });
+        f
+    }
+
+
     /// A north arrow: a circle, an arrow half filled, N above it (paper mm about its centre).
     pub fn north_arrow() -> AnnotationFamily {
         let shapes = vec![
@@ -58,7 +108,21 @@ impl Document {
     /// Place a symbol in a view or on a sheet. With no family the project's North Arrow (made the first time, in
     /// the same undo step).
     pub fn add_symbol(&mut self, view: Id, family: Option<Id>, at: Point, rotation_deg: f64) -> Result<Id, String> {
+        self.add_symbol_of(view, family, BuiltinSymbol::NorthArrow, at, rotation_deg)
+    }
+
+    /// Place a symbol; with no family, the built-in one (made the first time, in the same undo step). A scale bar
+    /// goes in a view, not on a sheet (a sheet has no scale of its own).
+    pub fn add_symbol_of(&mut self, view: Id, family: Option<Id>, builtin: BuiltinSymbol, at: Point, rotation_deg: f64) -> Result<Id, String> {
         self.check_detail_view(view)?;
+        let on_sheet = self.sheet(view).is_some();
+        let wants_bar = match family {
+            Some(f) => self.annotation_family(f).is_some_and(|x| x.scale_bar_mm.is_some()),
+            None => builtin == BuiltinSymbol::ScaleBar,
+        };
+        if on_sheet && wants_bar {
+            return Err("A scale bar goes in a view: a sheet has no scale of its own.".into());
+        }
         if let Some(f) = family {
             if !self.annotation_family(f).is_some_and(|x| x.kind == AnnotationKind::Symbol) {
                 return Err("A symbol is placed from a generic annotation family.".into());
@@ -67,11 +131,12 @@ impl Document {
         if !rotation_deg.is_finite() {
             return Err("bad rotation".into());
         }
-        let north = self.symbol_families().iter().find(|(_, f)| f.name == "North Arrow").map(|(id, _)| *id);
+        let name = if builtin == BuiltinSymbol::ScaleBar { "Scale Bar" } else { "North Arrow" };
+        let existing = self.symbol_families().iter().find(|(_, f)| f.name == name).map(|(id, _)| *id);
         self.transact("Symbol", |tx| {
-            let family = match family.or(north) {
+            let family = match family.or(existing) {
                 Some(f) => f,
-                None => tx.add(Element::AnnotationFamily(AnnotationFamily::north_arrow())),
+                None => tx.add(Element::AnnotationFamily(if builtin == BuiltinSymbol::ScaleBar { AnnotationFamily::scale_bar() } else { AnnotationFamily::north_arrow() })),
             };
             Ok(tx.add(Element::AnnotationSymbol(AnnotationSymbol { view, family, at, rotation_deg: rotation_deg.rem_euclid(360.0), pinned: false })))
         })
