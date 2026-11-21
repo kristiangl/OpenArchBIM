@@ -83,6 +83,7 @@ impl AnnotationFamily {
         ];
         let mut f = AnnotationFamily::drawn_with("North Arrow", AnnotationKind::Symbol, shapes, vec![], vec![]);
         f.text_types.push(TextType::new("3.5mm", 3.5, true));
+        f.points_north = true;
         f.texts.push(AnnText { x: 0.0, y: 10.0, text: "N".into(), text_type: "3.5mm".into(), halign: HAlign::Center, valign: VAlign::Bottom, width_mm: 0.0, keep_readable: false, visible: true });
         f
     }

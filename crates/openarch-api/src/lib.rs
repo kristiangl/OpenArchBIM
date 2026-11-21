@@ -161,11 +161,13 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
 fn symbols_json(d: &Document, view: Id) -> Value {
     // a scale bar is drawn for the view's scale
     let scale = d.view(view).and_then(|_| d.effective_settings(view)).map_or(1.0, |st| st.scale as f64);
+    // a north arrow in a plan points to true north
+    let north = if d.view(view).is_some_and(|v| v.view_kind.is_plan()) { d.project_location().map_or(0.0, |(_, l)| l.angle_true_north_deg) } else { 0.0 };
     json!(d.symbols_in(view).into_iter().filter(|(id, _)| !d.hidden_in(view, *id)).filter_map(|(id, s)| {
         let fam = d.annotation_family(s.family)?;
         let bar = fam.scale_bar_mm.map(|_| fam.scale_bar_drawing(scale));
         let f = bar.as_ref().unwrap_or(fam);
-        Some(json!({ "id": id, "at": { "x": s.at.x, "y": s.at.y }, "rotation_deg": s.rotation_deg, "pinned": s.pinned, "name": f.name,
+        Some(json!({ "id": id, "at": { "x": s.at.x, "y": s.at.y }, "rotation_deg": s.rotation_deg + if fam.points_north { north } else { 0.0 }, "pinned": s.pinned, "name": f.name,
             "family": d.symbol_drawing(f, false), "labels": d.symbol_texts(f, &|_| None, false) }))
     }).collect::<Vec<_>>())
 }
@@ -5792,6 +5794,10 @@ mod tests {
         assert!(s.handle("transform", &json!({ "ids": [n], "kind": "mirror", "a": [0, 0], "b": [0, 10], "copy": false })).is_err());
         call(&mut s, "patch_symbol", json!({ "id": n, "patch": { "rotation_deg": -15 } }));
         assert!((s.doc.symbol(n).unwrap().rotation_deg - 345.0).abs() < 1e-9);
+        // in a plan the North Arrow also turns by the angle to true north
+        call(&mut s, "patch_project_location", json!({ "patch": { "angle_true_north_deg": 20.0 } }));
+        let rot = call(&mut s, "plan", json!({ "view_id": view }))["symbols"].as_array().unwrap().iter().find(|x| x["id"] == n).unwrap()["rotation_deg"].as_f64().unwrap();
+        assert!((rot.rem_euclid(360.0) - 5.0).abs() < 1e-9, "{rot}");
         // a second one reuses the family; on a sheet too
         let fam = fams[0]["id"].as_u64().unwrap();
         let sheet = call(&mut s, "add_sheet", json!({ "name": "Plans" }))["id"].as_u64().unwrap();

@@ -453,6 +453,9 @@ pub struct AnnotationFamily {
     /// A scale bar: drawn from the view's scale each time, about this long on paper (mm), instead of its lines.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scale_bar_mm: Option<f64>,
+    /// A north arrow: in plans it turns by the project's angle to true north on top of its own rotation.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub points_north: bool,
 }
 
 fn reference_label() -> String {
@@ -520,6 +523,7 @@ impl AnnotationFamily {
             paper_mm: None,
             revision_schedule: None,
             scale_bar_mm: None,
+            points_north: false,
         };
         f.read_old_drawing();
         f
