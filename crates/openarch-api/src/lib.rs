@@ -44,6 +44,7 @@ mod railings;
 mod ramps;
 mod colorfill;
 mod guard;
+mod foundations;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -316,6 +317,9 @@ impl Session {
             return r;
         }
         if let Some(r) = self.handle_tags(method, p) {
+            return r;
+        }
+        if let Some(r) = self.handle_foundations(method, p) {
             return r;
         }
         if let Some(r) = self.handle_ceilings(method, p) {
@@ -3255,6 +3259,7 @@ impl Session {
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid)); o.insert("images".into(), images_json(d, vid));
+            if let Some(f) = foundations::plan_drawing(d, vid, settings.overrides.model.get("Structural Foundations").is_none_or(|o| o.visible)).as_object() { o.extend(f.clone()); }
             o.insert("ref_planes".into(), json!(d.ref_planes_in(vid).iter().filter(|_| settings.overrides.annotation.get("Reference Planes").is_none_or(|o| o.visible)).map(|(id, r)| json!({ "id": id, "a": [r.a.x, r.a.y], "b": [r.b.x, r.b.y], "name": r.name, "pinned": r.pinned })).collect::<Vec<_>>()));
         }
         Ok(out)
@@ -3548,6 +3553,8 @@ impl Session {
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
             Element::ModelLine(l) => Ok(props::model_line_props(d, id, l)),
+            Element::WallFoundation(f) => Ok(foundations::foundation_props(d, id, f)),
+            Element::WallFoundationType(t) => Ok(foundations::foundation_type_props(d, id, t)),
             Element::RefPlane(r) => Ok(json!({
                 "id": id, "kind": "RefPlane", "title": "Reference Planes (1)", "type_label": "Reference Plane",
                 "target": { "method": "patch_ref_plane", "id": id },
@@ -3598,6 +3605,7 @@ impl Session {
                 v
             }
             Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) | Element::ToposolidType(_) => props::sys_type_props(d, id)?,
+            Element::WallFoundationType(t) => foundations::foundation_type_props(d, id, t),
             Element::StructuralType(t) => {
                 let mut v = self.structural_type_props(id, t);
                 v["patch"] = json!("patch_structural");
@@ -4999,6 +5007,34 @@ mod tests {
         assert_eq!(s.doc.element_tag(id).unwrap().point, Some([2500.0, 1000.0]));
         // a level is not something a material tag goes on
         assert!(s.handle("add_material_tag", &json!({ "view_id": view, "element_id": lvl, "point": [0.0, 0.0] })).is_err());
+    }
+
+    #[test]
+    fn strip_footings_go_under_walls_and_draw_in_plan_3d_and_elevation() {
+        let (mut s, lvl, wt, view) = setup();
+        let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [5000, 0], "height": 2700.0}))["id"].as_u64().unwrap();
+        let b = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [5000, 0], "end": [5000, 4000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let ids = call(&mut s, "add_wall_foundations", json!({ "walls": [a, b] }))["ids"].clone();
+        let f = ids[0].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert_eq!((plan["wall_foundations"].as_array().unwrap().len(), plan["foundation_outline"].as_array().unwrap().len()), (2, 1));
+        let props = call(&mut s, "describe", json!({ "id": f }));
+        assert_eq!((props["category"].as_str(), props["target"]["method"].as_str()), (Some("Structural Foundations"), Some("patch_wall_foundation")));
+        let tid = props["type_id"].as_u64().unwrap();
+        let tp = call(&mut s, "describe_any_type", json!({ "id": tid }));
+        assert_eq!(tp["patch"], "patch_wall_foundation_type");
+        let wide = call(&mut s, "duplicate_wall_foundation_type", json!({ "id": tid, "name": "Strip 450 x 500" }))["id"].as_u64().unwrap();
+        call(&mut s, "patch_wall_foundation_type", json!({ "id": wide, "patch": { "width_mm": 450.0, "thickness_mm": 500.0 } }));
+        call(&mut s, "patch_wall_foundation", json!({ "id": f, "patch": { "foundation_type": wide } }));
+        assert_eq!(s.doc.wall_foundation(f).unwrap().foundation_type, wide);
+        let scene = call(&mut s, "scene", json!({}));
+        assert_eq!(scene["meshes"].as_array().unwrap().iter().filter(|m| m["kind"] == "WallFoundation").count(), 2);
+        // a wall copied with its footing selected leaves the footing where it was
+        let before = s.doc.wall_foundations().len();
+        call(&mut s, "transform", json!({ "ids": [a, f], "kind": "move", "copy": true, "dx": 0.0, "dy": -3000.0 }));
+        assert_eq!(s.doc.wall_foundations().len(), before);
+        call(&mut s, "delete", json!({ "ids": [a] }));
+        assert!(s.doc.wall_foundation(f).is_none());
     }
 
     #[test]

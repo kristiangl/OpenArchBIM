@@ -798,7 +798,10 @@ impl Document {
 
     /// Every column and beam as a solid: its id, kind ("StructuralColumn" or "Beam"), colour and triangles.
     pub fn structural_meshes(&self) -> Vec<(Id, &'static str, [u8; 3], Vec<f32>)> {
-        self.structural_members().into_iter().map(|(id, kind, t, m)| (id, kind, self.structural_colour(t), m.mesh(&t.section))).collect()
+        let mut out: Vec<_> = self.structural_members().into_iter().map(|(id, kind, t, m)| (id, kind, self.structural_colour(t), m.mesh(&t.section))).collect();
+        // strip footings (foundation.rs)
+        out.extend(self.foundation_meshes());
+        out
     }
 
     /// A beam's length as it is cut: its line less what its joins take, plus its extensions.

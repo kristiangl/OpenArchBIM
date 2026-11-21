@@ -754,6 +754,9 @@ pub enum Element {
     ModelLine(crate::modelline::ModelLine),
     /// A vertical reference plane drawn in plan (refplane.rs).
     RefPlane(crate::refplane::RefPlane),
+    /// A strip footing type and a strip footing under a wall (foundation.rs).
+    WallFoundationType(crate::foundation::WallFoundationType),
+    WallFoundation(crate::foundation::WallFoundation),
 }
 
 impl Element {
@@ -806,6 +809,8 @@ impl Element {
             Element::ImageItem(_) => "Image",
             Element::ModelLine(_) => "Model Line",
             Element::RefPlane(_) => "Reference Plane",
+            Element::WallFoundationType(_) => "WallFoundationType",
+            Element::WallFoundation(_) => "WallFoundation",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",
