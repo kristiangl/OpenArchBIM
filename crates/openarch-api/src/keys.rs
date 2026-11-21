@@ -175,14 +175,49 @@ impl Session {
         if !parameters.is_empty() { groups.push(json!({ "name": "Project Parameters", "target": { "method": "patch_project_values", "id": id, "extra": { "ids": ids } }, "rows": parameters })); }
     }
 
+    /// A new project parameter: `category`, or `categories` for several at once (Manage > Project Parameters).
     pub(crate) fn create_project_parameter(&mut self, p: &Value) -> Res {
-        let category = p["category"].as_str().ok_or("Choose a category")?;
-        let area = category.strip_prefix("Areas (").and_then(|c| c.strip_suffix(')')).is_some_and(|scheme| self.doc.area_schemes().iter().any(|(_, s)| s.name == scheme));
-        if !area && !crate::schedule::model_categories().iter().any(|c| c == category) { return Err("Choose a model category.".into()); }
+        let categories: Vec<String> = match p.get("categories").and_then(|v| v.as_array()) {
+            Some(a) => a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect(),
+            None => vec![p["category"].as_str().ok_or("Choose a category")?.to_string()],
+        };
+        if categories.is_empty() { return Err("Choose at least one category.".into()); }
         let name = p["name"].as_str().ok_or("Enter a name")?.trim();
-        if name == "Key Name" || self.key_fields(category, None).iter().any(|f| f["name"] == name) || self.doc.schedules().iter().any(|(_,v)| v.schedule.as_ref().is_some_and(|d| d.category == category && d.key.as_ref().is_some_and(|k| k.parameter_name == name || k.bindings.contains_key(name)))) { return Err("That parameter name is already in use.".into()); }
+        for category in &categories {
+            self.check_parameter_category(category)?;
+            if name == "Key Name" || self.key_fields(category, None).iter().any(|f| f["name"] == name) || self.doc.schedules().iter().any(|(_,v)| v.schedule.as_ref().is_some_and(|d| d.category == *category && d.key.as_ref().is_some_and(|k| k.parameter_name == name || k.bindings.contains_key(name)))) { return Err(format!("That parameter name is already in use for {category}.")); }
+        }
         let unit: Unit = serde_json::from_value(p.get("unit").cloned().unwrap_or(json!("text"))).map_err(|e| e.to_string())?;
-        let id = self.doc.add_project_parameter(ProjectParameter { name: name.into(), categories: vec![category.into()], unit, shared_guid: p["shared_guid"].as_str().map(str::to_string), group: "Identity Data".into(), values: BTreeMap::new() })?;
+        let group = p["group"].as_str().map(str::trim).filter(|g| !g.is_empty()).unwrap_or("Identity Data");
+        let id = self.doc.add_project_parameter(ProjectParameter { name: name.into(), categories, unit, shared_guid: p["shared_guid"].as_str().map(str::to_string), group: group.into(), values: BTreeMap::new() })?;
         Ok(json!({ "id": id }))
+    }
+
+    fn check_parameter_category(&self, category: &str) -> Result<(), String> {
+        let area = category.strip_prefix("Areas (").and_then(|c| c.strip_suffix(')')).is_some_and(|scheme| self.doc.area_schemes().iter().any(|(_, s)| s.name == scheme));
+        if !area && !crate::schedule::model_categories().iter().any(|c| c == category) { return Err(format!("{category} is not a model category.")); }
+        Ok(())
+    }
+
+    /// Manage > Project Parameters: every project parameter, and the categories one can apply to.
+    pub(crate) fn project_parameters_json(&self) -> Value {
+        let mut cats = crate::schedule::model_categories();
+        cats.extend(self.doc.area_schemes().iter().map(|(_, s)| format!("Areas ({})", s.name)));
+        json!({
+            "parameters": self.doc.project_parameters().iter().map(|(id, p)| json!({
+                "id": id, "name": p.name, "categories": p.categories, "unit": p.unit, "group": p.group, "shared_guid": p.shared_guid, "values": p.values.len(),
+            })).collect::<Vec<_>>(),
+            "categories": cats,
+        })
+    }
+
+    /// { id, name?, categories?, group?, unit? }
+    pub(crate) fn edit_project_parameter(&mut self, p: &Value) -> Res {
+        let id = crate::id_of(p, "id")?;
+        let categories: Option<Vec<String>> = p.get("categories").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|c| c.as_str().map(str::to_string)).collect());
+        if let Some(cs) = &categories { for c in cs { self.check_parameter_category(c)?; } }
+        let unit: Option<Unit> = match p.get("unit").filter(|v| !v.is_null()) { Some(u) => Some(serde_json::from_value(u.clone()).map_err(|e| e.to_string())?), None => None };
+        self.doc.edit_project_parameter(id, p["name"].as_str(), categories, p["group"].as_str(), unit)?;
+        Ok(self.project_parameters_json())
     }
 }

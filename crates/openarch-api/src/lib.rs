@@ -337,6 +337,9 @@ impl Session {
         }
         match method {
             "add_project_parameter" => self.create_project_parameter(p),
+            "project_parameters" => Ok(self.project_parameters_json()),
+            "edit_project_parameter" => self.edit_project_parameter(p),
+            "remove_project_parameter" => { self.doc.remove_project_parameter(id_of(p, "id")?)?; Ok(self.project_parameters_json()) }
             "add_key_row" => Ok(json!({ "row": self.doc.add_key_row(id_of(p, "id")?)? })),
             "patch_key_row" => { self.doc.patch_key_row(id_of(p, "id")?, id_of(p, "row")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) },
             "delete_key_rows" => { self.doc.delete_key_rows(id_of(p, "id")?, &ids_of(p, "rows")?)?; Ok(json!({})) },
@@ -5144,6 +5147,33 @@ mod tests {
         let stage = r["phases"].as_array().unwrap().iter().find(|p| p["name"] == "Stage 2").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "phase_op", json!({ "op": "combine", "id": stage, "into": phase("New Construction") }));
         assert_eq!(call(&mut s, "phasing", json!({}))["phases"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn project_parameters_add_change_and_remove() {
+        let (mut s, lvl, wt, _) = setup();
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [4000, 0]}))["id"].as_u64().unwrap();
+        let st = call(&mut s, "project_parameters", json!({}));
+        assert!(st["categories"].as_array().unwrap().iter().any(|c| c == "Walls"));
+        let id = call(&mut s, "add_project_parameter", json!({"name": "Fire Rating", "categories": ["Walls", "Doors"], "unit": "text", "group": "Fire"}))["id"].as_u64().unwrap();
+        let st = call(&mut s, "project_parameters", json!({}));
+        let p = st["parameters"].as_array().unwrap().iter().find(|p| p["id"] == id).unwrap().clone();
+        assert_eq!((p["categories"].as_array().unwrap().len(), p["group"].as_str()), (2, Some("Fire")));
+        // a value on the wall; then the type cannot change, but the name and group can
+        s.doc.set_project_value(id, w, json!("FRL 60/60/60")).unwrap();
+        assert!(s.handle("edit_project_parameter", &json!({"id": id, "unit": "length"})).is_err());
+        let st = call(&mut s, "edit_project_parameter", json!({"id": id, "name": "FRL", "group": "Identity Data"}));
+        assert_eq!(st["parameters"][0]["name"], "FRL");
+        assert_eq!(st["parameters"][0]["values"], 1);
+        // taking Walls away drops the wall's value
+        let st = call(&mut s, "edit_project_parameter", json!({"id": id, "categories": ["Doors"]}));
+        assert_eq!(st["parameters"][0]["values"], 0);
+        assert!(s.handle("edit_project_parameter", &json!({"id": id, "categories": []})).is_err());
+        assert!(s.handle("add_project_parameter", &json!({"name": "FRL", "categories": ["Doors"], "unit": "text"})).is_err());
+        let st = call(&mut s, "remove_project_parameter", json!({"id": id}));
+        assert!(st["parameters"].as_array().unwrap().is_empty());
+        call(&mut s, "undo", json!({}));
+        assert_eq!(call(&mut s, "project_parameters", json!({}))["parameters"].as_array().unwrap().len(), 1);
     }
 
     #[test]

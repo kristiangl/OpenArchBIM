@@ -116,6 +116,44 @@ impl Document {
         self.transact("Add project parameter", |tx| Ok(tx.add(Element::ProjectParameter(p))))
     }
 
+    /// Manage > Project Parameters: rename, change the categories or the group of a parameter, one undo step. Values on
+    /// elements of a category taken away are dropped; the unit cannot change while any element has a value.
+    pub fn edit_project_parameter(&mut self, id: Id, name: Option<&str>, categories: Option<Vec<String>>, group: Option<&str>, unit: Option<Unit>) -> Result<(), String> {
+        let mut p = self.project_parameter(id).cloned().ok_or("Unknown project parameter")?;
+        if let Some(n) = name {
+            let n = n.trim();
+            if n.is_empty() { return Err("A project parameter needs a name.".into()); }
+            p.name = n.to_string();
+        }
+        if let Some(c) = categories {
+            if c.is_empty() { return Err("A project parameter needs at least one category.".into()); }
+            p.categories = c;
+        }
+        if let Some(g) = group { p.group = g.trim().to_string(); }
+        if let Some(u) = unit {
+            if u != p.unit && !p.values.is_empty() { return Err("The type of a parameter that has values cannot change.".into()); }
+            p.unit = u;
+        }
+        if self.project_parameters().iter().any(|(other_id, other)| *other_id != id && other.name == p.name && other.categories.iter().any(|c| p.categories.contains(c))) {
+            return Err("That parameter is already defined for one of these categories.".into());
+        }
+        let keep: Vec<Id> = p.values.keys().copied().filter(|e| self.parameter_category(*e).is_some_and(|c| p.categories.contains(&c))).collect();
+        p.values.retain(|e, _| keep.contains(e));
+        self.transact("Change project parameter", |tx| tx.update(id, Element::ProjectParameter(p)))
+    }
+
+    /// Remove a project parameter and its values; refused while a key schedule drives it.
+    pub fn remove_project_parameter(&mut self, id: Id) -> Result<(), String> {
+        let p = self.project_parameter(id).ok_or("Unknown project parameter")?;
+        for (_, view) in self.schedules() {
+            let Some(key) = view.schedule.as_ref().and_then(|d| d.key.as_ref()) else { continue };
+            if key.bindings.values().any(|b| b.project_parameter == Some(id)) {
+                return Err(format!("{} is used by the key schedule {}.", p.name, view.name));
+            }
+        }
+        self.transact("Remove project parameter", |tx| tx.remove(id))
+    }
+
     pub fn set_project_value(&mut self, parameter: Id, element: Id, value: Value) -> Result<(), String> {
         let mut p = self.project_parameter(parameter).cloned().ok_or("Unknown project parameter")?;
         if !self.parameter_category(element).is_some_and(|c| p.categories.contains(&c)) { return Err("The parameter does not apply to that element.".into()); }

@@ -204,6 +204,7 @@ const COMMANDS = {
   "m-materials": () => openMaterials(),
   "m-linestyles": () => openLineStyles(),
   "m-globals": () => openGlobalParams(),
+  "m-params": () => ProjParams.open(),
   "m-lineweights": () => openLineWeights(),
   "m-linepatterns": () => openPatterns("line"),
   "m-fillpatterns": () => openPatterns("fill"),
