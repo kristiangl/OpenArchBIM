@@ -35,6 +35,7 @@ const AnnModel = (() => {
     window_tag: "Window tag: labels read the window's parameters (Mark by default). The tag's origin sits on the window, or at the end of its leader.",
     level_head: "Level head: the level line arrives from the left and ends at the vertical reference line.",
     elevation_marker: "Elevation mark: the body is drawn once. The pointer is drawn for each view, turned to point along +x here.",
+    symbol: "Generic annotation: a symbol placed on its own with Annotate > Symbol, drawn at this size on paper whatever the view's scale. Its origin is where it is placed.",
     section_marker: "Section mark: the body is drawn at the head of the line. The pointer is drawn at each end for the view direction, along +x here.",
   };
 

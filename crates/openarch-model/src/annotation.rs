@@ -1497,7 +1497,7 @@ impl Document {
     /// Whether a level type, an elevation marker or a section draws with this family.
     pub fn annotation_family_in_use(&self, id: Id) -> bool {
         self.level_types().iter().any(|(_, t)| t.head == Some(id)) || self.elevation_markers().iter().any(|(_, m)| self.elevation_symbol(m) == Some(id)) || self.sections().iter().any(|(_, s)| { let symbols = self.section_symbols(s); symbols.0 == Some(id) || symbols.1 == Some(id) })
-            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::ElementTag(t)=>t.family==Some(id),Element::AreaTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),_=>false})
+            || self.iter().any(|(_,e)|match e{Element::RoomTag(t)=>t.family==Some(id),Element::RevisionTag(t)=>t.family==Some(id),Element::ElementTag(t)=>t.family==Some(id),Element::AreaTag(t)=>t.family==Some(id),Element::Sheet(s)=>s.title_block==Some(id),Element::AnnotationSymbol(s)=>s.family==id,_=>false})
             || self.view_marker_types().iter().any(|(_, t)| t.head == Some(id) || t.tail == Some(id))
     }
 

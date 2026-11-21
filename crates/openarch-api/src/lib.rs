@@ -444,6 +444,7 @@ impl Session {
                 let builtin = if p.get("builtin").and_then(|v| v.as_str()) == Some("scale_bar") { openarch_model::annsymbol::BuiltinSymbol::ScaleBar } else { openarch_model::annsymbol::BuiltinSymbol::NorthArrow };
                 Ok(json!({ "id": self.doc.add_symbol_of(id_of(p, "view_id")?, p.get("family_id").and_then(|v| v.as_u64()), builtin, point_of(p.get("point").ok_or("missing point")?)?, p.get("rotation_deg").and_then(|v| v.as_f64()).unwrap_or(0.0))? }))
             }
+            "new_symbol_family" => Ok(json!({ "id": self.doc.new_symbol_family(p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "patch_symbol" => { self.doc.patch_symbol(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) }
             // View > Legend: { name?, scale? }
             "add_legend_view" => Ok(json!({ "id": self.doc.add_legend_view(p.get("name").and_then(|v| v.as_str()), p.get("scale").and_then(|v| v.as_u64()).unwrap_or(50) as u32)? })),
@@ -5818,6 +5819,11 @@ mod tests {
         call(&mut s, "patch_view", json!({ "id": view, "patch": { "settings": { "scale": 20 } } }));
         assert!(texts(&mut s).contains(&"1 m".to_string()), "{:?}", texts(&mut s));
         assert!(s.handle("add_symbol", &json!({ "view_id": sheet, "builtin": "scale_bar", "point": [0, 0] })).is_err());
+        // a new generic annotation family; one in use cannot be deleted
+        let datum = call(&mut s, "new_symbol_family", json!({ "name": "Datum" }))["id"].as_u64().unwrap();
+        assert!(s.handle("new_symbol_family", &json!({ "name": "Datum" })).is_err());
+        call(&mut s, "add_symbol", json!({ "view_id": view, "family_id": datum, "point": [0, 0] }));
+        assert!(s.handle("delete_annotation_family", &json!({ "id": fam })).is_err(), "the North Arrow is on the sheet");
     }
 
     #[test]

@@ -1143,11 +1143,24 @@ function familyMenu(f) {
     { label: "Save as File...", run: () => FamModel.exportFamily(f.id, f.name) },
   ];
 }
+// a new generic annotation family (a symbol) to draw, opened in the annotation family editor
+function newSymbolFamily() {
+  openModal("New Generic Annotation", (body, foot, close) => {
+    const name = el("input", { type: "text", value: "Symbol" });
+    const msg = el("div", { className: "modal-note" });
+    body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), msg);
+    foot.append(button("Cancel", close), button("OK", async () => {
+      try { const r = await Backend.call("new_symbol_family", { name: name.value }); close(); await refresh(); AnnModel.open(r.id); }
+      catch (e) { msg.textContent = String(e.message || e); }
+    }, true));
+  });
+}
 function annotationMenu(f) {
   const open = () => AnnModel.isOpen(f.id) && (setPrompt(`${f.name} is open in the family editor; close it there first.`, true), true);
   return [
     { label: "Edit", run: () => AnnModel.open(f.id) },
     { label: "Duplicate...", run: () => duplicateTypePrompt(f.id, async () => { await refresh(); }, "duplicate_annotation_family") },
+    { label: "New Generic Annotation...", run: () => newSymbolFamily() },
     { label: "Rename...", run: () => { if (!open()) renameAnnotationFamily(f); } },
     { label: "Save as File...", run: () => AnnModel.exportFamily(f.id, f.name) },
     { label: "Delete", disabled: f.in_use, title: f.in_use ? "In use by a level type, an elevation mark or a section" : "", run: async () => {

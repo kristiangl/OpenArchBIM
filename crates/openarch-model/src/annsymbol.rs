@@ -143,6 +143,16 @@ impl Document {
         })
     }
 
+    /// A new, empty generic annotation family to draw in the annotation family editor.
+    pub fn new_symbol_family(&mut self, name: &str) -> Result<Id, String> {
+        let name = name.trim();
+        if name.is_empty() || self.annotation_families().iter().any(|(_, f)| f.name == name) {
+            return Err(format!("a family named '{name}' already exists"));
+        }
+        let f = AnnotationFamily::drawn_with(name, AnnotationKind::Symbol, vec![], vec![], vec![]);
+        self.transact("New generic annotation", |tx| Ok(tx.add(Element::AnnotationFamily(f))))
+    }
+
     pub fn patch_symbol(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
         let old = self.symbol(id).cloned().ok_or("not a symbol")?;
         let mut new: AnnotationSymbol = crate::doc::apply_patch(&old, patch)?;
