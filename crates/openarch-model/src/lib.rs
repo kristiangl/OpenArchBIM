@@ -12,6 +12,7 @@ pub mod dimension;
 pub mod dimround;
 pub mod doc;
 pub mod drafting;
+pub mod legend;
 pub mod edit;
 pub mod element;
 pub mod elevplace;

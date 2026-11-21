@@ -422,6 +422,18 @@ impl Session {
                 Ok(json!({}))
             }
             "duplicate_view" => Ok(json!({ "id": self.doc.duplicate_view(id_of(p, "id")?)? })),
+            // View > Legend: { name?, scale? }
+            "add_legend_view" => Ok(json!({ "id": self.doc.add_legend_view(p.get("name").and_then(|v| v.as_str()), p.get("scale").and_then(|v| v.as_u64()).unwrap_or(50) as u32)? })),
+            // Legend Component: { view_id, type_id, point, length_mm? }
+            "add_legend_component" => Ok(json!({ "id": self.doc.add_legend_component(id_of(p, "view_id")?, id_of(p, "type_id")?, point_of(p.get("point").ok_or("missing point")?)?, p.get("length_mm").and_then(|v| v.as_f64()))? })),
+            "patch_legend_component" => { self.doc.patch_legend_component(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) }
+            // the types a legend component can show, for the tool's list
+            "legend_types" => {
+                let d = &self.doc;
+                let mut out: Vec<Value> = d.iter().filter(|(id, _)| d.legend_kind(*id).is_some()).map(|(id, _)| json!({ "id": id, "label": d.legend_type_label(id), "kind": format!("{:?}", d.legend_kind(id).unwrap()) })).collect();
+                out.sort_by(|a, b| a["label"].as_str().cmp(&b["label"].as_str()));
+                Ok(json!({ "types": out }))
+            }
             // View > Drafting View: { name?, scale? }
             "add_drafting_view" => Ok(json!({ "id": self.doc.add_drafting_view(p.get("name").and_then(|v| v.as_str()), p.get("scale").and_then(|v| v.as_u64()).unwrap_or(10) as u32)? })),
             // View > 3D View: the default {3D} view, made again if it has been deleted
@@ -2764,7 +2776,7 @@ impl Session {
             Some(v) => v,
             None => self.plan_view_of_level(id_of(p, "level_id")?)?,
         };
-        if d.view(vid).is_some_and(|v| v.view_kind == openarch_model::view::ViewKind::Drafting) {
+        if d.view(vid).is_some_and(|v| matches!(v.view_kind, openarch_model::view::ViewKind::Drafting | openarch_model::view::ViewKind::Legend)) {
             return Ok(self.drafting_json(vid));
         }
         let view = d.view(vid).filter(|v| v.view_kind.is_plan()).ok_or("not a plan view")?;
@@ -3203,6 +3215,20 @@ impl Session {
         if let Some(o) = out.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
             if let Some(r) = revisions::drawing(d, vid).as_object() { o.extend(r.clone()); }
+            // a legend's components join the detail drawing (so they print and export the same), with their outlines
+            // for picking
+            if view.view_kind == openarch_model::view::ViewKind::Legend {
+                let (paths, boxes) = d.legend_paths(vid, settings.scale as f64, settings.detail_level);
+                if let Some(det) = o.get_mut("detail") {
+                    if let Some(f) = det["fills"].as_array_mut() { f.extend(paths.fills.iter().map(|x| serde_json::to_value(x).unwrap_or_default())); }
+                    if let Some(st) = det["strokes"].as_array_mut() { st.extend(paths.strokes.iter().map(|x| serde_json::to_value(x).unwrap_or_default())); }
+                }
+                o.insert("legend".into(), json!(true));
+                o.insert("legend_components".into(), json!(boxes.iter().map(|(id, ring)| json!({
+                    "id": id, "ring": ring.iter().map(|p| [p.x, p.y]).collect::<Vec<_>>(), "pinned": d.is_pinned(*id),
+                    "label": d.legend_component(*id).map(|c| d.legend_type_label(c.type_id)),
+                })).collect::<Vec<_>>()));
+            }
         }
         out
     }
@@ -3448,6 +3474,7 @@ impl Session {
             Element::Dimension(x) => Ok(props::dimension_props(d, id, x)),
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
+            Element::LegendComponent(c) => Ok(props::legend_component_props(d, id, c)),
             Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
             Element::TextNote(t) => Ok(props::text_note_props(d, id, t)),
             Element::GroupInstance(g) => Ok(props::group_props(d, id, g)),
@@ -5722,6 +5749,55 @@ mod tests {
         call(&mut s, "align", json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 750], [4000, 750]] }));
         assert_eq!(ends(&mut s, o).0, json!([0.0, 900.0]));
         assert!(s.handle("align", &json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 900], [4000, 900]] })).is_err());
+    }
+
+    #[test]
+    fn legends_show_types_and_go_on_several_sheets() {
+        let (mut s, _lvl, wt, plan) = setup();
+        let info = call(&mut s, "doc_info", json!({}));
+        let ft = info["floor_types"][0]["id"].as_u64().unwrap();
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let v = call(&mut s, "add_legend_view", json!({}))["id"].as_u64().unwrap();
+        assert_eq!((s.doc.view(v).unwrap().name.as_str(), s.doc.view(v).unwrap().settings.scale), ("Legend 1", 50));
+        let types = call(&mut s, "legend_types", json!({}));
+        assert!(types["types"].as_array().unwrap().iter().any(|t| t["id"] == wt) && types["types"].as_array().unwrap().iter().any(|t| t["id"] == door));
+        // a wall strip, a floor in section, a door in its stub of wall
+        let w = call(&mut s, "add_legend_component", json!({ "view_id": v, "type_id": wt, "point": [0, 0], "length_mm": 2000 }))["id"].as_u64().unwrap();
+        let f = call(&mut s, "add_legend_component", json!({ "view_id": v, "type_id": ft, "point": [0, -2000] }))["id"].as_u64().unwrap();
+        let dr = call(&mut s, "add_legend_component", json!({ "view_id": v, "type_id": door, "point": [4000, 0] }))["id"].as_u64().unwrap();
+        assert!(s.handle("add_legend_component", &json!({ "view_id": plan, "type_id": wt, "point": [0, 0] })).is_err(), "only in a legend");
+        assert!(s.handle("add_legend_component", &json!({ "view_id": v, "type_id": v, "point": [0, 0] })).is_err(), "not a type");
+        let p = call(&mut s, "plan", json!({ "view_id": v }));
+        assert_eq!(p["legend"], true);
+        let comps = p["legend_components"].as_array().unwrap();
+        assert_eq!(comps.len(), 3);
+        let ring = |id: u64| comps.iter().find(|c| c["id"] == id).unwrap()["ring"].clone();
+        // the wall strip runs 2000 along; the door with its stubs is wider than the door
+        assert!((ring(w)[1][0].as_f64().unwrap() - ring(w)[0][0].as_f64().unwrap() - 2000.0).abs() < 1.0, "{}", ring(w));
+        let dw = ring(dr)[1][0].as_f64().unwrap() - ring(dr)[0][0].as_f64().unwrap();
+        assert!(dw > 820.0 + 1000.0, "door and stubs: {dw}");
+        let fills = p["detail"]["fills"].as_array().unwrap().iter().filter(|x| x["region"] == f).count();
+        assert!(fills >= 1);
+        // Properties: the type list and Host Length; a wall type can't go in section
+        let props = call(&mut s, "describe", json!({ "id": w }));
+        assert_eq!(props["target"]["method"], "patch_legend_component");
+        call(&mut s, "patch_legend_component", json!({ "id": w, "patch": { "length_mm": 3000 } }));
+        assert!(s.handle("patch_legend_component", &json!({ "id": w, "patch": { "dir": "section" } })).is_err());
+        // move and copy; a rotate is refused
+        let c = call(&mut s, "transform", json!({ "ids": [w], "kind": "move", "dx": 0, "dy": 1000, "copy": true }))["ids"][0].as_u64().unwrap();
+        assert_eq!(s.doc.legend_component(c).unwrap().at, Point::new(0.0, 1000.0));
+        assert!(s.handle("transform", &json!({ "ids": [w], "kind": "rotate", "cx": 0, "cy": 0, "angle_deg": 90 })).is_err());
+        // on two sheets at once
+        let a = call(&mut s, "add_sheet", json!({ "name": "A" }))["id"].as_u64().unwrap();
+        let b = call(&mut s, "add_sheet", json!({ "name": "B" }))["id"].as_u64().unwrap();
+        call(&mut s, "place_view", json!({ "sheet": a, "view": v, "centre": [200, 200] }));
+        call(&mut s, "place_view", json!({ "sheet": b, "view": v, "centre": [200, 200] }));
+        assert!(s.doc.sheet_views(a).len() == 1 && s.doc.sheet_views(b).len() == 1);
+        // duplicate takes the components; delete takes them away
+        let dup = call(&mut s, "duplicate_view", json!({ "id": v }))["id"].as_u64().unwrap();
+        assert_eq!(s.doc.legend_components(dup).len(), 4);
+        call(&mut s, "delete", json!({ "ids": [v] }));
+        assert!(s.doc.legend_components(v).is_empty());
     }
 
     #[test]

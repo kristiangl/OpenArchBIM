@@ -744,6 +744,8 @@ pub enum Element {
     /// The project's phases, phase filters and each element's Phase Created and Demolished (phasing.rs).
     Phasing(crate::phasing::Phasing),
     DesignOptions(crate::designopt::DesignOptions),
+    /// A type drawn on its own in a legend view (legend.rs).
+    LegendComponent(crate::legend::LegendComponent),
 }
 
 impl Element {
@@ -791,6 +793,7 @@ impl Element {
             Element::PropertyLineTag(_) => "PropertyLineTag",
             Element::Phasing(_) => "Phasing",
             Element::DesignOptions(_) => "Design Options",
+            Element::LegendComponent(_) => "Legend Component",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

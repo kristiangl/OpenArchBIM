@@ -514,7 +514,7 @@ impl Document {
                 ("elevation", [(f.right_mm - f.left_mm) / 2.0, (f.z_min + f.z_max) / 2.0], [f.left_mm + f.right_mm, f.z_max - f.z_min])
             }
             // a drafting view: what is drawn in it, with 10 mm of paper round it (an empty one 200 x 150 mm)
-            ViewKind::Drafting => {
+            ViewKind::Drafting | ViewKind::Legend => {
                 let m = 10.0 * scale as f64;
                 let (lo, hi) = self.view_detail_bounds(view).map_or((Point::new(0.0, 0.0), Point::new(200.0 * scale as f64, 150.0 * scale as f64)), |(lo, hi)| (Point::new(lo.x - m, lo.y - m), Point::new(hi.x + m, hi.y + m)));
                 ("plan", [(lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0], [hi.x - lo.x, hi.y - lo.y])

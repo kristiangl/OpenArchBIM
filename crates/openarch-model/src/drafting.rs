@@ -47,6 +47,12 @@ impl Document {
         for (_, t) in self.text_notes(view) {
             pts.push(t.at);
         }
+        // legend components: their strips and symbols
+        if !self.legend_components(view).is_empty() {
+            for (_, ring) in self.legend_paths(view, 1.0, crate::view::DetailLevel::Coarse).1 {
+                pts.extend(ring);
+            }
+        }
         let first = *pts.first()?;
         Some(pts.iter().fold((first, first), |(lo, hi), p| (Point::new(lo.x.min(p.x), lo.y.min(p.y)), Point::new(hi.x.max(p.x), hi.y.max(p.y)))))
     }
@@ -62,6 +68,9 @@ impl Document {
         }
         for (_, t) in self.text_notes(from) {
             out.push(Element::TextNote(crate::detail::TextNote { view: to, pinned: false, ..t.clone() }));
+        }
+        for (_, c) in self.legend_components(from) {
+            out.push(Element::LegendComponent(crate::legend::LegendComponent { view: to, pinned: false, ..c.clone() }));
         }
         out
     }

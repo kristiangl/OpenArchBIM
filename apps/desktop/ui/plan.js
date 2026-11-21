@@ -299,7 +299,8 @@ const Plan = (() => {
     for (const x of data.sections || []) { const h = Sections.hitRings(x); out.push({ id: x.id, kind: "section", ring: h.ring, rings: h.rings, pinned: x.pinned, category: "Sections", display: "normal" }); }
     for (const x of data.spots || []) { const h = Spots.hitRings(x); out.push({ id: x.id, kind: "spot", ring: h.ring, rings: h.rings, pinned: x.pinned, category: x.category, display: "normal" }); }
     // detail lines, regions and text notes (details.js); what a sketch holds is picked there instead
-    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Structure.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data));
+    out.push(...Det.elements(), ...Spatial.elements(data, cam.s), ...Revisions.elements(data,cam.s), ...Tags.elements(data), ...Ceilings.elements(data), ...Structure.elements(data), ...Topo.elements(data), ...Topo.labelElements(data), ...PropLines.elements(data), ...Cad.elements(data), ...Traffic.elements(data), ...Stairs.elements(data), ...Railings.elements(data), ...Ramps.elements(data), ...Areas.elements(data, cam.s), ...ColorFill.elements(data),
+      ...(data.legend_components || []).map((c) => ({ id: c.id, kind: "legendcomp", ring: c.ring, pinned: c.pinned, display: "normal" })));
     const sp = data.site_points;
     if (sp) {
       if (sp.base) out.push({ id: sp.base.id, kind: "sitepoint", ring: sq(sp.base.x, sp.base.y, rw * 0.8), pinned: sp.base.pinned, category: "Project Base Point", display: "normal" });
@@ -439,7 +440,7 @@ const Plan = (() => {
     const p = toWorld(sx, sy);
     const tol = 4 / cam.s;
     // annotations on top of what they annotate: a tag picks before its door, a room tag before its room
-    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, proplinetag: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
+    const rank = { marker: -1, sitepoint: -1, section: -1, dimension: -1, spot: -1, note: -1, elementtag: -1, legendcomp: -1, roomtag: -1, revisiontag: -1, areatag: -1, colorlegend: -1, contourlabel: -1, proplinetag: -1, propertyline: 0, linemarking: 1, kerb: 1, parkingrow: 2, area: 0, areaboundary: 0, detail: 0, grid: 0, insert: 0, revisioncloud: 0, room: 0, roomseparator: 0, region: 1, wall: 1, roof: 2, stair: 2, ramp: 2, railing: 1, floor: 3, ceiling: 3, toposolid: 4, cadimport: 5 };
     const found = [];
     for (const e of elements()) {
       if (!selectable(e)) continue;
@@ -1979,6 +1980,7 @@ const Plan = (() => {
     if (tool === "secsplit") return Sections.splitPrompt();
     if (tool === "section") return draw ? "Click the end of the section line. Shift keeps to 45 degrees. The view looks to the left of the direction you draw; flip it after. Esc cancels." : "Click the start of the section line.";
     if (tool === "elevation") return "Click to place the elevation marker. Space turns it 90 degrees. Tick the pointers you want views for in the options bar. Esc to stop.";
+    if (tool === "legendcomp") return "Click where the component goes: a strip's left end, a symbol's centre. Esc finishes.";
     if (tool === "split") return "Click a wall where it should be split. Esc finishes.";
     if (tool === "splitgap") return `Click a wall where it should be split, leaving a ${eo.splitGap} mm gap. Esc finishes.`;
     if (tool === "wall" && wallShape === "pick_lines") return "Click a line to put a wall on it: a detail or CAD line, an edge or a grid. The wall's location line follows it.";
@@ -2538,6 +2540,7 @@ const Plan = (() => {
   }
 
   function click(sx, sy, ev) {
+    if (tool === "legendcomp") { const p = snap(sx, sy); cb.legendPlace({ x: p.x, y: p.y }); return; }
     if (tool === "split" || tool === "splitgap") {
       const s = splitAt(sx, sy);
       if (!s) { cb.prompt("Click on a wall where it should be split.", true); return; }
@@ -3356,6 +3359,17 @@ const Plan = (() => {
       return false;
     },
     fit() {
+      // a drafting view or legend: what is drawn in it (its detail drawing is in paper mm), with a little paper round it
+      if (data.drafting) {
+        const ds = (data.view && data.view.scale) || 100;
+        const pts = [...((data.detail && data.detail.strokes) || []).flatMap((st) => st.pts.map(([x, y]) => [x * ds, y * ds])), ...(data.legend_components || []).flatMap((c) => c.ring)];
+        if (!pts.length) { cam = { x: 0, y: 0, s: Math.min(size().w / (200 * ds), size().h / (150 * ds)) }; render(); return; }
+        const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+        const [x0, x1, y0, y1] = [Math.min(...xs), Math.max(...xs), Math.min(...ys), Math.max(...ys)];
+        cam = { x: (x0 + x1) / 2, y: (y0 + y1) / 2, s: Math.min(size().w / ((x1 - x0) * 1.2 + 20 * ds), size().h / ((y1 - y0) * 1.2 + 20 * ds)) };
+        render();
+        return;
+      }
       // the elevation markers and project points are part of what the view shows
       const extra = [...(data.markers || []).map((m) => [m.x, m.y]), ...(data.sections || []).flatMap((s) => [s.start, s.end]), ...(data.site_points && data.site_points.base ? [[data.site_points.base.x, data.site_points.base.y]] : [])];
       const pts = [...data.walls.flatMap((w) => w.corners), ...data.floors.flatMap((f) => f.points), ...(data.roofs || []).flatMap((r) => r.points), ...(data.toposolids || []).flatMap((t) => t.rings.flat()), ...(data.cad_imports || []).flatMap((c) => c.ring || []), ...extra];

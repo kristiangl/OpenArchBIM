@@ -832,6 +832,7 @@ impl Document {
             Some(Element::Level(l)) => l.pinned,
             Some(Element::Grid(g)) => g.pinned,
             Some(Element::GroupInstance(g)) => g.pinned,
+            Some(Element::LegendComponent(c)) => c.pinned,
             _ => false,
         }
     }
@@ -852,10 +853,11 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::StructuralColumn(_) | Element::Beam(_) | Element::BeamSystem(_) | Element::Truss(_) | Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::ContourLabel(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_) | Element::CadImport(_) | Element::Stair(_) | Element::Railing(_) | Element::Ramp(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_))) => e.clone(),
+                Some(e @ (Element::StructuralColumn(_) | Element::Beam(_) | Element::BeamSystem(_) | Element::Truss(_) | Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::ContourLabel(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_) | Element::CadImport(_) | Element::Stair(_) | Element::Railing(_) | Element::Ramp(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_) | Element::LegendComponent(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
+                Element::LegendComponent(c)=>c.pinned=pinned,
                 Element::Room(r)=>r.pinned=pinned,
                 Element::RoomTag(r)=>r.pinned=pinned,
                 Element::RoomSeparation(r)=>r.pinned=pinned,
@@ -915,7 +917,7 @@ impl Document {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
                 Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
-                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) => {}
+                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) => {}
                 Some(Element::StructuralColumn(_)) | Some(Element::Beam(_)) | Some(Element::BeamSystem(_)) | Some(Element::Truss(_)) | Some(Element::PropertyLineTag(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,
@@ -929,6 +931,7 @@ impl Document {
         for (i, e) in self.iter() {
             let view = match e {
                 Element::DetailLine(l) => Some(l.view),
+                Element::LegendComponent(c) => Some(c.view),
                 Element::DetailRegion(r) => Some(r.view),
                 Element::TextNote(t) => Some(t.view),
                 Element::PropertyLineTag(t) => Some(t.view),
@@ -1342,7 +1345,7 @@ impl Document {
             n += 1;
         };
         // a drafting view is what is drawn in it, so its detailing comes along
-        let drafting = v.view_kind == ViewKind::Drafting;
+        let drafting = matches!(v.view_kind, ViewKind::Drafting | ViewKind::Legend);
         let extra = if drafting { self.detail_copies(id, id) } else { vec![] };
         self.transact("Duplicate view", |tx| {
             let nid = tx.add(Element::View(View { name, ..v }));
@@ -1351,6 +1354,7 @@ impl Document {
                     Element::DetailLine(l) => l.view = nid,
                     Element::DetailRegion(r) => r.view = nid,
                     Element::TextNote(t) => t.view = nid,
+                    Element::LegendComponent(c) => c.view = nid,
                     _ => {}
                 }
                 tx.add(e);

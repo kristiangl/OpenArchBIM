@@ -208,6 +208,9 @@ const COMMANDS = {
   "m-globals": () => openGlobalParams(),
   "m-params": () => ProjParams.open(),
   "v-draft": () => newDraftingView(),
+  "v-legend": () => newDraftingView("legend"),
+  // Annotate > Component: in a legend, Legend Component (detail components are not built yet)
+  "det-comp": () => startLegendComponent(),
   // View > 3D View: the default {3D} view (made again when it has been deleted)
   "v-3d": async () => { const r = await run("default_3d_view", {}); if (!r) return; if (r.made) await refresh(); await openView("3d", r.id); },
   "m-lineweights": () => openLineWeights(),
@@ -386,7 +389,7 @@ const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : app.doc === "annota
 // In a drafting view only what draws in it, edits it, or manages the project runs; a model tool asks for a plan first
 const DRAFTING_OK = new Set(["det-line", "text", "text-lead-l", "text-lead-r", "text-arc-l", "text-arc-r", "text-lead-rm", "det-filled", "det-masking",
   "edit-boundary", "det-revcloud", "tag-revision", "mi-pick", "mi-draw", "del", "mv", "cp", "ro", "mi", "of", "tr", "al", "me", "ar", "gp", "det-group",
-  "pin", "unpin", "clip-copy", "clip-cut", "paste", "paste-same", "paste-current", "match-type", "create-similar", "reveal", "show-wp", "export",
+  "pin", "unpin", "det-comp", "clip-copy", "clip-cut", "paste", "paste-same", "paste-current", "match-type", "create-similar", "reveal", "show-wp", "export",
   "export-ifc", "open-ifc", "import-ifc", "project-info", "load-family", "open-log"]);
 const draftingOk = (id) => DRAFTING_OK.has(id) || (/^(m-|temp-|hide-|override-|v-)/.test(id) && !["v-elev", "v-section", "m-addset", "m-pickedit"].includes(id));
 const projectCommand = (id) => {
@@ -827,7 +830,7 @@ function renderTree() {
       ...byType("elevation", "Elevations"),
       ...byType("section", "Sections"),
       { name: "Drafting Views", menu: [{ label: "New Drafting View...", run: () => newDraftingView() }], children: ofKind("drafting").map(viewLeaf) },
-      { name: "Legends", children: [] },
+      { name: "Legends", menu: [{ label: "New Legend...", run: () => newDraftingView("legend") }], children: ofKind("legend").map(viewLeaf) },
       { name: "Schedules / Quantities", menu: newScheduleMenu, children: [
         ...ofKind("schedule").map((x) => ({ ...viewLeaf(x), menu: [
           { label: "Open", run: () => openView("schedule", x.id) },
@@ -1078,17 +1081,18 @@ function viewMenu(x) {
   ];
 }
 // View > Drafting View: a name and a scale, then the new view opens
-function newDraftingView() {
-  openModal("New Drafting View", (body, foot, close) => {
-    const name = el("input", { type: "text", placeholder: "Drafting 1 (the next free name)" });
-    const scale = el("select", {}, [1, 2, 5, 10, 20, 25, 50, 100, 200].map((n) => new Option(`1 : ${n}`, String(n), false, n === 10)));
+function newDraftingView(kind = "drafting") {
+  const legend = kind === "legend";
+  openModal(legend ? "New Legend" : "New Drafting View", (body, foot, close) => {
+    const name = el("input", { type: "text", placeholder: legend ? "Legend 1 (the next free name)" : "Drafting 1 (the next free name)" });
+    const scale = el("select", {}, [1, 2, 5, 10, 20, 25, 50, 100, 200].map((n) => new Option(`1 : ${n}`, String(n), false, n === (legend ? 50 : 10))));
     const msg = el("div", { className: "modal-note" });
     body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), el("label", { className: "new-row" }, [el("span", { textContent: "Scale" }), scale]), msg);
     foot.append(button("Cancel", close), button("OK", async () => {
       try {
-        const r = await Backend.call("add_drafting_view", { name: name.value.trim() || null, scale: Number(scale.value) });
+        const r = await Backend.call(legend ? "add_legend_view" : "add_drafting_view", { name: name.value.trim() || null, scale: Number(scale.value) });
         close(); await refresh(); await openView("plan", r.id);
-        setPrompt("Drafting view: draw with Detail Line, Region and Text on the Annotate tab.");
+        setPrompt(legend ? "Legend: place types with Annotate > Component, and add Text and Detail Lines. A legend can go on any number of sheets." : "Drafting view: draw with Detail Line, Region and Text on the Annotate tab.");
       } catch (e) { msg.textContent = String(e.message || e); }
     }, true));
   });
@@ -1278,7 +1282,24 @@ function planViews() {
   return app.info.views.filter((x) => x.view_kind === "floor_plan" || x.view_kind === "ceiling_plan" || x.view_kind === "structural_plan" || x.view_kind === "area_plan");
 }
 // the open view is a drafting view: the plan canvas, but nothing of the model goes in it
-function inDrafting() { return !!app.view && app.view.kind === "plan" && !!app.info && (app.info.views || []).some((v) => v.id === app.view.viewId && v.view_kind === "drafting"); }
+function inDrafting() { return !!app.view && app.view.kind === "plan" && !!app.info && (app.info.views || []).some((v) => v.id === app.view.viewId && (v.view_kind === "drafting" || v.view_kind === "legend")); }
+const inLegend = () => app.view.kind === "plan" && (viewById(app.view.viewId) || {}).view_kind === "legend";
+// Legend Component: the type to show and its Host Length in the options bar, a click places it
+async function startLegendComponent() {
+  if (!inLegend()) { setPrompt("Legend components go in a legend (View > Legend). Detail components are not built yet.", true); return; }
+  const r = await run("legend_types", {});
+  if (!r || !r.types.length) return;
+  app.legendTypes = r.types;
+  if (!app.legendType || !r.types.some((t) => t.id === app.legendType)) app.legendType = r.types[0].id;
+  app.legendLength = app.legendLength || 1000;
+  Plan.setTool("legendcomp");
+  renderOptionsBar();
+}
+Plan.callbacks.legendPlace = async (p) => {
+  const t = (app.legendTypes || []).find((x) => x.id === app.legendType);
+  const r = await run("add_legend_component", { view_id: app.view.viewId, type_id: app.legendType, point: [Math.round(p.x), Math.round(p.y)], length_mm: t && t.kind !== "Family" ? app.legendLength : null });
+  if (r) { await refresh(); setPrompt(`Placed ${t ? t.label : "the component"}. Click to place another, Esc finishes.`); }
+};
 async function ensurePlan(what, opts = {}) {
   if (app.view.kind === "plan" && (!inDrafting() || opts.drafting)) return true;
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return false; }
@@ -1390,7 +1411,7 @@ function updateTitle() {
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
   if (app.activation) { const s = sheetById(app.activation.sheet); $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - Sheet: ${s ? `${s.number} - ${s.name}` : ""} (${v ? v.name : "view"} activated)`; updateUndoButtons(); return; }
-  const planKind = (x) => x.view_kind === "drafting" ? "Drafting View" : x.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : x.view_kind === "area_plan" ? `Area Plan (${(app.info.area_schemes || []).find((s) => s.id === x.area_scheme)?.name || ""})` : "Floor Plan";
+  const planKind = (x) => x.view_kind === "drafting" ? "Drafting View" : x.view_kind === "legend" ? "Legend" : x.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : x.view_kind === "area_plan" ? `Area Plan (${(app.info.area_schemes || []).find((s) => s.id === x.area_scheme)?.name || ""})` : "Floor Plan";
   const vn = app.view.kind === "plan" && v ? `${planKind(v)}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : `Schedule: ${tabName(app.view)}`;
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
@@ -1813,7 +1834,7 @@ Plan.callbacks.placeInstance = async (wallId, point) => {
 function renderOptionsBar() {
   const bar = $("#optionsbar");
   const inPlan = app.view.kind === "plan";
-  const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && (Plan.isEditTool() || Plan.tool === "split" || Plan.tool === "splitgap"), sketchTool = Sketch.active;
+  const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && (Plan.isEditTool() || Plan.tool === "split" || Plan.tool === "splitgap" || Plan.tool === "legendcomp"), sketchTool = Sketch.active;
   const levelTool = app.view.kind === "elevation" && Elev.tool === "level", elevTool = inPlan && Plan.tool === "elevation", gridTool = inPlan && Plan.tool === "grid";
   const secTool = inPlan && Plan.tool === "section";
   // Place Wall and Place Component add their panels to the Modify tab (one pass covers both)
@@ -2284,7 +2305,7 @@ async function startEditTool(name) {
   Plan.setTool(name);
 }
 
-const EDIT_PROMPT = { split: "Split", splitgap: "Split with Gap", move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array", measure: "Measure" };
+const EDIT_PROMPT = { legendcomp: "Legend Component", split: "Split", splitgap: "Split with Gap", move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array", measure: "Measure" };
 
 function renderEditBar() {
   const box = $("#ob-edit");
@@ -2296,6 +2317,17 @@ function renderEditBar() {
   const kids = [el("b", { textContent: EDIT_PROMPT[t] })];
   if (t === "move") kids.push(check("Constrain", "constrain", "Keep to the element's own direction or its perpendicular (Shift does the same for one move)"), check("Disjoin", "disjoin", "Break joins first: joined walls stay where they are, and a door or window may move to another wall"));
   if (t === "copy") kids.push(check("Constrain", "constrain"), check("Multiple", "multiple", "Keep placing copies from the same start point"));
+  if (t === "legendcomp") {
+    const types = app.legendTypes || [];
+    const sel = el("select", { onchange: () => { app.legendType = Number(sel.value); renderEditBar(); } }, types.map((x) => new Option(x.label, String(x.id), false, x.id === app.legendType)));
+    kids.push(el("label", {}, [" Family: ", sel]));
+    const cur = types.find((x) => x.id === app.legendType);
+    if (cur && cur.kind !== "Family") {
+      const len = el("input", { type: "number", min: "10", step: "10", value: app.legendLength, style: "width:80px" });
+      len.onchange = () => { const v = parseFloat(len.value); if (v >= 10) app.legendLength = v; else len.value = app.legendLength; };
+      kids.push(el("label", {}, [` ${cur.kind === "Wall" ? "Host Length" : "Host Length (section)"} `, len, " mm"]));
+    }
+  }
   if (t === "splitgap") {
     const g = el("input", { type: "number", min: "1", max: "5000", step: "1", value: o.splitGap, style: "width:70px", title: "The gap left between the two pieces, mm" });
     g.onchange = () => { const v = parseFloat(g.value); if (v > 0 && v <= 5000) set({ splitGap: v }); else g.value = o.splitGap; };

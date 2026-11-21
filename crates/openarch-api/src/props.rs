@@ -1244,6 +1244,28 @@ pub fn dimension_type_props(d: &Document, id: Id, t: &openarch_model::dimension:
     })
 }
 
+/// A legend component: the type it shows (any type of the same kind), how it is drawn, its Host Length.
+pub fn legend_component_props(d: &Document, id: Id, c: &openarch_model::legend::LegendComponent) -> Value {
+    use openarch_model::legend::{LegendDir, LegendKind};
+    let kind = d.legend_kind(c.type_id);
+    let mut types: Vec<(String, Value, bool)> = d.iter().filter(|(tid, _)| d.legend_kind(*tid) == kind).map(|(tid, _)| (d.legend_type_label(tid), json!({ "type_id": tid }), tid == c.type_id)).collect();
+    types.sort_by(|a, b| a.0.cmp(&b.0));
+    let detail = c.detail.map(|x| name_of(&x)).unwrap_or_default();
+    let mut rows = vec![
+        select("Component", types),
+        ro("View", if c.dir == LegendDir::Section { "Section" } else { "Floor Plan" }),
+        select("Detail Level", [("By View", Value::Null, ""), ("Coarse", json!("coarse"), "coarse"), ("Medium", json!("medium"), "medium"), ("Fine", json!("fine"), "fine")].into_iter().map(|(l, v, n)| (l.to_string(), json!({ "detail": v }), n == detail)).collect()),
+    ];
+    if kind != Some(LegendKind::Family) {
+        rows.push(num("Host Length", "length_mm", c.length_mm, !c.pinned));
+    }
+    json!({
+        "id": id, "kind": "LegendComponent", "title": "Legend Component", "type_label": "Legend Component",
+        "target": { "method": "patch_legend_component", "id": id },
+        "groups": [group("Graphics", rows), group("Constraints", vec![boolean("Pinned", "pinned", c.pinned, true)])],
+    })
+}
+
 /// Type Properties of a spot type (spot elevation, coordinate or slope): its symbol and text, how values are written,
 /// and what it measures from.
 pub fn spot_type_props(d: &Document, id: Id, t: &openarch_model::spot::SpotType) -> Value {
