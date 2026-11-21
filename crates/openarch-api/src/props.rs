@@ -1248,6 +1248,19 @@ pub fn dimension_type_props(d: &Document, id: Id, t: &openarch_model::dimension:
     })
 }
 
+/// A symbol: its family (any generic annotation family), its rotation, Pinned.
+pub fn symbol_props(d: &Document, id: Id, s: &openarch_model::annsymbol::AnnotationSymbol) -> Value {
+    let fams: Vec<(String, Value, bool)> = d.symbol_families().into_iter().map(|(fid, f)| (f.name.clone(), json!({ "family": fid }), fid == s.family)).collect();
+    json!({
+        "id": id, "kind": "Symbol", "title": "Generic Annotation", "type_label": "Generic Annotation",
+        "target": { "method": "patch_symbol", "id": id },
+        "groups": [
+            group("Graphics", vec![select("Family", fams), num("Rotation", "rotation_deg", (s.rotation_deg * 100.0).round() / 100.0, !s.pinned)]),
+            group("Constraints", vec![boolean("Pinned", "pinned", s.pinned, true)]),
+        ],
+    })
+}
+
 /// A legend component: the type it shows (any type of the same kind), how it is drawn, its Host Length.
 pub fn legend_component_props(d: &Document, id: Id, c: &openarch_model::legend::LegendComponent) -> Value {
     use openarch_model::legend::{LegendDir, LegendKind};

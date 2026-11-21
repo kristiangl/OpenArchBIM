@@ -2,6 +2,7 @@
 //! geometry and the project file.
 
 pub mod annotation;
+pub mod annsymbol;
 pub mod array;
 pub mod curtain;
 pub mod curve;

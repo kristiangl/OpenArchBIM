@@ -47,6 +47,9 @@ impl Document {
         for (_, t) in self.text_notes(view) {
             pts.push(t.at);
         }
+        for (_, s) in self.symbols_in(view) {
+            pts.push(s.at);
+        }
         // legend components: their strips and symbols
         if !self.legend_components(view).is_empty() {
             for (_, ring) in self.legend_paths(view, 1.0, crate::view::DetailLevel::Coarse).1 {
@@ -68,6 +71,9 @@ impl Document {
         }
         for (_, t) in self.text_notes(from) {
             out.push(Element::TextNote(crate::detail::TextNote { view: to, pinned: false, ..t.clone() }));
+        }
+        for (_, s) in self.symbols_in(from) {
+            out.push(Element::AnnotationSymbol(crate::annsymbol::AnnotationSymbol { view: to, pinned: false, ..s.clone() }));
         }
         for (_, c) in self.legend_components(from) {
             out.push(Element::LegendComponent(crate::legend::LegendComponent { view: to, pinned: false, ..c.clone() }));

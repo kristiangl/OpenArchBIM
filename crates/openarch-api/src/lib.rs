@@ -157,6 +157,15 @@ fn section_patch_points(patch: &mut Value) -> Result<(), String> {
 
 /// What a 2D view shows of its detail lines, regions and text notes (paper mm, round the view's origin), with the
 /// lists the tools need. Plans, elevations and sections all send it.
+/// The symbols placed in a view or on a sheet: where, turned how far, and their family's drawing (paper mm).
+fn symbols_json(d: &Document, view: Id) -> Value {
+    json!(d.symbols_in(view).into_iter().filter(|(id, _)| !d.hidden_in(view, *id)).filter_map(|(id, s)| {
+        let f = d.annotation_family(s.family)?;
+        Some(json!({ "id": id, "at": { "x": s.at.x, "y": s.at.y }, "rotation_deg": s.rotation_deg, "pinned": s.pinned, "name": f.name,
+            "family": d.symbol_drawing(f, false), "labels": d.symbol_texts(f, &|_| None, false) }))
+    }).collect::<Vec<_>>())
+}
+
 fn detail_json(d: &Document, vid: Id, settings: &openarch_model::view::ViewSettings) -> serde_json::Map<String, Value> {
     let ann_shown = |cat: &str| settings.overrides.annotation.get(cat).is_none_or(|o| o.visible);
     let scale = settings.scale as f64;
@@ -422,6 +431,11 @@ impl Session {
                 Ok(json!({}))
             }
             "duplicate_view" => Ok(json!({ "id": self.doc.duplicate_view(id_of(p, "id")?)? })),
+            // Annotate > Symbol: the generic annotation families (none yet: the North Arrow comes with the first one)
+            "symbol_families" => Ok(json!({ "families": self.doc.symbol_families().iter().map(|(id, f)| json!({ "id": id, "name": f.name })).collect::<Vec<_>>() })),
+            // { view_id (a view or a sheet), family_id?, point, rotation_deg? }
+            "add_symbol" => Ok(json!({ "id": self.doc.add_symbol(id_of(p, "view_id")?, p.get("family_id").and_then(|v| v.as_u64()), point_of(p.get("point").ok_or("missing point")?)?, p.get("rotation_deg").and_then(|v| v.as_f64()).unwrap_or(0.0))? })),
+            "patch_symbol" => { self.doc.patch_symbol(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) }
             // View > Legend: { name?, scale? }
             "add_legend_view" => Ok(json!({ "id": self.doc.add_legend_view(p.get("name").and_then(|v| v.as_str()), p.get("scale").and_then(|v| v.as_u64()).unwrap_or(50) as u32)? })),
             // Legend Component: { view_id, type_id, point, length_mm? }
@@ -2299,7 +2313,7 @@ impl Session {
                     schedules.push(json!({ "id": sid, "schedule": p.schedule, "segments": p.segments, "repeat_headers": p.repeat_headers, "table": table }));
                 }
                 Ok(json!({ "id": id, "number": s.number, "name": s.name, "paper": d.sheet_paper(id), "title_block": title_block, "views": d.sheet_views(id), "schedules": schedules, "revision_table":self.revision_table(id), "revision_clouds":revisions::drawing(d,id)["revision_clouds"], "revision_tags":revisions::drawing(d,id)["revision_tags"], "additional_revisions":s.additional_revisions, "applicable_revisions":d.sheet_revisions(id),
-                    "detail": d.detail_paths(id, 1.0, true, true), "text_notes": d.text_note_draws(id, 1.0),
+                    "detail": d.detail_paths(id, 1.0, true, true), "text_notes": d.text_note_draws(id, 1.0), "symbols": symbols_json(d, id),
                     "detail_lines": d.detail_lines(id).iter().map(|(i, l)| json!({ "id": i, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
                     "regions": d.detail_regions(id).iter().map(|(i, r)| json!({ "id": i, "masking": r.masking, "region_type": r.region_type })).collect::<Vec<_>>(),
                     "fill_patterns": graphics::fill_pattern_defs(d), "line_styles": d.line_styles() }))
@@ -2503,7 +2517,7 @@ impl Session {
         if let Some(o) = v.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
-            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
+            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid));
         }
         // permanent dimensions, measured in the view's own frame
         let hidden_here = d.view(vid).map(|x| x.hidden_elements.clone()).unwrap_or_default();
@@ -3184,7 +3198,7 @@ impl Session {
             if let Some(c) = colorfill::drawing(d, vid).as_object() { o.extend(c.clone()); }
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
-            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
+            if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid));
         }
         Ok(out)
     }
@@ -3215,6 +3229,7 @@ impl Session {
         if let Some(o) = out.as_object_mut() {
             o.extend(detail_json(d, vid, &settings));
             if let Some(r) = revisions::drawing(d, vid).as_object() { o.extend(r.clone()); }
+            o.insert("symbols".into(), symbols_json(d, vid));
             // a legend's components join the detail drawing (so they print and export the same), with their outlines
             // for picking
             if view.view_kind == openarch_model::view::ViewKind::Legend {
@@ -3475,6 +3490,7 @@ impl Session {
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
             Element::LegendComponent(c) => Ok(props::legend_component_props(d, id, c)),
+            Element::AnnotationSymbol(s) => Ok(props::symbol_props(d, id, s)),
             Element::DetailRegion(r) => Ok(props::detail_region_props(d, id, r)),
             Element::TextNote(t) => Ok(props::text_note_props(d, id, t)),
             Element::GroupInstance(g) => Ok(props::group_props(d, id, g)),
@@ -5749,6 +5765,37 @@ mod tests {
         call(&mut s, "align", json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 750], [4000, 750]] }));
         assert_eq!(ends(&mut s, o).0, json!([0.0, 900.0]));
         assert!(s.handle("align", &json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 900], [4000, 900]] })).is_err());
+    }
+
+    #[test]
+    fn symbols_place_in_views_and_on_sheets() {
+        let (mut s, _, _, view) = setup();
+        // the North Arrow comes with the first symbol, in the same undo step
+        assert!(call(&mut s, "symbol_families", json!({}))["families"].as_array().unwrap().is_empty());
+        let n = call(&mut s, "add_symbol", json!({ "view_id": view, "point": [1000, 2000] }))["id"].as_u64().unwrap();
+        let fams = call(&mut s, "symbol_families", json!({}))["families"].clone();
+        assert_eq!(fams[0]["name"], "North Arrow");
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        let sym = plan["symbols"].as_array().unwrap().iter().find(|x| x["id"] == n).unwrap().clone();
+        assert!(sym["family"]["body"]["strokes"].as_array().unwrap().len() >= 2);
+        assert!(sym["labels"].as_array().unwrap().iter().any(|l| l["lines"][0][0] == "N"));
+        // rotate turns it; mirror is refused; Properties change the rotation
+        call(&mut s, "transform", json!({ "ids": [n], "kind": "rotate", "cx": 1000, "cy": 2000, "angle_deg": 30 }));
+        assert!((s.doc.symbol(n).unwrap().rotation_deg - 30.0).abs() < 1e-9);
+        assert!(s.handle("transform", &json!({ "ids": [n], "kind": "mirror", "a": [0, 0], "b": [0, 10], "copy": false })).is_err());
+        call(&mut s, "patch_symbol", json!({ "id": n, "patch": { "rotation_deg": -15 } }));
+        assert!((s.doc.symbol(n).unwrap().rotation_deg - 345.0).abs() < 1e-9);
+        // a second one reuses the family; on a sheet too
+        let fam = fams[0]["id"].as_u64().unwrap();
+        let sheet = call(&mut s, "add_sheet", json!({ "name": "Plans" }))["id"].as_u64().unwrap();
+        call(&mut s, "add_symbol", json!({ "view_id": sheet, "family_id": fam, "point": [780, 60] }));
+        assert_eq!(s.doc.symbol_families().len(), 1);
+        assert_eq!(call(&mut s, "sheet", json!({ "id": sheet }))["symbols"].as_array().unwrap().len(), 1);
+        // only generic annotation families; delete
+        let tb = s.doc.annotation_families().iter().find(|(_, f)| f.kind == openarch_model::annotation::AnnotationKind::TitleBlock).unwrap().0;
+        assert!(s.handle("add_symbol", &json!({ "view_id": view, "family_id": tb, "point": [0, 0] })).is_err());
+        call(&mut s, "delete", json!({ "ids": [n] }));
+        assert!(s.doc.symbol(n).is_none());
     }
 
     #[test]

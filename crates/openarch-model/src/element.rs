@@ -746,6 +746,8 @@ pub enum Element {
     DesignOptions(crate::designopt::DesignOptions),
     /// A type drawn on its own in a legend view (legend.rs).
     LegendComponent(crate::legend::LegendComponent),
+    /// A generic annotation placed in a view or on a sheet (annsymbol.rs).
+    AnnotationSymbol(crate::annsymbol::AnnotationSymbol),
 }
 
 impl Element {
@@ -794,6 +796,7 @@ impl Element {
             Element::Phasing(_) => "Phasing",
             Element::DesignOptions(_) => "Design Options",
             Element::LegendComponent(_) => "Legend Component",
+            Element::AnnotationSymbol(_) => "Symbol",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

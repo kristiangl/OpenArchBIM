@@ -66,7 +66,7 @@ const SheetView = (() => {
         if ((ring[i][1] > q.y) !== (ring[j][1] > q.y) && q.x < (ring[j][0] - ring[i][0]) * (q.y - ring[i][1]) / (ring[j][1] - ring[i][1]) + ring[i][0]) hit = !hit;
       return hit;
     };
-    return [...Det.elements(),...Revisions.elements(sheet,cam.s)].filter((e) => (e.rings || [e.ring]).filter(inside).length % 2).reverse()[0];
+    return [...Det.elements(),...Revisions.elements(sheet,cam.s),...Symbols.elements(sheet)].filter((e) => (e.rings || [e.ring]).filter(inside).length % 2).reverse()[0];
   }
 
   // ---- drawing, onto any context: `at(x, y)` maps paper mm to the context's pixels, `k` pixels per mm
@@ -114,6 +114,7 @@ const SheetView = (() => {
       d.drawItems(new Set(), new Set(), "#2f6fd6", false);
       d.drawNotes(new Set(), new Set(), "#2f6fd6", false);
       Revisions.draw(c,s,q=>at(q.x,q.y),k);
+      Symbols.draw(c, s, (q) => at(q.x, q.y), k);
     }
     c.restore();
   }
@@ -269,6 +270,7 @@ const SheetView = (() => {
     Det.drawItems(sel, new Set(), accent, tool === "select");
     Det.drawNotes(sel, new Set(), accent, tool === "select");
     Revisions.draw(ctx,sheet,q=>toScreen(q.x,q.y),cam.s,sel);
+    Symbols.draw(ctx, sheet, (q) => toScreen(q.x, q.y), cam.s, sel);
     if (down?.delta) {
       ctx.save(); ctx.strokeStyle = accent; ctx.lineWidth = 1;
       for (const e of Det.elements()) if (sel.has(e.id)) for (const ring of e.rings || [e.ring]) {
@@ -473,6 +475,7 @@ const SheetView = (() => {
         } else Sketch.click(snap(x, y), x, y, e);
       } else if(tool==="sheetedit") Revisions.sheetClick(toPaper(x,y));
       else if (tool === "revisiontag") Revisions.place(toPaper(x,y));
+      else if (tool === "symbol") Symbols.place(toPaper(x, y));
       else if (tool === "text") Det.toolClick(Det.toolSnap(x, y));
       else if (tool === "noteleader") Det.leaderClick(Det.toolSnap(x, y));
       render(); return;

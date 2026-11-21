@@ -44,6 +44,8 @@ pub enum AnnotationKind {
     DoorTag,
     WindowTag,
     AreaTag,
+    /// A generic annotation placed on its own (Annotate > Symbol): a north arrow and the like (annsymbol.rs).
+    Symbol,
 }
 
 impl AnnotationKind {
@@ -58,6 +60,7 @@ impl AnnotationKind {
             AnnotationKind::DoorTag => "Door Tag",
             AnnotationKind::WindowTag => "Window Tag",
             AnnotationKind::AreaTag => "Area Tag",
+            AnnotationKind::Symbol => "Generic Annotation",
         }
     }
 
@@ -73,6 +76,7 @@ impl AnnotationKind {
             AnnotationKind::DoorTag => "Door Tags",
             AnnotationKind::WindowTag => "Window Tags",
             AnnotationKind::AreaTag => "Area Tags",
+            AnnotationKind::Symbol => "Generic Annotations",
         }
     }
 
@@ -87,6 +91,7 @@ impl AnnotationKind {
             AnnotationKind::RoomTag => &["Room Number", "Room Name", "Area", "Perimeter", "Volume", "Department", "Occupancy", "Level"],
             AnnotationKind::DoorTag | AnnotationKind::WindowTag => OPENING_TAG_PARAMS,
             AnnotationKind::AreaTag => &["Name", "Number", "Area", "Perimeter", "Area Type", "Level", "Comments"],
+            AnnotationKind::Symbol => &[],
         }
     }
 }
@@ -494,7 +499,7 @@ fn pt(p: [f64; 2]) -> Point {
 }
 
 impl AnnotationFamily {
-    fn drawn_with(name: &str, kind: AnnotationKind, shapes: Vec<AnnShape>, pointer: Vec<AnnShape>, labels: Vec<AnnLabel>) -> AnnotationFamily {
+    pub(crate) fn drawn_with(name: &str, kind: AnnotationKind, shapes: Vec<AnnShape>, pointer: Vec<AnnShape>, labels: Vec<AnnLabel>) -> AnnotationFamily {
         let mut f = AnnotationFamily {
             name: name.into(),
             kind,
