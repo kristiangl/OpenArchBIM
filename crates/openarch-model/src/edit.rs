@@ -428,7 +428,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) | Some(Element::WallFoundation(_)) | Some(Element::IsolatedFooting(_)) | Some(Element::SlabEdge(_)) => details.push(id),
+                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) | Some(Element::WallFoundation(_)) | Some(Element::IsolatedFooting(_)) | Some(Element::SlabEdge(_)) | Some(Element::ModelText(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -607,6 +607,11 @@ impl Document {
                 }
                 Some(Element::DetailLine(l)) => Element::DetailLine(crate::detail::DetailLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
                 // a footing follows its wall; on its own it does not move
+                // model text moves by its point and turns; mirrored it would read backwards
+                Some(Element::ModelText(t)) => {
+                    if matches!(x, Xform::Mirror { .. }) { return Err("Model text moves, copies and rotates; mirrored it would read backwards.".into()); }
+                    Element::ModelText(crate::modeltext::ModelText { at: x.apply(t.at), rotation_deg: (t.rotation_deg + turn).rem_euclid(360.0), pinned: t.pinned && !opt.copy, ..t.clone() })
+                }
                 Some(Element::SlabEdge(s)) => {
                     if !set.contains(&s.floor) { return Err("A slab edge follows its floor: move the floor.".into()); }
                     Element::SlabEdge(s.clone())

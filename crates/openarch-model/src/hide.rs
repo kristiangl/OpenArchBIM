@@ -99,6 +99,7 @@ impl Document {
             Element::DetailLine(_) | Element::ModelLine(_) => "Lines",
             Element::RefPlane(_) => "Reference Planes",
             Element::WallFoundation(_) | Element::IsolatedFooting(_) | Element::SlabEdge(_) => "Structural Foundations",
+            Element::ModelText(_) => "Generic Models",
             Element::DetailRegion(_) => "Detail Items",
             Element::TextNote(_) => "Text Notes",
             Element::RevisionCloud(_) => "Revision Clouds",

@@ -530,6 +530,7 @@ impl Document {
                 Element::RoomSeparation(s) => s.level==level,
                 Element::ModelLine(l) => l.level == level,
                 Element::IsolatedFooting(f) => f.level == level,
+                Element::ModelText(t) => t.level == level,
                 Element::Stair(s) => s.base_level == level || s.top_level == Some(level) || s.multistory_top == Some(level),
                 Element::Railing(r) => r.level == level,
                 Element::Ramp(r) => r.base_level == level || r.top_level == Some(level),
@@ -1892,6 +1893,7 @@ impl Document {
                 "StructuralColumn" => "Structural Columns",
                 "Beam" => "Structural Framing",
                 "WallFoundation" | "IsolatedFooting" | "SlabEdge" => "Structural Foundations",
+                "ModelText" => "Generic Models",
                 "WheelStop" => "Parking",
                 _ => continue,
             };

@@ -840,6 +840,7 @@ impl Document {
             Some(Element::WallFoundation(f)) => f.pinned,
             Some(Element::IsolatedFooting(f)) => f.pinned,
             Some(Element::SlabEdge(s)) => s.pinned,
+            Some(Element::ModelText(t)) => t.pinned,
             _ => false,
         }
     }
@@ -860,7 +861,7 @@ impl Document {
         let mut edits = vec![];
         for &id in ids {
             let mut e = match self.get(id) {
-                Some(e @ (Element::StructuralColumn(_) | Element::Beam(_) | Element::BeamSystem(_) | Element::Truss(_) | Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::ContourLabel(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_) | Element::CadImport(_) | Element::Stair(_) | Element::Railing(_) | Element::Ramp(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_) | Element::LegendComponent(_) | Element::AnnotationSymbol(_) | Element::ImageItem(_) | Element::ModelLine(_) | Element::RefPlane(_) | Element::WallFoundation(_) | Element::IsolatedFooting(_) | Element::SlabEdge(_))) => e.clone(),
+                Some(e @ (Element::StructuralColumn(_) | Element::Beam(_) | Element::BeamSystem(_) | Element::Truss(_) | Element::Wall(_) | Element::Floor(_) | Element::Roof(_) | Element::FamilyInstance(_) | Element::ElevationMarker(_) | Element::Section(_) | Element::Level(_) | Element::Grid(_) | Element::GroupInstance(_) | Element::Room(_) | Element::RoomTag(_) | Element::RoomSeparation(_) | Element::RevisionCloud(_) | Element::RevisionTag(_) | Element::ElementTag(_) | Element::Ceiling(_) | Element::Toposolid(_) | Element::ContourLabel(_) | Element::PropertyLine(_) | Element::LineMarking(_) | Element::ParkingRow(_) | Element::Kerb(_) | Element::KerbRamp(_) | Element::CadImport(_) | Element::Stair(_) | Element::Railing(_) | Element::Ramp(_) | Element::Area(_) | Element::AreaTag(_) | Element::AreaBoundary(_) | Element::ColorFillLegend(_) | Element::LegendComponent(_) | Element::AnnotationSymbol(_) | Element::ImageItem(_) | Element::ModelLine(_) | Element::RefPlane(_) | Element::WallFoundation(_) | Element::IsolatedFooting(_) | Element::SlabEdge(_) | Element::ModelText(_))) => e.clone(),
                 _ => continue,
             };
             match &mut e {
@@ -872,6 +873,7 @@ impl Document {
                 Element::WallFoundation(f)=>f.pinned=pinned,
                 Element::IsolatedFooting(f)=>f.pinned=pinned,
                 Element::SlabEdge(s)=>s.pinned=pinned,
+                Element::ModelText(t)=>t.pinned=pinned,
                 Element::Room(r)=>r.pinned=pinned,
                 Element::RoomTag(r)=>r.pinned=pinned,
                 Element::RoomSeparation(r)=>r.pinned=pinned,
@@ -931,7 +933,7 @@ impl Document {
                 Some(Element::Wall(_)) | Some(Element::Floor(_)) | Some(Element::Roof(_)) | Some(Element::View(_)) => {}
                 Some(Element::ViewTemplate(_)) | Some(Element::FamilyInstance(_)) | Some(Element::Grid(_)) | Some(Element::Dimension(_)) | Some(Element::Spot(_)) => {}
                 Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::Revision(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_)) => {},
-                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) | Some(Element::WallFoundation(_)) | Some(Element::IsolatedFooting(_)) | Some(Element::SlabEdge(_)) => {}
+                Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) | Some(Element::WallFoundation(_)) | Some(Element::IsolatedFooting(_)) | Some(Element::SlabEdge(_)) | Some(Element::ModelText(_)) => {}
                 Some(Element::StructuralColumn(_)) | Some(Element::Beam(_)) | Some(Element::BeamSystem(_)) | Some(Element::Truss(_)) | Some(Element::PropertyLineTag(_)) => {}
                 Some(Element::Sheet(_)) | Some(Element::Viewport(_)) | Some(Element::SheetSchedule(_)) => {}
                 Some(Element::SheetCollection(_)) => self.check_collection_delete(*id)?,

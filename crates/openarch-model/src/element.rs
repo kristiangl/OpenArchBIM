@@ -763,6 +763,8 @@ pub enum Element {
     /// A thickened slab edge type and a floor's thickened edge (foundation.rs).
     SlabEdgeType(crate::foundation::SlabEdgeType),
     SlabEdge(crate::foundation::SlabEdge),
+    /// Letters as solids on a level (modeltext.rs).
+    ModelText(crate::modeltext::ModelText),
 }
 
 impl Element {
@@ -821,6 +823,7 @@ impl Element {
             Element::IsolatedFooting(_) => "IsolatedFooting",
             Element::SlabEdgeType(_) => "SlabEdgeType",
             Element::SlabEdge(_) => "SlabEdge",
+            Element::ModelText(_) => "Model Text",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

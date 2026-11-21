@@ -36,6 +36,18 @@ impl Session {
             "patch_slab_edge" => (|| { self.doc.patch_slab_edge(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "patch_slab_edge_type" => (|| { self.doc.patch_slab_edge_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "duplicate_slab_edge_type" => (|| Ok(json!({ "id": self.doc.duplicate_slab_edge_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
+            // Model Text: { level_id, point, text, size_mm?, depth_mm?, upright?, rotation_deg? }
+            "add_model_text" => (|| {
+                let q = p["point"].as_array().ok_or("missing point")?;
+                let at = openarch_model::Point::new(q[0].as_f64().unwrap_or(f64::NAN), q.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN));
+                let mut t = openarch_model::modeltext::ModelText::new(id_of(p, "level_id")?, at, p["text"].as_str().unwrap_or(""));
+                if let Some(v) = p["size_mm"].as_f64() { t.size_mm = v; }
+                if let Some(v) = p["depth_mm"].as_f64() { t.depth_mm = v; }
+                if let Some(v) = p["rotation_deg"].as_f64() { t.rotation_deg = v; }
+                t.upright = p["upright"].as_bool().unwrap_or(false);
+                Ok(json!({ "id": self.doc.add_model_text(t)? }))
+            })(),
+            "patch_model_text" => (|| { self.doc.patch_model_text(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "duplicate_wall_foundation_type" => (|| Ok(json!({ "id": self.doc.duplicate_wall_foundation_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             _ => return None,
         })
@@ -174,6 +186,47 @@ pub(crate) fn slab_edge_type_props(d: &Document, id: Id, t: &SlabEdgeType) -> Va
             group("Identity Data", vec![text("Type Name", "name", &t.name)]),
         ],
     })
+}
+
+/// Model text's Properties.
+pub(crate) fn model_text_props(d: &Document, id: Id, t: &openarch_model::modeltext::ModelText) -> Value {
+    let free = !t.pinned;
+    let mats: Vec<(String, Value, bool)> = std::iter::once(("<By Category>".to_string(), json!({ "material": "" }), t.material.is_empty()))
+        .chain(d.materials().into_iter().map(|(_, m)| (m.name.clone(), json!({ "material": m.name }), m.name == t.material)))
+        .collect();
+    let align = |v: &str, l: &str| (l.to_string(), json!({ "align": v }), serde_json::to_value(t.align).ok() == Some(json!(v)));
+    json!({
+        "id": id, "kind": "ModelText", "category": "Generic Models", "title": "Model Text", "type_label": "Model Text",
+        "target": { "method": "patch_model_text", "id": id },
+        "groups": [
+            group("Constraints", vec![
+                crate::props::level_select(d, "Level", "level", t.level, free),
+                num("Offset From Level", "offset_mm", t.offset_mm, free),
+                num("Rotation", "rotation_deg", t.rotation_deg, free),
+                boolean("Upright", "upright", t.upright, free),
+                boolean("Pinned", "pinned", t.pinned, true),
+            ]),
+            group("Text", vec![
+                text("Text", "text", &t.text),
+                num("Size", "size_mm", t.size_mm, true),
+                boolean("Bold", "bold", t.bold, true),
+                boolean("Italic", "italic", t.italic, true),
+                select("Horizontal Align", vec![align("left", "Left"), align("center", "Center"), align("right", "Right")]),
+                ro("Font", t.font.clone()),
+            ]),
+            group("Dimensions", vec![num("Depth", "depth_mm", t.depth_mm, true)]),
+            group("Materials and Finishes", vec![select("Material", mats)]),
+        ],
+    })
+}
+
+/// Model text a plan shows: each one's letter outlines (or the strip upright text stands on).
+pub(crate) fn model_text_drawing(d: &Document, view: Id, shown: bool) -> Value {
+    if !shown { return json!({ "model_texts": [] }); }
+    json!({ "model_texts": d.model_texts_in(view).into_iter().map(|(id, rings)| json!({
+        "id": id, "rings": rings.iter().map(|r| r.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>()).collect::<Vec<_>>(),
+        "upright": d.model_text(id).is_some_and(|t| t.upright), "pinned": d.model_text(id).is_some_and(|t| t.pinned),
+    })).collect::<Vec<_>>() })
 }
 
 /// The footings a plan shows, dashed (they are below the cut): each one's outline for picking, and the union of

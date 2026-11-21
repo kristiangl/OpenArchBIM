@@ -801,6 +801,7 @@ impl Document {
         let mut out: Vec<_> = self.structural_members().into_iter().map(|(id, kind, t, m)| (id, kind, self.structural_colour(t), m.mesh(&t.section))).collect();
         // strip footings (foundation.rs)
         out.extend(self.foundation_meshes());
+        out.extend(self.model_text_meshes());
         out
     }
 

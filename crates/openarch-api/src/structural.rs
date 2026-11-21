@@ -350,6 +350,6 @@ pub(crate) fn drawing(d: &Document, view: Id) -> Value {
 
 /// The 3D solids of the columns and beams whose category shows.
 pub(crate) fn meshes(d: &Document, shown: &dyn Fn(&str) -> bool, hidden: &std::collections::BTreeSet<Id>) -> Vec<Value> {
-    d.structural_meshes().into_iter().filter(|(id, kind, _, v)| !v.is_empty() && !hidden.contains(id) && shown(match *kind { "Beam" => "Structural Framing", "WallFoundation" | "IsolatedFooting" | "SlabEdge" => "Structural Foundations", _ => "Structural Columns" }))
+    d.structural_meshes().into_iter().filter(|(id, kind, _, v)| !v.is_empty() && !hidden.contains(id) && shown(match *kind { "Beam" => "Structural Framing", "WallFoundation" | "IsolatedFooting" | "SlabEdge" => "Structural Foundations", "ModelText" => "Generic Models", _ => "Structural Columns" }))
         .map(|(id, kind, color, verts)| json!({ "id": id, "kind": kind, "color": color, "verts": verts })).collect()
 }

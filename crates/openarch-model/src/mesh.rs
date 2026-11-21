@@ -32,6 +32,24 @@ fn prism(out: &mut Vec<f32>, poly: &[Point], tris: &[[usize; 3]], z0: f64, z1: f
     prism_sides(out, poly, z0, z1);
 }
 
+/// Shapes (an outline and its holes each) swept from `z0` to `z1`: model text's letters.
+pub fn shapes_prism(shapes: &[crate::layers::Shape], z0: f64, z1: f64) -> Vec<f32> {
+    let mut out = vec![];
+    cap(&mut out, shapes, z1, true);
+    cap(&mut out, shapes, z0, false);
+    for s in shapes {
+        for (k, ring) in s.iter().enumerate() {
+            // sides face out of the solid: an outline counter-clockwise, a hole clockwise
+            let mut r = ring.clone();
+            if (signed_area(&r) > 0.0) != (k == 0) {
+                r.reverse();
+            }
+            prism_sides(&mut out, &r, z0, z1);
+        }
+    }
+    out
+}
+
 /// A flat face at height `z` over each of `shapes` (an outline and its holes), facing up or down.
 fn cap(out: &mut Vec<f32>, shapes: &[crate::layers::Shape], z: f64, up: bool) {
     for s in shapes {

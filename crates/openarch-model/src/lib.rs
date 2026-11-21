@@ -33,6 +33,7 @@ pub mod image;
 pub mod modelline;
 pub mod refplane;
 pub mod foundation;
+pub mod modeltext;
 pub mod units;
 pub mod group;
 pub mod hosting;

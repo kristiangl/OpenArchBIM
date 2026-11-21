@@ -3260,6 +3260,7 @@ impl Session {
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid)); o.insert("images".into(), images_json(d, vid));
             if let Some(f) = foundations::plan_drawing(d, vid, settings.overrides.model.get("Structural Foundations").is_none_or(|o| o.visible)).as_object() { o.extend(f.clone()); }
+            if let Some(m) = foundations::model_text_drawing(d, vid, settings.overrides.model.get("Generic Models").is_none_or(|o| o.visible)).as_object() { o.extend(m.clone()); }
             o.insert("ref_planes".into(), json!(d.ref_planes_in(vid).iter().filter(|_| settings.overrides.annotation.get("Reference Planes").is_none_or(|o| o.visible)).map(|(id, r)| json!({ "id": id, "a": [r.a.x, r.a.y], "b": [r.b.x, r.b.y], "name": r.name, "pinned": r.pinned })).collect::<Vec<_>>()));
         }
         Ok(out)
@@ -3558,6 +3559,7 @@ impl Session {
             Element::IsolatedFooting(f) => Ok(foundations::isolated_props(d, id, f)),
             Element::IsolatedFootingType(t) => Ok(foundations::isolated_type_props(d, id, t)),
             Element::SlabEdge(s) => Ok(foundations::slab_edge_props(d, id, s)),
+            Element::ModelText(t) => Ok(foundations::model_text_props(d, id, t)),
             Element::SlabEdgeType(t) => Ok(foundations::slab_edge_type_props(d, id, t)),
             Element::RefPlane(r) => Ok(json!({
                 "id": id, "kind": "RefPlane", "title": "Reference Planes (1)", "type_label": "Reference Plane",
@@ -5049,6 +5051,20 @@ mod tests {
         assert_eq!(call(&mut s, "describe", json!({ "id": pad }))["target"]["method"], "patch_isolated_footing");
         call(&mut s, "patch_isolated_footing", json!({ "id": pad, "patch": { "rotation_deg": 45.0 } }));
         assert!(s.handle("add_isolated_footings", &json!({ "columns": [lvl] })).is_err());
+    }
+
+    #[test]
+    fn model_text_is_placed_drawn_and_changed() {
+        let (mut s, lvl, _wt, view) = setup();
+        let id = call(&mut s, "add_model_text", json!({ "level_id": lvl, "point": [0.0, 0.0], "text": "OA", "size_mm": 500.0 }))["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert!(plan["model_texts"][0]["rings"].as_array().unwrap().len() >= 3);
+        assert_eq!(call(&mut s, "describe", json!({ "id": id }))["target"]["method"], "patch_model_text");
+        call(&mut s, "patch_model_text", json!({ "id": id, "patch": { "upright": true, "text": "OAB" } }));
+        assert_eq!(call(&mut s, "plan", json!({ "view_id": view }))["model_texts"][0]["upright"], true);
+        let scene = call(&mut s, "scene", json!({}));
+        assert_eq!(scene["meshes"].as_array().unwrap().iter().filter(|m| m["kind"] == "ModelText").count(), 1);
+        assert!(s.handle("add_model_text", &json!({ "level_id": lvl, "point": [0.0, 0.0], "text": "" })).is_err());
     }
 
     #[test]
