@@ -104,7 +104,8 @@ function groupTable(name, rows, target) {
   hc.textContent = name;
   for (const r of rows) {
     const tr = t.insertRow();
-    tr.append(...rowCells(r, target));
+    // a row may write somewhere else than its group (a project parameter in the group it is filed under)
+    tr.append(...rowCells(r, r.target || target));
   }
   return t;
 }

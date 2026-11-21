@@ -162,7 +162,10 @@ impl Session {
             selectors.push(json!({ "label": key.parameter_name, "value": shown, "kind": "select", "options": options, "varies": varies }));
         }
         if !selectors.is_empty() { groups.push(json!({ "name": "Key Schedules", "target": { "method": "patch_element_keys", "id": id, "extra": { "ids": ids } }, "rows": selectors })); }
-        let mut parameters = vec![];
+        // each project parameter under the group it is filed under (an existing group, or one of its own), writing
+        // through its own target
+        let target = json!({ "method": "patch_project_values", "id": id, "extra": { "ids": ids } });
+        let mut parameters: Vec<(String, Value)> = vec![];
         for (parameter, p) in self.doc.project_parameters().into_iter().filter(|(_, p)| p.categories.contains(&category)) {
             let value = p.values.get(&id).cloned().unwrap_or(Value::Null);
             let mut row = editor(&p.name, &["values".into(), parameter.to_string()], value.clone(), p.unit);
@@ -170,9 +173,15 @@ impl Session {
             if let Some((schedule, name, _)) = ids.iter().find_map(|id| self.doc.key_control(*id, &[], Some(parameter))) {
                 row["kind"] = json!("ro"); row["locked"] = json!(true); row["lock_reason"] = json!(format!("Controlled by {name}")); row["key_control"] = json!({ "schedule": schedule, "name": name, "aligned": true });
             }
-            parameters.push(row);
+            row["target"] = target.clone();
+            parameters.push((if p.group.trim().is_empty() { "Project Parameters".to_string() } else { p.group.clone() }, row));
         }
-        if !parameters.is_empty() { groups.push(json!({ "name": "Project Parameters", "target": { "method": "patch_project_values", "id": id, "extra": { "ids": ids } }, "rows": parameters })); }
+        for (name, row) in parameters {
+            match groups.iter_mut().find(|g| g["name"] == name.as_str()) {
+                Some(g) => { if let Some(rows) = g["rows"].as_array_mut() { rows.push(row); } }
+                None => groups.push(json!({ "name": name, "target": target.clone(), "rows": [row] })),
+            }
+        }
     }
 
     /// A new project parameter: `category`, or `categories` for several at once (Manage > Project Parameters).
