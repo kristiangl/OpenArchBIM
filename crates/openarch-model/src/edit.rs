@@ -424,7 +424,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) => details.push(id),
+                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -597,6 +597,8 @@ impl Document {
                     Element::ElementTag(t)
                 }
                 Some(Element::DetailLine(l)) => Element::DetailLine(crate::detail::DetailLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
+                // a copy of a reference plane is unnamed (names are unique)
+                Some(Element::RefPlane(r)) => Element::RefPlane(crate::refplane::RefPlane { a: x.apply(r.a), b: x.apply(r.b), pinned: r.pinned && !opt.copy, name: if opt.copy { String::new() } else { r.name.clone() } }),
                 Some(Element::ModelLine(l)) => Element::ModelLine(crate::modelline::ModelLine { curve: l.curve.transform(x), pinned: l.pinned && !opt.copy, ..l.clone() }),
                 // an image moves by its centre; it does not turn or mirror
                 Some(Element::ImageItem(i)) => {

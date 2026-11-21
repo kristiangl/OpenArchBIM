@@ -752,6 +752,8 @@ pub enum Element {
     ImageItem(crate::image::ImageItem),
     /// A line in the model, flat on a level (modelline.rs).
     ModelLine(crate::modelline::ModelLine),
+    /// A vertical reference plane drawn in plan (refplane.rs).
+    RefPlane(crate::refplane::RefPlane),
 }
 
 impl Element {
@@ -803,6 +805,7 @@ impl Element {
             Element::AnnotationSymbol(_) => "Symbol",
             Element::ImageItem(_) => "Image",
             Element::ModelLine(_) => "Model Line",
+            Element::RefPlane(_) => "Reference Plane",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

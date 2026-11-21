@@ -97,6 +97,7 @@ impl Document {
             Element::Section(_) => "Sections",
             Element::ElevationMarker(_) => "Elevations",
             Element::DetailLine(_) | Element::ModelLine(_) => "Lines",
+            Element::RefPlane(_) => "Reference Planes",
             Element::DetailRegion(_) => "Detail Items",
             Element::TextNote(_) => "Text Notes",
             Element::RevisionCloud(_) => "Revision Clouds",

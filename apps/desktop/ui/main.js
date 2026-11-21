@@ -117,6 +117,7 @@ const COMMANDS = {
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
   "det-line": () => { app.insulationOn = false; startDetailLines(null, "line"); },
+  "ref-plane": () => RefPlanes.start(),
   "model-line": () => { app.insulationOn = false; startDetailLines(null, "line", true); },
   // Annotate > Insulation: straight detail lines drawn as batt insulation of the width asked for
   "det-insulation": () => {

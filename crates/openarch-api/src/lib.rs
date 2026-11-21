@@ -674,6 +674,14 @@ impl Session {
                 let curves: Vec<Curve> = serde_json::from_value(p.get("curves").cloned().ok_or("missing curves")?).map_err(|e| format!("bad curves: {e}"))?;
                 Ok(json!({ "ids": self.doc.add_model_lines(id_of(p, "level_id")?, curves, p["style"].as_str().unwrap_or("Thin Lines"))? }))
             }
+            "add_ref_plane" => {
+                let pt = |k: &str| -> Result<Point, String> { let a = p[k].as_array().ok_or(format!("missing {k}"))?; Ok(Point::new(a[0].as_f64().unwrap_or(f64::NAN), a.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN))) };
+                Ok(json!({ "id": self.doc.add_ref_plane(pt("a")?, pt("b")?, p["name"].as_str().unwrap_or(""))? }))
+            }
+            "patch_ref_plane" => {
+                self.doc.patch_ref_plane(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
             "set_model_lines" => {
                 let lines: Vec<openarch_model::modelline::ModelLineEdit> = serde_json::from_value(p.get("lines").cloned().ok_or("missing lines")?).map_err(|e| format!("bad lines: {e}"))?;
                 Ok(json!({ "ids": self.doc.set_model_lines(id_of(p, "view_id")?, lines)? }))
@@ -3241,6 +3249,7 @@ impl Session {
             o.extend(detail_json(d, vid, &settings));
             if let Some(revisions)=revisions::drawing(d,vid).as_object(){o.extend(revisions.clone());}
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); } o.insert("symbols".into(), symbols_json(d, vid)); o.insert("images".into(), images_json(d, vid));
+            o.insert("ref_planes".into(), json!(d.ref_planes_in(vid).iter().filter(|_| settings.overrides.annotation.get("Reference Planes").is_none_or(|o| o.visible)).map(|(id, r)| json!({ "id": id, "a": [r.a.x, r.a.y], "b": [r.b.x, r.b.y], "name": r.name, "pinned": r.pinned })).collect::<Vec<_>>()));
         }
         Ok(out)
     }
@@ -3533,6 +3542,15 @@ impl Session {
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
             Element::ModelLine(l) => Ok(props::model_line_props(d, id, l)),
+            Element::RefPlane(r) => Ok(json!({
+                "id": id, "kind": "RefPlane", "title": "Reference Planes (1)", "type_label": "Reference Plane",
+                "target": { "method": "patch_ref_plane", "id": id },
+                "groups": [
+                    props::group("Identity Data", vec![props::text("Name", "name", &r.name)]),
+                    props::group("Constraints", vec![props::boolean("Pinned", "pinned", r.pinned, true)]),
+                    props::group("Dimensions", vec![props::ro("Length", format!("{:.0}", (r.b.x - r.a.x).hypot(r.b.y - r.a.y)))]),
+                ],
+            })),
             Element::LegendComponent(c) => Ok(props::legend_component_props(d, id, c)),
             Element::AnnotationSymbol(s) => Ok(props::symbol_props(d, id, s)),
             Element::ImageItem(i) => Ok(json!({
@@ -5996,6 +6014,23 @@ mod tests {
         // deleting the view takes its lines (and its viewport)
         call(&mut s, "delete", json!({ "ids": [v] }));
         assert!(s.doc.detail_lines(v).is_empty() && s.doc.sheet_views(sheet).is_empty());
+    }
+
+    #[test]
+    fn reference_planes_show_in_plans_unless_turned_off() {
+        let (mut s, _lvl, _wt, view) = setup();
+        let id = call(&mut s, "add_ref_plane", json!({ "a": [0.0, 0.0], "b": [0.0, 4000.0], "name": "A" }))["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert_eq!((plan["ref_planes"][0]["id"].as_u64(), plan["ref_planes"][0]["name"].as_str()), (Some(id), Some("A")));
+        assert_eq!(call(&mut s, "describe", json!({ "id": id }))["target"]["method"], "patch_ref_plane");
+        assert!(s.handle("add_ref_plane", &json!({ "a": [0.0, 0.0], "b": [0.0, 0.0] })).is_err());
+        call(&mut s, "patch_ref_plane", json!({ "id": id, "patch": { "name": "Setout" } }));
+        assert_eq!(s.doc.ref_plane(id).unwrap().name, "Setout");
+        // Visibility/Graphics: the Reference Planes category off
+        let mut v = s.doc.view(view).unwrap().clone();
+        v.settings.overrides.annotation.insert("Reference Planes".into(), serde_json::from_value(json!({ "visible": false })).unwrap());
+        s.doc.transact("vg", |tx| tx.update(view, Element::View(v))).unwrap();
+        assert!(call(&mut s, "plan", json!({ "view_id": view }))["ref_planes"].as_array().unwrap().is_empty());
     }
 
     #[test]
