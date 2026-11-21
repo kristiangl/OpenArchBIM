@@ -529,6 +529,7 @@ impl Document {
                 Element::Room(r) => r.level==level || r.upper_level==Some(level),
                 Element::RoomSeparation(s) => s.level==level,
                 Element::ModelLine(l) => l.level == level,
+                Element::IsolatedFooting(f) => f.level == level,
                 Element::Stair(s) => s.base_level == level || s.top_level == Some(level) || s.multistory_top == Some(level),
                 Element::Railing(r) => r.level == level,
                 Element::Ramp(r) => r.base_level == level || r.top_level == Some(level),
@@ -1890,7 +1891,7 @@ impl Document {
                 "Kerb" | "KerbRamp" => "Hardscape",
                 "StructuralColumn" => "Structural Columns",
                 "Beam" => "Structural Framing",
-                "WallFoundation" => "Structural Foundations",
+                "WallFoundation" | "IsolatedFooting" => "Structural Foundations",
                 "WheelStop" => "Parking",
                 _ => continue,
             };

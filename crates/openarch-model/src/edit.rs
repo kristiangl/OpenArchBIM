@@ -428,7 +428,7 @@ impl Document {
         let mut details = vec![];
         for &id in &set {
             match self.get(id) {
-                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) | Some(Element::WallFoundation(_)) => details.push(id),
+                Some(Element::StructuralColumn(_))|Some(Element::Beam(_))|Some(Element::BeamSystem(_))|Some(Element::Truss(_))|Some(Element::Room(_))|Some(Element::RoomTag(_))|Some(Element::RoomSeparation(_))|Some(Element::RevisionCloud(_))|Some(Element::RevisionTag(_))|Some(Element::ElementTag(_))|Some(Element::Ceiling(_))|Some(Element::Toposolid(_))|Some(Element::ContourLabel(_))|Some(Element::PropertyLine(_))|Some(Element::LineMarking(_))|Some(Element::ParkingRow(_))|Some(Element::Kerb(_))|Some(Element::KerbRamp(_))|Some(Element::CadImport(_))|Some(Element::Stair(_))|Some(Element::Railing(_))|Some(Element::Ramp(_))|Some(Element::Area(_))|Some(Element::AreaTag(_))|Some(Element::AreaBoundary(_))|Some(Element::ColorFillLegend(_))|Some(Element::DetailLine(_)) | Some(Element::DetailRegion(_)) | Some(Element::TextNote(_)) | Some(Element::LegendComponent(_)) | Some(Element::AnnotationSymbol(_)) | Some(Element::ImageItem(_)) | Some(Element::ModelLine(_)) | Some(Element::RefPlane(_)) | Some(Element::WallFoundation(_)) | Some(Element::IsolatedFooting(_)) => details.push(id),
                 Some(Element::Wall(_)) => walls.push(id),
                 Some(Element::Floor(_)) => floors.push(id),
                 Some(Element::FamilyInstance(_)) => insts.push(id),
@@ -610,6 +610,14 @@ impl Document {
                 Some(Element::WallFoundation(f)) => {
                     if !set.contains(&f.wall) { return Err("A strip footing follows its wall: move the wall.".into()); }
                     Element::WallFoundation(f.clone())
+                }
+                // a pad footing moves by its point and turns with a rotate or mirror (a rectangle reads the same)
+                Some(Element::IsolatedFooting(f)) => {
+                    let rot = match x {
+                        Xform::Mirror { ax, ay, bx, by } => 2.0 * (by - ay).atan2(bx - ax).to_degrees() - f.rotation_deg,
+                        _ => f.rotation_deg + turn,
+                    };
+                    Element::IsolatedFooting(crate::foundation::IsolatedFooting { at: x.apply(f.at), rotation_deg: rot.rem_euclid(360.0), pinned: f.pinned && !opt.copy, ..f.clone() })
                 }
                 // a copy of a reference plane is unnamed (names are unique)
                 Some(Element::RefPlane(r)) => Element::RefPlane(crate::refplane::RefPlane { a: x.apply(r.a), b: x.apply(r.b), pinned: r.pinned && !opt.copy, name: if opt.copy { String::new() } else { r.name.clone() } }),

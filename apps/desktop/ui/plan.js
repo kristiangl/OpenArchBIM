@@ -1977,6 +1977,7 @@ const Plan = (() => {
     if (Structure.owns(tool)) return Structure.promptText();
     if (tool === "refplane") return RefPlanes.promptText();
     if (tool === "wallfoot") return "Click a wall to put a strip footing under it. Esc finishes.";
+    if (tool === "isofoot") return "Click where the footing's centre goes. Esc finishes.";
     if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
@@ -2594,6 +2595,7 @@ const Plan = (() => {
     if (tool === "parkrow" || tool === "kerbramp") { Traffic.click(snap(sx, sy)); return; }
     if (Structure.owns(tool)) { Structure.click(snap(sx, sy)); return; }
     if (tool === "wallfoot") { const w = wallAt(sx, sy); Foundations.click(w ? w.id : null); return; }
+    if (tool === "isofoot") { Foundations.place(snap(sx, sy)); return; }
     if (tool === "refplane") { const l = RefPlanes.last(); RefPlanes.click(l ? snap(sx, sy, { last: l }) : snap(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
     if (tool === "shapepoint") { ShapeEdit.pointClick(snap(sx, sy)); return; }
@@ -3312,7 +3314,7 @@ const Plan = (() => {
       if ((tool === "parkrow" || tool === "kerbramp") && Traffic.key(e)) return true;
       if ((Structure.owns(tool)) && Structure.key(e)) return true;
       if (tool === "refplane" && RefPlanes.key(e)) return true;
-      if (tool === "wallfoot" && e.key === "Escape") { setTool("select"); cb.prompt?.("Ready."); return true; }
+      if ((tool === "wallfoot" || tool === "isofoot") && e.key === "Escape") { setTool("select"); cb.prompt?.("Ready."); return true; }
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }

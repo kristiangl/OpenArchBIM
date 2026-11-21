@@ -3555,6 +3555,8 @@ impl Session {
             Element::ModelLine(l) => Ok(props::model_line_props(d, id, l)),
             Element::WallFoundation(f) => Ok(foundations::foundation_props(d, id, f)),
             Element::WallFoundationType(t) => Ok(foundations::foundation_type_props(d, id, t)),
+            Element::IsolatedFooting(f) => Ok(foundations::isolated_props(d, id, f)),
+            Element::IsolatedFootingType(t) => Ok(foundations::isolated_type_props(d, id, t)),
             Element::RefPlane(r) => Ok(json!({
                 "id": id, "kind": "RefPlane", "title": "Reference Planes (1)", "type_label": "Reference Plane",
                 "target": { "method": "patch_ref_plane", "id": id },
@@ -3606,6 +3608,7 @@ impl Session {
             }
             Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) | Element::ToposolidType(_) => props::sys_type_props(d, id)?,
             Element::WallFoundationType(t) => foundations::foundation_type_props(d, id, t),
+            Element::IsolatedFootingType(t) => foundations::isolated_type_props(d, id, t),
             Element::StructuralType(t) => {
                 let mut v = self.structural_type_props(id, t);
                 v["patch"] = json!("patch_structural");
@@ -5035,6 +5038,14 @@ mod tests {
         assert_eq!(s.doc.wall_foundations().len(), before);
         call(&mut s, "delete", json!({ "ids": [a] }));
         assert!(s.doc.wall_foundation(f).is_none());
+        // pad footings: by points on a level, shown in the plan with the strips
+        let pads = call(&mut s, "add_isolated_footings", json!({ "level_id": lvl, "points": [[2000.0, 2000.0], [4000.0, 2000.0]] }))["ids"].clone();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert_eq!(plan["wall_foundations"].as_array().unwrap().iter().filter(|f| f["isolated"] == true).count(), 2);
+        let pad = pads[0].as_u64().unwrap();
+        assert_eq!(call(&mut s, "describe", json!({ "id": pad }))["target"]["method"], "patch_isolated_footing");
+        call(&mut s, "patch_isolated_footing", json!({ "id": pad, "patch": { "rotation_deg": 45.0 } }));
+        assert!(s.handle("add_isolated_footings", &json!({ "columns": [lvl] })).is_err());
     }
 
     #[test]

@@ -757,6 +757,9 @@ pub enum Element {
     /// A strip footing type and a strip footing under a wall (foundation.rs).
     WallFoundationType(crate::foundation::WallFoundationType),
     WallFoundation(crate::foundation::WallFoundation),
+    /// A pad footing type and a pad footing (foundation.rs).
+    IsolatedFootingType(crate::foundation::IsolatedFootingType),
+    IsolatedFooting(crate::foundation::IsolatedFooting),
 }
 
 impl Element {
@@ -811,6 +814,8 @@ impl Element {
             Element::RefPlane(_) => "Reference Plane",
             Element::WallFoundationType(_) => "WallFoundationType",
             Element::WallFoundation(_) => "WallFoundation",
+            Element::IsolatedFootingType(_) => "IsolatedFootingType",
+            Element::IsolatedFooting(_) => "IsolatedFooting",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

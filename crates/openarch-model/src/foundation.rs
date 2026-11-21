@@ -208,31 +208,190 @@ impl Document {
         Some((ring, base - t.thickness_mm, base))
     }
 
-    /// The footings a plan shows: those under walls standing on its level.
+    /// The footings a plan shows: strip footings under walls standing on its level and the level's isolated footings.
     pub fn wall_foundations_in(&self, view: Id) -> Vec<(Id, Vec<Point>)> {
         let Some(v) = self.view(view) else { return vec![] };
         if !v.view_kind.is_plan() {
             return vec![];
         }
         let Some(level) = v.level else { return vec![] };
-        self.wall_foundations()
+        let strips = self
+            .wall_foundations()
             .into_iter()
             .filter(|(id, f)| !self.hidden_in(view, *id) && matches!(self.get(f.wall), Some(Element::Wall(w)) if w.base_level == level))
-            .filter_map(|(id, _)| self.wall_foundation_shape(id).map(|(r, _, _)| (id, r)))
-            .collect()
+            .filter_map(|(id, _)| self.wall_foundation_shape(id).map(|(r, _, _)| (id, r)));
+        let pads = self
+            .isolated_footings()
+            .into_iter()
+            .filter(|(id, f)| !self.hidden_in(view, *id) && f.level == level)
+            .filter_map(|(id, _)| self.isolated_footing_shape(id).map(|(r, _, _)| (id, r)));
+        strips.chain(pads).collect()
     }
 
     /// The footings as solids, for 3D views, elevations, sections and IFC (with the structural members).
     pub fn foundation_meshes(&self) -> Vec<(Id, &'static str, [u8; 3], Vec<f32>)> {
-        self.wall_foundations()
-            .into_iter()
-            .filter_map(|(id, f)| {
-                let (ring, z0, z1) = self.wall_foundation_shape(id)?;
-                let colour = self.wall_foundation_type(f.foundation_type).and_then(|t| self.material(&t.material)).map_or([190, 190, 190], |m| m.graphics.shading_color);
-                Some((id, "WallFoundation", colour, crate::mesh::solid_mesh(&ring, z0, z1)))
-            })
-            .collect()
+        let colour = |m: &str| self.material(m).map_or([190, 190, 190], |m| m.graphics.shading_color);
+        let strips = self.wall_foundations().into_iter().filter_map(|(id, f)| {
+            let (ring, z0, z1) = self.wall_foundation_shape(id)?;
+            Some((id, "WallFoundation", colour(&self.wall_foundation_type(f.foundation_type)?.material), crate::mesh::solid_mesh(&ring, z0, z1)))
+        });
+        let pads = self.isolated_footings().into_iter().filter_map(|(id, f)| {
+            let (ring, z0, z1) = self.isolated_footing_shape(id)?;
+            Some((id, "IsolatedFooting", colour(&self.isolated_footing_type(f.footing_type)?.material), crate::mesh::solid_mesh(&ring, z0, z1)))
+        });
+        strips.chain(pads).collect()
     }
+
+    // ---- isolated footings (Structure > Isolated Footing) -----------------------------------------------------
+
+    pub fn isolated_footing_types(&self) -> Vec<(Id, &IsolatedFootingType)> {
+        self.iter().filter_map(|(id, e)| match e { Element::IsolatedFootingType(t) => Some((id, t)), _ => None }).collect()
+    }
+    pub fn isolated_footing_type(&self, id: Id) -> Option<&IsolatedFootingType> {
+        match self.get(id) { Some(Element::IsolatedFootingType(t)) => Some(t), _ => None }
+    }
+    pub fn isolated_footing(&self, id: Id) -> Option<&IsolatedFooting> {
+        match self.get(id) { Some(Element::IsolatedFooting(f)) => Some(f), _ => None }
+    }
+    pub fn isolated_footings(&self) -> Vec<(Id, &IsolatedFooting)> {
+        self.iter().filter_map(|(id, e)| match e { Element::IsolatedFooting(f) => Some((id, f)), _ => None }).collect()
+    }
+
+    /// The project's first isolated footing type, made when there is none (Pad Footing - 1200 x 1200 x 450, concrete).
+    fn ensure_isolated_footing_type(&mut self) -> Result<Id, String> {
+        if let Some((id, _)) = self.isolated_footing_types().first() {
+            return Ok(*id);
+        }
+        let t = IsolatedFootingType { name: "Pad Footing - 1200 x 1200 x 450".into(), width_mm: 1200.0, length_mm: 1200.0, thickness_mm: 450.0, material: self.concrete() };
+        self.transact("Isolated footing type", |tx| Ok(tx.add(Element::IsolatedFootingType(t))))
+    }
+
+    /// Pad footings at points on a level (their tops at the level), one undo step.
+    pub fn add_isolated_footings(&mut self, level: Id, at: &[Point], footing_type: Option<Id>) -> Result<Vec<Id>, String> {
+        if self.level(level).is_none() {
+            return Err("Unknown level".into());
+        }
+        if at.is_empty() || at.iter().any(|p| !p.x.is_finite() || !p.y.is_finite()) {
+            return Err("Click where the footing goes.".into());
+        }
+        if footing_type.is_some_and(|t| self.isolated_footing_type(t).is_none()) {
+            return Err("not an isolated footing type".into());
+        }
+        let at = at.to_vec();
+        self.grouped("Isolated footing", |d| {
+            let t = match footing_type { Some(t) => t, None => d.ensure_isolated_footing_type()? };
+            d.transact("Isolated footing", |tx| Ok(at.iter().map(|p| tx.add(Element::IsolatedFooting(IsolatedFooting { footing_type: t, level, at: *p, rotation_deg: 0.0, offset_mm: 0.0, pinned: false }))).collect()))
+        })
+    }
+
+    /// Footings under structural columns (At Columns): at each column's base point, on its base level.
+    pub fn add_isolated_footings_at_columns(&mut self, columns: &[Id], footing_type: Option<Id>) -> Result<Vec<Id>, String> {
+        let mut by_level: Vec<(Id, Point)> = vec![];
+        for c in columns {
+            if let Some(Element::StructuralColumn(col)) = self.get(*c) {
+                by_level.push((col.level, col.at));
+            }
+        }
+        if by_level.is_empty() {
+            return Err("Select structural columns to put footings under them.".into());
+        }
+        self.grouped("Isolated footings at columns", |d| {
+            let mut out = vec![];
+            for (level, p) in &by_level {
+                out.extend(d.add_isolated_footings(*level, &[*p], footing_type)?);
+            }
+            Ok(out)
+        })
+    }
+
+    /// Type, Level, Offset (its top above the level), Rotation and Pinned.
+    pub fn patch_isolated_footing(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let old = self.isolated_footing(id).cloned().ok_or("not an isolated footing")?;
+        let new: IsolatedFooting = crate::doc::apply_patch(&old, patch)?;
+        if new == old {
+            return Ok(());
+        }
+        if self.isolated_footing_type(new.footing_type).is_none() {
+            return Err("not an isolated footing type".into());
+        }
+        if self.level(new.level).is_none() {
+            return Err("Unknown level".into());
+        }
+        if !new.offset_mm.is_finite() || !new.rotation_deg.is_finite() || !new.at.x.is_finite() || !new.at.y.is_finite() {
+            return Err("Offset, rotation and position are numbers.".into());
+        }
+        self.transact("Change isolated footing", |tx| tx.update(id, Element::IsolatedFooting(new)))
+    }
+
+    pub fn patch_isolated_footing_type(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let old = self.isolated_footing_type(id).cloned().ok_or("not an isolated footing type")?;
+        let mut new: IsolatedFootingType = crate::doc::apply_patch(&old, patch)?;
+        new.name = new.name.trim().into();
+        if new == old {
+            return Ok(());
+        }
+        self.check_isolated_footing_type(Some(id), &new)?;
+        self.transact("Change isolated footing type", |tx| tx.update(id, Element::IsolatedFootingType(new)))
+    }
+
+    pub fn duplicate_isolated_footing_type(&mut self, id: Id, name: &str) -> Result<Id, String> {
+        let t = IsolatedFootingType { name: name.trim().into(), ..self.isolated_footing_type(id).cloned().ok_or("not an isolated footing type")? };
+        self.check_isolated_footing_type(None, &t)?;
+        self.transact("Duplicate isolated footing type", |tx| Ok(tx.add(Element::IsolatedFootingType(t))))
+    }
+
+    fn check_isolated_footing_type(&self, id: Option<Id>, t: &IsolatedFootingType) -> Result<(), String> {
+        if t.name.is_empty() {
+            return Err("A type needs a name.".into());
+        }
+        if self.isolated_footing_types().iter().any(|(i, o)| Some(*i) != id && o.name == t.name) {
+            return Err(format!("An isolated footing type named '{}' already exists.", t.name));
+        }
+        let ok = |v: f64| v.is_finite() && v > 0.0 && v <= 20_000.0;
+        if !ok(t.width_mm) || !ok(t.length_mm) || !ok(t.thickness_mm) {
+            return Err("Width, length and thickness are more than 0 and up to 20 m.".into());
+        }
+        if !t.material.is_empty() && self.material(&t.material).is_none() {
+            return Err(format!("There is no material named '{}'.", t.material));
+        }
+        Ok(())
+    }
+
+    /// An isolated footing's outline in plan (width across, length along its rotation) and its bottom and top.
+    pub fn isolated_footing_shape(&self, id: Id) -> Option<(Vec<Point>, f64, f64)> {
+        let f = self.isolated_footing(id)?;
+        let t = self.isolated_footing_type(f.footing_type)?;
+        let top = self.level(f.level)?.elevation_mm + f.offset_mm;
+        let (s, c) = f.rotation_deg.to_radians().sin_cos();
+        let (hw, hl) = (t.width_mm / 2.0, t.length_mm / 2.0);
+        let ring = [(-hw, -hl), (hw, -hl), (hw, hl), (-hw, hl)].iter().map(|(x, y)| Point::new(f.at.x + x * c - y * s, f.at.y + x * s + y * c)).collect();
+        Some((ring, top - t.thickness_mm, top))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IsolatedFootingType {
+    pub name: String,
+    pub width_mm: f64,
+    pub length_mm: f64,
+    pub thickness_mm: f64,
+    #[serde(default)]
+    pub material: String,
+}
+
+/// A pad footing (Revit's Isolated Foundation): a box under a point, its top at its level plus the offset.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct IsolatedFooting {
+    pub footing_type: Id,
+    pub level: Id,
+    pub at: Point,
+    #[serde(default)]
+    pub rotation_deg: f64,
+    /// Height Offset From Level (its top).
+    #[serde(default)]
+    pub offset_mm: f64,
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 #[cfg(test)]
@@ -281,6 +440,35 @@ mod tests {
         assert!(d.transform_elements(&[ids[0]], crate::edit::Xform::Move { dx: 0.0, dy: 100.0 }, crate::edit::EditOptions { copy: false, disjoin: false }).is_err());
         d.delete(&[b]).unwrap();
         assert!(d.wall_foundation(ids[1]).is_none());
+    }
+
+    #[test]
+    fn isolated_footings_sit_on_their_level_and_turn() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let ids = d.add_isolated_footings(lvl, &[Point::new(1000.0, 1000.0)], None).unwrap();
+        let base = d.level(lvl).unwrap().elevation_mm;
+        let (ring, z0, z1) = d.isolated_footing_shape(ids[0]).unwrap();
+        assert_eq!((z0, z1, ring.len()), (base - 450.0, base, 4));
+        assert!((ring[0].x - 400.0).abs() < 1e-6 && (ring[2].y - 1600.0).abs() < 1e-6);
+        d.patch_isolated_footing(ids[0], &serde_json::json!({ "offset_mm": -200.0 })).unwrap();
+        assert_eq!(d.isolated_footing_shape(ids[0]).unwrap().2, base - 200.0);
+        let t = d.isolated_footing_types()[0].0;
+        let long = d.duplicate_isolated_footing_type(t, "Pad 900 x 2400").unwrap();
+        d.patch_isolated_footing_type(long, &serde_json::json!({ "width_mm": 900.0, "length_mm": 2400.0 })).unwrap();
+        d.patch_isolated_footing(ids[0], &serde_json::json!({ "footing_type": long })).unwrap();
+        // rotated a quarter turn the length runs along x
+        d.transform_elements(&ids, crate::edit::Xform::Rotate { cx: 1000.0, cy: 1000.0, angle_deg: 90.0 }, crate::edit::EditOptions::default()).unwrap();
+        let xs: Vec<f64> = d.isolated_footing_shape(ids[0]).unwrap().0.iter().map(|p| p.x).collect();
+        let span = xs.iter().cloned().fold(f64::NEG_INFINITY, f64::max) - xs.iter().cloned().fold(f64::INFINITY, f64::min);
+        assert!((span - 2400.0).abs() < 1e-6);
+        let plan = d.views().into_iter().find(|(_, v)| v.view_kind == crate::view::ViewKind::FloorPlan && v.level == Some(lvl)).unwrap().0;
+        assert_eq!(d.wall_foundations_in(plan).len(), 1);
+        assert_eq!(d.foundation_meshes().len(), 1);
+        assert!(d.add_isolated_footings_at_columns(&[lvl], None).is_err());
+        assert!(d.patch_isolated_footing_type(long, &serde_json::json!({ "length_mm": -1.0 })).is_err());
+        d.delete(&ids).unwrap();
+        assert!(d.isolated_footings().is_empty());
     }
 
     impl Document {

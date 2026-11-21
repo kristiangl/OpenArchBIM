@@ -45,5 +45,23 @@ const Foundations = (() => {
     if (wallId == null) { setPrompt("Click a wall: strip footings go under walls.", true); return; }
     await add([wallId]);
   }
-  return { draw, elements, start, click };
+  // Isolated Footing: under the structural columns selected when it starts (At Columns), else one per click, its
+  // centre on the click and its top at the plan's level
+  async function startIsolated() {
+    if (!(await ensurePlan("An isolated footing"))) return;
+    const cols = (Plan.selectionInfo?.()["Structural Columns"] || []).slice();
+    if (cols.length) {
+      const r = await run("add_isolated_footings", { columns: cols });
+      if (r) { await refresh(); setPrompt(`${r.ids.length === 1 ? "A footing" : `${r.ids.length} footings`} placed under the selected columns.`); }
+      return;
+    }
+    Plan.setTool("isofoot");
+    setPrompt("Click where the footing's centre goes. Esc finishes.");
+  }
+  async function place(p) {
+    const level = (app.info.views || []).find((v) => v.id === app.view.viewId)?.level_id;
+    if (level == null) { setPrompt("Isolated footings are placed in a floor plan.", true); return; }
+    if (await run("add_isolated_footings", { level_id: level, points: [[p.x, p.y]] })) await refresh();
+  }
+  return { draw, elements, start, click, startIsolated, place };
 })();

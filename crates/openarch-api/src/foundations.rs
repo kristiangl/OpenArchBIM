@@ -2,7 +2,7 @@
 //! (foundation.rs in the core).
 use serde_json::{json, Value};
 
-use openarch_model::foundation::{WallFoundation, WallFoundationType};
+use openarch_model::foundation::{IsolatedFooting, IsolatedFootingType, WallFoundation, WallFoundationType};
 use openarch_model::{Document, Id};
 
 use crate::props::{boolean, group, num, ro, select, text};
@@ -18,6 +18,19 @@ impl Session {
             })(),
             "patch_wall_foundation" => (|| { self.doc.patch_wall_foundation(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "patch_wall_foundation_type" => (|| { self.doc.patch_wall_foundation_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            // Isolated Footing: { level_id, points: [[x, y]], type_id? }, or { columns: [ids] } for At Columns
+            "add_isolated_footings" => (|| {
+                let t = p.get("type_id").and_then(|v| v.as_u64());
+                if p.get("columns").is_some() {
+                    return Ok(json!({ "ids": self.doc.add_isolated_footings_at_columns(&crate::ids_of(p, "columns")?, t)? }));
+                }
+                let pts: Vec<[f64; 2]> = serde_json::from_value(p.get("points").cloned().ok_or("missing points")?).map_err(|e| format!("bad points: {e}"))?;
+                let at: Vec<openarch_model::Point> = pts.iter().map(|q| openarch_model::Point::new(q[0], q[1])).collect();
+                Ok(json!({ "ids": self.doc.add_isolated_footings(id_of(p, "level_id")?, &at, t)? }))
+            })(),
+            "patch_isolated_footing" => (|| { self.doc.patch_isolated_footing(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            "patch_isolated_footing_type" => (|| { self.doc.patch_isolated_footing_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            "duplicate_isolated_footing_type" => (|| Ok(json!({ "id": self.doc.duplicate_isolated_footing_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             "duplicate_wall_foundation_type" => (|| Ok(json!({ "id": self.doc.duplicate_wall_foundation_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             _ => return None,
         })
@@ -71,6 +84,54 @@ pub(crate) fn foundation_type_props(d: &Document, id: Id, t: &WallFoundationType
     })
 }
 
+/// A pad footing's Properties.
+pub(crate) fn isolated_props(d: &Document, id: Id, f: &IsolatedFooting) -> Value {
+    let types: Vec<(String, Value, bool)> = d.isolated_footing_types().into_iter().map(|(tid, t)| (t.name.clone(), json!({ "footing_type": tid }), tid == f.footing_type)).collect();
+    let t = d.isolated_footing_type(f.footing_type);
+    let free = !f.pinned;
+    json!({
+        "id": id, "kind": "IsolatedFooting", "category": "Structural Foundations", "title": "Isolated Foundation", "type_label": t.map_or(String::new(), |t| t.name.clone()),
+        "type_id": f.footing_type,
+        "target": { "method": "patch_isolated_footing", "id": id },
+        "groups": [
+            group("Constraints", vec![
+                crate::props::level_select(d, "Level", "level", f.level, free),
+                num("Height Offset From Level", "offset_mm", f.offset_mm, free),
+                num("Rotation", "rotation_deg", f.rotation_deg, free),
+                boolean("Pinned", "pinned", f.pinned, true),
+            ]),
+            group("Type", vec![select("Type", types)]),
+            group("Dimensions", vec![
+                ro("Width", t.map_or(String::new(), |t| format!("{:.0}", t.width_mm))),
+                ro("Length", t.map_or(String::new(), |t| format!("{:.0}", t.length_mm))),
+                ro("Foundation Thickness", t.map_or(String::new(), |t| format!("{:.0}", t.thickness_mm))),
+                ro("Volume", t.map_or(String::new(), |t| d.project_units().volume(t.width_mm * t.length_mm * t.thickness_mm))),
+            ]),
+        ],
+    })
+}
+
+/// A pad footing type's properties.
+pub(crate) fn isolated_type_props(d: &Document, id: Id, t: &IsolatedFootingType) -> Value {
+    let mats: Vec<(String, Value, bool)> = std::iter::once(("<By Category>".to_string(), json!({ "material": "" }), t.material.is_empty()))
+        .chain(d.materials().into_iter().map(|(_, m)| (m.name.clone(), json!({ "material": m.name }), m.name == t.material)))
+        .collect();
+    json!({
+        "id": id, "kind": "IsolatedFootingType", "title": t.name, "family": "Isolated Foundation",
+        "siblings": d.isolated_footing_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "patch": "patch_isolated_footing_type", "duplicate": "duplicate_isolated_footing_type",
+        "groups": [
+            group("Materials and Finishes", vec![select("Structural Material", mats)]),
+            group("Dimensions", vec![
+                num("Width", "width_mm", t.width_mm, true),
+                num("Length", "length_mm", t.length_mm, true),
+                num("Foundation Thickness", "thickness_mm", t.thickness_mm, true),
+            ]),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
+        ],
+    })
+}
+
 /// The footings a plan shows, dashed (they are below the cut): each one's outline for picking, and the union of
 /// them all for drawing, so corners and tees read as one footing.
 pub(crate) fn plan_drawing(d: &Document, view: Id, shown: bool) -> Value {
@@ -81,7 +142,7 @@ pub(crate) fn plan_drawing(d: &Document, view: Id, shown: bool) -> Value {
     let pts = |r: &[openarch_model::Point]| r.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>();
     let union = openarch_model::layers::union_rings(list.iter().map(|(_, r)| r));
     json!({
-        "wall_foundations": list.iter().map(|(id, r)| json!({ "id": id, "ring": pts(r), "pinned": d.wall_foundation(*id).is_some_and(|f| f.pinned) })).collect::<Vec<_>>(),
+        "wall_foundations": list.iter().map(|(id, r)| json!({ "id": id, "ring": pts(r), "pinned": d.wall_foundation(*id).map(|f| f.pinned).or_else(|| d.isolated_footing(*id).map(|f| f.pinned)).unwrap_or(false), "isolated": d.isolated_footing(*id).is_some() })).collect::<Vec<_>>(),
         "foundation_outline": union.iter().map(|shape| shape.iter().map(|r| pts(r)).collect::<Vec<_>>()).collect::<Vec<_>>(),
     })
 }
