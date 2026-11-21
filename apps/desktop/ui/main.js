@@ -109,6 +109,7 @@ const COMMANDS = {
   "color-legend": () => ColorFill.start(),
   "tag-cat": () => Tags.start(false),
   "tag-mat": () => Tags.start(true),
+  keynote: () => Tags.startKeynote(),
   "tag-all": () => Tags.tagAll(),
   room: () => Spatial.start(),
   "room-sep": () => Spatial.separators(),

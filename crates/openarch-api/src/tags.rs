@@ -27,6 +27,25 @@ impl Session {
         Some(match method {
             // Tag by Category and Tag on Placement: { view_id, element_id, options: { orientation, leader, leader_mm, family } }
             "add_tag" => (|| { let o = options_of(p)?; Ok(json!({ "id": self.doc.add_element_tag(id_of(p, "view_id")?, id_of(p, "element_id")?, &o)? })) })(),
+            // keynotes: the table, Load keynote file { path }, and Keynote { view_id, element_id, point, source: { kind:
+            // element | material | user, key? }, material?, options }
+            "keynotes" => Ok(json!(self.doc.keynote_table())),
+            "load_keynotes" => (|| {
+                let path = p["path"].as_str().ok_or("missing path")?;
+                let bytes = std::fs::read(path).map_err(|e| format!("Could not read {path}: {e}"))?;
+                let text = String::from_utf8_lossy(&bytes).trim_start_matches('\u{feff}').to_string();
+                let entries = openarch_model::keynote::parse_keynotes(&text)?;
+                let n = entries.len();
+                self.doc.set_keynote_table(openarch_model::keynote::KeynoteTable { source: path.to_string(), entries })?;
+                Ok(json!({ "count": n }))
+            })(),
+            "add_keynote_tag" => (|| {
+                let o = options_of(p)?;
+                let q = p["point"].as_array().ok_or("missing point")?;
+                let at = openarch_model::Point::new(q[0].as_f64().unwrap_or(f64::NAN), q.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN));
+                let source: openarch_model::keynote::KeynoteSource = serde_json::from_value(p.get("source").cloned().ok_or("missing source")?).map_err(|e| format!("bad source: {e}"))?;
+                Ok(json!({ "id": self.doc.add_keynote_tag(id_of(p, "view_id")?, id_of(p, "element_id")?, source, p["material"].as_str(), at, &o)? }))
+            })(),
             // Material Tag: { view_id, element_id, point, material?, options }
             "add_material_tag" => (|| {
                 let o = options_of(p)?;
@@ -117,13 +136,16 @@ impl Session {
             if !visible(kind.category(), false) || !visible(&self.schedule_category(t.element)?, true) { return None; }
             let p = d.tag_anchor(t)?;
             let fam = t.family.and_then(|f| d.annotation_family(f))?;
-            // a material tag reads its material's identity
-            let values = match t.material.as_deref().and_then(|m| d.material(m)) {
+            // a keynote reads its key and the key's text; a material tag its material's identity
+            let values = if t.keynote.is_some() {
+                let key = d.keynote_key(t).unwrap_or_default();
+                [("Key Value".to_string(), key.clone()), ("Keynote Text".to_string(), d.keynote_text(&key).unwrap_or_default())].into_iter().collect()
+            } else { match t.material.as_deref().and_then(|m| d.material(m)) {
                 Some(m) => [("Name", m.name.clone()), ("Description", if m.identity.description.is_empty() { m.name.clone() } else { m.identity.description.clone() }), ("Mark", m.identity.mark.clone()), ("Keynote", m.identity.keynote.clone()), ("Class", m.class.clone()),
                     ("Manufacturer", m.identity.manufacturer.clone()), ("Model", m.identity.model.clone()), ("Comments", m.identity.comments.clone()), ("Cost", format!("{:.2}", m.identity.cost)), ("URL", m.identity.url.clone())]
                     .into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
                 None => self.param_texts(t.element, &mut types),
-            };
+            } };
             let labels = d.symbol_texts(fam, &|name| Some(values.get(name).cloned().unwrap_or_default()), false);
             let at = |o: [f64; 2]| json!({ "x": p.x + o[0], "y": p.y + o[1] });
             let end = match t.leader_end { LeaderEnd::Free => at(t.end_offset.unwrap_or([0.0, 0.0])), LeaderEnd::Attached => at([0.0, 0.0]) };
@@ -140,6 +162,11 @@ impl Session {
         let d = &self.doc;
         let kind = d.kind_of_tag(t);
         let what = match d.get(t.element) {
+            _ if t.keynote.is_some() => {
+                let key = d.keynote_key(t).unwrap_or_default();
+                let kind = match t.keynote { Some(openarch_model::keynote::KeynoteSource::Element) => "Element", Some(openarch_model::keynote::KeynoteSource::Material) => "Material", _ => "User" };
+                format!("{kind} keynote {} ({})", if key.is_empty() { "(no key)".to_string() } else { key }, self.schedule_category(t.element).unwrap_or_default())
+            }
             _ if t.material.is_some() => format!("{} ({})", t.material.clone().unwrap_or_default(), self.schedule_category(t.element).unwrap_or_default()),
             Some(Element::FamilyInstance(i)) => {
                 let name = d.instance_family(i).map(|(f, ty)| format!("{}: {}", f.name, ty.name)).unwrap_or_default();

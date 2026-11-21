@@ -103,15 +103,53 @@ const Tags = (() => {
   // Tag by Category, or Material Tag (`mat`): the same tool, which picks walls, floors, roofs and ceilings and tags
   // the material under the click
   let materialMode = false;
-  const promptText = () => (materialMode ? "Click a wall, floor, roof or ceiling to tag the material there. Esc finishes." : "Click a door or window to tag it. Esc finishes.");
-  async function start(mat = false) {
+  // Keynote: where the key comes from ({ kind: "element" | "material" | "user", key }), null for the other tools
+  let keySource = null;
+  const promptText = () => (keySource ? (keySource.kind === "material" ? "Click a wall, floor, roof or ceiling to keynote the material there. Esc finishes." : "Click an element to keynote it. Esc finishes.")
+    : materialMode ? "Click a wall, floor, roof or ceiling to tag the material there. Esc finishes." : "Click a door or window to tag it. Esc finishes.");
+  async function start(mat = false, keep = false) {
     materialMode = !!mat;
+    if (!keep) keySource = null;
     if (app.view.kind === "elevation") Elev.setTool("tag");
     else { if (!(await ensurePlan(mat ? "A material tag" : "A tag"))) return; Plan.setTool("tag"); }
     updateRibbonContext(true);
     setPrompt(promptText());
   }
   const isMaterial = () => materialMode;
+  const isKeynote = () => keySource;
+  // Keynote: Element, Material or User (a key from the table, loaded from a keynote file), then clicks on elements
+  async function startKeynote() {
+    let table = (await Backend.call("keynotes", {}).catch(() => null)) || { entries: [] };
+    openModal("Keynote", (body, foot, close) => {
+      let kind = keySource?.kind || "element";
+      const radio = (v, label) => { const r = el("input", { type: "radio", name: "kn-kind", value: v, checked: kind === v, onchange: () => { kind = v; keys.disabled = v !== "user"; } }); return el("label", { style: "display:flex;gap:6px;align-items:center;margin:4px 0" }, [r, label]); };
+      const keys = el("select", { style: "width:100%", disabled: kind !== "user" });
+      const info = el("p", { className: "muted" });
+      const fill = () => {
+        keys.innerHTML = "";
+        for (const e of table.entries) keys.add(new Option(`${e.parent ? "\u00a0\u00a0\u00a0" : ""}${e.key}  ${e.text}`, e.key, false, e.key === keySource?.key));
+        info.textContent = table.entries.length ? `${table.entries.length} keynotes from ${table.source || "the project"}.` : "No keynote file loaded: User keynotes need one (each line: key, tab, text, and a tab and the heading's key for a note).";
+      };
+      const load = button("Load Keynote File...", async () => {
+        const p = await Backend.fileDialog("open", { multiple: false, filters: [{ name: "Keynote file", extensions: ["txt"] }] });
+        if (!p) return;
+        const r = await run("load_keynotes", { path: Array.isArray(p) ? p[0] : p });
+        if (r) { table = await Backend.call("keynotes", {}); fill(); setPrompt(`${r.count} keynotes loaded.`); }
+      });
+      body.append(radio("element", "Element: the Keynote of the element's type"), radio("material", "Material: the Keynote of the material clicked"), radio("user", "User: a key from the keynote file"), keys, info, load);
+      fill();
+      foot.append(button("Cancel", close), button("OK", async () => {
+        if (kind === "user" && !keys.value) { setPrompt("Load a keynote file and choose a key first.", true); return; }
+        keySource = kind === "user" ? { kind, key: keys.value } : { kind };
+        close();
+        await start(kind === "material", true);
+      }, true));
+    });
+  }
+  async function placeKeynote(elementId, point, material) {
+    if (elementId == null) { setPrompt(keySource?.kind === "material" ? "Click a wall, floor, roof or ceiling." : "Click an element to keynote it.", true); return; }
+    if (await run("add_keynote_tag", { view_id: app.view.viewId, element_id: elementId, point: [point.x, point.y], source: keySource, material: material ?? null, options: { ...opts } })) await refresh();
+  }
   const MATERIAL_HOSTS = ["Walls", "Floors", "Roofs", "Ceilings"];
   async function placeMaterial(elementId, point, material) {
     if (elementId == null) { setPrompt("Click a wall, floor, roof or ceiling to tag its material.", true); return; }
@@ -202,5 +240,5 @@ const Tags = (() => {
     });
   }
 
-  return { elements, draw, start, taggable, place, placed, context, placementGroups, flipSelected, tagAll, drawGrips, gripDown, gripMove, gripUp, isMaterial, placeMaterial, promptText, MATERIAL_HOSTS, get dragging() { return !!gdrag; } };
+  return { elements, draw, start, taggable, place, placed, context, placementGroups, flipSelected, tagAll, drawGrips, gripDown, gripMove, gripUp, isMaterial, placeMaterial, promptText, MATERIAL_HOSTS, isKeynote, startKeynote, placeKeynote, get dragging() { return !!gdrag; } };
 })();

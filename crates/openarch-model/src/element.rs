@@ -765,6 +765,8 @@ pub enum Element {
     SlabEdge(crate::foundation::SlabEdge),
     /// Letters as solids on a level (modeltext.rs).
     ModelText(crate::modeltext::ModelText),
+    /// The project's keynote table (keynote.rs).
+    KeynoteTable(crate::keynote::KeynoteTable),
 }
 
 impl Element {
@@ -824,6 +826,7 @@ impl Element {
             Element::SlabEdgeType(_) => "SlabEdgeType",
             Element::SlabEdge(_) => "SlabEdge",
             Element::ModelText(_) => "Model Text",
+            Element::KeynoteTable(_) => "KeynoteTable",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

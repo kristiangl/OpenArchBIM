@@ -34,6 +34,7 @@ pub mod modelline;
 pub mod refplane;
 pub mod foundation;
 pub mod modeltext;
+pub mod keynote;
 pub mod units;
 pub mod group;
 pub mod hosting;

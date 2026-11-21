@@ -48,6 +48,8 @@ pub enum AnnotationKind {
     Symbol,
     /// A tag of the material at a point of a wall, floor, roof or ceiling (tags.rs): its labels read the material.
     MaterialTag,
+    /// A keynote (keynote.rs): its labels read the key and its text from the keynote table.
+    KeynoteTag,
 }
 
 impl AnnotationKind {
@@ -64,6 +66,7 @@ impl AnnotationKind {
             AnnotationKind::AreaTag => "Area Tag",
             AnnotationKind::Symbol => "Generic Annotation",
             AnnotationKind::MaterialTag => "Material Tag",
+            AnnotationKind::KeynoteTag => "Keynote Tag",
         }
     }
 
@@ -81,6 +84,7 @@ impl AnnotationKind {
             AnnotationKind::AreaTag => "Area Tags",
             AnnotationKind::Symbol => "Generic Annotations",
             AnnotationKind::MaterialTag => "Material Tags",
+            AnnotationKind::KeynoteTag => "Keynote Tags",
         }
     }
 
@@ -97,6 +101,7 @@ impl AnnotationKind {
             AnnotationKind::AreaTag => &["Name", "Number", "Area", "Perimeter", "Area Type", "Level", "Comments"],
             AnnotationKind::Symbol => &[],
             AnnotationKind::MaterialTag => &["Name", "Description", "Mark", "Keynote", "Class", "Manufacturer", "Model", "Comments", "Cost", "URL"],
+            AnnotationKind::KeynoteTag => &["Key Value", "Keynote Text"],
         }
     }
 }
@@ -1199,10 +1204,13 @@ impl Document {
             AnnotationKind::WindowTag => ("Window Tag", "Mark", "W01", vec![[-4.5, 0.0], [-2.5, -2.5], [2.5, -2.5], [4.5, 0.0], [2.5, 2.5], [-2.5, 2.5]]),
             // Revit's material tag: the material's Description, no border
             AnnotationKind::MaterialTag => ("Material Tag", "Description", "Material", vec![]),
+            // Revit's keynote tag: the key in a box
+            AnnotationKind::KeynoteTag => ("Keynote Tag", "Key Value", "E10", vec![[0.0, -2.5], [8.0, -2.5], [8.0, 2.5], [0.0, 2.5]]),
             _ => return Err("not a door or window tag".into()),
         };
         // a material tag's text starts just past its leader's end, as Revit's does
-        let (x, align) = if kind == AnnotationKind::MaterialTag { (1.0, HAlign::Left) } else { (0.0, HAlign::Center) };
+        // and a keynote's box starts there, so the leader meets its side
+        let (x, align) = match kind { AnnotationKind::MaterialTag => (1.0, HAlign::Left), AnnotationKind::KeynoteTag => (4.0, HAlign::Center), _ => (0.0, HAlign::Center) };
         let mut f = AnnotationFamily::drawn_with(name, kind, vec![], vec![], vec![old_label(x, 0.0, align, VAlign::Middle, 2.5, false, vec![LabelLine::new(param, "", "", sample)])]);
         f.read_old_drawing();
         for (i, a) in outline.iter().enumerate() {

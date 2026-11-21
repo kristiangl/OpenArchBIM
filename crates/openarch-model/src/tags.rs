@@ -56,6 +56,9 @@ pub struct ElementTag {
     /// Where the tag points on its element (view mm), when that is not the element's own tag point (a material tag).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub point: Option<[f64; 2]>,
+    /// A keynote (Annotate > Keynote): where its key comes from (keynote.rs).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub keynote: Option<crate::keynote::KeynoteSource>,
 }
 
 /// How a new tag is placed: Tag by Category, Tag All and Tag on Placement share these.
@@ -91,7 +94,7 @@ impl Document {
 
     /// The tag family kind a tag takes: a material tag's, or its element's.
     pub fn kind_of_tag(&self, t: &ElementTag) -> Option<AnnotationKind> {
-        if t.material.is_some() { Some(AnnotationKind::MaterialTag) } else { self.tag_kind(t.element) }
+        if t.keynote.is_some() { Some(AnnotationKind::KeynoteTag) } else if t.material.is_some() { Some(AnnotationKind::MaterialTag) } else { self.tag_kind(t.element) }
     }
 
     /// Where a tag hangs from: its own point, or its element's tag point.
@@ -149,11 +152,43 @@ impl Document {
         };
         let paper = if o.leader_mm > 0.0 { o.leader_mm } else { 10.0 };
         let k = paper * self.tag_scale(view) * std::f64::consts::FRAC_1_SQRT_2;
-        let mut t = ElementTag { view, element, offset: [k, k], family: o.family, orientation: o.orientation, leader: true, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material: Some(material), point: Some([point.x, point.y]) };
+        let mut t = ElementTag { view, element, offset: [k, k], family: o.family, orientation: o.orientation, leader: true, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material: Some(material), point: Some([point.x, point.y]), keynote: None };
         self.check_tag(&t)?;
         self.grouped("Material Tag", |d| {
             if t.family.is_none() { t.family = Some(d.ensure_tag_family(AnnotationKind::MaterialTag)?); }
             d.transact("Material Tag", |tx| Ok(tx.add(Element::ElementTag(t))))
+        })
+    }
+
+    /// A keynote on an element at a point (Annotate > Keynote): Element (its type's Keynote), Material (the material
+    /// there, as Material Tag picks it) or User (a key from the keynote table). The leader is on, as in Revit.
+    pub fn add_keynote_tag(&mut self, view: Id, element: Id, source: crate::keynote::KeynoteSource, material: Option<&str>, point: Point, o: &TagOptions) -> Result<Id, String> {
+        if self.get(element).is_none() {
+            return Err("Click an element to keynote.".into());
+        }
+        let v = self.view(view).ok_or("not a view")?;
+        if !(v.view_kind.is_plan() || self.elevation_frame(view).is_some()) {
+            return Err("Keynotes go in plan, elevation and section views.".into());
+        }
+        let material = match &source {
+            crate::keynote::KeynoteSource::Material => {
+                let mats = self.element_materials(element);
+                if mats.is_empty() { return Err("Material keynotes go on walls, floors, roofs and ceilings so far.".into()); }
+                Some(material.filter(|m| self.material(m).is_some()).map(str::to_string).unwrap_or_else(|| mats[0].clone()))
+            }
+            crate::keynote::KeynoteSource::User { key } => {
+                if self.keynote_text(key).is_none() { return Err(format!("The keynote table has no key {key}: load a keynote file first.")); }
+                None
+            }
+            crate::keynote::KeynoteSource::Element => None,
+        };
+        let paper = if o.leader_mm > 0.0 { o.leader_mm } else { 10.0 };
+        let k = paper * self.tag_scale(view) * std::f64::consts::FRAC_1_SQRT_2;
+        let mut t = ElementTag { view, element, offset: [k, k], family: o.family, orientation: o.orientation, leader: true, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material, point: Some([point.x, point.y]), keynote: Some(source) };
+        self.check_tag(&t)?;
+        self.grouped("Keynote", |d| {
+            if t.family.is_none() { t.family = Some(d.ensure_tag_family(AnnotationKind::KeynoteTag)?); }
+            d.transact("Keynote", |tx| Ok(tx.add(Element::ElementTag(t))))
         })
     }
 
@@ -220,7 +255,7 @@ impl Document {
         let paper = if o.leader_mm > 0.0 { o.leader_mm } else { 12.0 };
         let length = if o.leader { paper * self.tag_scale(view) } else { 0.0 };
         let offset = if self.view(view).is_some_and(|v| v.view_kind.is_plan()) { [0.0, length] } else { [length, 0.0] };
-        let mut t = ElementTag { view, element, offset, family: o.family, orientation: o.orientation, leader: o.leader, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material: None, point: None };
+        let mut t = ElementTag { view, element, offset, family: o.family, orientation: o.orientation, leader: o.leader, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material: None, point: None, keynote: None };
         self.check_tag(&t)?;
         self.grouped("Tag", |d| {
             if t.family.is_none() { t.family = Some(d.ensure_tag_family(kind)?); }

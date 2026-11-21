@@ -5068,6 +5068,25 @@ mod tests {
     }
 
     #[test]
+    fn keynotes_are_loaded_from_a_file_and_tags_show_key_and_text() {
+        let (mut s, lvl, wt, view) = setup();
+        let path = std::env::temp_dir().join(format!("oa-keynotes-{}.txt", std::process::id()));
+        std::fs::write(&path, "\u{feff}W\tWalls\nW10\tBrick veneer\tW\n").unwrap();
+        assert_eq!(call(&mut s, "load_keynotes", json!({ "path": path.to_string_lossy() }))["count"], 2);
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(call(&mut s, "keynotes", json!({}))["entries"][1]["key"], "W10");
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [5000, 0], "height": 2700.0}))["id"].as_u64().unwrap();
+        let id = call(&mut s, "add_keynote_tag", json!({ "view_id": view, "element_id": w, "point": [2500.0, 0.0], "source": { "kind": "user", "key": "W10" } }))["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        let tag = plan["element_tags"].as_array().unwrap().iter().find(|t| t["id"].as_u64() == Some(id)).unwrap().clone();
+        assert_eq!(tag["category"], "Keynote Tags");
+        assert!(tag["labels"].to_string().contains("W10"), "{}", tag["labels"]);
+        assert!(call(&mut s, "describe", json!({ "id": id }))["groups"].to_string().contains("User keynote W10"));
+        assert!(s.handle("add_keynote_tag", &json!({ "view_id": view, "element_id": w, "point": [0.0, 0.0], "source": { "kind": "user", "key": "X" } })).is_err());
+        assert!(s.handle("load_keynotes", &json!({ "path": "no-such-file.txt" })).is_err());
+    }
+
+    #[test]
     fn dimension_types_are_edited_duplicated_and_drawn() {
         let (mut s, lvl, wt, view) = setup();
         let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 5000], "height": 2700.0}))["id"].as_u64().unwrap();

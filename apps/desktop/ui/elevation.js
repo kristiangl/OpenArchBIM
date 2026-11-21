@@ -1613,6 +1613,7 @@ const Elev = (() => {
       if (tool === "tag") {
         down = null;
         const cats = new Map(data.items.map((it) => [it.id, it.category]));
+        if (Tags.isKeynote()) { const p = toWorld(e.offsetX, e.offsetY); const hits = itemsAt(e.offsetX, e.offsetY); Tags.placeKeynote((Tags.isMaterial() ? hits.find((id) => Tags.MATERIAL_HOSTS.includes(cats.get(id))) : hits[0]) ?? null, { x: p.u, y: p.z }, null); return; }
         if (Tags.isMaterial()) { const p = toWorld(e.offsetX, e.offsetY); Tags.placeMaterial(itemsAt(e.offsetX, e.offsetY).find((id) => Tags.MATERIAL_HOSTS.includes(cats.get(id))) ?? null, { x: p.u, y: p.z }, null); return; }
         Tags.place(itemsAt(e.offsetX, e.offsetY).find((id) => Tags.taggable(cats.get(id))) ?? null);
         return;
