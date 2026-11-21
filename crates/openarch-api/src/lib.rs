@@ -422,6 +422,8 @@ impl Session {
                 Ok(json!({}))
             }
             "duplicate_view" => Ok(json!({ "id": self.doc.duplicate_view(id_of(p, "id")?)? })),
+            // View > Drafting View: { name?, scale? }
+            "add_drafting_view" => Ok(json!({ "id": self.doc.add_drafting_view(p.get("name").and_then(|v| v.as_str()), p.get("scale").and_then(|v| v.as_u64()).unwrap_or(10) as u32)? })),
             // View > 3D View: the default {3D} view, made again if it has been deleted
             // Split Element and Split with Gap on a wall: { id, point, gap_mm? }
             "split_wall" => {
@@ -2762,6 +2764,9 @@ impl Session {
             Some(v) => v,
             None => self.plan_view_of_level(id_of(p, "level_id")?)?,
         };
+        if d.view(vid).is_some_and(|v| v.view_kind == openarch_model::view::ViewKind::Drafting) {
+            return Ok(self.drafting_json(vid));
+        }
         let view = d.view(vid).filter(|v| v.view_kind.is_plan()).ok_or("not a plan view")?;
         // openings follow the view's phase while it is drawn
         let _drawing = d.drawing(vid);
@@ -3170,6 +3175,36 @@ impl Session {
             if let Some(tags) = self.tag_drawing(vid).as_object() { o.extend(tags.clone()); }
         }
         Ok(out)
+    }
+
+    /// What the plan canvas draws for a drafting view: the same shape as a plan with no model in it, its own detail
+    /// lines, regions, text notes, revision clouds and tags.
+    fn drafting_json(&self, vid: Id) -> Value {
+        let d = &self.doc;
+        let Some(view) = d.view(vid) else { return json!({}) };
+        let settings = d.effective_settings(vid).unwrap_or_default();
+        let mut out = json!({
+            "drafting": true,
+            "view": {
+                "id": vid, "name": view.name, "level_id": null, "scale": settings.scale, "detail_level": settings.detail_level,
+                "wall_join_display": settings.wall_join_display, "display_model": settings.display_model, "drafting": true,
+            },
+            "north_turn_deg": 0.0,
+            "range": { "top": 0.0, "cut": 0.0, "bottom": 0.0, "depth": 0.0 },
+            "crop": { "enabled": false, "visible": false, "region": null, "annotation": false, "annotation_offset": [10.0, 10.0, 10.0, 10.0] },
+            "display": { "isolated": false, "reveal": false, "revealed": [], "temporary": false },
+            "walls": [], "curtains": [], "floors": [], "roofs": [], "inserts": [], "markers": [], "marker_family": null, "site_points": null,
+            "sections": [], "section_family": null, "section_tail_family": null, "grids": [], "dimensions": [], "spots": [], "wall_groups": [],
+            "cad_imports": [], "ceilings": [], "color_fills": [], "color_legends": [], "color_location": "background", "contour_labels": [],
+            "property_lines": [], "railings": [], "ramps": [], "room_separators": [], "room_tags": [], "rooms": [], "stairs": [],
+            "structure": [], "toposolids": [], "traffic": [], "element_tags": [], "revision_clouds": [], "revision_tags": [],
+            "line_patterns": graphics::line_pattern_defs(d), "fill_patterns": graphics::fill_pattern_defs(d),
+        });
+        if let Some(o) = out.as_object_mut() {
+            o.extend(detail_json(d, vid, &settings));
+            if let Some(r) = revisions::drawing(d, vid).as_object() { o.extend(r.clone()); }
+        }
+        out
     }
 
     /// Display meshes for the 3D view (metres). A view id applies that view's
@@ -5687,6 +5722,33 @@ mod tests {
         call(&mut s, "align", json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 750], [4000, 750]] }));
         assert_eq!(ends(&mut s, o).0, json!([0.0, 900.0]));
         assert!(s.handle("align", &json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 900], [4000, 900]] })).is_err());
+    }
+
+    #[test]
+    fn drafting_views_hold_detailing_duplicate_and_go_on_sheets() {
+        let (mut s, lvl, wt, _) = setup();
+        call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0]}));
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let v = call(&mut s, "add_drafting_view", json!({ "scale": 5 }))["id"].as_u64().unwrap();
+        assert_eq!(s.doc.view(v).unwrap().name, "Drafting 1");
+        assert!(s.handle("add_drafting_view", &json!({ "name": "Drafting 1" })).is_err());
+        assert!(s.handle("add_drafting_view", &json!({ "scale": 0 })).is_err());
+        call(&mut s, "set_detail_lines", json!({ "view_id": v, "lines": [{ "curve": line([0.0, 0.0], [1000.0, 0.0]) }, { "curve": line([0.0, 0.0], [0.0, 500.0]) }] }));
+        // the plan canvas gets no model, only the view's own lines
+        let p = call(&mut s, "plan", json!({ "view_id": v }));
+        assert_eq!((p["drafting"].as_bool(), p["walls"].as_array().unwrap().len(), p["detail_lines"].as_array().unwrap().len(), p["view"]["scale"].as_u64()), (Some(true), 0, 2, Some(5)));
+        // Duplicate takes the lines along
+        let c = call(&mut s, "duplicate_view", json!({ "id": v }))["id"].as_u64().unwrap();
+        assert_eq!(call(&mut s, "plan", json!({ "view_id": c }))["detail_lines"].as_array().unwrap().len(), 2);
+        assert_eq!(s.doc.view(c).unwrap().view_kind, openarch_model::view::ViewKind::Drafting);
+        // on a sheet it is as big as its lines at 1 : 5 with 10 mm round them: 220 x 120 mm
+        let sheet = call(&mut s, "add_sheet", json!({ "name": "Details" }))["id"].as_u64().unwrap();
+        call(&mut s, "place_view", json!({ "sheet": sheet, "view": v, "centre": [200, 200] }));
+        let pv = s.doc.sheet_views(sheet).into_iter().find(|x| x.view == v).unwrap();
+        assert_eq!((pv.drawing, pv.paper_size[0].round(), pv.paper_size[1].round()), ("plan", 220.0, 120.0));
+        // deleting the view takes its lines (and its viewport)
+        call(&mut s, "delete", json!({ "ids": [v] }));
+        assert!(s.doc.detail_lines(v).is_empty() && s.doc.sheet_views(sheet).is_empty());
     }
 
     #[test]

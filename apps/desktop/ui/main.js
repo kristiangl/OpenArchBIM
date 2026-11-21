@@ -207,6 +207,7 @@ const COMMANDS = {
   "m-linestyles": () => openLineStyles(),
   "m-globals": () => openGlobalParams(),
   "m-params": () => ProjParams.open(),
+  "v-draft": () => newDraftingView(),
   // View > 3D View: the default {3D} view (made again when it has been deleted)
   "v-3d": async () => { const r = await run("default_3d_view", {}); if (!r) return; if (r.made) await refresh(); await openView("3d", r.id); },
   "m-lineweights": () => openLineWeights(),
@@ -382,7 +383,18 @@ function syncTabLabels(c) {
 
 // The ribbon and its commands belong to the document showing: the project's, the family editor's, or an annotation family's
 const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : app.doc === "annotation" ? ANN_RIBBON : RIBBON);
-const commandFor = (id) => (app.doc === "family" ? FamModel.commands[id] : app.doc === "annotation" ? AnnModel.commands[id] : COMMANDS[id]);
+// In a drafting view only what draws in it, edits it, or manages the project runs; a model tool asks for a plan first
+const DRAFTING_OK = new Set(["det-line", "text", "text-lead-l", "text-lead-r", "text-arc-l", "text-arc-r", "text-lead-rm", "det-filled", "det-masking",
+  "edit-boundary", "det-revcloud", "tag-revision", "mi-pick", "mi-draw", "del", "mv", "cp", "ro", "mi", "of", "tr", "al", "me", "ar", "gp", "det-group",
+  "pin", "unpin", "clip-copy", "clip-cut", "paste", "paste-same", "paste-current", "match-type", "create-similar", "reveal", "show-wp", "export",
+  "export-ifc", "open-ifc", "import-ifc", "project-info", "load-family", "open-log"]);
+const draftingOk = (id) => DRAFTING_OK.has(id) || (/^(m-|temp-|hide-|override-|v-)/.test(id) && !["v-elev", "v-section", "m-addset", "m-pickedit"].includes(id));
+const projectCommand = (id) => {
+  const f = COMMANDS[id];
+  if (!f || !inDrafting() || draftingOk(id)) return f;
+  return async (...a) => { if (await ensurePlan("That tool", {})) f(...a); };
+};
+const commandFor = (id) => (app.doc === "family" ? FamModel.commands[id] : app.doc === "annotation" ? AnnModel.commands[id] : projectCommand(id));
 
 // The constant Modify tab: every document has one, and whatever the active tool, selection or sketch adds
 // is drawn after the tab's own panels on a tinted background. There are no contextual tabs.
@@ -814,7 +826,7 @@ function renderTree() {
       ...byType("three_d", "3D Views"),
       ...byType("elevation", "Elevations"),
       ...byType("section", "Sections"),
-      { name: "Drafting Views", children: [] },
+      { name: "Drafting Views", menu: [{ label: "New Drafting View...", run: () => newDraftingView() }], children: ofKind("drafting").map(viewLeaf) },
       { name: "Legends", children: [] },
       { name: "Schedules / Quantities", menu: newScheduleMenu, children: [
         ...ofKind("schedule").map((x) => ({ ...viewLeaf(x), menu: [
@@ -1065,6 +1077,22 @@ function viewMenu(x) {
     { label: "Delete", disabled: app.view.viewId === x.id, title: app.view.viewId === x.id ? "Open another view first" : "", run: async () => { if ((await askConfirm(`Delete the view ${x.name}?`)) && (await run("delete", { ids: [x.id] }))) { await refresh(); } } },
   ];
 }
+// View > Drafting View: a name and a scale, then the new view opens
+function newDraftingView() {
+  openModal("New Drafting View", (body, foot, close) => {
+    const name = el("input", { type: "text", placeholder: "Drafting 1 (the next free name)" });
+    const scale = el("select", {}, [1, 2, 5, 10, 20, 25, 50, 100, 200].map((n) => new Option(`1 : ${n}`, String(n), false, n === 10)));
+    const msg = el("div", { className: "modal-note" });
+    body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Name" }), name]), el("label", { className: "new-row" }, [el("span", { textContent: "Scale" }), scale]), msg);
+    foot.append(button("Cancel", close), button("OK", async () => {
+      try {
+        const r = await Backend.call("add_drafting_view", { name: name.value.trim() || null, scale: Number(scale.value) });
+        close(); await refresh(); await openView("plan", r.id);
+        setPrompt("Drafting view: draw with Detail Line, Region and Text on the Annotate tab.");
+      } catch (e) { msg.textContent = String(e.message || e); }
+    }, true));
+  });
+}
 function renameView(x) {
   openModal("Rename View", (body, foot, close) => {
     const inp = el("input", { type: "text", value: x.name });
@@ -1171,7 +1199,7 @@ async function openView(kind, viewId, opt = {}) {
   if (changed) saveCamera();
   app.view = { kind, viewId: target };
   Backend.call("active_view", { view_id: target }).catch(() => {});
-  if (kind === "plan") app.lastPlanId = target;
+  if (kind === "plan" && (viewById(target) || {}).view_kind !== "drafting") app.lastPlanId = target;
   if (kind !== "plan" && Plan.tool !== "select") Plan.setTool("select");
   if (kind !== "elevation" && Elev.tool !== "select") Elev.setTool("select");
   if (changed) SheetView.setTool("select");
@@ -1249,8 +1277,10 @@ async function closeTab(t) {
 function planViews() {
   return app.info.views.filter((x) => x.view_kind === "floor_plan" || x.view_kind === "ceiling_plan" || x.view_kind === "structural_plan" || x.view_kind === "area_plan");
 }
-async function ensurePlan(what) {
-  if (app.view.kind === "plan") return true;
+// the open view is a drafting view: the plan canvas, but nothing of the model goes in it
+function inDrafting() { return !!app.view && app.view.kind === "plan" && !!app.info && (app.info.views || []).some((v) => v.id === app.view.viewId && v.view_kind === "drafting"); }
+async function ensurePlan(what, opts = {}) {
+  if (app.view.kind === "plan" && (!inDrafting() || opts.drafting)) return true;
   if (Sketch.active) { setPrompt("Finish or cancel the sketch first.", true); return false; }
   const plans = planViews();
   if (!plans.length) { setPrompt(`${what} needs a plan view, and this project has none.`, true); return false; }
@@ -1259,7 +1289,7 @@ async function ensurePlan(what) {
     openModal("Go To View", (body, foot, close) => {
       const msg = document.createElement("div");
       msg.className = "modal-msg";
-      msg.textContent = `${what} is placed in a plan view. Open one:`;
+      msg.textContent = inDrafting() ? "A drafting view does not show the model. Open a plan to use that tool:" : `${what} is placed in a plan view. Open one:`;
       const sel = document.createElement("select");
       sel.size = Math.min(8, plans.length + 1);
       sel.style.width = "100%";
@@ -1360,7 +1390,7 @@ function updateTitle() {
   const name = app.info.path ? app.info.path.split(/[\\/]/).pop() : "Untitled";
   const v = curView();
   if (app.activation) { const s = sheetById(app.activation.sheet); $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - Sheet: ${s ? `${s.number} - ${s.name}` : ""} (${v ? v.name : "view"} activated)`; updateUndoButtons(); return; }
-  const planKind = (x) => x.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : x.view_kind === "area_plan" ? `Area Plan (${(app.info.area_schemes || []).find((s) => s.id === x.area_scheme)?.name || ""})` : "Floor Plan";
+  const planKind = (x) => x.view_kind === "drafting" ? "Drafting View" : x.view_kind === "ceiling_plan" ? "Reflected Ceiling Plan" : x.view_kind === "area_plan" ? `Area Plan (${(app.info.area_schemes || []).find((s) => s.id === x.area_scheme)?.name || ""})` : "Floor Plan";
   const vn = app.view.kind === "plan" && v ? `${planKind(v)}: ${v.name}` : app.view.kind === "elevation" && v ? `${v.view_kind === "section" ? "Section" : "Elevation"}: ${v.name}` : app.view.kind === "3d" && v ? `3D View: ${v.name}` : app.view.kind === "sheet" ? `Sheet: ${tabName(app.view)}` : `Schedule: ${tabName(app.view)}`;
   $("#doc-title").textContent = `${name}${app.info.dirty ? " *" : ""} - ${vn}`;
   document.querySelector("#browser .panel-title").textContent = `Project Browser - ${name}`;
@@ -2249,7 +2279,7 @@ async function startEditTool(name) {
     else setPrompt(`${EDIT_PROMPT[name] || name} works in plan views only.`, true);
     return;
   }
-  if (!(await ensurePlan(EDIT_PROMPT[name] || name))) return;
+  if (!(await ensurePlan(EDIT_PROMPT[name] || name, { drafting: true }))) return;
   Plan.setSelection(app.selection);
   Plan.setTool(name);
 }
@@ -3222,7 +3252,8 @@ function shortcutCommand(projectId) {
   if (!projectId) return null;
   if (app.doc === "project") {
     if (Sketch.active) return SKETCH_MODIFY[projectId] || projectId === "del" ? () => runCommand(projectId) : null;
-    return COMMANDS[projectId] ? () => COMMANDS[projectId]() : null;
+    const f = projectCommand(projectId);
+    return f ? () => f() : null;
   }
   const alias = { mi: "mi-pick" };
   const want = [projectId, alias[projectId]].filter(Boolean);

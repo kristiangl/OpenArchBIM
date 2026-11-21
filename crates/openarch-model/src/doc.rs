@@ -1341,7 +1341,22 @@ impl Document {
             }
             n += 1;
         };
-        self.transact("Duplicate view", |tx| Ok(tx.add(Element::View(View { name, ..v }))))
+        // a drafting view is what is drawn in it, so its detailing comes along
+        let drafting = v.view_kind == ViewKind::Drafting;
+        let extra = if drafting { self.detail_copies(id, id) } else { vec![] };
+        self.transact("Duplicate view", |tx| {
+            let nid = tx.add(Element::View(View { name, ..v }));
+            for mut e in extra {
+                match &mut e {
+                    Element::DetailLine(l) => l.view = nid,
+                    Element::DetailRegion(r) => r.view = nid,
+                    Element::TextNote(t) => t.view = nid,
+                    _ => {}
+                }
+                tx.add(e);
+            }
+            Ok(nid)
+        })
     }
 
     pub fn add_floor_plan(&mut self, level: Id, name: &str) -> Result<Id, String> {
