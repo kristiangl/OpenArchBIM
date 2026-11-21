@@ -4656,7 +4656,7 @@ const FamModel = (() => {
     });
   }
 
-  return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, syncRibbon, context, docInfo, undoState: () => (S ? (skActive() ? { undo: FSk.canUndo ? 1 : 0, redo: FSk.canRedo ? 1 : 0 } : { undo: S.undo.length, redo: S.redo.length }) : null),
+  return { list, open, newFamily, loadFile, exportFamily, activate, close: closeEditor, commands, sharedParams: () => sharedParamsDialog(null), syncRibbon, context, docInfo, undoState: () => (S ? (skActive() ? { undo: FSk.canUndo ? 1 : 0, redo: FSk.canRedo ? 1 : 0 } : { undo: S.undo.length, redo: S.redo.length }) : null),
     undo: () => (skActive() ? FSk.undo() : undo()), redo: () => (skActive() ? FSk.redo() : redo()), save: saveFile, closeForExit, sketchModify: SK_MODIFY, _state: () => S,
     // test hooks: where a point of the open view is on the canvas, the sketch session, the 3D view
     _screenOf: (u, v) => w2s(u, v), _sketch: FSk, _vp3: () => vp3, _refresh: async () => { await preview(); props(); render(); } };

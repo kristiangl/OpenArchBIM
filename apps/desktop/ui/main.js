@@ -223,6 +223,8 @@ const COMMANDS = {
   "m-linestyles": () => openLineStyles(),
   "m-globals": () => openGlobalParams(),
   "m-params": () => ProjParams.open(),
+  // Manage > Shared Parameters: the shared parameter file, the same box as the family editor's
+  "m-shared": () => FamModel.sharedParams(),
   "v-draft": () => newDraftingView(),
   "v-legend": () => newDraftingView("legend"),
   // Annotate > Component: in a legend, Legend Component (detail components are not built yet)
