@@ -116,7 +116,23 @@ const COMMANDS = {
   wall: async () => { if (await ensurePlan("A wall")) Plan.setTool("wall"); },
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
-  "det-line": () => startDetailLines(null, "line"),
+  "det-line": () => { app.insulationOn = false; startDetailLines(null, "line"); },
+  // Annotate > Insulation: straight detail lines drawn as batt insulation of the width asked for
+  "det-insulation": () => {
+    app.insulationWidth ||= 90;
+    openModal("Insulation", (body, foot, close) => {
+      const w = el("input", { type: "number", min: "5", max: "2000", step: "5", value: app.insulationWidth, style: "width:90px" });
+      const msg = el("div", { className: "modal-note" });
+      body.append(el("label", { className: "new-row" }, [el("span", { textContent: "Width (mm)" }), w]), msg);
+      foot.append(button("Cancel", close), button("OK", async () => {
+        const v = Number(w.value);
+        if (!(v >= 5 && v <= 2000)) { msg.textContent = "Insulation is 5 to 2000 mm wide."; return; }
+        app.insulationWidth = v; app.insulationOn = true; close();
+        await startDetailLines(null, "line");
+        setPrompt(`Insulation ${v} mm: click the start and end of each run along its middle. Esc finishes.`);
+      }, true));
+    });
+  },
   text: async () => { if (!(await ensureDetailView("Text"))) return; noteView().setTool("text"); renderOptionsBar(); renderProperties(); updateRibbonContext(); },
   "text-lead-l": () => addNoteLeader("left", false),
   "text-lead-r": () => addNoteLeader("right", false),
@@ -387,7 +403,7 @@ function syncTabLabels(c) {
 // The ribbon and its commands belong to the document showing: the project's, the family editor's, or an annotation family's
 const ribbonSet = () => (app.doc === "family" ? FAM_RIBBON : app.doc === "annotation" ? ANN_RIBBON : RIBBON);
 // In a drafting view only what draws in it, edits it, or manages the project runs; a model tool asks for a plan first
-const DRAFTING_OK = new Set(["det-line", "text", "text-lead-l", "text-lead-r", "text-arc-l", "text-arc-r", "text-lead-rm", "det-filled", "det-masking",
+const DRAFTING_OK = new Set(["det-line", "det-insulation", "text", "text-lead-l", "text-lead-r", "text-arc-l", "text-arc-r", "text-lead-rm", "det-filled", "det-masking",
   "edit-boundary", "det-revcloud", "tag-revision", "mi-pick", "mi-draw", "del", "mv", "cp", "ro", "mi", "of", "tr", "al", "me", "ar", "gp", "det-group",
   "pin", "unpin", "det-comp", "clip-copy", "clip-cut", "paste", "paste-same", "paste-current", "match-type", "create-similar", "reveal", "show-wp", "export",
   "export-ifc", "open-ifc", "import-ifc", "project-info", "load-family", "open-log"]);
@@ -3636,7 +3652,7 @@ Sketch.callbacks.cancel = () => {
 // Finish: Esc in its select tool, or another command, leaves it. Filled Region and Masking Region sketch closed loops
 // with Finish and Cancel; each edge has its own line style.
 let detailSync = Promise.resolve(), detailKey = "";
-const detailPayload = (curves) => curves.map((c) => ({ id: c.attr.id ?? null, curve: c.curve, style: c.attr.style || app.lineStyle }));
+const detailPayload = (curves) => curves.map((c) => ({ id: c.attr.id ?? null, curve: c.curve, style: c.attr.style || app.lineStyle, insulation: c.attr.insulation ?? null }));
 
 async function startDetailLines(selectId, tool) {
   if (Sketch.active) {
@@ -3655,8 +3671,9 @@ function beginDetailSession(selectId, tool) {
   const V = noteView(), lines = V.detailLines().filter((l) => { const g = Plan.groupOf(l.id); return g == null || (app.groupEdit && app.groupEdit.id === g); });
   V.startSketch({
     kind: "detail", title: "Detail Lines", tool, fade: false, ink: getComputedStyle(document.documentElement).getPropertyValue("--text").trim(),
-    curves: lines.map((l) => ({ ...l.entry, attr: { id: l.id, style: l.style } })),
-    attr: (extra) => ({ style: app.lineStyle, ...(extra || {}) }),
+    curves: lines.map((l) => ({ ...l.entry, attr: { id: l.id, style: l.style, insulation: l.insulation ?? null } })),
+    // Insulation draws straight lines that carry its width; Detail Line plain ones
+    attr: (extra) => ({ style: app.lineStyle, insulation: app.insulationOn ? app.insulationWidth : null, ...(extra || {}) }),
   });
   const st = Sketch.state();
   if (selectId) { const c = st.curves.find((x) => x.attr.id === selectId); if (c) st.sel = new Set([c.uid]); }
@@ -3894,7 +3911,7 @@ DetailCallbacks.moveLineEnds = async (changes) => {
   const lines = V.detailLines().map((l) => {
     const c = { ...l.entry.curve };
     for (const ch of changes) if (ch.id === l.id) c[ch.end] = notePt(ch.to);
-    return { id: l.id, curve: c, style: l.style };
+    return { id: l.id, curve: c, style: l.style, insulation: l.insulation ?? null };
   });
   if (lines.some((l) => l.curve.type === "line" && Math.hypot(l.curve.a.x - l.curve.b.x, l.curve.a.y - l.curve.b.y) < 1)) { setPrompt("That would leave a line with no length.", true); V.render(); return; }
   await run("set_detail_lines", { view_id: V.viewId(), lines });

@@ -1043,11 +1043,15 @@ pub fn grid_props(d: &Document, id: Id, g: &openarch_model::grid::Grid) -> Value
 /// Properties of a detail line: its line style and length.
 pub fn detail_line_props(d: &Document, id: Id, l: &openarch_model::detail::DetailLine) -> Value {
     let styles: Vec<(String, Value, bool)> = d.line_styles().into_iter().map(|s| (s.clone(), json!({ "style": s }), s == l.style)).collect();
+    let mut graphics = vec![select("Line Style", styles)];
+    if let Some(w) = l.insulation {
+        graphics.push(num("Insulation Width", "insulation", w, !l.pinned));
+    }
     json!({
-        "id": id, "kind": "DetailLine", "title": "Lines (1)", "type_label": "Detail Lines",
+        "id": id, "kind": "DetailLine", "title": if l.insulation.is_some() { "Insulation" } else { "Lines (1)" }, "type_label": if l.insulation.is_some() { "Insulation" } else { "Detail Lines" },
         "target": { "method": "patch_detail_line", "id": id },
         "groups": [
-            group("Graphics", vec![select("Line Style", styles)]),
+            group("Graphics", graphics),
             group("Constraints", vec![boolean("Pinned", "pinned", l.pinned, true)]),
             group("Dimensions", vec![ro("Length", format!("{:.0}", l.curve.length()))]),
         ],

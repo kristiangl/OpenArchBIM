@@ -32,6 +32,10 @@ pub struct DetailLine {
     pub style: String,
     #[serde(default)]
     pub pinned: bool,
+    /// Insulation (Annotate > Insulation): the line is the middle of a batt this wide (mm), drawn as loops from
+    /// one side to the other. Straight lines only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub insulation: Option<f64>,
 }
 
 /// A filled region (with a type) or a masking region (without), in one view.
@@ -143,6 +147,8 @@ pub struct DetailLineEdit {
     pub curve: Curve,
     #[serde(default = "thin")]
     pub style: String,
+    #[serde(default)]
+    pub insulation: Option<f64>,
 }
 
 impl Document {
@@ -447,6 +453,7 @@ impl Document {
         self.check_detail_view(view)?;
         for l in &lines {
             self.check_line_style(&l.style, false)?;
+            check_insulation(l.insulation)?;
             if l.curve.length().is_nan() || l.curve.length() <= 0.5 {
                 return Err("a detail line needs some length".into());
             }
@@ -458,7 +465,9 @@ impl Document {
             .map(|l| {
                 let id = l.id.filter(|i| have.contains(i) && used.insert(*i));
                 let pinned = id.and_then(|i| match self.get(i) { Some(Element::DetailLine(d)) => Some(d.pinned), _ => None }).unwrap_or(false);
-                (id, DetailLine { view, curve: l.curve, style: l.style, pinned })
+                // insulation follows a straight line; on a curve it is dropped
+                let insulation = l.insulation.filter(|_| matches!(l.curve, Curve::Line { .. }));
+                (id, DetailLine { view, curve: l.curve, style: l.style, pinned, insulation })
             })
             .collect();
         // lines in a group are not held by the sketch (outside Edit Group), so leaving them out keeps them
@@ -497,6 +506,10 @@ impl Document {
             return Err("a detail line stays in its view".into());
         }
         self.check_line_style(&new.style, false)?;
+        check_insulation(new.insulation)?;
+        if new.insulation.is_some() && !matches!(new.curve, Curve::Line { .. }) {
+            return Err("Insulation follows straight lines.".into());
+        }
         self.transact("Change detail line", |tx| tx.update(id, Element::DetailLine(new)))
     }
 
@@ -646,7 +659,15 @@ impl Document {
         }
         if lines {
             for (id, l) in self.detail_lines(view).into_iter().filter(|(id, _)| !self.hidden_in(view, *id)) {
-                out.strokes.extend(stroke(&l.curve, &l.style, Some(id), None));
+                match (l.insulation, &l.curve) {
+                    (Some(w), Curve::Line { a, b }) => {
+                        if let Some(mut st) = stroke(&l.curve, &l.style, Some(id), None) {
+                            st.pts = paper(insulation_loops(*a, *b, w));
+                            out.strokes.push(st);
+                        }
+                    }
+                    _ => out.strokes.extend(stroke(&l.curve, &l.style, Some(id), None)),
+                }
             }
         }
         out
@@ -676,7 +697,7 @@ mod tests {
     fn a_detail_line_sketch_adds_changes_and_deletes_lines_in_one_step_each() {
         let mut d = Document::new_project();
         let v = plan(&d);
-        let line = |id: Option<Id>, a: Point, b: Point, style: &str| DetailLineEdit { id, curve: Curve::line(a, b), style: style.into() };
+        let line = |id: Option<Id>, a: Point, b: Point, style: &str| DetailLineEdit { id, curve: Curve::line(a, b), style: style.into(), insulation: None };
         let ids = d.set_detail_lines(v, vec![line(None, p(0.0, 0.0), p(3000.0, 0.0), "Thin Lines"), line(None, p(0.0, 0.0), p(0.0, 2000.0), "Wide Lines")]).unwrap();
         assert_eq!(d.detail_lines(v).len(), 2);
         // a split keeps the id on the first half; the second half is new; the other line goes
@@ -707,7 +728,7 @@ mod tests {
         let mut d = Document::new_project();
         let v = plan(&d);
         d.patch_object_styles(&serde_json::json!({ "annotation": { "Lines": { "subcategories": { "Hatch": { "projection_weight": 2, "cut_weight": null, "color": [0, 0, 255], "pattern": "Solid", "material": null, "subcategories": {}, "built_in": false } } } } })).unwrap();
-        let ids = d.set_detail_lines(v, vec![DetailLineEdit { id: None, curve: Curve::line(p(0.0, 0.0), p(1000.0, 0.0)), style: "Hatch".into() }]).unwrap();
+        let ids = d.set_detail_lines(v, vec![DetailLineEdit { id: None, curve: Curve::line(p(0.0, 0.0), p(1000.0, 0.0)), style: "Hatch".into(), insulation: None }]).unwrap();
         assert_eq!(d.line_style_usage()["Hatch"], 1);
         assert!(d.rename_line_style("Thin Lines", "Fine").is_err(), "built-in styles keep their names");
         assert!(d.rename_line_style("Hatch", "Medium Lines").is_err(), "names are unique");
@@ -755,7 +776,7 @@ mod tests {
     fn detail_items_move_copy_and_go_with_their_view() {
         let mut d = Document::new_project();
         let v = plan(&d);
-        let ids = d.set_detail_lines(v, vec![DetailLineEdit { id: None, curve: Curve::line(p(0.0, 0.0), p(1000.0, 0.0)), style: "Thin Lines".into() }]).unwrap();
+        let ids = d.set_detail_lines(v, vec![DetailLineEdit { id: None, curve: Curve::line(p(0.0, 0.0), p(1000.0, 0.0)), style: "Thin Lines".into(), insulation: None }]).unwrap();
         let copies = d.transform_elements(&ids, crate::edit::Xform::Move { dx: 0.0, dy: 500.0 }, crate::edit::EditOptions { copy: true, disjoin: false }).unwrap();
         assert_eq!(d.detail_lines(v).len(), 2);
         let Some(Element::DetailLine(c)) = d.get(copies[0]) else { panic!() };
@@ -803,4 +824,38 @@ mod tests {
         d.delete(&[v]).unwrap();
         assert!(d.get(id).is_none(), "a view's text notes go with it");
     }
+}
+
+fn check_insulation(w: Option<f64>) -> Result<(), String> {
+    match w {
+        Some(w) if !(w.is_finite() && (5.0..=2000.0).contains(&w)) => Err("Insulation is 5 to 2000 mm wide.".into()),
+        _ => Ok(()),
+    }
+}
+
+/// Batt insulation along a straight line `w` wide: a wave from one side of the batt to the other, each crossing half
+/// the width along the line (Revit's bulge to width of 1 : 2), its crests rounded, as one polyline.
+pub fn insulation_loops(a: Point, b: Point, w: f64) -> Vec<Point> {
+    let len = a.dist(&b);
+    if len < 1e-6 {
+        return vec![a, b];
+    }
+    let (ux, uy) = ((b.x - a.x) / len, (b.y - a.y) / len);
+    let (nx, ny) = (-uy, ux);
+    let r = w / 2.0;
+    let n = (len / (w / 2.0)).round().max(1.0) as usize;
+    let step = len / n as f64;
+    let mut out = vec![];
+    for k in 0..n {
+        for j in 0..=16 {
+            if k > 0 && j == 0 {
+                continue;
+            }
+            let t = j as f64 / 16.0;
+            let along = (k as f64 + t) * step;
+            let across = r * (std::f64::consts::PI * (k as f64 + t)).cos();
+            out.push(Point::new(a.x + ux * along + nx * across, a.y + uy * along + ny * across));
+        }
+    }
+    out
 }

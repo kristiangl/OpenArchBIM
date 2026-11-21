@@ -732,7 +732,7 @@ mod tests {
         assert_eq!(tl(&before), tl(&after));
         assert_eq!(after.paper_size, [300.0, 200.0]);
         // duplicates: the sheet only; with new views; with the views' detailing
-        let line = crate::detail::DetailLine { view: plan, curve: crate::curve::Curve::line(Point::new(0.0, 0.0), Point::new(1000.0, 0.0)), style: "Thin Lines".into(), pinned: false };
+        let line = crate::detail::DetailLine { view: plan, curve: crate::curve::Curve::line(Point::new(0.0, 0.0), Point::new(1000.0, 0.0)), style: "Thin Lines".into(), pinned: false, insulation: None };
         d.transact("line", |tx| Ok(tx.add(Element::DetailLine(line)))).unwrap();
         let lines = |d: &Document, v: Id| d.iter().filter(|(_, e)| matches!(e, Element::DetailLine(l) if l.view == v)).count();
         assert_eq!(lines(&d, plan), 1);

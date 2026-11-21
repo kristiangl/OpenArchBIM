@@ -162,7 +162,7 @@ fn detail_json(d: &Document, vid: Id, settings: &openarch_model::view::ViewSetti
     let scale = settings.scale as f64;
     let v = json!({
         "detail": d.detail_paths(vid, scale, ann_shown("Lines"), ann_shown("Detail Items")),
-        "detail_lines": d.detail_lines(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+        "detail_lines": d.detail_lines(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "insulation": l.insulation, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
         "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, scale) } else { vec![] },
         "regions": d.detail_regions(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
         "line_styles": d.line_styles(),
@@ -5749,6 +5749,30 @@ mod tests {
         call(&mut s, "align", json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 750], [4000, 750]] }));
         assert_eq!(ends(&mut s, o).0, json!([0.0, 900.0]));
         assert!(s.handle("align", &json!({ "ids": [o], "reference": [[0, 900], [10, 900]], "target": [[0, 900], [4000, 900]] })).is_err());
+    }
+
+    #[test]
+    fn insulation_draws_as_loops_along_a_detail_line() {
+        let (mut s, _, _, view) = setup();
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let arc = json!({ "type": "arc", "start": { "x": 3000, "y": 0 }, "end": { "x": 0, "y": 3000 }, "centre": { "x": 0, "y": 0 }, "ccw": true });
+        let ids = call(&mut s, "set_detail_lines", json!({ "view_id": view, "lines": [{ "curve": line([0.0, 0.0], [2700.0, 0.0]), "insulation": 90 }, { "curve": arc, "insulation": 90 }] }))["ids"].clone();
+        let (ins, curved) = (ids[0].as_u64().unwrap(), ids[1].as_u64().unwrap());
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        let strokes = plan["detail"]["strokes"].as_array().unwrap();
+        let pts = |id: u64| strokes.iter().find(|st| st["line"] == id).unwrap()["pts"].as_array().unwrap().clone();
+        // 2700 long at 90 wide: 60 crossings (half the width each), 16 points each; it stays within the batt
+        assert!(pts(ins).len() > 900, "{}", pts(ins).len());
+        let ys: Vec<f64> = pts(ins).iter().map(|p| p[1].as_f64().unwrap() * 100.0).collect();
+        assert!(ys.iter().all(|y| y.abs() <= 45.0 + 1e-6) && ys.iter().any(|y| (y.abs() - 45.0).abs() < 1.0));
+        // on a curve it is dropped
+        assert!(plan["detail_lines"].as_array().unwrap().iter().find(|l| l["id"] == curved).unwrap()["insulation"].is_null());
+        // Properties: the width, which can change; bad widths refused
+        let rows: Vec<Value> = call(&mut s, "describe", json!({ "id": ins }))["groups"].as_array().unwrap().iter().flat_map(|g| g["rows"].as_array().unwrap().clone()).collect();
+        assert!(rows.iter().any(|r| r["label"] == "Insulation Width" && r["raw"] == 90.0));
+        call(&mut s, "patch_detail_line", json!({ "id": ins, "patch": { "insulation": 140 } }));
+        assert!(s.handle("patch_detail_line", &json!({ "id": ins, "patch": { "insulation": 1 } })).is_err());
+        assert!(s.handle("patch_detail_line", &json!({ "id": curved, "patch": { "insulation": 90 } })).is_err());
     }
 
     #[test]
