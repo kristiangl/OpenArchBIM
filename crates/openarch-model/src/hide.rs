@@ -96,7 +96,7 @@ impl Document {
             Element::Spot(s) => match s.kind { SpotKind::Elevation => "Spot Elevations", SpotKind::Coordinate => "Spot Coordinates", SpotKind::Slope => "Spot Slopes" },
             Element::Section(_) => "Sections",
             Element::ElevationMarker(_) => "Elevations",
-            Element::DetailLine(_) => "Lines",
+            Element::DetailLine(_) | Element::ModelLine(_) => "Lines",
             Element::DetailRegion(_) => "Detail Items",
             Element::TextNote(_) => "Text Notes",
             Element::RevisionCloud(_) => "Revision Clouds",

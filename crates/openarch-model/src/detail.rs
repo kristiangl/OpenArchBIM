@@ -438,7 +438,7 @@ impl Document {
         }
     }
 
-    fn check_line_style(&self, style: &str, invisible_ok: bool) -> Result<(), String> {
+    pub(crate) fn check_line_style(&self, style: &str, invisible_ok: bool) -> Result<(), String> {
         if (invisible_ok && style == INVISIBLE_LINES) || self.line_styles().iter().any(|s| s == style) {
             Ok(())
         } else {
@@ -603,7 +603,7 @@ impl Document {
         self.transact("Duplicate filled region type", |tx| Ok(tx.add(Element::FilledRegionType(new))))
     }
 
-    fn line_style(&self, style: &str) -> ObjectStyle {
+    pub(crate) fn line_style(&self, style: &str) -> ObjectStyle {
         let os = self.object_styles().map(|(_, s)| s);
         os.and_then(|s| s.resolve(LINES, Some(style))).cloned().unwrap_or_else(|| ObjectStyle::new(1, None))
     }
@@ -668,6 +668,10 @@ impl Document {
                     }
                     _ => out.strokes.extend(stroke(&l.curve, &l.style, Some(id), None)),
                 }
+            }
+            // a plan's model lines (modelline.rs) draw as its detail lines do, in model mm round the same origin
+            for (id, l) in self.model_lines_in(view) {
+                out.strokes.extend(stroke(&l.curve, &l.style, Some(id), None));
             }
         }
         out

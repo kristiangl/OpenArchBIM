@@ -750,6 +750,8 @@ pub enum Element {
     AnnotationSymbol(crate::annsymbol::AnnotationSymbol),
     /// A picture placed in a view or on a sheet (image.rs).
     ImageItem(crate::image::ImageItem),
+    /// A line in the model, flat on a level (modelline.rs).
+    ModelLine(crate::modelline::ModelLine),
 }
 
 impl Element {
@@ -800,6 +802,7 @@ impl Element {
             Element::LegendComponent(_) => "Legend Component",
             Element::AnnotationSymbol(_) => "Symbol",
             Element::ImageItem(_) => "Image",
+            Element::ModelLine(_) => "Model Line",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

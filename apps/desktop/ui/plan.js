@@ -410,7 +410,8 @@ const Plan = (() => {
   // detail items a sketch is holding: the view's detail lines while Detail Line is on, a region's edges in Edit Boundary
   function heldBySketch(x) {
     if (!Sketch.active) return false;
-    if (Sketch.kind === "detail") return x.line != null;
+    // Detail Line holds the view's detail lines, Model Line its model lines
+    if (Sketch.kind === "detail") return x.line != null && (data.model_lines || []).some((l) => l.id === x.line) === (app.lineSession === "model");
     return Sketch.kind === "region" && Sketch.editingId != null && x.region === Sketch.editingId;
   }
   // radius of the marker and point symbols in pixels: 3.5 mm on paper at the view scale, so they keep their printed size against the model
@@ -3039,6 +3040,7 @@ const Plan = (() => {
       // a detail line opens Detail Line with it selected; a region, Edit Boundary; a text note, its text
       if (id && (data.text_notes || []).some((x) => x.id === id)) cb.editNote(id);
       else if (id && (data.detail_lines || []).some((x) => x.id === id)) cb.editDetail(id);
+      else if (id && (data.model_lines || []).some((x) => x.id === id)) cb.editModelLine(id);
       else if (id && (data.regions || []).some((x) => x.id === id)) cb.editRegion(id); }
   });
   canvas.addEventListener("wheel", (ev) => { const e = unturn(ev);
@@ -3188,7 +3190,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.symbols || []), ...(data.images || []), ...(data.legend_components || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.model_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.symbols || []), ...(data.images || []), ...(data.legend_components || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();
@@ -3215,6 +3217,7 @@ const Plan = (() => {
     spots: () => data.spots || [],
     sections: () => data.sections || [],
     detailLines: () => data.detail_lines || [],
+    modelLines: () => data.model_lines || [],
     textNotes: () => data.text_notes || [],
     paperPx: () => ((data.view && data.view.scale) || 100) * cam.s,
     viewScale: () => (data.view && data.view.scale) || 100,

@@ -528,6 +528,7 @@ impl Document {
                 Element::Section(s) => s.level == level,
                 Element::Room(r) => r.level==level || r.upper_level==Some(level),
                 Element::RoomSeparation(s) => s.level==level,
+                Element::ModelLine(l) => l.level == level,
                 Element::Stair(s) => s.base_level == level || s.top_level == Some(level) || s.multistory_top == Some(level),
                 Element::Railing(r) => r.level == level,
                 Element::Ramp(r) => r.base_level == level || r.top_level == Some(level),

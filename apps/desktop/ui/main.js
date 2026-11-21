@@ -117,6 +117,7 @@ const COMMANDS = {
   floor: () => startFloorSketch(null),
   roof: () => startRoofSketch(null),
   "det-line": () => { app.insulationOn = false; startDetailLines(null, "line"); },
+  "model-line": () => { app.insulationOn = false; startDetailLines(null, "line", true); },
   // Annotate > Insulation: straight detail lines drawn as batt insulation of the width asked for
   "det-insulation": () => {
     app.insulationWidth ||= 90;
@@ -688,7 +689,7 @@ function runCommand(id, e) {
     if (id === "del") { if (Sketch.selectedCount) Sketch.key({ key: "Delete", preventDefault() {} }); else { Sketch.setTool("delete"); renderSketchRibbon(); } return; }
     // Detail Line has no Finish: another command leaves it (its lines are already in the model)
     if (Sketch.kind === "detail") {
-      if (id === "det-line") { Sketch.setTool("line"); return; }
+      if (id === (app.lineSession === "model" ? "model-line" : "det-line")) { Sketch.setTool("line"); return; }
       leaveDetailLines().then(() => { const f = commandFor(id); if (f) f(e); });
       return;
     }
@@ -1389,7 +1390,8 @@ async function refreshView(force) {
       app.vp.setMeshes(scene.meshes, app.selection);
       app.sceneIds = new Set(scene.meshes.map((m) => m.id).filter((i) => typeof i === "number"));
       // imported CAD drawings, as lines at their levels
-      Cad.lines3D(scene.cad_imports).then((lines) => { if (app.view.kind === "3d" && app.vp) app.vp.setLines(lines); });
+      // and model lines, in their line styles' colours
+      Cad.lines3D(scene.cad_imports).then((lines) => { if (app.view.kind === "3d" && app.vp) app.vp.setLines(withModelLines(lines, scene.model_lines)); });
       snapGeometry3D(scene.meshes);
       if (force) app.vp.fit();
     }
@@ -3673,13 +3675,17 @@ Sketch.callbacks.cancel = () => {
 let detailSync = Promise.resolve(), detailKey = "";
 const detailPayload = (curves) => curves.map((c) => ({ id: c.attr.id ?? null, curve: c.curve, style: c.attr.style || app.lineStyle, insulation: c.attr.insulation ?? null }));
 
-async function startDetailLines(selectId, tool) {
+// Model Line (Architecture > Model Line) is the same session on the plan's model lines (modelline.rs): they belong to
+// the plan's level, so every floor plan of it and 3D views show them. `app.lineSession` says which.
+async function startDetailLines(selectId, tool, model = false) {
   if (Sketch.active) {
-    if (Sketch.kind === "detail") { if (tool) Sketch.setTool(tool); return; }
-    setPrompt("Finish or cancel the sketch first.", true);
-    return;
+    if (Sketch.kind === "detail" && (app.lineSession === "model") === model) { if (tool) Sketch.setTool(tool); return; }
+    if (Sketch.kind === "detail") await leaveDetailLines();
+    else { setPrompt("Finish or cancel the sketch first.", true); return; }
   }
-  if (!(await ensureDetailView("A detail line"))) return;
+  if (model ? !(await ensurePlan("A model line")) : !(await ensureDetailView("A detail line"))) return;
+  if (model && !["floor_plan", "structural_plan"].includes((app.info.views || []).find((v) => v.id === app.view.viewId)?.view_kind)) { setPrompt("Model lines are drawn in a floor or structural plan.", true); return; }
+  app.lineSession = model ? "model" : "detail";
   app.lineStyle ||= "Thin Lines";
   app.selection = []; Plan.setSelection([]); Elev.setSelection([]); app.vp?.setSelection([]);
   beginDetailSession(selectId, tool || "line");
@@ -3687,12 +3693,13 @@ async function startDetailLines(selectId, tool) {
 }
 function beginDetailSession(selectId, tool) {
   // a group's lines stay out of the sketch, except the group's own in Edit Group
-  const V = noteView(), lines = V.detailLines().filter((l) => { const g = Plan.groupOf(l.id); return g == null || (app.groupEdit && app.groupEdit.id === g); });
+  const model = app.lineSession === "model";
+  const V = noteView(), lines = (model ? V.modelLines() : V.detailLines()).filter((l) => { const g = Plan.groupOf(l.id); return g == null || (app.groupEdit && app.groupEdit.id === g); });
   V.startSketch({
-    kind: "detail", title: "Detail Lines", tool, fade: false, ink: getComputedStyle(document.documentElement).getPropertyValue("--text").trim(),
+    kind: "detail", title: model ? "Model Lines" : "Detail Lines", tool, fade: false, ink: getComputedStyle(document.documentElement).getPropertyValue("--text").trim(),
     curves: lines.map((l) => ({ ...l.entry, attr: { id: l.id, style: l.style, insulation: l.insulation ?? null } })),
     // Insulation draws straight lines that carry its width; Detail Line plain ones
-    attr: (extra) => ({ style: app.lineStyle, insulation: app.insulationOn ? app.insulationWidth : null, ...(extra || {}) }),
+    attr: (extra) => ({ style: app.lineStyle, insulation: app.insulationOn && !model ? app.insulationWidth : null, ...(extra || {}) }),
   });
   const st = Sketch.state();
   if (selectId) { const c = st.curves.find((x) => x.attr.id === selectId); if (c) st.sel = new Set([c.uid]); }
@@ -3711,13 +3718,26 @@ function syncDetailLines() {
     if (!Sketch.active || Sketch.kind !== "detail") return;
     const entries = Sketch.state().curves.slice(), payload = detailPayload(entries), key = JSON.stringify(payload);
     if (key === detailKey) return;
-    const r = await run("set_detail_lines", { view_id: sketchView().viewId(), lines: payload });
+    const r = await run(app.lineSession === "model" ? "set_model_lines" : "set_detail_lines", { view_id: sketchView().viewId(), lines: payload });
     if (!r) { detailKey = key; return; } // run() put the reason in the status bar
     entries.forEach((c, i) => { if (r.ids[i] != null) c.attr.id = r.ids[i]; });
     if (Sketch.active) detailKey = JSON.stringify(detailPayload(Sketch.state().curves));
     await refresh();
   });
   return detailSync;
+}
+// the 3D view's lines: the CAD lines (x y z r g b per end, metres) with each model line's segments after them
+function withModelLines(lines, model) {
+  const segs = [];
+  for (const l of model || []) {
+    const [r, g, b] = (l.color || [0, 0, 0]).map((c) => c / 255);
+    for (let i = 1; i < l.pts.length; i++) for (const q of [l.pts[i - 1], l.pts[i]]) segs.push(q[0] / 1000, q[1] / 1000, q[2] / 1000, r, g, b);
+  }
+  if (!segs.length) return lines;
+  const out = new Float32Array((lines ? lines.length : 0) + segs.length);
+  if (lines) out.set(lines);
+  out.set(segs, lines ? lines.length : 0);
+  return out;
 }
 async function leaveDetailLines() {
   if (!Sketch.active || Sketch.kind !== "detail") return;
@@ -4009,6 +4029,7 @@ function textContext() {
   return { auto: true, key: `notes:${sel.map((n) => n.id).join(",")}:${JSON.stringify(cur)}`, title: "Text Notes", groups: [{ label: "Leader", items: [...adds, ...attach] }, { label: "Paragraph", items: align }] };
 }
 Plan.callbacks.editDetail = (id) => startDetailLines(id, "select");
+Plan.callbacks.editModelLine = (id) => startDetailLines(id, "select", true);
 Plan.callbacks.editRegion = (id) => startRegionSketch(null, id);
 
 // ---- viewport -------------------------------------------------------------------

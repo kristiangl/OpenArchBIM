@@ -1058,6 +1058,20 @@ pub fn detail_line_props(d: &Document, id: Id, l: &openarch_model::detail::Detai
     })
 }
 
+/// Properties of a model line: its line style, its level (read only), Pinned and length.
+pub fn model_line_props(d: &Document, id: Id, l: &openarch_model::modelline::ModelLine) -> Value {
+    let styles: Vec<(String, Value, bool)> = d.line_styles().into_iter().map(|s| (s.clone(), json!({ "style": s }), s == l.style)).collect();
+    json!({
+        "id": id, "kind": "ModelLine", "title": "Lines (1)", "type_label": "Model Lines",
+        "target": { "method": "patch_model_line", "id": id },
+        "groups": [
+            group("Graphics", vec![select("Line Style", styles)]),
+            group("Constraints", vec![ro("Work Plane", d.level(l.level).map_or_else(String::new, |v| format!("Level : {}", v.name))), boolean("Pinned", "pinned", l.pinned, true)]),
+            group("Dimensions", vec![ro("Length", format!("{:.0}", l.curve.length()))]),
+        ],
+    })
+}
+
 /// Properties of a filled region (its type, with Edit Type) or a masking region, and its area.
 pub fn detail_region_props(d: &Document, id: Id, r: &openarch_model::detail::DetailRegion) -> Value {
     let types: Vec<(String, Value, bool)> = d.filled_region_types().into_iter().map(|(tid, t)| (t.name.clone(), json!({ "region_type": tid }), Some(tid) == r.region_type)).collect();

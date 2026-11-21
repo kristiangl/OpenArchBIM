@@ -187,6 +187,7 @@ fn detail_json(d: &Document, vid: Id, settings: &openarch_model::view::ViewSetti
     let v = json!({
         "detail": d.detail_paths(vid, scale, ann_shown("Lines"), ann_shown("Detail Items")),
         "detail_lines": d.detail_lines(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "insulation": l.insulation, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
+        "model_lines": d.model_lines_in(vid).iter().map(|(id, l)| json!({ "id": id, "style": l.style, "pinned": l.pinned, "entry": describe_curve(&l.curve) })).collect::<Vec<_>>(),
         "text_notes": if ann_shown("Text Notes") { d.text_note_draws(vid, scale) } else { vec![] },
         "regions": d.detail_regions(vid).iter().filter(|(id, _)| !d.hidden_in(vid, *id)).map(|(id, r)| json!({ "id": id, "masking": r.masking, "region_type": r.region_type, "pinned": r.pinned })).collect::<Vec<_>>(),
         "line_styles": d.line_styles(),
@@ -668,6 +669,18 @@ impl Session {
             "set_detail_lines" => {
                 let lines: Vec<openarch_model::detail::DetailLineEdit> = serde_json::from_value(p.get("lines").cloned().ok_or("missing lines")?).map_err(|e| format!("bad lines: {e}"))?;
                 Ok(json!({ "ids": self.doc.set_detail_lines(id_of(p, "view_id")?, lines)? }))
+            }
+            "add_model_lines" => {
+                let curves: Vec<Curve> = serde_json::from_value(p.get("curves").cloned().ok_or("missing curves")?).map_err(|e| format!("bad curves: {e}"))?;
+                Ok(json!({ "ids": self.doc.add_model_lines(id_of(p, "level_id")?, curves, p["style"].as_str().unwrap_or("Thin Lines"))? }))
+            }
+            "set_model_lines" => {
+                let lines: Vec<openarch_model::modelline::ModelLineEdit> = serde_json::from_value(p.get("lines").cloned().ok_or("missing lines")?).map_err(|e| format!("bad lines: {e}"))?;
+                Ok(json!({ "ids": self.doc.set_model_lines(id_of(p, "view_id")?, lines)? }))
+            }
+            "patch_model_line" => {
+                self.doc.patch_model_line(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
             }
             "patch_detail_line" => {
                 self.doc.patch_detail_line(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
@@ -3429,7 +3442,8 @@ impl Session {
                 }
             }
         }
-        json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")), "visual_style": settings.as_ref().map(|s| s.visual_style),
+        json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")),
+            "model_lines": if shown("Lines") { d.model_lines_3d(|i| hidden.contains(&i)).into_iter().map(|(id, c, pts)| json!({ "id": id, "color": c, "pts": pts })).collect::<Vec<_>>() } else { vec![] }, "visual_style": settings.as_ref().map(|s| s.visual_style),
             // the Graphic Display Options the 3D view draws (shadows and the sun come with `sun`)
             "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "silhouettes": s.graphic_display.silhouettes, "transparency": s.graphic_display.transparency, "background": s.graphic_display.background,
                 "sketchy": s.graphic_display.sketchy_lines.then(|| json!({ "jitter": s.graphic_display.sketchy_jitter, "extension": s.graphic_display.sketchy_extension })) })) })
@@ -3518,6 +3532,7 @@ impl Session {
             Element::Dimension(x) => Ok(props::dimension_props(d, id, x)),
             Element::Spot(x) => Ok(props::spot_props(d, id, x)),
             Element::DetailLine(l) => Ok(props::detail_line_props(d, id, l)),
+            Element::ModelLine(l) => Ok(props::model_line_props(d, id, l)),
             Element::LegendComponent(c) => Ok(props::legend_component_props(d, id, c)),
             Element::AnnotationSymbol(s) => Ok(props::symbol_props(d, id, s)),
             Element::ImageItem(i) => Ok(json!({
@@ -5981,6 +5996,26 @@ mod tests {
         // deleting the view takes its lines (and its viewport)
         call(&mut s, "delete", json!({ "ids": [v] }));
         assert!(s.doc.detail_lines(v).is_empty() && s.doc.sheet_views(sheet).is_empty());
+    }
+
+    #[test]
+    fn model_lines_are_drawn_in_their_levels_plans_and_in_3d() {
+        let (mut s, _lvl, _wt, view) = setup();
+        let line = |a: [f64; 2], b: [f64; 2]| json!({ "type": "line", "a": { "x": a[0], "y": a[1] }, "b": { "x": b[0], "y": b[1] } });
+        let ids = call(&mut s, "set_model_lines", json!({ "view_id": view, "lines": [{ "curve": line([0.0, 0.0], [2000.0, 0.0]), "style": "Wide Lines" }] }))["ids"].clone();
+        let id = ids[0].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        assert_eq!((plan["model_lines"][0]["id"].as_u64(), plan["detail_lines"].as_array().unwrap().len()), (Some(id), 0));
+        assert!(plan["detail"]["strokes"].as_array().unwrap().iter().any(|st| st["line"].as_u64() == Some(id)));
+        assert_eq!(call(&mut s, "describe", json!({ "id": id }))["target"]["method"], "patch_model_line");
+        call(&mut s, "patch_model_line", json!({ "id": id, "patch": { "style": "Thin Lines" } }));
+        let scene = call(&mut s, "scene", json!({}));
+        assert_eq!(scene["model_lines"][0]["pts"].as_array().unwrap().len(), 2);
+        // hidden in the plan: not drawn there, and the session leaves it alone
+        call(&mut s, "hide_elements", json!({ "view_id": view, "ids": [id] }));
+        assert!(call(&mut s, "plan", json!({ "view_id": view }))["model_lines"].as_array().unwrap().is_empty());
+        call(&mut s, "set_model_lines", json!({ "view_id": view, "lines": [] }));
+        assert!(s.doc.model_line(id).is_some());
     }
 
     #[test]
