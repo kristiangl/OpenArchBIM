@@ -46,6 +46,8 @@ pub enum AnnotationKind {
     AreaTag,
     /// A generic annotation placed on its own (Annotate > Symbol): a north arrow and the like (annsymbol.rs).
     Symbol,
+    /// A tag of the material at a point of a wall, floor, roof or ceiling (tags.rs): its labels read the material.
+    MaterialTag,
 }
 
 impl AnnotationKind {
@@ -61,6 +63,7 @@ impl AnnotationKind {
             AnnotationKind::WindowTag => "Window Tag",
             AnnotationKind::AreaTag => "Area Tag",
             AnnotationKind::Symbol => "Generic Annotation",
+            AnnotationKind::MaterialTag => "Material Tag",
         }
     }
 
@@ -77,6 +80,7 @@ impl AnnotationKind {
             AnnotationKind::WindowTag => "Window Tags",
             AnnotationKind::AreaTag => "Area Tags",
             AnnotationKind::Symbol => "Generic Annotations",
+            AnnotationKind::MaterialTag => "Material Tags",
         }
     }
 
@@ -92,6 +96,7 @@ impl AnnotationKind {
             AnnotationKind::DoorTag | AnnotationKind::WindowTag => OPENING_TAG_PARAMS,
             AnnotationKind::AreaTag => &["Name", "Number", "Area", "Perimeter", "Area Type", "Level", "Comments"],
             AnnotationKind::Symbol => &[],
+            AnnotationKind::MaterialTag => &["Name", "Description", "Mark", "Keynote", "Class", "Manufacturer", "Model", "Comments", "Cost", "URL"],
         }
     }
 }
@@ -1192,9 +1197,13 @@ impl Document {
         let (name, param, sample, outline): (&str, &str, &str, Vec<[f64; 2]>) = match kind {
             AnnotationKind::DoorTag => ("Door Tag", "Mark", "1", vec![[-4.0, -2.5], [4.0, -2.5], [4.0, 2.5], [-4.0, 2.5]]),
             AnnotationKind::WindowTag => ("Window Tag", "Mark", "W01", vec![[-4.5, 0.0], [-2.5, -2.5], [2.5, -2.5], [4.5, 0.0], [2.5, 2.5], [-2.5, 2.5]]),
+            // Revit's material tag: the material's Description, no border
+            AnnotationKind::MaterialTag => ("Material Tag", "Description", "Material", vec![]),
             _ => return Err("not a door or window tag".into()),
         };
-        let mut f = AnnotationFamily::drawn_with(name, kind, vec![], vec![], vec![old_label(0.0, 0.0, HAlign::Center, VAlign::Middle, 2.5, false, vec![LabelLine::new(param, "", "", sample)])]);
+        // a material tag's text starts just past its leader's end, as Revit's does
+        let (x, align) = if kind == AnnotationKind::MaterialTag { (1.0, HAlign::Left) } else { (0.0, HAlign::Center) };
+        let mut f = AnnotationFamily::drawn_with(name, kind, vec![], vec![], vec![old_label(x, 0.0, align, VAlign::Middle, 2.5, false, vec![LabelLine::new(param, "", "", sample)])]);
         f.read_old_drawing();
         for (i, a) in outline.iter().enumerate() {
             let b = outline[(i + 1) % outline.len()];

@@ -499,6 +499,17 @@ const Plan = (() => {
     return rawCandidates(sx, sy).flat().find((id) => id !== Topo.excavateTarget() && ["floor", "roof", "toposolid"].includes(kinds.get(id))) ?? null;
   }
   // the door or window under the cursor, for the Tag tool
+  // Material Tag: the wall, floor, roof or ceiling under the cursor, and the material of the wall layer fill there
+  function materialHostAt(sx, sy) {
+    const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...(data.ceilings || [])].map((e) => e.id));
+    return rawCandidates(sx, sy).flat().find((id) => ids.has(id)) ?? null;
+  }
+  function materialAt(p) {
+    for (const g of data.wall_groups || []) for (const f of g.fills || []) for (const shape of f.shapes || []) {
+      if (shape.length && inPoly(p, shape[0]) && !shape.slice(1).some((h) => inPoly(p, h))) return f.material || null;
+    }
+    return null;
+  }
   function taggableAt(sx, sy) {
     const inserts = new Map(data.inserts.map((i) => [i.id, i]));
     return rawCandidates(sx, sy).flat().find((id) => inserts.has(id) && Tags.taggable(inserts.get(id).category)) ?? null;
@@ -1956,7 +1967,7 @@ const Plan = (() => {
   function promptText() {
     if (tool === "room") return "Click inside an enclosed area to place a room. Esc finishes.";
     if (tool === "roomtag") return "Click inside a placed room to tag it. Esc finishes.";
-    if (tool === "tag") return "Click a door or window to tag it. Esc finishes.";
+    if (tool === "tag") return Tags.promptText();
     if (tool === "ceiling") return "Click inside walls that form a closed loop to place a ceiling. Esc finishes.";
     if (tool === "topopoint" || tool === "topolabel" || tool === "topoexcavate") return Topo.promptText();
     if (tool === "propplace" || tool === "proptag") return PropLines.promptText();
@@ -2571,7 +2582,7 @@ const Plan = (() => {
     if (tool === "symbol") { const p = snap(sx, sy); Symbols.place({ x: p.x, y: p.y }); return; }
     if (tool === "image") { const p = snap(sx, sy); Images.place({ x: p.x, y: p.y }); return; }
     if (tool === "room" || tool === "roomtag") { Spatial.place(tool,toWorld(sx,sy)); return; }
-    if (tool === "tag") { Tags.place(taggableAt(sx, sy)); return; }
+    if (tool === "tag") { if (Tags.isMaterial()) { const p = toWorld(sx, sy); Tags.placeMaterial(materialHostAt(sx, sy), p, materialAt(p)); } else Tags.place(taggableAt(sx, sy)); return; }
     if (tool === "ceiling") { Ceilings.place(toWorld(sx, sy)); return; }
     if (tool === "topopoint") { Topo.click(toWorld(sx, sy)); return; }
     if (tool === "topoexcavate") { Topo.excavateClick(cutterAt(sx, sy)); return; }
@@ -2895,7 +2906,7 @@ const Plan = (() => {
     if (!lastMouse || Math.hypot(e.offsetX - lastMouse.x, e.offsetY - lastMouse.y) > 3) { snapCycle = 0; tabIdx = 0; }
     editMove(e.offsetX, e.offsetY);
     if (tool === "select") { const c = candidates(e.offsetX, e.offsetY); selHover = c.length ? c[tabIdx % c.length] : null; }
-    if (tool === "tag") { const id = taggableAt(e.offsetX, e.offsetY); selHover = id != null ? [id] : null; render(); }
+    if (tool === "tag") { const id = Tags.isMaterial() ? materialHostAt(e.offsetX, e.offsetY) : taggableAt(e.offsetX, e.offsetY); selHover = id != null ? [id] : null; render(); }
     if (tool === "topoexcavate") { const id = cutterAt(e.offsetX, e.offsetY); selHover = id != null ? [id] : null; }
     if (tool === "ceiling") Ceilings.hover(toWorld(e.offsetX, e.offsetY));
     if (tool === "stair") { const l = Stairs.last(); if (l) Stairs.hover(snap(e.offsetX, e.offsetY, { last: l })); }

@@ -822,7 +822,7 @@ pub const SITE_POINT_CATEGORIES: [&str; 2] = ["Project Base Point", "Survey Poin
 
 pub const ANNOTATION_CATEGORIES: &[&str] = &[
     "Dimensions", "Elevations", "Grids", "Levels", "Matchline", "Room Tags", "Room Separation", "Revision Tags", "Scope Boxes", "Sections", "Spot Coordinates", "Spot Elevations", "Spot Slopes", "Text Notes",
-    "Reference Planes", "Revision Clouds", "Detail Items", "Generic Annotations", "Keynote Tags", "Door Tags", "Window Tags", "Wall Tags",
+    "Reference Planes", "Revision Clouds", "Detail Items", "Generic Annotations", "Keynote Tags", "Door Tags", "Window Tags", "Material Tags", "Wall Tags",
 ];
 
 /// The categories of annotation families (level heads, elevation and section marks): Object Styles rows whose

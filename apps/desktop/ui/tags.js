@@ -100,11 +100,22 @@ const Tags = (() => {
   }
 
   // ---- Tag by Category: hover a door or window and click it ----------------------------------------------------
-  async function start() {
+  // Tag by Category, or Material Tag (`mat`): the same tool, which picks walls, floors, roofs and ceilings and tags
+  // the material under the click
+  let materialMode = false;
+  const promptText = () => (materialMode ? "Click a wall, floor, roof or ceiling to tag the material there. Esc finishes." : "Click a door or window to tag it. Esc finishes.");
+  async function start(mat = false) {
+    materialMode = !!mat;
     if (app.view.kind === "elevation") Elev.setTool("tag");
-    else { if (!(await ensurePlan("A tag"))) return; Plan.setTool("tag"); }
+    else { if (!(await ensurePlan(mat ? "A material tag" : "A tag"))) return; Plan.setTool("tag"); }
     updateRibbonContext(true);
-    setPrompt("Click a door or window to tag it. Esc finishes.");
+    setPrompt(promptText());
+  }
+  const isMaterial = () => materialMode;
+  const MATERIAL_HOSTS = ["Walls", "Floors", "Roofs", "Ceilings"];
+  async function placeMaterial(elementId, point, material) {
+    if (elementId == null) { setPrompt("Click a wall, floor, roof or ceiling to tag its material.", true); return; }
+    if (await run("add_material_tag", { view_id: app.view.viewId, element_id: elementId, point: [point.x, point.y], material: material ?? null, options: { ...opts } })) await refresh();
   }
   const taggable = (category) => TAGGABLE.includes(category);
   async function place(elementId) {
@@ -191,5 +202,5 @@ const Tags = (() => {
     });
   }
 
-  return { elements, draw, start, taggable, place, placed, context, placementGroups, flipSelected, tagAll, drawGrips, gripDown, gripMove, gripUp, get dragging() { return !!gdrag; } };
+  return { elements, draw, start, taggable, place, placed, context, placementGroups, flipSelected, tagAll, drawGrips, gripDown, gripMove, gripUp, isMaterial, placeMaterial, promptText, MATERIAL_HOSTS, get dragging() { return !!gdrag; } };
 })();

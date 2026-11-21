@@ -27,6 +27,13 @@ impl Session {
         Some(match method {
             // Tag by Category and Tag on Placement: { view_id, element_id, options: { orientation, leader, leader_mm, family } }
             "add_tag" => (|| { let o = options_of(p)?; Ok(json!({ "id": self.doc.add_element_tag(id_of(p, "view_id")?, id_of(p, "element_id")?, &o)? })) })(),
+            // Material Tag: { view_id, element_id, point, material?, options }
+            "add_material_tag" => (|| {
+                let o = options_of(p)?;
+                let q = p["point"].as_array().ok_or("missing point")?;
+                let at = openarch_model::Point::new(q[0].as_f64().unwrap_or(f64::NAN), q.get(1).and_then(|v| v.as_f64()).unwrap_or(f64::NAN));
+                Ok(json!({ "id": self.doc.add_material_tag(id_of(p, "view_id")?, id_of(p, "element_id")?, p["material"].as_str(), at, &o)? }))
+            })(),
             "patch_tag" => (|| { self.doc.patch_element_tag(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             // Spacebar on selected tags: horizontal and vertical swap, as one undo step
             "flip_tags" => (|| {
@@ -106,11 +113,17 @@ impl Session {
             if v.hidden_elements.contains(&id) || v.hidden_elements.contains(&t.element) { return None; }
             // a tag goes with what it tags where the view's phase or design options leave that out (spec 5.4)
             if d.filter_hides(v, id) || d.filter_hides(v, t.element) { return None; }
-            let kind = d.tag_kind(t.element)?;
+            let kind = d.kind_of_tag(t)?;
             if !visible(kind.category(), false) || !visible(&self.schedule_category(t.element)?, true) { return None; }
-            let p = d.tag_point(view, t.element)?;
+            let p = d.tag_anchor(t)?;
             let fam = t.family.and_then(|f| d.annotation_family(f))?;
-            let values = self.param_texts(t.element, &mut types);
+            // a material tag reads its material's identity
+            let values = match t.material.as_deref().and_then(|m| d.material(m)) {
+                Some(m) => [("Name", m.name.clone()), ("Description", if m.identity.description.is_empty() { m.name.clone() } else { m.identity.description.clone() }), ("Mark", m.identity.mark.clone()), ("Keynote", m.identity.keynote.clone()), ("Class", m.class.clone()),
+                    ("Manufacturer", m.identity.manufacturer.clone()), ("Model", m.identity.model.clone()), ("Comments", m.identity.comments.clone()), ("Cost", format!("{:.2}", m.identity.cost)), ("URL", m.identity.url.clone())]
+                    .into_iter().map(|(k, v)| (k.to_string(), v)).collect(),
+                None => self.param_texts(t.element, &mut types),
+            };
             let labels = d.symbol_texts(fam, &|name| Some(values.get(name).cloned().unwrap_or_default()), false);
             let at = |o: [f64; 2]| json!({ "x": p.x + o[0], "y": p.y + o[1] });
             let end = match t.leader_end { LeaderEnd::Free => at(t.end_offset.unwrap_or([0.0, 0.0])), LeaderEnd::Attached => at([0.0, 0.0]) };
@@ -125,8 +138,9 @@ impl Session {
 
     pub(crate) fn tag_props(&self, id: Id, t: &ElementTag) -> Value {
         let d = &self.doc;
-        let kind = d.tag_kind(t.element);
+        let kind = d.kind_of_tag(t);
         let what = match d.get(t.element) {
+            _ if t.material.is_some() => format!("{} ({})", t.material.clone().unwrap_or_default(), self.schedule_category(t.element).unwrap_or_default()),
             Some(Element::FamilyInstance(i)) => {
                 let name = d.instance_family(i).map(|(f, ty)| format!("{}: {}", f.name, ty.name)).unwrap_or_default();
                 if i.mark.is_empty() { name } else { format!("{name} (Mark {})", i.mark) }

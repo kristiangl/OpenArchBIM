@@ -585,8 +585,13 @@ impl Document {
                 // element), moved alone its head goes where the transform takes it
                 Some(Element::ElementTag(t)) => {
                     let mut t = t.clone();
+                    // a material tag's own point goes with its element
+                    if let (Some(p0), true) = (t.point, set.contains(&t.element)) {
+                        let q = x.apply(Point::new(p0[0], p0[1]));
+                        t.point = Some([q.x, q.y]);
+                    }
                     if !set.contains(&t.element) {
-                        if let Some(p) = self.tag_point(t.view, t.element) {
+                        if let Some(p) = self.tag_anchor(&t) {
                             let shift = |o: [f64; 2]| { let q = x.apply(Point::new(p.x + o[0], p.y + o[1])); [q.x - p.x, q.y - p.y] };
                             t.offset = shift(t.offset);
                             t.end_offset = t.end_offset.map(shift);

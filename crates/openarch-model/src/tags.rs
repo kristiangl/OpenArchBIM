@@ -50,6 +50,12 @@ pub struct ElementTag {
     pub elbow: Option<[f64; 2]>,
     #[serde(default)]
     pub pinned: bool,
+    /// A material tag (Annotate > Material Tag): the material it names, of the tagged element.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub material: Option<String>,
+    /// Where the tag points on its element (view mm), when that is not the element's own tag point (a material tag).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub point: Option<[f64; 2]>,
 }
 
 /// How a new tag is placed: Tag by Category, Tag All and Tag on Placement share these.
@@ -83,6 +89,74 @@ impl Document {
         }
     }
 
+    /// The tag family kind a tag takes: a material tag's, or its element's.
+    pub fn kind_of_tag(&self, t: &ElementTag) -> Option<AnnotationKind> {
+        if t.material.is_some() { Some(AnnotationKind::MaterialTag) } else { self.tag_kind(t.element) }
+    }
+
+    /// Where a tag hangs from: its own point, or its element's tag point.
+    pub fn tag_anchor(&self, t: &ElementTag) -> Option<Point> {
+        match t.point {
+            Some(p) if self.get(t.element).is_some() => Some(Point::new(p[0], p[1])),
+            Some(_) => None,
+            None => self.tag_point(t.view, t.element),
+        }
+    }
+
+    /// The materials an element is made of, for Material Tag: its type's layers (outside or top first, voids left
+    /// out). Walls, floors, roofs and ceilings.
+    pub fn element_materials(&self, element: Id) -> Vec<String> {
+        let layers = match self.get(element) {
+            Some(Element::Wall(w)) => self.wall_type(w.wall_type).map(|t| t.layers.clone()),
+            Some(Element::Floor(f)) => self.floor_type(f.floor_type).map(|t| t.layers.clone()),
+            Some(Element::Roof(r)) => self.roof_type(r.roof_type).map(|t| t.layers.clone()),
+            Some(Element::Ceiling(c)) => self.ceiling_type(c.ceiling_type).map(|t| t.layers.clone()),
+            _ => None,
+        };
+        let mut out: Vec<String> = vec![];
+        for l in layers.unwrap_or_default() {
+            if !l.is_void && !l.material.is_empty() && !out.contains(&l.material) {
+                out.push(l.material);
+            }
+        }
+        out
+    }
+
+    /// Tag the material at a point of a wall, floor, roof or ceiling (Annotate > Material Tag): `material` is the one
+    /// under the click when the view knows it, else the element's structural (or first) material. The head sits a
+    /// leader's length up and to the right; the leader is on, as in Revit.
+    pub fn add_material_tag(&mut self, view: Id, element: Id, material: Option<&str>, point: Point, o: &TagOptions) -> Result<Id, String> {
+        let mats = self.element_materials(element);
+        if mats.is_empty() {
+            return Err("Material tags go on walls, floors, roofs and ceilings so far.".into());
+        }
+        let v = self.view(view).ok_or("not a view")?;
+        if !(v.view_kind.is_plan() || self.elevation_frame(view).is_some()) {
+            return Err("Tags go in plan, elevation and section views.".into());
+        }
+        let structural = || {
+            let layers = match self.get(element) {
+                Some(Element::Wall(w)) => self.wall_type(w.wall_type).map(|t| t.layers.clone()),
+                Some(Element::Floor(f)) => self.floor_type(f.floor_type).map(|t| t.layers.clone()),
+                Some(Element::Roof(r)) => self.roof_type(r.roof_type).map(|t| t.layers.clone()),
+                _ => None,
+            };
+            layers.unwrap_or_default().into_iter().find(|l| l.structural_material || l.core).map(|l| l.material)
+        };
+        let material = match material.filter(|m| self.material(m).is_some()) {
+            Some(m) => m.to_string(),
+            None => structural().filter(|m| mats.contains(m)).unwrap_or_else(|| mats[0].clone()),
+        };
+        let paper = if o.leader_mm > 0.0 { o.leader_mm } else { 10.0 };
+        let k = paper * self.tag_scale(view) * std::f64::consts::FRAC_1_SQRT_2;
+        let mut t = ElementTag { view, element, offset: [k, k], family: o.family, orientation: o.orientation, leader: true, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material: Some(material), point: Some([point.x, point.y]) };
+        self.check_tag(&t)?;
+        self.grouped("Material Tag", |d| {
+            if t.family.is_none() { t.family = Some(d.ensure_tag_family(AnnotationKind::MaterialTag)?); }
+            d.transact("Material Tag", |tx| Ok(tx.add(Element::ElementTag(t))))
+        })
+    }
+
     /// Where an element's tags hang from in a view: a door or window's opening centre (on the wall's location line in
     /// plan), in the view's own frame. None when the view cannot show the element's tags.
     pub fn tag_point(&self, view: Id, element: Id) -> Option<Point> {
@@ -112,9 +186,17 @@ impl Document {
     }
 
     fn check_tag(&self, t: &ElementTag) -> Result<(), String> {
-        let kind = self.tag_kind(t.element).ok_or("Only doors and windows can be tagged so far.")?;
-        if self.tag_point(t.view, t.element).is_none() {
+        let kind = self.kind_of_tag(t).ok_or("Only doors and windows can be tagged so far.")?;
+        if self.tag_anchor(t).is_none() {
             return Err("Tags go in plan, elevation and section views.".into());
+        }
+        if let Some(m) = &t.material {
+            if self.material(m).is_none() {
+                return Err(format!("There is no material named '{m}'."));
+            }
+        }
+        if t.point.is_some_and(|p| !p.iter().all(|v| v.is_finite())) {
+            return Err("The tag's position must be numbers.".into());
         }
         if let Some(f) = t.family {
             if self.annotation_family(f).is_none_or(|f| f.kind != kind) {
@@ -138,7 +220,7 @@ impl Document {
         let paper = if o.leader_mm > 0.0 { o.leader_mm } else { 12.0 };
         let length = if o.leader { paper * self.tag_scale(view) } else { 0.0 };
         let offset = if self.view(view).is_some_and(|v| v.view_kind.is_plan()) { [0.0, length] } else { [length, 0.0] };
-        let mut t = ElementTag { view, element, offset, family: o.family, orientation: o.orientation, leader: o.leader, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false };
+        let mut t = ElementTag { view, element, offset, family: o.family, orientation: o.orientation, leader: o.leader, leader_end: LeaderEnd::Attached, end_offset: None, elbow: None, pinned: false, material: None, point: None };
         self.check_tag(&t)?;
         self.grouped("Tag", |d| {
             if t.family.is_none() { t.family = Some(d.ensure_tag_family(kind)?); }

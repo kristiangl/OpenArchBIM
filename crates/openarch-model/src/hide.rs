@@ -102,7 +102,7 @@ impl Document {
             Element::TextNote(_) => "Text Notes",
             Element::RevisionCloud(_) => "Revision Clouds",
             Element::RevisionTag(_) => "Revision Tags",
-            Element::ElementTag(t) => return self.tag_kind(t.element).map(|k| k.category().to_string()),
+            Element::ElementTag(t) => return self.kind_of_tag(t).map(|k| k.category().to_string()),
             Element::ColorFillLegend(_) => "Color Fill Legends",
             _ => return None,
         };

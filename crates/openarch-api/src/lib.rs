@@ -4978,6 +4978,30 @@ mod tests {
     }
 
     #[test]
+    fn material_tags_name_the_material_where_they_point() {
+        let (mut s, lvl, wt, view) = setup();
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [5000, 0], "height": 2700.0}))["id"].as_u64().unwrap();
+        let mats = s.doc.element_materials(w);
+        assert!(!mats.is_empty());
+        let m = mats.last().unwrap().clone();
+        let id = call(&mut s, "add_material_tag", json!({ "view_id": view, "element_id": w, "point": [2500.0, 0.0], "material": m }))["id"].as_u64().unwrap();
+        let plan = call(&mut s, "plan", json!({ "view_id": view }));
+        let tag = plan["element_tags"].as_array().unwrap().iter().find(|t| t["id"].as_u64() == Some(id)).unwrap().clone();
+        assert_eq!((tag["category"].as_str(), tag["point"]["x"].as_f64(), tag["leader"].as_bool()), (Some("Material Tags"), Some(2500.0), Some(true)));
+        let desc = s.doc.material(&m).map(|x| if x.identity.description.is_empty() { x.name.clone() } else { x.identity.description.clone() }).unwrap();
+        assert!(tag["labels"].to_string().contains(&desc), "{}", tag["labels"]);
+        assert_eq!(call(&mut s, "describe", json!({ "id": id }))["title"], "Material Tag");
+        // no material given: the wall's structural one; a bad name falls back too
+        let id2 = call(&mut s, "add_material_tag", json!({ "view_id": view, "element_id": w, "point": [1000.0, 0.0], "material": "No Such" }))["id"].as_u64().unwrap();
+        assert!(mats.contains(s.doc.element_tag(id2).unwrap().material.as_ref().unwrap()));
+        // moved with its wall, the point goes too
+        call(&mut s, "transform", json!({ "ids": [w, id], "kind": "move", "dx": 0.0, "dy": 1000.0 }));
+        assert_eq!(s.doc.element_tag(id).unwrap().point, Some([2500.0, 1000.0]));
+        // a level is not something a material tag goes on
+        assert!(s.handle("add_material_tag", &json!({ "view_id": view, "element_id": lvl, "point": [0.0, 0.0] })).is_err());
+    }
+
+    #[test]
     fn dimension_types_are_edited_duplicated_and_drawn() {
         let (mut s, lvl, wt, view) = setup();
         let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 5000], "height": 2700.0}))["id"].as_u64().unwrap();
