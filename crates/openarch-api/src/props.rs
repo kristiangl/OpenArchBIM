@@ -1081,7 +1081,7 @@ pub fn detail_region_props(d: &Document, id: Id, r: &openarch_model::detail::Det
         groups.push(group("Graphics", vec![select("Filled Region Type", types)]));
     }
     groups.push(group("Constraints", vec![boolean("Pinned", "pinned", r.pinned, true)]));
-    groups.push(group("Dimensions", vec![ro_measure("Area", format!("{area:.3} m²"), area)]));
+    groups.push(group("Dimensions", vec![ro_measure("Area", d.project_units().area(area * 1e6), area)]));
     json!({
         "id": id, "kind": "DetailRegion", "title": if r.masking { "Masking Region" } else { "Filled Region" },
         "type_label": if r.masking { "Masking Region" } else { "Filled region" },
@@ -1221,6 +1221,7 @@ pub fn dimension_type_props(d: &Document, id: Id, t: &openarch_model::dimension:
     let units = |path: &str, cur: LengthUnit| select("Units", [("Millimetres", LengthUnit::Millimetres), ("Centimetres", LengthUnit::Centimetres), ("Metres", LengthUnit::Metres), ("Feet and inches", LengthUnit::FeetInches)].iter().map(|(l, u)| (l.to_string(), nest(path, json!(unit_name(*u))), *u == cur)).collect());
     let tick = |s: TickStyle| match s { TickStyle::Tick => "tick", TickStyle::Arrow => "arrow", TickStyle::Dot => "dot", TickStyle::None => "none" };
     let mut format = vec![
+        boolean("Use Project Settings", "use_project_units", t.use_project_units, true),
         units("format.unit", t.format.unit),
         num("Decimal Places", "format.decimals", t.format.decimals as f64, true),
         boolean("Suppress Trailing Zeros", "format.suppress_trailing_zeros", t.format.suppress_trailing_zeros, true),

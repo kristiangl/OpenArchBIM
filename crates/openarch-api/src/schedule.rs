@@ -55,14 +55,20 @@ impl Cell {
     }
 }
 
-/// A number written in its unit.
+thread_local! {
+    /// The project's units while a table is made (Project Units: units.rs)
+    static UNITS: std::cell::Cell<openarch_model::units::ProjectUnits> = std::cell::Cell::new(Default::default());
+}
+
+/// A number written in its unit: lengths (mm), areas (m²), volumes (m³) and angles in the project's units.
 fn show(n: f64, unit: Unit) -> String {
     let trim = |s: String| if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.').to_string() } else { s };
+    let u = UNITS.with(|c| c.get());
     match unit {
-        Unit::Length => trim(format!("{:.1}", n)),
-        Unit::Area => format!("{n:.2} m²"),
-        Unit::Volume => format!("{n:.2} m³"),
-        Unit::Angle => format!("{}°", trim(format!("{n:.2}"))),
+        Unit::Length => u.length(n),
+        Unit::Area => u.area(n * 1e6),
+        Unit::Volume => u.volume(n * 1e9),
+        Unit::Angle => u.angle(n),
         Unit::Integer => format!("{}", n.round()),
         Unit::Currency => format!("{n:.2}"),
         Unit::YesNo => if n != 0.0 { "Yes".into() } else { "No".into() },
@@ -209,6 +215,7 @@ impl Session {
     }
 
     pub(crate) fn params(&self, id: Id, types: &mut BTreeMap<Id, BTreeMap<String, Cell>>) -> Params {
+        UNITS.with(|c| c.set(self.doc.project_units()));
         let mut instance = BTreeMap::new();
         let mut of_type = BTreeMap::new();
         if let Some(c) = self.schedule_category(id) {
@@ -442,6 +449,7 @@ impl Session {
     pub(crate) fn schedule_table_for(&self, view: Id, only: Option<&HashSet<Id>>) -> Res { self.schedule_table_definition(view, only, None) }
 
     pub(crate) fn schedule_table_definition(&self, view: Id, only: Option<&HashSet<Id>>, definition: Option<&ScheduleDef>) -> Res {
+        UNITS.with(|c| c.set(self.doc.project_units()));
         let v = self.doc.view(view).ok_or("not a view")?;
         let def = definition.or(v.schedule.as_ref()).ok_or("not a schedule")?;
         // sheets and views aren't shown by a sheet's views

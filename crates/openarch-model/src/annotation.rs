@@ -1220,11 +1220,12 @@ impl Document {
         let family = tag.family.and_then(|id| self.annotation_family(id)).or_else(|| self.annotation_families().into_iter().find(|(_, f)| f.kind == AnnotationKind::AreaTag).map(|(_, f)| f));
         let Some(family) = family else { return vec![] };
         let placed = c.status == crate::areas::AreaStatus::Placed;
+        let u = self.project_units();
         self.symbol_texts(family, &|name| Some(match name {
             "Name" => a.name.clone(),
             "Number" => a.number.clone(),
-            "Area" => if placed { format!("{:.2} m²", c.area_mm2 / 1e6) } else { "Not Enclosed".into() },
-            "Perimeter" => format!("{:.0}", c.perimeter_mm),
+            "Area" => if placed { u.area(c.area_mm2) } else { "Not Enclosed".into() },
+            "Perimeter" => u.length(c.perimeter_mm),
             "Area Type" => a.area_type.label().into(),
             "Level" => self.level_of_area(a).and_then(|l| self.level(l)).map_or(String::new(), |l| l.name.clone()),
             "Comments" => a.comments.clone(),
@@ -1235,8 +1236,9 @@ impl Document {
     pub fn room_tag_labels(&self,tag:&crate::rooms::RoomTag)->Vec<DrawnText>{
         let Some(room)=self.room(tag.room)else{return vec![]};let Some(calc)=self.room_calculation(tag.room)else{return vec![]};
         let family=tag.family.and_then(|id|self.annotation_family(id)).or_else(||self.annotation_families().into_iter().find(|(_,f)|f.kind==AnnotationKind::RoomTag).map(|(_,f)|f));let Some(family)=family else{return vec![]};
+        let u=self.project_units();
         self.symbol_texts(family,&|name|Some(match name{
-            "Room Number"=>room.number.clone(),"Room Name"=>room.name.clone(),"Area"=>if calc.status==crate::rooms::RoomStatus::Placed{format!("{:.2} m²",calc.area_mm2/1e6)}else{format!("{:?}",calc.status)},"Perimeter"=>format!("{:.0}",calc.perimeter_mm),"Volume"=>calc.volume_mm3.map(|v|format!("{:.2} m³",v/1e9)).unwrap_or("Not Calculated".into()),"Department"=>room.department.clone(),"Occupancy"=>room.occupancy.clone(),"Level"=>self.level(room.level).map_or(String::new(),|l|l.name.clone()),_=>return None}),false)
+            "Room Number"=>room.number.clone(),"Room Name"=>room.name.clone(),"Area"=>if calc.status==crate::rooms::RoomStatus::Placed{u.area(calc.area_mm2)}else{format!("{:?}",calc.status)},"Perimeter"=>u.length(calc.perimeter_mm),"Volume"=>calc.volume_mm3.map(|v|u.volume(v)).unwrap_or("Not Calculated".into()),"Department"=>room.department.clone(),"Occupancy"=>room.occupancy.clone(),"Level"=>self.level(room.level).map_or(String::new(),|l|l.name.clone()),_=>return None}),false)
     }
 
     pub fn ensure_annotation_defaults(&mut self) {

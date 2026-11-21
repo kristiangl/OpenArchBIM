@@ -2203,6 +2203,12 @@ impl Session {
                 Ok(json!({ "paper": paper, "views": [v], "title_block": null }))
             }
             // ---- sheets (openarch_model::sheet) ----
+            "project_units" => Ok(json!(self.doc.project_units())),
+            "set_project_units" => {
+                let u = serde_json::from_value(p.get("units").cloned().ok_or("missing units")?).map_err(|e| format!("bad units: {e}"))?;
+                self.doc.set_project_units(u)?;
+                Ok(json!({}))
+            }
             "set_project_info" => {
                 let info = serde_json::from_value(p.get("info").cloned().ok_or("missing info")?).map_err(|e| format!("bad project information: {e}"))?;
                 self.doc.set_project_info(info)?;
@@ -4944,6 +4950,31 @@ mod tests {
         call(&mut s, "patch_dimension", json!({"id": r, "patch": {"segments": [{"index": 0, "locked": false}]}}));
         call(&mut s, "label_dimension", json!({"id": r, "segment": 0, "param": len}));
         assert!((text(&mut s, dia).1 - 8000.0).abs() < 0.5);
+    }
+
+    #[test]
+    fn project_units_change_dimension_text_and_keep_through_project_information() {
+        let (mut s, lvl, wt, view) = setup();
+        let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [0, 5000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let b = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [12345, 0], "end": [12345, 5000], "height": 2700.0}))["id"].as_u64().unwrap();
+        let r = |w: u64| json!({"spec": {"kind": "wall", "id": w, "offset": 0.0}, "pick": [0, 2500]});
+        call(&mut s, "add_dimension", json!({"view_id": view, "kind": "aligned", "refs": [r(a), r(b)], "line_point": [6000, 6000]}));
+        let txt = |s: &mut Session| call(s, "plan", json!({"view_id": view}))["dimensions"][0]["segments"][0]["text"].as_str().unwrap().to_string();
+        assert_eq!(txt(&mut s), "12345");
+        let mut u = call(&mut s, "project_units", json!({}));
+        u["digit_grouping"] = json!(true);
+        call(&mut s, "set_project_units", json!({ "units": u }));
+        assert_eq!(txt(&mut s), "12,345");
+        // Project Information leaves the units alone
+        call(&mut s, "set_project_info", json!({ "info": { "name": "House" } }));
+        assert_eq!(call(&mut s, "project_units", json!({}))["digit_grouping"], true);
+        // a dimension type with its own format ignores them
+        let tid = call(&mut s, "doc_info", json!({}))["dimension_types"][0]["id"].as_u64().unwrap();
+        call(&mut s, "patch_dimension_type", json!({"id": tid, "patch": {"format": {"unit": "metres", "decimals": 2}}}));
+        assert_eq!(txt(&mut s), "12.35");
+        call(&mut s, "patch_dimension_type", json!({"id": tid, "patch": {"use_project_units": true}}));
+        assert_eq!(txt(&mut s), "12,345");
+        assert!(s.handle("set_project_units", &json!({ "units": { "angle_decimals": 12 } })).is_err());
     }
 
     #[test]

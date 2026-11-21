@@ -37,6 +37,9 @@ pub struct ProjectInfo {
     pub status: String,
     #[serde(default)]
     pub author: String,
+    /// Project Units (units.rs); changed with `set_project_units`, kept by `set_project_info`.
+    #[serde(default)]
+    pub units: crate::units::ProjectUnits,
 }
 
 /// A drawing sheet.
@@ -174,7 +177,8 @@ impl Document {
     }
 
     /// Changes the project information (one undo step).
-    pub fn set_project_info(&mut self, info: ProjectInfo) -> Result<(), String> {
+    pub fn set_project_info(&mut self, mut info: ProjectInfo) -> Result<(), String> {
+        info.units = self.project_units();
         let id = self.iter().find_map(|(id, e)| matches!(e, Element::ProjectInfo(_)).then_some(id));
         self.transact("Project Information", |tx| match id {
             Some(id) => tx.update(id, Element::ProjectInfo(info)),

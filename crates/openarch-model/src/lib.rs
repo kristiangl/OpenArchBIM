@@ -32,6 +32,7 @@ pub mod grid;
 pub mod image;
 pub mod modelline;
 pub mod refplane;
+pub mod units;
 pub mod group;
 pub mod hosting;
 pub mod ifc;

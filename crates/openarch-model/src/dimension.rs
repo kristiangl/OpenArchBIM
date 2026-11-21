@@ -181,6 +181,9 @@ pub struct DimensionType {
     /// A labelled dimension shows its value after the parameter's name ("Corridor Width = 1800").
     #[serde(default = "yes")]
     pub show_label_value: bool,
+    /// Units Format "Use project settings": lengths and angles as Project Units writes them, not `format`.
+    #[serde(default = "yes")]
+    pub use_project_units: bool,
 }
 
 /// The symbols written before the value of the round dimensions (Radius, Diameter and Arc Length Symbol).
@@ -245,6 +248,7 @@ impl DimensionType {
             angle_decimals: d_angle_decimals(),
             symbols: RoundSymbols::default(),
             show_label_value: true,
+            use_project_units: true,
         }
     }
 }
@@ -813,7 +817,12 @@ impl Document {
 
     /// Draw a dimension that may not be in the document (a preview while placing or dragging).
     pub fn draw_dimension(&self, id: Id, d: &Dimension) -> DimDraw {
-        let ty = self.dimension_type(d.dim_type).cloned().unwrap_or_else(DimensionType::standard);
+        let mut ty = self.dimension_type(d.dim_type).cloned().unwrap_or_else(DimensionType::standard);
+        let units = self.project_units();
+        if ty.use_project_units {
+            ty.format = units.length;
+            ty.angle_decimals = units.angle_decimals;
+        }
         let mut out = DimDraw {
             id,
             kind: d.kind,
@@ -860,24 +869,24 @@ impl Document {
             let label = s.param.and_then(|g| self.global_param(g));
             let mut text = if let Some(g) = label {
                 // a labelled segment shows its parameter's name, and its value when the type says so
-                if ty.show_label_value { format!("{} = {}", g.name, format_length(value, &ty.format)) } else { g.name.clone() }
+                if ty.show_label_value { format!("{} = {}", g.name, units.write_length(value, &ty.format)) } else { g.name.clone() }
             } else if let Some(w) = &s.value_text {
                 w.clone()
             } else if d.equality && d.eq_display == EqDisplay::Eq {
                 "EQ".to_string()
             } else if d.equality && d.eq_display == EqDisplay::Formula {
                 if i == (n - 1) / 2 {
-                    format!("{} @ {} = {}", n, format_length(total / n as f64, &ty.format), format_length(total, &ty.format))
+                    format!("{} @ {} = {}", n, units.write_length(total / n as f64, &ty.format), units.write_length(total, &ty.format))
                 } else {
                     String::new()
                 }
             } else {
-                format_length(value, &ty.format)
+                units.write_length(value, &ty.format)
             };
             let mut alt_text = None;
             if s.value_text.is_none() && !text.is_empty() && !(d.equality && d.eq_display != EqDisplay::Value) {
                 if let Some(alt) = &ty.alt {
-                    let a = format_length(value, &alt.format);
+                    let a = units.write_length(value, &alt.format);
                     match alt.placement {
                         AltPlacement::Right => text = format!("{text} [{a}]"),
                         AltPlacement::Below => alt_text = Some(a),
@@ -912,7 +921,11 @@ impl Document {
     /// Change a dimension type (Edit Type): any of its fields, `alt` null to drop the second units.
     pub fn patch_dimension_type(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
         let old = self.dimension_type(id).cloned().ok_or("not a dimension type")?;
-        let new: DimensionType = crate::doc::apply_patch(&old, patch)?;
+        let mut new: DimensionType = crate::doc::apply_patch(&old, patch)?;
+        // setting the type's own units format takes it off the project's (Use Project Settings)
+        if patch.get("use_project_units").is_none() && (new.format != old.format || new.angle_decimals != old.angle_decimals) {
+            new.use_project_units = false;
+        }
         if new == old {
             return Ok(());
         }
@@ -1756,6 +1769,7 @@ impl Document {
     }
 
     fn draw_round(&self, d: &Dimension, ty: &DimensionType, mut out: DimDraw) -> DimDraw {
+        let units = self.project_units();
         let sh = match self.round_shape(d) {
             Ok(s) => s,
             Err(e) => {
@@ -1765,14 +1779,14 @@ impl Document {
         };
         let seg = d.segments.first().cloned().unwrap_or_default();
         let number = if sh.angular {
-            format!("{}\u{00B0}", num(sh.value, ty.angle_decimals, ty.format.suppress_trailing_zeros))
+            units.local(&format!("{}\u{00B0}", num(sh.value, ty.angle_decimals, ty.format.suppress_trailing_zeros)))
         } else {
             let symbol = match sh.sym {
                 "radius" => ty.symbols.radius.as_str(),
                 "diameter" => ty.symbols.diameter.as_str(),
                 _ => ty.symbols.arc_length.as_str(),
             };
-            format!("{}{}", symbol, format_length(sh.value, &ty.format))
+            format!("{}{}", symbol, units.write_length(sh.value, &ty.format))
         };
         let label = seg.param.and_then(|g| self.global_param(g));
         let mut text = match label {
@@ -1784,7 +1798,7 @@ impl Document {
         let mut alt_text = None;
         if seg.value_text.is_none() && label.is_none() && !sh.angular {
             if let Some(alt) = &ty.alt {
-                let a = format_length(sh.value, &alt.format);
+                let a = units.write_length(sh.value, &alt.format);
                 match alt.placement {
                     AltPlacement::Right => text = format!("{text} [{a}]"),
                     AltPlacement::Below => alt_text = Some(a),
