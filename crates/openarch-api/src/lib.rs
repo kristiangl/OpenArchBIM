@@ -423,6 +423,11 @@ impl Session {
             }
             "duplicate_view" => Ok(json!({ "id": self.doc.duplicate_view(id_of(p, "id")?)? })),
             // View > 3D View: the default {3D} view, made again if it has been deleted
+            // Split Element and Split with Gap on a wall: { id, point, gap_mm? }
+            "split_wall" => {
+                let nid = self.doc.split_wall(id_of(p, "id")?, point_of(p.get("point").ok_or("missing point")?)?, p.get("gap_mm").and_then(|v| v.as_f64()).unwrap_or(0.0))?;
+                Ok(json!({ "id": nid }))
+            }
             "default_3d_view" => {
                 use openarch_model::view::ViewKind;
                 if let Some((id, _)) = self.doc.views().into_iter().find(|(_, v)| v.view_kind == ViewKind::ThreeD && v.name == "{3D}") {
@@ -5156,6 +5161,42 @@ mod tests {
         let stage = r["phases"].as_array().unwrap().iter().find(|p| p["name"] == "Stage 2").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "phase_op", json!({ "op": "combine", "id": stage, "into": phase("New Construction") }));
         assert_eq!(call(&mut s, "phasing", json!({}))["phases"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn walls_split_with_and_without_a_gap() {
+        let (mut s, lvl, wt, _) = setup();
+        let w = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "start": [0, 0], "end": [6000, 0]}))["id"].as_u64().unwrap();
+        let info = call(&mut s, "doc_info", json!({}));
+        let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+        let d = call(&mut s, "place_instance", json!({"type_id": door, "host_id": w, "point": [4500, -200]}))["id"].as_u64().unwrap();
+        // through the door: refused
+        assert!(s.handle("split_wall", &json!({"id": w, "point": [4500, 50]})).is_err());
+        // at 3000: the door goes to the new piece, 1500 along it; the pieces meet end to end
+        let n = call(&mut s, "split_wall", json!({"id": w, "point": [3000, 80]}))["id"].as_u64().unwrap();
+        let wall = |s: &Session, id: u64| match s.doc.get(id) { Some(Element::Wall(x)) => x.clone(), _ => panic!() };
+        assert_eq!((wall(&s, w).end, wall(&s, n).start), (Point::new(3000.0, 0.0), Point::new(3000.0, 0.0)));
+        let host = |s: &Session| match s.doc.get(d) { Some(Element::FamilyInstance(i)) => i.host.unwrap(), _ => panic!() };
+        assert_eq!((host(&s).wall, host(&s).u_mm.round()), (n, 1500.0));
+        assert!(wall(&s, n).start_join.allowed);
+        // one undo step puts it back
+        call(&mut s, "undo", json!({}));
+        assert_eq!(wall(&s, w).end, Point::new(6000.0, 0.0));
+        assert_eq!(host(&s).wall, w);
+        // with a 100 gap: the ends stop 50 short of the cut and are free
+        let n = call(&mut s, "split_wall", json!({"id": w, "point": [2000, 0], "gap_mm": 100}))["id"].as_u64().unwrap();
+        assert_eq!((wall(&s, w).end.x.round(), wall(&s, n).start.x.round()), (1950.0, 2050.0));
+        assert!(!wall(&s, w).end_join.allowed && !wall(&s, n).start_join.allowed);
+        assert_eq!(host(&s).u_mm.round(), 2450.0);
+        // too near an end
+        assert!(s.handle("split_wall", &json!({"id": w, "point": [5, 0]})).is_err());
+        // a curved wall splits on its arc; a gap on one is refused
+        let a = call(&mut s, "add_wall", json!({"type_id": wt, "level_id": lvl, "curve": {"type": "arc", "start": {"x": 23000, "y": 0}, "end": {"x": 20000, "y": 3000}, "centre": {"x": 20000, "y": 0}, "ccw": true}}))["id"].as_u64().unwrap();
+        assert!(s.handle("split_wall", &json!({"id": a, "point": [22121, 2121], "gap_mm": 50})).is_err());
+        let b = call(&mut s, "split_wall", json!({"id": a, "point": [22121, 2121]}))["id"].as_u64().unwrap();
+        let (wa, wb) = (wall(&s, a), wall(&s, b));
+        assert!(wa.curve.is_some() && wb.curve.is_some() && wa.end.dist(&wb.start) < 1e-6);
+        assert!((wa.end.dist(&Point::new(20000.0, 0.0)) - 3000.0).abs() < 1.0);
     }
 
     #[test]

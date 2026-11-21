@@ -294,6 +294,84 @@ impl Document {
         Ok(out)
     }
 
+    /// Split Element (and Split with Gap) on a wall: cut it in two at the point of its location line nearest `at`,
+    /// leaving `gap` mm between the pieces (straight walls only). The first piece keeps the wall's id, the second is
+    /// a new wall with the same type, heights, parameters, phases and design option; doors and windows past the cut
+    /// go to it. Without a gap the two pieces stay joined end to end; with one their ends at the gap are free.
+    /// Refused on a pinned wall, a curtain wall, an infill, a wall with an edited profile, a cut through a door or
+    /// window, or one too near an end. Returns the new wall. One undo step.
+    pub fn split_wall(&mut self, id: Id, at: Point, gap: f64) -> Result<Id, String> {
+        let Some(Element::Wall(w)) = self.get(id).cloned() else { return Err("Split works on walls.".into()) };
+        if w.pinned { return Err("The wall is pinned: unpin it to split it.".into()); }
+        if w.profile.is_some() { return Err("A wall with an edited profile cannot be split yet.".into()); }
+        if w.infill.is_some() { return Err("An infill follows its opening and cannot be split.".into()); }
+        if self.wall_type(w.wall_type).is_some_and(|t| t.curtain.is_some()) { return Err("Curtain walls cannot be split yet.".into()); }
+        if !(gap.is_finite() && (0.0..=5000.0).contains(&gap)) { return Err("The gap is 0 to 5000 mm.".into()); }
+        let len = w.length();
+        let (mut a, mut b) = (w.clone(), w.clone());
+        // how far along the wall the cut is, and where the second piece starts along the old wall
+        let (u, u_after) = match &w.curve {
+            None => {
+                let d = Point::new((w.end.x - w.start.x) / len, (w.end.y - w.start.y) / len);
+                let u = (at.x - w.start.x) * d.x + (at.y - w.start.y) * d.y;
+                if u - gap / 2.0 < 10.0 || u + gap / 2.0 > len - 10.0 { return Err("Split nearer the middle of the wall.".into()); }
+                a.end = Point::new(w.start.x + d.x * (u - gap / 2.0), w.start.y + d.y * (u - gap / 2.0));
+                b.start = Point::new(w.start.x + d.x * (u + gap / 2.0), w.start.y + d.y * (u + gap / 2.0));
+                (u, u + gap / 2.0)
+            }
+            Some(c) => {
+                if gap > 0.0 { return Err("Split with Gap works on straight walls.".into()); }
+                let (c1, c2) = crate::sketch::split_curve(c, at)?;
+                a.end = c1.end();
+                b.start = c2.start();
+                let u = c1.length();
+                a.curve = Some(c1);
+                b.curve = Some(c2);
+                (u, u)
+            }
+        };
+        let join = EndJoin { allowed: gap == 0.0, ..EndJoin::default() };
+        a.end_join = join;
+        b.start_join = join;
+        b.mark.clear();
+        b.pinned = false;
+        b.ifc.guid = crate::element::new_ifc_guid();
+        // doors and windows past the cut move to the new piece; one the cut passes through stops it
+        let mut moved = vec![];
+        for (iid, inst) in self.instances() {
+            let Some(h) = inst.host.filter(|h| h.wall == id) else { continue };
+            let (lo, hi) = self.instance_frame(iid).map_or((h.u_mm, h.u_mm), |f| (h.u_mm + f.x_off - f.width / 2.0, h.u_mm + f.x_off + f.width / 2.0));
+            if hi > u - gap / 2.0 - 1e-6 && lo < u + gap / 2.0 + 1e-6 {
+                return Err("The cut goes through a door or window: split clear of it.".into());
+            }
+            if h.u_mm > u {
+                let mut n = inst.clone();
+                n.host = Some(HostRef { u_mm: h.u_mm - u_after, ..h });
+                moved.push((iid, n));
+            }
+        }
+        let (phases, option) = (self.element_phases(id), self.option_of(id));
+        self.grouped(if gap > 0.0 { "Split with Gap" } else { "Split" }, |d| {
+            let nid = d.transact("Split wall", |tx| {
+                tx.update(id, Element::Wall(a))?;
+                let nid = tx.add(Element::Wall(b));
+                tx.copy_parameter_data(id, nid)?;
+                for (iid, mut n) in moved {
+                    if let Some(h) = n.host.as_mut() { h.wall = nid; }
+                    tx.update(iid, Element::FamilyInstance(n))?;
+                }
+                Ok(nid)
+            })?;
+            if let Some((created, demolished)) = phases {
+                d.set_element_phases(&[nid], Some(created), Some(demolished))?;
+            }
+            if option.is_some() && d.option_of(nid) != option {
+                d.set_element_option(&[nid], option)?;
+            }
+            Ok(nid)
+        })
+    }
+
     /// Move, Rotate or Mirror elements, or copy them transformed. Returns the ids of
     /// the elements that now sit in the new place (the copies when `opt.copy`).
     pub fn transform_elements(&mut self, ids: &[Id], x: Xform, opt: EditOptions) -> Result<Vec<Id>, String> {

@@ -1735,6 +1735,7 @@ const Plan = (() => {
       Areas.draw(ctx, data, toScreen, cam.s, sel, printing);
       Revisions.draw(ctx,data,toScreen,cam.s,sel);
       Tags.draw(ctx, data, toScreen, cam.s, sel);
+      if (tool === "split" || tool === "splitgap") drawSplitHover();
       if (tool === "wall" && wallShape === "pick_lines" && pickHover && !printing) {
         const a = toScreen(pickHover.a), b = toScreen(pickHover.b);
         ctx.save(); ctx.strokeStyle = "#e07b00"; ctx.lineWidth = 3; ctx.setLineDash([]); ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke(); ctx.restore();
@@ -1978,6 +1979,8 @@ const Plan = (() => {
     if (tool === "secsplit") return Sections.splitPrompt();
     if (tool === "section") return draw ? "Click the end of the section line. Shift keeps to 45 degrees. The view looks to the left of the direction you draw; flip it after. Esc cancels." : "Click the start of the section line.";
     if (tool === "elevation") return "Click to place the elevation marker. Space turns it 90 degrees. Tick the pointers you want views for in the options bar. Esc to stop.";
+    if (tool === "split") return "Click a wall where it should be split. Esc finishes.";
+    if (tool === "splitgap") return `Click a wall where it should be split, leaving a ${eo.splitGap} mm gap. Esc finishes.`;
     if (tool === "wall" && wallShape === "pick_lines") return "Click a line to put a wall on it: a detail or CAD line, an edge or a grid. The wall's location line follows it.";
     if (tool === "wall") return draw ? "Click to place the next wall point. Esc finishes the chain. Hold Shift for 45 degree angles. Right-click for snap overrides." : "Click to start a wall. Esc to stop; right-click for Cancel and snap overrides.";
     if (ed) return editPrompt();
@@ -2071,7 +2074,7 @@ const Plan = (() => {
   // preview and sends the command through cb.edit, cb.offset, cb.trim and cb.align.
   const EDIT_TOOLS = ["move", "copy", "rotate", "mirror", "offset", "trim", "align", "array", "measure"];
   const NEEDS_SELECTION = new Set(["move", "copy", "rotate", "mirror", "array"]);
-  let eo = { constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "", measureMode: "points", measureChain: false,
+  let eo = { splitGap: 25, constrain: false, disjoin: false, multiple: false, copy: false, mirrorMode: "pick", mirrorCopy: true, offsetMode: "numerical", offsetDist: 300, offsetCopy: false, trimMode: "corner", prefer: "all", centrePlace: false, angle: "", measureMode: "points", measureChain: false,
     arrayKind: "linear", arrayCount: 2, arrayMoveTo: "second", arrayConstrain: false, arrayAssociate: true };
   let cdrag = false; // the centre of rotation (Rotate, a radial Array) being dragged
   const radialTool = () => tool === "rotate" || (tool === "array" && eo.arrayKind === "radial");
@@ -2496,6 +2499,30 @@ const Plan = (() => {
     render();
   }
 
+  // Split and Split with Gap: the wall under the cursor and where on its location line the cut goes
+  let splitHover = null;
+  function splitAt(sx, sy) {
+    const w = wallAt(sx, sy);
+    if (!w) return null;
+    // the snapped point (a midpoint, an intersection) when there is one, else the cursor
+    const sp = snap(sx, sy), p = sp && sp.kind !== "free" ? { x: sp.x, y: sp.y } : toWorld(sx, sy);
+    if (w.curve) return { w, p };
+    const dx = w.end[0] - w.start[0], dy = w.end[1] - w.start[1], L = Math.hypot(dx, dy) || 1, t = ((p.x - w.start[0]) * dx + (p.y - w.start[1]) * dy) / (L * L);
+    return { w, p: { x: w.start[0] + dx * t, y: w.start[1] + dy * t }, d: { x: dx / L, y: dy / L } };
+  }
+  function drawSplitHover() {
+    if (!splitHover || printing) return;
+    const { w, p, d } = splitHover, half = Math.max(w.extents ? w.extents[0] + w.extents[1] : 200, 100) * 0.75;
+    const n = d ? { x: -d.y, y: d.x } : null, gap = tool === "splitgap" ? eo.splitGap / 2 : 0;
+    ctx.save(); ctx.strokeStyle = css("--accent"); ctx.lineWidth = 2; ctx.setLineDash([]);
+    for (const s of gap && d ? [-gap, gap] : [0]) {
+      const c = d ? { x: p.x + d.x * s, y: p.y + d.y * s } : p;
+      const a = toScreen(n ? { x: c.x - n.x * half, y: c.y - n.y * half } : { x: c.x, y: c.y - half }), b = toScreen(n ? { x: c.x + n.x * half, y: c.y + n.y * half } : { x: c.x, y: c.y + half });
+      ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+
   // Pick Lines for walls: the straight line under the cursor (a detail or CAD line, a face, an edge, a grid)
   let pickHover = null;
   function pickLineAt(sx, sy) {
@@ -2511,6 +2538,12 @@ const Plan = (() => {
   }
 
   function click(sx, sy, ev) {
+    if (tool === "split" || tool === "splitgap") {
+      const s = splitAt(sx, sy);
+      if (!s) { cb.prompt("Click on a wall where it should be split.", true); return; }
+      cb.splitWall(s.w.id, s.p, tool === "splitgap" ? eo.splitGap : 0);
+      return;
+    }
     if (tool === "wall" && wallShape === "pick_lines") {
       const l = pickLineAt(sx, sy);
       if (!l) { cb.prompt("Click on a line: a detail or CAD line, an edge or a grid.", true); return; }
@@ -2862,6 +2895,7 @@ const Plan = (() => {
     if (tool === "topolabel") Topo.labelHover(hover);
     if (tool === "propplace") { PropLines.hover(hover); render(); }
     if (tool === "wall" && wallShape === "pick_lines") { pickHover = pickLineAt(e.offsetX, e.offsetY); render(); }
+    if (tool === "split" || tool === "splitgap") { splitHover = splitAt(e.offsetX, e.offsetY); render(); }
     if (tool === "parkrow" || tool === "kerbramp") { Traffic.hover(hover); render(); }
     if (Structure.owns(tool)) { Structure.hover(hover); render(); }
     cb.cursor(hover);

@@ -149,6 +149,8 @@ const COMMANDS = {
   wjoin: async () => { if (await ensurePlan("Wall Joins")) Plan.setTool("joins"); },
   del: () => deleteSelection(),
   mv: () => startEditTool("move"),
+  sp: () => startSplitTool("split"),
+  "sp-gap": () => startSplitTool("splitgap"),
   cp: () => startEditTool("copy"),
   ro: () => startEditTool("rotate"),
   mi: () => startEditTool("mirror"),
@@ -1781,7 +1783,7 @@ Plan.callbacks.placeInstance = async (wallId, point) => {
 function renderOptionsBar() {
   const bar = $("#optionsbar");
   const inPlan = app.view.kind === "plan";
-  const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && Plan.isEditTool(), sketchTool = Sketch.active;
+  const wallTool = inPlan && Plan.tool === "wall", joinTool = inPlan && Plan.tool === "joins", editTool = inPlan && (Plan.isEditTool() || Plan.tool === "split" || Plan.tool === "splitgap"), sketchTool = Sketch.active;
   const levelTool = app.view.kind === "elevation" && Elev.tool === "level", elevTool = inPlan && Plan.tool === "elevation", gridTool = inPlan && Plan.tool === "grid";
   const secTool = inPlan && Plan.tool === "section";
   // Place Wall and Place Component add their panels to the Modify tab (one pass covers both)
@@ -2223,6 +2225,17 @@ $("#viewport").addEventListener("pointermove", (e) => { if (!ed3 || e.buttons) r
 // Esc leaves a 3D Modify tool before anything else sees the key
 document.addEventListener("keydown", (e) => { if (ed3 && e.key === "Escape") { e.stopPropagation(); end3DEdit("Cancelled."); } }, true);
 
+// Split Element and Split with Gap: walls in a plan
+async function startSplitTool(name) {
+  if (!(await ensurePlan(name === "split" ? "Split" : "Split with Gap"))) return;
+  Plan.setTool(name);
+  renderOptionsBar();
+}
+Plan.callbacks.splitWall = async (id, point, gap) => {
+  const r = await run("split_wall", { id, point: [Math.round(point.x * 1000) / 1000, Math.round(point.y * 1000) / 1000], gap_mm: gap });
+  if (r) { await refresh(); setPrompt(gap ? `Split with a ${gap} mm gap. Click another wall or press Esc.` : "Split. Click another wall or press Esc."); }
+};
+
 async function startEditTool(name) {
   if(app.view.kind==="sheet"&&["move","copy","rotate","mirror"].includes(name)){Revisions.startSheetEdit(name);return;}
   if (app.view.kind === "3d") {
@@ -2241,7 +2254,7 @@ async function startEditTool(name) {
   Plan.setTool(name);
 }
 
-const EDIT_PROMPT = { move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array", measure: "Measure" };
+const EDIT_PROMPT = { split: "Split", splitgap: "Split with Gap", move: "Move", copy: "Copy", rotate: "Rotate", mirror: "Mirror", offset: "Offset", trim: "Trim/Extend", align: "Align", array: "Array", measure: "Measure" };
 
 function renderEditBar() {
   const box = $("#ob-edit");
@@ -2253,6 +2266,11 @@ function renderEditBar() {
   const kids = [el("b", { textContent: EDIT_PROMPT[t] })];
   if (t === "move") kids.push(check("Constrain", "constrain", "Keep to the element's own direction or its perpendicular (Shift does the same for one move)"), check("Disjoin", "disjoin", "Break joins first: joined walls stay where they are, and a door or window may move to another wall"));
   if (t === "copy") kids.push(check("Constrain", "constrain"), check("Multiple", "multiple", "Keep placing copies from the same start point"));
+  if (t === "splitgap") {
+    const g = el("input", { type: "number", min: "1", max: "5000", step: "1", value: o.splitGap, style: "width:70px", title: "The gap left between the two pieces, mm" });
+    g.onchange = () => { const v = parseFloat(g.value); if (v > 0 && v <= 5000) set({ splitGap: v }); else g.value = o.splitGap; };
+    kids.push(el("label", {}, [" Joint Gap ", g, " mm"]));
+  }
   if (t === "rotate") {
     const ang = el("input", { type: "number", step: "any", value: o.angle, style: "width:70px", title: "Type an angle and press Enter to rotate now" });
     ang.onkeydown = async (e) => {
