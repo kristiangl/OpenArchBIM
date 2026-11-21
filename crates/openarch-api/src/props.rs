@@ -1244,6 +1244,74 @@ pub fn dimension_type_props(d: &Document, id: Id, t: &openarch_model::dimension:
     })
 }
 
+/// Type Properties of a spot type (spot elevation, coordinate or slope): its symbol and text, how values are written,
+/// and what it measures from.
+pub fn spot_type_props(d: &Document, id: Id, t: &openarch_model::spot::SpotType) -> Value {
+    use openarch_model::dimension::LengthUnit;
+    use openarch_model::spot::SpotKind;
+    let unit_name = |u: LengthUnit| match u { LengthUnit::Millimetres => "millimetres", LengthUnit::Centimetres => "centimetres", LengthUnit::Metres => "metres", LengthUnit::FeetInches => "feet_inches" };
+    let units = select("Units", [("Millimetres", LengthUnit::Millimetres), ("Centimetres", LengthUnit::Centimetres), ("Metres", LengthUnit::Metres), ("Feet and inches", LengthUnit::FeetInches)].iter().map(|(l, u)| (l.to_string(), nest("format.unit", json!(unit_name(*u))), *u == t.format.unit)).collect());
+    let family = match t.kind { SpotKind::Elevation => "Spot Elevations", SpotKind::Coordinate => "Spot Coordinates", SpotKind::Slope => "Spot Slopes" };
+    let mut groups = vec![
+        group("Graphics", vec![
+            enum_select("Symbol", "symbol", &name_of(&t.symbol), &[("target", "Target"), ("cross", "Cross"), ("triangle", "Triangle"), ("none", "None")]),
+            num("Symbol Size", "symbol_size_mm", t.symbol_size_mm, true),
+        ]),
+        group("Text", vec![
+            num("Text Size", "text_size_mm", t.text_size_mm, true),
+            num("Text Offset from Leader", "text_offset_mm", t.text_offset_mm, true),
+            text("Prefix", "prefix", &t.prefix),
+            text("Suffix", "suffix", &t.suffix),
+        ]),
+    ];
+    match t.kind {
+        SpotKind::Elevation => {
+            groups.push(group("Constraints", vec![enum_select("Elevation Origin", "elevation_origin", &name_of(&t.elevation_origin), &[("project_base", "Project Base Point"), ("survey", "Survey Point"), ("relative", "Relative (the view's level)")])]));
+            groups.push(group("Units Format", vec![
+                units,
+                num("Decimal Places", "format.decimals", t.format.decimals as f64, true),
+                boolean("Suppress Trailing Zeros", "format.suppress_trailing_zeros", t.format.suppress_trailing_zeros, true),
+                boolean("Unit Symbol", "format.symbol", t.format.symbol, true),
+                boolean("Elevation Indicator", "indicator", t.indicator, true),
+                text("Top Indicator", "top_text", &t.top_text),
+                text("Core Indicator", "core_text", &t.core_text),
+                text("Bottom Indicator", "bottom_text", &t.bottom_text),
+            ]));
+        }
+        SpotKind::Coordinate => {
+            groups.push(group("Constraints", vec![
+                enum_select("Coordinate Origin", "coord_origin", &name_of(&t.coord_origin), &[("project_base", "Project Base Point"), ("survey", "Survey Point"), ("shared", "Shared")]),
+                enum_select("North", "north_ref", &name_of(&t.north_ref), &[("project", "Project North"), ("true", "True North")]),
+            ]));
+            groups.push(group("Units Format", vec![
+                units,
+                num("Decimal Places", "format.decimals", t.format.decimals as f64, true),
+                boolean("Suppress Trailing Zeros", "format.suppress_trailing_zeros", t.format.suppress_trailing_zeros, true),
+                boolean("Unit Symbol", "format.symbol", t.format.symbol, true),
+                boolean("Show North/South", "show_ns", t.show_ns, true),
+                boolean("Show East/West", "show_ew", t.show_ew, true),
+                boolean("Include Elevation", "show_elevation", t.show_elevation, true),
+                text("Elevation Indicator", "elevation_text", &t.elevation_text),
+                boolean("One Value per Line", "stacked", t.stacked, true),
+            ]));
+        }
+        SpotKind::Slope => {
+            groups.push(group("Units Format", vec![
+                enum_select("Slope Format", "slope_format", &name_of(&t.slope_format), &[("percent", "Percentage"), ("angle", "Degrees"), ("ratio", "1 in n"), ("rise_run", "Rise per 12")]),
+                num("Decimal Places", "slope_decimals", t.slope_decimals as f64, true),
+                enum_select("Arrow Points", "slope_dir", &name_of(&t.slope_dir), &[("down", "Down the slope"), ("up", "Up the slope")]),
+                boolean("Show Arrow", "slope_arrow", t.slope_arrow, true),
+            ]));
+        }
+    }
+    groups.push(group("Identity Data", vec![text("Type Name", "name", &t.name)]));
+    json!({
+        "id": id, "kind": "SpotType", "title": t.name, "family": family,
+        "siblings": d.spot_types(t.kind).iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "groups": groups,
+    })
+}
+
 /// One Label row per segment: the global length parameters a segment can take (a reporting one only on a dimension of
 /// one segment), and whether the type shows the value after the name.
 fn label_rows(d: &Document, x: &openarch_model::dimension::Dimension) -> Vec<Value> {

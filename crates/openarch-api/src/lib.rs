@@ -1721,6 +1721,11 @@ impl Session {
                 self.doc.delete_annotation_family(id_of(p, "id")?)?;
                 Ok(json!({}))
             }
+            "patch_spot_type" => {
+                self.doc.patch_spot_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
+                Ok(json!({}))
+            }
+            "duplicate_spot_type" => Ok(json!({ "id": self.doc.duplicate_spot_type(id_of(p, "id")?, p.get("name").and_then(|v| v.as_str()).ok_or("missing name")?)? })),
             "patch_level_type" => {
                 self.doc.patch_level_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?;
                 Ok(json!({}))
@@ -3455,6 +3460,12 @@ impl Session {
                 v["duplicate"] = json!("duplicate_grid_type");
                 v
             }
+            Element::SpotType(t) => {
+                let mut v = props::spot_type_props(d, id, t);
+                v["patch"] = json!("patch_spot_type");
+                v["duplicate"] = json!("duplicate_spot_type");
+                v
+            }
             Element::DimensionType(t) => {
                 let mut v = props::dimension_type_props(d, id, t);
                 v["family"] = json!("Linear Dimension Style");
@@ -5133,6 +5144,30 @@ mod tests {
         let stage = r["phases"].as_array().unwrap().iter().find(|p| p["name"] == "Stage 2").unwrap()["id"].as_u64().unwrap();
         call(&mut s, "phase_op", json!({ "op": "combine", "id": stage, "into": phase("New Construction") }));
         assert_eq!(call(&mut s, "phasing", json!({}))["phases"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn spot_types_edit_in_type_properties() {
+        use openarch_model::spot::SpotKind;
+        let (mut s, _, _, _) = setup();
+        for kind in [SpotKind::Elevation, SpotKind::Coordinate, SpotKind::Slope] {
+            let id = s.doc.default_spot_type(kind).unwrap();
+            let t = call(&mut s, "describe_any_type", json!({ "id": id }));
+            assert_eq!(t["patch"], "patch_spot_type");
+            let groups: Vec<String> = t["groups"].as_array().unwrap().iter().map(|g| g["name"].as_str().unwrap().to_string()).collect();
+            assert!(groups.contains(&"Units Format".to_string()) && groups.contains(&"Identity Data".to_string()), "{groups:?}");
+            call(&mut s, "patch_spot_type", json!({ "id": id, "patch": { "text_size_mm": 3.5, "symbol": "triangle" } }));
+            let ty = s.doc.spot_type(id).unwrap();
+            assert_eq!((ty.text_size_mm, ty.kind), (3.5, kind));
+            assert!(s.handle("patch_spot_type", &json!({ "id": id, "patch": { "text_size_mm": 0 } })).is_err());
+            assert!(s.handle("patch_spot_type", &json!({ "id": id, "patch": { "kind": "slope" } })).is_ok());
+            assert_eq!(s.doc.spot_type(id).unwrap().kind, kind, "the kind stays");
+            let name = s.doc.spot_type(id).unwrap().name.clone();
+            let dup = call(&mut s, "duplicate_spot_type", json!({ "id": id, "name": format!("{name} 2") }))["id"].as_u64().unwrap();
+            assert_eq!(s.doc.spot_type(dup).unwrap().text_size_mm, 3.5);
+            assert!(s.handle("duplicate_spot_type", &json!({ "id": id, "name": name })).is_err());
+        }
+        assert!(!s.doc.spot_types(SpotKind::Elevation).is_empty());
     }
 
     #[test]

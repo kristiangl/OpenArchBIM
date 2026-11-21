@@ -408,6 +408,46 @@ impl Document {
         }
     }
 
+    /// Type Properties of a spot type: one undo step; refused with a reason for a bad size, decimals or name.
+    pub fn patch_spot_type(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let old = self.spot_type(id).cloned().ok_or("not a spot type")?;
+        let mut new: SpotType = crate::doc::apply_patch(&old, patch)?;
+        new.kind = old.kind;
+        if new == old {
+            return Ok(());
+        }
+        self.check_spot_type(Some(id), &new)?;
+        self.transact("Change spot type", |tx| tx.update(id, Element::SpotType(new)))
+    }
+
+    pub fn duplicate_spot_type(&mut self, id: Id, name: &str) -> Result<Id, String> {
+        let t = self.spot_type(id).cloned().ok_or("not a spot type")?;
+        let new = SpotType { name: name.trim().to_string(), ..t };
+        self.check_spot_type(None, &new)?;
+        self.transact("Duplicate spot type", |tx| Ok(tx.add(Element::SpotType(new))))
+    }
+
+    fn check_spot_type(&self, me: Option<Id>, t: &SpotType) -> Result<(), String> {
+        if t.name.trim().is_empty() {
+            return Err("a spot type needs a name".into());
+        }
+        if self.iter().any(|(i, e)| Some(i) != me && matches!(e, Element::SpotType(o) if o.kind == t.kind && o.name.eq_ignore_ascii_case(t.name.trim()))) {
+            return Err(format!("there is already a spot type called {}", t.name.trim()));
+        }
+        for (what, v) in [("Text Size", t.text_size_mm), ("Symbol Size", t.symbol_size_mm)] {
+            if !(v.is_finite() && v > 0.0 && v <= 50.0) {
+                return Err(format!("{what} is a paper size above 0 and up to 50 mm"));
+            }
+        }
+        if !(t.text_offset_mm.is_finite() && (0.0..=50.0).contains(&t.text_offset_mm)) {
+            return Err("Text Offset is 0 to 50 mm on paper".into());
+        }
+        if t.format.decimals > 6 || t.slope_decimals > 6 {
+            return Err("decimal places are 0 to 6".into());
+        }
+        Ok(())
+    }
+
     pub fn spot_types(&self, kind: SpotKind) -> Vec<(Id, &SpotType)> {
         self.iter().filter_map(|(id, e)| if let Element::SpotType(t) = e { (t.kind == kind).then_some((id, t)) } else { None }).collect()
     }
@@ -708,7 +748,8 @@ impl Document {
         Some(self.draw_spot(id, s))
     }
 
-    fn default_spot_type(&mut self, kind: SpotKind) -> Result<Id, String> {
+    /// The first spot type of a kind, made (with the other defaults) the first time one is wanted.
+    pub fn default_spot_type(&mut self, kind: SpotKind) -> Result<Id, String> {
         if let Some((id, _)) = self.spot_types(kind).first() {
             return Ok(*id);
         }
