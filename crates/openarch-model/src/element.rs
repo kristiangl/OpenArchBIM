@@ -760,6 +760,9 @@ pub enum Element {
     /// A pad footing type and a pad footing (foundation.rs).
     IsolatedFootingType(crate::foundation::IsolatedFootingType),
     IsolatedFooting(crate::foundation::IsolatedFooting),
+    /// A thickened slab edge type and a floor's thickened edge (foundation.rs).
+    SlabEdgeType(crate::foundation::SlabEdgeType),
+    SlabEdge(crate::foundation::SlabEdge),
 }
 
 impl Element {
@@ -816,6 +819,8 @@ impl Element {
             Element::WallFoundation(_) => "WallFoundation",
             Element::IsolatedFootingType(_) => "IsolatedFootingType",
             Element::IsolatedFooting(_) => "IsolatedFooting",
+            Element::SlabEdgeType(_) => "SlabEdgeType",
+            Element::SlabEdge(_) => "SlabEdge",
             Element::Family(_) => "Family",
             Element::FamilyType(_) => "FamilyType",
             Element::FamilyInstance(_) => "FamilyInstance",

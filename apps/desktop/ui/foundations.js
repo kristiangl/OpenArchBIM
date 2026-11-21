@@ -14,6 +14,14 @@ const Foundations = (() => {
       ctx.closePath(); ctx.stroke();
     }
     ctx.setLineDash([]);
+    // a selected slab edge: the band between its loops
+    for (const s of data.slab_edges || []) {
+      if (!sel.has(s.id)) continue;
+      ctx.beginPath();
+      for (const r of s.rings) { r.forEach(([x, y], i) => { const q = toScreen({ x, y }); i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y); }); ctx.closePath(); }
+      ctx.fillStyle = "rgba(46,111,158,0.15)"; ctx.fill("evenodd");
+      ctx.strokeStyle = "#2e6f9e"; ctx.lineWidth = 2; ctx.stroke();
+    }
     for (const f of data.wall_foundations || []) {
       if (!sel.has(f.id)) continue;
       ctx.beginPath();
@@ -24,7 +32,10 @@ const Foundations = (() => {
     }
     ctx.restore();
   }
-  const elements = (data) => (data?.wall_foundations || []).map((f) => ({ id: f.id, kind: "foundation", category: "Structural Foundations", ring: f.ring, pinned: f.pinned, display: "normal" }));
+  const elements = (data) => [
+    ...(data?.wall_foundations || []).map((f) => ({ id: f.id, kind: "foundation", category: "Structural Foundations", ring: f.ring, pinned: f.pinned, display: "normal" })),
+    ...(data?.slab_edges || []).map((s) => ({ id: s.id, kind: "foundation", category: "Structural Foundations", ring: s.rings[0], rings: s.rings, pinned: s.pinned, display: "normal" })),
+  ];
 
   async function add(walls) {
     const r = await run("add_wall_foundations", { walls });
@@ -63,5 +74,21 @@ const Foundations = (() => {
     if (level == null) { setPrompt("Isolated footings are placed in a floor plan.", true); return; }
     if (await run("add_isolated_footings", { level_id: level, points: [[p.x, p.y]] })) await refresh();
   }
-  return { draw, elements, start, click, startIsolated, place };
+  // Slab / Edge Thickening: round the floors selected when it starts, else one per click on a floor
+  async function startSlabEdge() {
+    if (!(await ensurePlan("A slab edge"))) return;
+    const floors = (Plan.selectionInfo?.().Floors || []).slice();
+    if (floors.length) {
+      const r = await run("add_slab_edges", { floors });
+      if (r) { await refresh(); setPrompt(`Thickened edge${r.ids.length === 1 ? "" : "s"} added round the selected floor${r.ids.length === 1 ? "" : "s"}.`); }
+      return;
+    }
+    Plan.setTool("slabedge");
+    setPrompt("Click a floor to thicken its edge. Esc finishes.");
+  }
+  async function slabClick(floorId) {
+    if (floorId == null) { setPrompt("Click a floor: slab edges go round floors.", true); return; }
+    if (await run("add_slab_edges", { floors: [floorId] })) { await refresh(); setPrompt("Thickened edge added. Click another floor, or Esc."); }
+  }
+  return { draw, elements, start, click, startIsolated, place, startSlabEdge, slabClick };
 })();

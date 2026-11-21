@@ -3557,6 +3557,8 @@ impl Session {
             Element::WallFoundationType(t) => Ok(foundations::foundation_type_props(d, id, t)),
             Element::IsolatedFooting(f) => Ok(foundations::isolated_props(d, id, f)),
             Element::IsolatedFootingType(t) => Ok(foundations::isolated_type_props(d, id, t)),
+            Element::SlabEdge(s) => Ok(foundations::slab_edge_props(d, id, s)),
+            Element::SlabEdgeType(t) => Ok(foundations::slab_edge_type_props(d, id, t)),
             Element::RefPlane(r) => Ok(json!({
                 "id": id, "kind": "RefPlane", "title": "Reference Planes (1)", "type_label": "Reference Plane",
                 "target": { "method": "patch_ref_plane", "id": id },
@@ -3609,6 +3611,7 @@ impl Session {
             Element::WallType(_) | Element::FloorType(_) | Element::RoofType(_) | Element::CeilingType(_) | Element::ToposolidType(_) => props::sys_type_props(d, id)?,
             Element::WallFoundationType(t) => foundations::foundation_type_props(d, id, t),
             Element::IsolatedFootingType(t) => foundations::isolated_type_props(d, id, t),
+            Element::SlabEdgeType(t) => foundations::slab_edge_type_props(d, id, t),
             Element::StructuralType(t) => {
                 let mut v = self.structural_type_props(id, t);
                 v["patch"] = json!("patch_structural");

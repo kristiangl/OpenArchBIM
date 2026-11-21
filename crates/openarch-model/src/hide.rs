@@ -98,7 +98,7 @@ impl Document {
             Element::ElevationMarker(_) => "Elevations",
             Element::DetailLine(_) | Element::ModelLine(_) => "Lines",
             Element::RefPlane(_) => "Reference Planes",
-            Element::WallFoundation(_) | Element::IsolatedFooting(_) => "Structural Foundations",
+            Element::WallFoundation(_) | Element::IsolatedFooting(_) | Element::SlabEdge(_) => "Structural Foundations",
             Element::DetailRegion(_) => "Detail Items",
             Element::TextNote(_) => "Text Notes",
             Element::RevisionCloud(_) => "Revision Clouds",

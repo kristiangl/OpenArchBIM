@@ -122,6 +122,7 @@ const COMMANDS = {
   "m-units": () => ProjUnits.open(),
   "s-strip": () => Foundations.start(),
   "s-isolated": () => Foundations.startIsolated(),
+  "s-slab": () => Foundations.startSlabEdge(),
   "model-line": () => { app.insulationOn = false; startDetailLines(null, "line", true); },
   // Annotate > Insulation: straight detail lines drawn as batt insulation of the width asked for
   "det-insulation": () => {

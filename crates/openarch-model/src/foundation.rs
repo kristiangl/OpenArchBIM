@@ -239,7 +239,7 @@ impl Document {
             let (ring, z0, z1) = self.isolated_footing_shape(id)?;
             Some((id, "IsolatedFooting", colour(&self.isolated_footing_type(f.footing_type)?.material), crate::mesh::solid_mesh(&ring, z0, z1)))
         });
-        strips.chain(pads).collect()
+        strips.chain(pads).chain(self.slab_edge_meshes()).collect()
     }
 
     // ---- isolated footings (Structure > Isolated Footing) -----------------------------------------------------
@@ -475,5 +475,228 @@ mod tests {
         fn wall_foundations_types_first(&self) -> Id {
             self.wall_foundation_types()[0].0
         }
+    }
+}
+
+// ---- slab edges (Structure > Slab / Edge Thickening) ---------------------------------------------------------
+
+/// How deep and wide a slab's thickened edge is (a raft slab's edge beam).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlabEdgeType {
+    pub name: String,
+    /// In from the slab's edge.
+    pub width_mm: f64,
+    /// Below the slab's underside.
+    pub depth_mm: f64,
+    #[serde(default)]
+    pub material: String,
+}
+
+/// A thickened edge round the outside of a floor (its outer edges; openings are left alone).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SlabEdge {
+    pub floor: Id,
+    pub edge_type: Id,
+    #[serde(default)]
+    pub pinned: bool,
+}
+
+/// The shape of a slab edge in plan: each outer loop, the same loop set in by the width, and the pieces between
+/// them (one per side of the loop, mitred at the corners).
+pub struct SlabEdgeShape {
+    pub outer: Vec<Vec<Point>>,
+    pub inner: Vec<Vec<Point>>,
+    pub pieces: Vec<Vec<Point>>,
+    pub z0: f64,
+    pub z1: f64,
+}
+
+impl Document {
+    pub fn slab_edge_types(&self) -> Vec<(Id, &SlabEdgeType)> {
+        self.iter().filter_map(|(id, e)| match e { Element::SlabEdgeType(t) => Some((id, t)), _ => None }).collect()
+    }
+    pub fn slab_edge_type(&self, id: Id) -> Option<&SlabEdgeType> {
+        match self.get(id) { Some(Element::SlabEdgeType(t)) => Some(t), _ => None }
+    }
+    pub fn slab_edge(&self, id: Id) -> Option<&SlabEdge> {
+        match self.get(id) { Some(Element::SlabEdge(s)) => Some(s), _ => None }
+    }
+    pub fn slab_edges(&self) -> Vec<(Id, &SlabEdge)> {
+        self.iter().filter_map(|(id, e)| match e { Element::SlabEdge(s) => Some((id, s)), _ => None }).collect()
+    }
+
+    fn ensure_slab_edge_type(&mut self) -> Result<Id, String> {
+        if let Some((id, _)) = self.slab_edge_types().first() {
+            return Ok(*id);
+        }
+        let t = SlabEdgeType { name: "Edge Beam - 300 x 400".into(), width_mm: 300.0, depth_mm: 400.0, material: self.concrete() };
+        self.transact("Slab edge type", |tx| Ok(tx.add(Element::SlabEdgeType(t))))
+    }
+
+    /// Thickened edges round floors, one each (floors that have one are left as they are), one undo step.
+    pub fn add_slab_edges(&mut self, floors: &[Id], edge_type: Option<Id>) -> Result<Vec<Id>, String> {
+        let has = |d: &Document, f: Id| d.slab_edges().iter().any(|(_, s)| s.floor == f);
+        let todo: Vec<Id> = floors.iter().copied().filter(|f| matches!(self.get(*f), Some(Element::Floor(_))) && !has(self, *f)).collect();
+        if todo.is_empty() {
+            return Err(if floors.iter().any(|f| matches!(self.get(*f), Some(Element::Floor(_)))) { "That floor has a thickened edge already.".into() } else { "Slab edges go round floors: pick a floor.".into() });
+        }
+        if edge_type.is_some_and(|t| self.slab_edge_type(t).is_none()) {
+            return Err("not a slab edge type".into());
+        }
+        self.grouped("Slab edge", |d| {
+            let t = match edge_type { Some(t) => t, None => d.ensure_slab_edge_type()? };
+            d.transact("Slab edge", |tx| Ok(todo.iter().map(|f| tx.add(Element::SlabEdge(SlabEdge { floor: *f, edge_type: t, pinned: false }))).collect()))
+        })
+    }
+
+    pub fn patch_slab_edge(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let old = self.slab_edge(id).cloned().ok_or("not a slab edge")?;
+        let new: SlabEdge = crate::doc::apply_patch(&old, patch)?;
+        if new == old {
+            return Ok(());
+        }
+        if new.floor != old.floor {
+            return Err("A slab edge stays with its floor.".into());
+        }
+        if self.slab_edge_type(new.edge_type).is_none() {
+            return Err("not a slab edge type".into());
+        }
+        self.transact("Change slab edge", |tx| tx.update(id, Element::SlabEdge(new)))
+    }
+
+    pub fn patch_slab_edge_type(&mut self, id: Id, patch: &serde_json::Value) -> Result<(), String> {
+        let old = self.slab_edge_type(id).cloned().ok_or("not a slab edge type")?;
+        let mut new: SlabEdgeType = crate::doc::apply_patch(&old, patch)?;
+        new.name = new.name.trim().into();
+        if new == old {
+            return Ok(());
+        }
+        self.check_slab_edge_type(Some(id), &new)?;
+        self.transact("Change slab edge type", |tx| tx.update(id, Element::SlabEdgeType(new)))
+    }
+
+    pub fn duplicate_slab_edge_type(&mut self, id: Id, name: &str) -> Result<Id, String> {
+        let t = SlabEdgeType { name: name.trim().into(), ..self.slab_edge_type(id).cloned().ok_or("not a slab edge type")? };
+        self.check_slab_edge_type(None, &t)?;
+        self.transact("Duplicate slab edge type", |tx| Ok(tx.add(Element::SlabEdgeType(t))))
+    }
+
+    fn check_slab_edge_type(&self, id: Option<Id>, t: &SlabEdgeType) -> Result<(), String> {
+        if t.name.is_empty() {
+            return Err("A type needs a name.".into());
+        }
+        if self.slab_edge_types().iter().any(|(i, o)| Some(*i) != id && o.name == t.name) {
+            return Err(format!("A slab edge type named '{}' already exists.", t.name));
+        }
+        let ok = |v: f64| v.is_finite() && v > 0.0 && v <= 5_000.0;
+        if !ok(t.width_mm) || !ok(t.depth_mm) {
+            return Err("Width and depth are more than 0 and up to 5 m.".into());
+        }
+        if !t.material.is_empty() && self.material(&t.material).is_none() {
+            return Err(format!("There is no material named '{}'.", t.material));
+        }
+        Ok(())
+    }
+
+    /// A slab edge's plan shape and the heights of its bottom and top (the slab's underside).
+    pub fn slab_edge_shape(&self, id: Id) -> Option<SlabEdgeShape> {
+        let s = self.slab_edge(id)?;
+        let Some(Element::Floor(f)) = self.get(s.floor) else { return None };
+        let t = self.slab_edge_type(s.edge_type)?;
+        let polys = f.polygons(20.0);
+        let depths = crate::curve::loop_depths(&polys);
+        let under = self.floor_base_z(f) - self.floor_type(f.floor_type).map_or(0.0, |ft| ft.thickness_mm());
+        let w = t.width_mm;
+        let (mut outer, mut inner, mut pieces) = (vec![], vec![], vec![]);
+        for (poly, depth) in polys.into_iter().zip(depths) {
+            if depth % 2 == 1 || poly.len() < 3 {
+                continue;
+            }
+            let mut p = poly;
+            if crate::geom::signed_area(&p) < 0.0 {
+                p.reverse();
+            }
+            let n = p.len();
+            // the inward side of each edge of a counter-clockwise loop is its left
+            let normal = |i: usize| { let (a, b) = (p[i], p[(i + 1) % n]); let l = a.dist(&b).max(1e-9); Point::new(-(b.y - a.y) / l, (b.x - a.x) / l) };
+            let q: Vec<Point> = (0..n)
+                .map(|i| {
+                    let (n0, n1) = (normal((i + n - 1) % n), normal(i));
+                    // the mitre: along the sum of the two normals, w over cos of half the turn (capped)
+                    let m = Point::new(n0.x + n1.x, n0.y + n1.y);
+                    let c = ((1.0 + n0.x * n1.x + n0.y * n1.y) / 2.0).max(1.0 / 16.0);
+                    let k = w / c / 2.0;
+                    Point::new(p[i].x + m.x * k, p[i].y + m.y * k)
+                })
+                .collect();
+            for i in 0..n {
+                let j = (i + 1) % n;
+                pieces.push(vec![p[i], p[j], q[j], q[i]]);
+            }
+            outer.push(p);
+            inner.push(q);
+        }
+        if pieces.is_empty() {
+            return None;
+        }
+        Some(SlabEdgeShape { outer, inner, pieces, z0: under - t.depth_mm, z1: under })
+    }
+
+    /// The slab edges a plan shows: those of floors on its level.
+    pub fn slab_edges_in(&self, view: Id) -> Vec<(Id, SlabEdgeShape)> {
+        let Some(v) = self.view(view) else { return vec![] };
+        let Some(level) = v.level.filter(|_| v.view_kind.is_plan()) else { return vec![] };
+        self.slab_edges()
+            .into_iter()
+            .filter(|(id, s)| !self.hidden_in(view, *id) && matches!(self.get(s.floor), Some(Element::Floor(f)) if f.level == level))
+            .filter_map(|(id, _)| Some((id, self.slab_edge_shape(id)?)))
+            .collect()
+    }
+
+    pub(crate) fn slab_edge_meshes(&self) -> Vec<(Id, &'static str, [u8; 3], Vec<f32>)> {
+        self.slab_edges()
+            .into_iter()
+            .filter_map(|(id, s)| {
+                let shape = self.slab_edge_shape(id)?;
+                let colour = self.slab_edge_type(s.edge_type).and_then(|t| self.material(&t.material)).map_or([190, 190, 190], |m| m.graphics.shading_color);
+                let verts: Vec<f32> = shape.pieces.iter().flat_map(|r| crate::mesh::solid_mesh(r, shape.z0, shape.z1)).collect();
+                Some((id, "SlabEdge", colour, verts))
+            })
+            .collect()
+    }
+}
+
+#[cfg(test)]
+mod slab_edge_tests {
+    use super::*;
+    use crate::curve::Curve;
+
+    #[test]
+    fn slab_edges_run_round_the_outside_of_a_floor_under_it() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let ft = d.floor_types()[0].0;
+        let sq = |a: f64, b: f64| vec![Curve::line(Point::new(a, a), Point::new(b, a)), Curve::line(Point::new(b, a), Point::new(b, b)), Curve::line(Point::new(b, b), Point::new(a, b)), Curve::line(Point::new(a, b), Point::new(a, a))];
+        let f = d.add_floor_sketch(ft, lvl, [sq(0.0, 6000.0), sq(2000.0, 3000.0)].concat(), None, None).unwrap();
+        let ids = d.add_slab_edges(&[f], None).unwrap();
+        assert!(d.add_slab_edges(&[f], None).is_err());
+        assert!(d.add_slab_edges(&[lvl], None).is_err());
+        let s = d.slab_edge_shape(ids[0]).unwrap();
+        // the outer loop only (the opening is left alone), four pieces, the inside set in 300
+        assert_eq!((s.outer.len(), s.pieces.len()), (1, 4));
+        let xs: Vec<f64> = s.inner[0].iter().map(|p| p.x).collect();
+        assert!((xs.iter().cloned().fold(f64::INFINITY, f64::min) - 300.0).abs() < 1e-6, "{xs:?}");
+        let Some(Element::Floor(fl)) = d.get(f) else { panic!() };
+        let under = d.floor_base_z(fl) - d.floor_type(ft).unwrap().thickness_mm();
+        assert_eq!((s.z0, s.z1), (under - 400.0, under));
+        let plan = d.views().into_iter().find(|(_, v)| v.view_kind == crate::view::ViewKind::FloorPlan && v.level == Some(lvl)).unwrap().0;
+        assert_eq!(d.slab_edges_in(plan).len(), 1);
+        assert_eq!(d.slab_edge_meshes().len(), 1);
+        let t = d.slab_edge_types()[0].0;
+        assert!(d.patch_slab_edge_type(t, &serde_json::json!({ "depth_mm": 0.0 })).is_err());
+        d.patch_slab_edge_type(t, &serde_json::json!({ "depth_mm": 600.0 })).unwrap();
+        assert_eq!(d.slab_edge_shape(ids[0]).unwrap().z0, under - 600.0);
+        d.delete(&[f]).unwrap();
+        assert!(d.slab_edge(ids[0]).is_none());
     }
 }

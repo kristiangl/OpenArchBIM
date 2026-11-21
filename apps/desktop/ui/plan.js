@@ -1978,6 +1978,7 @@ const Plan = (() => {
     if (tool === "refplane") return RefPlanes.promptText();
     if (tool === "wallfoot") return "Click a wall to put a strip footing under it. Esc finishes.";
     if (tool === "isofoot") return "Click where the footing's centre goes. Esc finishes.";
+    if (tool === "slabedge") return "Click a floor to thicken its edge. Esc finishes.";
     if (tool === "shapeedit" || tool === "shapeline" || tool === "shapepoint") return ShapeEdit.promptText();
     if (tool === "sketch") return Sketch.promptText();
     if (tool === "dimension") return Dims.prompt();
@@ -2596,6 +2597,7 @@ const Plan = (() => {
     if (Structure.owns(tool)) { Structure.click(snap(sx, sy)); return; }
     if (tool === "wallfoot") { const w = wallAt(sx, sy); Foundations.click(w ? w.id : null); return; }
     if (tool === "isofoot") { Foundations.place(snap(sx, sy)); return; }
+    if (tool === "slabedge") { const fl = new Set(data.floors.map((f) => f.id)); Foundations.slabClick(rawCandidates(sx, sy).flat().find((id) => fl.has(id)) ?? null); return; }
     if (tool === "refplane") { const l = RefPlanes.last(); RefPlanes.click(l ? snap(sx, sy, { last: l }) : snap(sx, sy)); return; }
     if (tool === "shapeline") { ShapeEdit.lineClick(snap(sx, sy, ShapeEdit.lineSnap())); return; }
     if (tool === "shapepoint") { ShapeEdit.pointClick(snap(sx, sy)); return; }
@@ -3213,7 +3215,7 @@ const Plan = (() => {
       data = { crop: {}, view: {}, inserts: [], ...d };
       for (const w of data.walls) w.pieces = w.pieces && w.pieces.length ? w.pieces : [w.corners];
       Snap.build(Snap.fromPlan(data, heldBySketch));
-      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.model_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.symbols || []), ...(data.images || []), ...(data.ref_planes || []), ...(data.wall_foundations || []), ...(data.legend_components || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
+      const ids = new Set([...data.walls, ...data.floors, ...(data.roofs || []), ...data.inserts, ...(data.markers || []), ...(data.sections || []), ...(data.grids || []), ...(data.dimensions || []), ...(data.spots || []), ...(data.detail_lines || []), ...(data.model_lines || []), ...(data.regions || []), ...(data.text_notes || []), ...(data.rooms || []), ...(data.room_tags || []), ...(data.room_separators || []), ...(data.revision_clouds || []), ...(data.revision_tags || []), ...(data.element_tags || []), ...(data.ceilings || []), ...(data.toposolids || []), ...(data.contour_labels || []), ...(data.property_lines || []), ...(data.cad_imports || []), ...(data.structure || []), ...(data.traffic || []), ...(data.areas || []), ...(data.area_tags || []), ...(data.area_boundaries || []), ...(data.symbols || []), ...(data.images || []), ...(data.ref_planes || []), ...(data.wall_foundations || []), ...(data.slab_edges || []), ...(data.legend_components || []), ...(data.site_points ? [data.site_points.base, data.site_points.survey].filter(Boolean) : []), ...modelGroups].map((e) => e.id)); sel = new Set([...sel].filter((i) => ids.has(i))); render(); },
     setGroups(list, edit) {
       modelGroups = list || [];
       memberOf = new Map();
@@ -3314,7 +3316,7 @@ const Plan = (() => {
       if ((tool === "parkrow" || tool === "kerbramp") && Traffic.key(e)) return true;
       if ((Structure.owns(tool)) && Structure.key(e)) return true;
       if (tool === "refplane" && RefPlanes.key(e)) return true;
-      if ((tool === "wallfoot" || tool === "isofoot") && e.key === "Escape") { setTool("select"); cb.prompt?.("Ready."); return true; }
+      if ((tool === "wallfoot" || tool === "isofoot" || tool === "slabedge") && e.key === "Escape") { setTool("select"); cb.prompt?.("Ready."); return true; }
       if (tool === "stair" && e.key === "Escape") { const r = Stairs.escape(); render(); return r; }
       if (tool === "ramp" && e.key === "Escape") { const r = Ramps.escape(); render(); return r; }
       if (tool === "text" && e.key === "Escape" && Det.picking) { Det.clearPicks(); cb.prompt(promptText()); render(); return true; }

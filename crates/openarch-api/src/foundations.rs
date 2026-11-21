@@ -2,7 +2,7 @@
 //! (foundation.rs in the core).
 use serde_json::{json, Value};
 
-use openarch_model::foundation::{IsolatedFooting, IsolatedFootingType, WallFoundation, WallFoundationType};
+use openarch_model::foundation::{IsolatedFooting, IsolatedFootingType, SlabEdge, SlabEdgeType, WallFoundation, WallFoundationType};
 use openarch_model::{Document, Id};
 
 use crate::props::{boolean, group, num, ro, select, text};
@@ -31,6 +31,11 @@ impl Session {
             "patch_isolated_footing" => (|| { self.doc.patch_isolated_footing(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "patch_isolated_footing_type" => (|| { self.doc.patch_isolated_footing_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
             "duplicate_isolated_footing_type" => (|| Ok(json!({ "id": self.doc.duplicate_isolated_footing_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
+            // Slab / Edge Thickening: { floors: [ids], type_id? }
+            "add_slab_edges" => (|| Ok(json!({ "ids": self.doc.add_slab_edges(&crate::ids_of(p, "floors")?, p.get("type_id").and_then(|v| v.as_u64()))? })))(),
+            "patch_slab_edge" => (|| { self.doc.patch_slab_edge(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            "patch_slab_edge_type" => (|| { self.doc.patch_slab_edge_type(id_of(p, "id")?, p.get("patch").ok_or("missing patch")?)?; Ok(json!({})) })(),
+            "duplicate_slab_edge_type" => (|| Ok(json!({ "id": self.doc.duplicate_slab_edge_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             "duplicate_wall_foundation_type" => (|| Ok(json!({ "id": self.doc.duplicate_wall_foundation_type(id_of(p, "id")?, p["name"].as_str().ok_or("missing name")?)? })))(),
             _ => return None,
         })
@@ -132,17 +137,59 @@ pub(crate) fn isolated_type_props(d: &Document, id: Id, t: &IsolatedFootingType)
     })
 }
 
+/// A thickened slab edge's Properties.
+pub(crate) fn slab_edge_props(d: &Document, id: Id, s: &SlabEdge) -> Value {
+    let types: Vec<(String, Value, bool)> = d.slab_edge_types().into_iter().map(|(tid, t)| (t.name.clone(), json!({ "edge_type": tid }), tid == s.edge_type)).collect();
+    let t = d.slab_edge_type(s.edge_type);
+    let vol = d.slab_edge_shape(id).map_or(0.0, |sh| sh.pieces.iter().map(|r| openarch_model::geom::signed_area(r).abs()).sum::<f64>() * (sh.z1 - sh.z0));
+    json!({
+        "id": id, "kind": "SlabEdge", "category": "Structural Foundations", "title": "Slab Edge", "type_label": t.map_or(String::new(), |t| t.name.clone()),
+        "type_id": s.edge_type,
+        "target": { "method": "patch_slab_edge", "id": id },
+        "groups": [
+            group("Constraints", vec![boolean("Pinned", "pinned", s.pinned, true)]),
+            group("Type", vec![select("Type", types)]),
+            group("Dimensions", vec![
+                ro("Width", t.map_or(String::new(), |t| format!("{:.0}", t.width_mm))),
+                ro("Depth Below Slab", t.map_or(String::new(), |t| format!("{:.0}", t.depth_mm))),
+                ro("Volume", d.project_units().volume(vol)),
+            ]),
+            group("Identity Data", vec![ro("Floor", format!("{}", s.floor))]),
+        ],
+    })
+}
+
+/// A thickened slab edge type's properties.
+pub(crate) fn slab_edge_type_props(d: &Document, id: Id, t: &SlabEdgeType) -> Value {
+    let mats: Vec<(String, Value, bool)> = std::iter::once(("<By Category>".to_string(), json!({ "material": "" }), t.material.is_empty()))
+        .chain(d.materials().into_iter().map(|(_, m)| (m.name.clone(), json!({ "material": m.name }), m.name == t.material)))
+        .collect();
+    json!({
+        "id": id, "kind": "SlabEdgeType", "title": t.name, "family": "Slab Edge",
+        "siblings": d.slab_edge_types().iter().map(|(i, x)| json!({ "id": i, "name": x.name })).collect::<Vec<_>>(),
+        "patch": "patch_slab_edge_type", "duplicate": "duplicate_slab_edge_type",
+        "groups": [
+            group("Materials and Finishes", vec![select("Structural Material", mats)]),
+            group("Dimensions", vec![num("Width", "width_mm", t.width_mm, true), num("Depth Below Slab", "depth_mm", t.depth_mm, true)]),
+            group("Identity Data", vec![text("Type Name", "name", &t.name)]),
+        ],
+    })
+}
+
 /// The footings a plan shows, dashed (they are below the cut): each one's outline for picking, and the union of
 /// them all for drawing, so corners and tees read as one footing.
 pub(crate) fn plan_drawing(d: &Document, view: Id, shown: bool) -> Value {
     if !shown {
-        return json!({ "wall_foundations": [], "foundation_outline": [] });
+        return json!({ "wall_foundations": [], "slab_edges": [], "foundation_outline": [] });
     }
     let list = d.wall_foundations_in(view);
+    let edges = d.slab_edges_in(view);
     let pts = |r: &[openarch_model::Point]| r.iter().map(|q| [q.x, q.y]).collect::<Vec<_>>();
-    let union = openarch_model::layers::union_rings(list.iter().map(|(_, r)| r));
+    let union = openarch_model::layers::union_rings(list.iter().map(|(_, r)| r).chain(edges.iter().flat_map(|(_, s)| s.pieces.iter())));
     json!({
         "wall_foundations": list.iter().map(|(id, r)| json!({ "id": id, "ring": pts(r), "pinned": d.wall_foundation(*id).map(|f| f.pinned).or_else(|| d.isolated_footing(*id).map(|f| f.pinned)).unwrap_or(false), "isolated": d.isolated_footing(*id).is_some() })).collect::<Vec<_>>(),
+        // a slab edge is picked by the band between its outer loop and the loop set in from it
+        "slab_edges": edges.iter().map(|(id, sh)| json!({ "id": id, "rings": sh.outer.iter().chain(sh.inner.iter()).map(|r| pts(r)).collect::<Vec<_>>(), "pinned": d.slab_edge(*id).is_some_and(|s| s.pinned) })).collect::<Vec<_>>(),
         "foundation_outline": union.iter().map(|shape| shape.iter().map(|r| pts(r)).collect::<Vec<_>>()).collect::<Vec<_>>(),
     })
 }

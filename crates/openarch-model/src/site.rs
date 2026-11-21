@@ -1891,7 +1891,7 @@ impl Document {
                 "Kerb" | "KerbRamp" => "Hardscape",
                 "StructuralColumn" => "Structural Columns",
                 "Beam" => "Structural Framing",
-                "WallFoundation" | "IsolatedFooting" => "Structural Foundations",
+                "WallFoundation" | "IsolatedFooting" | "SlabEdge" => "Structural Foundations",
                 "WheelStop" => "Parking",
                 _ => continue,
             };
