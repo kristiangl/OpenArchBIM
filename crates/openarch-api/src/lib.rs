@@ -45,6 +45,7 @@ mod ramps;
 mod colorfill;
 mod guard;
 mod foundations;
+mod materials;
 use graphics::{layers_hint, style_for, Hint, LayeredWall};
 use openarch_params::{Column, ColumnKind, Project, Row, Schedule, Value as PValue};
 use serde_json::{json, Value};
@@ -449,6 +450,19 @@ impl Session {
             "add_style_item" => graphics::add_style_item(&mut self.doc, p),
             "patch_style_item" => graphics::patch_style_item(&mut self.doc, p),
             "delete_style_item" => graphics::delete_style_item(&mut self.doc, p),
+            // the Material Manager's appearance: generator, image maps, Realistic textures, baking and the user library
+            "material_presets" => materials::presets(),
+            "material_maps" => materials::maps(&self.doc, p),
+            "material_textures" => materials::textures(&self.doc, p),
+            "material_load_map" => materials::load_map(&mut self.doc, p),
+            "material_export" => materials::export(&self.doc, p),
+            "material_library_dir" => Ok(json!({ "dir": materials::default_library_dir().to_string_lossy() })),
+            "material_library_list" => materials::library_list(p),
+            "material_library_save" => materials::library_save(&mut self.doc, p),
+            "material_library_update" => materials::library_update(&mut self.doc, p),
+            "material_library_import" => materials::library_import(&mut self.doc, p),
+            "material_library_delete" => materials::library_delete(p),
+            "material_library_add_category" => materials::library_add_category(p),
             "plan" => self.plan(p),
             "scene" => Ok(self.scene(p)),
             "patch_wall" => {
@@ -3452,7 +3466,17 @@ impl Session {
                 _ => continue,
             };
             if let Some(v) = verts {
-                meshes.push(json!({ "id": id, "kind": kind, "verts": v }));
+                // floors and roofs show their top layer, ceilings the one facing the room
+                let layer_mat = match e {
+                    Element::Floor(f) => d.floor_type(f.floor_type).and_then(|t| t.layers.first()).map(|l| l.material.clone()),
+                    Element::Roof(r) => d.roof_type(r.roof_type).and_then(|t| t.layers.first()).map(|l| l.material.clone()),
+                    Element::Ceiling(c) => d.ceiling_type(c.ceiling_type).and_then(|t| t.layers.last()).map(|l| l.material.clone()),
+                    _ => None,
+                };
+                match layer_mat.as_deref().and_then(|n| d.material(n)) {
+                    Some(m) => meshes.push(json!({ "id": id, "kind": kind, "material": m.name, "color": m.graphics.shading_color, "verts": v })),
+                    None => meshes.push(json!({ "id": id, "kind": kind, "verts": v })),
+                }
             }
         }
         // line markings, parking rows and kerbs on the ground
@@ -3487,7 +3511,16 @@ impl Session {
                 }
             }
         }
-        json!({ "revision": d.revision(), "meshes": meshes, "cad_imports": cad::scene(d, view, shown("Imported Drawings")),
+        // the materials with maps the meshes use, keyed by what they draw (the view fetches material_textures once per key)
+        let mut appearances = serde_json::Map::new();
+        for m in &meshes {
+            if let Some(mat) = m["material"].as_str().and_then(|n| d.material(n)) {
+                if mat.appearance.textured() && !appearances.contains_key(&mat.name) {
+                    appearances.insert(mat.name.clone(), json!(materials::appearance_key(mat)));
+                }
+            }
+        }
+        json!({ "revision": d.revision(), "meshes": meshes, "appearances": appearances, "cad_imports": cad::scene(d, view, shown("Imported Drawings")),
             "model_lines": if shown("Lines") { d.model_lines_3d(|i| hidden.contains(&i)).into_iter().map(|(id, c, pts)| json!({ "id": id, "color": c, "pts": pts })).collect::<Vec<_>>() } else { vec![] }, "visual_style": settings.as_ref().map(|s| s.visual_style),
             // the Graphic Display Options the 3D view draws (shadows and the sun come with `sun`)
             "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "silhouettes": s.graphic_display.silhouettes, "transparency": s.graphic_display.transparency, "background": s.graphic_display.background,
@@ -7904,3 +7937,7 @@ mod tests {
         assert_eq!(get("Half"), 350.0);
     }
 }
+
+#[cfg(test)]
+#[path = "materials_tests.rs"]
+mod materials_tests;

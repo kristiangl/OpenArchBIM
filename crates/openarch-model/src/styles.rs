@@ -210,6 +210,7 @@ pub struct PatternGraphics {
 
 /// The Graphics tab of the Material Browser.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct MaterialGraphics {
     /// Shading colour used in shaded views.
     pub shading_color: Color,
@@ -224,6 +225,13 @@ pub struct MaterialGraphics {
     pub cut_foreground: PatternGraphics,
     #[serde(default)]
     pub cut_background: PatternGraphics,
+    /// Use Render Appearance: the shading colour follows the appearance (a generator's primary colour after its
+    /// colour modifiers, or a standard appearance's colour). Off, the shading colour is the user's own.
+    #[serde(default)]
+    pub sync_with_appearance: bool,
+    /// The surface foreground pattern is the one the generator makes from the appearance's joints.
+    #[serde(default)]
+    pub pattern_from_appearance: bool,
 }
 
 impl Default for MaterialGraphics {
@@ -235,6 +243,8 @@ impl Default for MaterialGraphics {
             surface_background: PatternGraphics::default(),
             cut_foreground: PatternGraphics::default(),
             cut_background: PatternGraphics::default(),
+            sync_with_appearance: false,
+            pattern_from_appearance: false,
         }
     }
 }
@@ -286,6 +296,119 @@ pub struct Material {
     pub physical: PhysicalAsset,
     #[serde(default)]
     pub identity: MaterialIdentity,
+    /// How it looks in Realistic views and renders.
+    #[serde(default)]
+    pub appearance: Appearance,
+    /// Where it came from in the user material library, for Update Library Asset. Editing the material never
+    /// changes the library by itself.
+    #[serde(default)]
+    pub library_source: Option<LibraryRef>,
+}
+
+/// The library asset a project material was imported from (or last saved to).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct LibraryRef {
+    /// The library folder (category) it is in.
+    pub category: String,
+    /// The asset's name in the library.
+    pub name: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AppearanceKind {
+    /// Image maps the user links (or none: the shading colour, flat).
+    #[default]
+    Standard,
+    /// Made by the generator from `generator`.
+    Parametric,
+}
+
+/// An image kept in the project for a shader slot.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TextureImage {
+    /// The file it came from (for the user's reference; the data is what is used).
+    #[serde(default)]
+    pub file: String,
+    /// "image/png" or "image/jpeg".
+    pub mime: String,
+    /// The file, base64.
+    pub data: String,
+    #[serde(default)]
+    pub px: [u32; 2],
+}
+
+/// The shader slots of a standard appearance.
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+pub struct TextureMaps {
+    #[serde(default)]
+    pub albedo: Option<TextureImage>,
+    /// A tangent-space normal map, or (with `bump_is_height`) a greyscale bump map.
+    #[serde(default)]
+    pub normal: Option<TextureImage>,
+    #[serde(default)]
+    pub bump_is_height: bool,
+    /// Greyscale height for parallax occlusion (white is the face).
+    #[serde(default)]
+    pub height: Option<TextureImage>,
+    /// Greyscale roughness (white is rough).
+    #[serde(default)]
+    pub roughness: Option<TextureImage>,
+    /// Greyscale cutout (black is a hole).
+    #[serde(default)]
+    pub cutout: Option<TextureImage>,
+}
+
+/// The Appearance tab: a physically based (metallic and roughness) shader with parallax occlusion.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Appearance {
+    pub kind: AppearanceKind,
+    /// The colour a standard appearance shows without an albedo map (tints it with one).
+    pub color: Color,
+    /// The real size one tile of the maps covers, mm (a parametric appearance sets it from its pattern).
+    pub uv_size_mm: [f64; 2],
+    /// Where the tile starts, mm, and how it is turned, degrees.
+    pub uv_offset_mm: [f64; 2],
+    pub uv_rotation_deg: f64,
+    /// Scalar roughness and metalness, used where there is no map.
+    pub roughness: f64,
+    pub metalness: f64,
+    /// Dielectric reflectivity at normal incidence (0.04 is most non-metals).
+    pub reflectivity: f64,
+    /// Depth of the relief the height map spans, mm (0 turns parallax off).
+    pub pom_depth_mm: f64,
+    pub maps: TextureMaps,
+    /// The parametric definition (kept when switching to Standard, so switching back restores it).
+    pub generator: Option<crate::matgen::GeneratorParams>,
+}
+
+impl Default for Appearance {
+    fn default() -> Self {
+        Appearance {
+            kind: AppearanceKind::Standard,
+            color: [190, 190, 190],
+            uv_size_mm: [1000.0, 1000.0],
+            uv_offset_mm: [0.0, 0.0],
+            uv_rotation_deg: 0.0,
+            roughness: 0.6,
+            metalness: 0.0,
+            reflectivity: 0.04,
+            pom_depth_mm: 0.0,
+            maps: TextureMaps::default(),
+            generator: None,
+        }
+    }
+}
+
+impl Appearance {
+    /// Whether the Realistic view needs maps for it (generated, or linked images).
+    pub fn textured(&self) -> bool {
+        match self.kind {
+            AppearanceKind::Parametric => self.generator.is_some(),
+            AppearanceKind::Standard => self.maps.albedo.is_some() || self.maps.normal.is_some() || self.maps.height.is_some() || self.maps.roughness.is_some() || self.maps.cutout.is_some(),
+        }
+    }
 }
 
 fn mat(name: &str, class: &str, shade: Color, cut: Option<&str>, surface: Option<&str>, density: f64, k: f64) -> Material {
@@ -300,6 +423,8 @@ fn mat(name: &str, class: &str, shade: Color, cut: Option<&str>, surface: Option
             surface_background: PatternGraphics::default(),
             cut_foreground: pat(cut),
             cut_background: PatternGraphics::default(),
+            sync_with_appearance: false,
+            pattern_from_appearance: false,
         },
         // typical specific heats by class, so a new project's assemblies report a thermal mass
         physical: PhysicalAsset {
@@ -315,6 +440,8 @@ fn mat(name: &str, class: &str, shade: Color, cut: Option<&str>, surface: Option
             },
         },
         identity: MaterialIdentity::default(),
+        appearance: Appearance { color: shade, ..Appearance::default() },
+        library_source: None,
     }
 }
 
@@ -342,6 +469,27 @@ pub fn starter_materials() -> Vec<Material> {
         mat("Steel", "Metal", [150, 156, 166], Some(SOLID_FILL), None, 7850.0, 50.0),
         mat("Timber", "Wood", [198, 166, 120], Some("Diagonal crosshatch"), None, 550.0, 0.13),
     ]
+}
+
+/// The fill pattern the generator keeps for a material's joints.
+pub fn generated_pattern_name(material: &str) -> String {
+    format!("{material} (generated)")
+}
+
+fn put_generated_pattern(tx: &mut crate::doc::Tx, p: Option<FillPattern>) -> Result<(), String> {
+    let Some(p) = p else { return Ok(()) };
+    let at = tx.doc_ref().iter().find_map(|(id, e)| matches!(e, Element::FillPattern(x) if x.name == p.name).then_some(id));
+    match at {
+        Some(id) => {
+            if tx.get(id) != Some(&Element::FillPattern(p.clone())) {
+                tx.update(id, Element::FillPattern(p))?;
+            }
+        }
+        None => {
+            tx.add(Element::FillPattern(p));
+        }
+    }
+    Ok(())
 }
 
 // ---------------------------------------------------------------- object styles
@@ -856,13 +1004,53 @@ impl Document {
         if taken {
             return Err(format!("'{name}' already exists"));
         }
+        let mut item = item;
+        let follow = if let Element::Material(m) = &mut item { self.follow_appearance(m)? } else { None };
         self.validate_item(&item)?;
         let label = match &item {
             Element::LinePattern(_) => "Create line pattern",
             Element::FillPattern(_) => "Create fill pattern",
             _ => "Create material",
         };
-        self.transact(label, |tx| Ok(tx.add(item)))
+        self.transact(label, |tx| {
+            let id = tx.add(item);
+            put_generated_pattern(tx, follow)?;
+            Ok(id)
+        })
+    }
+
+    /// Bring what follows a material's appearance up to date: its UV size and parallax depth from the generator,
+    /// the shading colour (Use Render Appearance), and the generated surface pattern, which is returned to be
+    /// written (made or updated) with the material.
+    pub fn follow_appearance(&self, m: &mut Material) -> Result<Option<FillPattern>, String> {
+        let a = &mut m.appearance;
+        let mut pattern = None;
+        if a.kind == AppearanceKind::Parametric {
+            let g = a.generator.get_or_insert_with(Default::default).clone();
+            let (w, h) = crate::matgen::domain(&g)?;
+            a.uv_size_mm = [w, h];
+            a.pom_depth_mm = crate::matgen::relief_mm(&g);
+            a.color = g.base_color();
+            a.roughness = g.finish.roughness();
+            a.metalness = if g.archetype == crate::matgen::Archetype::Metal && !matches!(g.finish, crate::matgen::Finish::PowderCoated | crate::matgen::Finish::Patina) { 1.0 } else { 0.0 };
+            if m.graphics.pattern_from_appearance {
+                let lines = crate::matgen::rotate_hatch(&crate::matgen::hatch(&g)?, a.uv_rotation_deg);
+                let off = a.uv_offset_mm;
+                let lines: Vec<HatchLine> = lines.into_iter().map(|mut l| { l.origin = [l.origin[0] + off[0], l.origin[1] + off[1]]; l }).collect();
+                let name = generated_pattern_name(&m.name);
+                m.graphics.surface_foreground.pattern = if lines.is_empty() { None } else { Some(name.clone()) };
+                if !lines.is_empty() {
+                    if self.fill_pattern(&name).is_some_and(|p| p.built_in) {
+                        return Err(format!("'{name}' is a built-in pattern"));
+                    }
+                    pattern = Some(FillPattern { name, pattern_type: PatternKind::Model, solid: false, lines, built_in: false });
+                }
+            }
+        }
+        if m.graphics.sync_with_appearance {
+            m.graphics.shading_color = m.appearance.color;
+        }
+        Ok(pattern)
     }
 
     fn validate_item(&self, item: &Element) -> Result<(), String> {
@@ -895,7 +1083,8 @@ impl Document {
                 }
                 for p in [&g.surface_foreground, &g.surface_background, &g.cut_foreground, &g.cut_background] {
                     if let Some(n) = &p.pattern {
-                        if self.fill_pattern(n).is_none() {
+                        // the generated pattern is written with the material
+                        if self.fill_pattern(n).is_none() && !(g.pattern_from_appearance && *n == generated_pattern_name(&m.name)) {
                             return Err(format!("no fill pattern named '{n}'"));
                         }
                     }
@@ -945,15 +1134,43 @@ impl Document {
                 return Err(format!("'{new_name}' already exists"));
             }
         }
+        let mut new = new;
+        // a generated pattern follows its material's name
+        let old_pattern = match (&cur, &new) {
+            (Element::Material(a), Element::Material(b)) if a.name != b.name => {
+                let (from, to) = (generated_pattern_name(&a.name), generated_pattern_name(&b.name));
+                self.fill_patterns().into_iter().find(|(_, p)| p.name == from).map(|(pid, _)| (pid, from, to))
+            }
+            _ => None,
+        };
+        if let Some((_, _, to)) = &old_pattern {
+            if self.fill_pattern(to).is_some() {
+                return Err(format!("a fill pattern '{to}' already exists"));
+            }
+        }
+        if let Element::Material(m) = &mut new {
+            // the name the pattern will have once renamed
+            if let Some((_, from, to)) = &old_pattern {
+                if m.graphics.surface_foreground.pattern.as_deref() == Some(from.as_str()) { m.graphics.surface_foreground.pattern = Some(to.clone()); }
+            }
+        }
+        let follow = if let Element::Material(m) = &mut new { self.follow_appearance(m)? } else { None };
         self.validate_item(&new)?;
         let is_material = matches!(cur, Element::Material(_));
         let (is_line, is_fill) = (matches!(cur, Element::LinePattern(_)), matches!(cur, Element::FillPattern(_)));
         self.transact("Change graphics standard", |tx| {
+            if let Some((pid, from, to)) = &old_pattern {
+                if let Some(Element::FillPattern(mut fp)) = tx.get(*pid).cloned() {
+                    fp.name = to.clone();
+                    tx.update(*pid, Element::FillPattern(fp))?;
+                    tx.rename_references(from, to, false, false, true)?;
+                }
+            }
             tx.update(id, new)?;
             if old_name != new_name {
                 tx.rename_references(&old_name, &new_name, is_material, is_line, is_fill)?;
             }
-            Ok(())
+            put_generated_pattern(tx, follow)
         })
     }
 
@@ -1228,7 +1445,7 @@ mod tests {
         d.undo();
         assert!(d.material("Face Brick").is_some(), "one undo step restores every user");
         // a new material is free to delete
-        let m = d.add_style_item(Element::Material(Material { name: "Spare".into(), class: "Generic".into(), graphics: Default::default(), physical: Default::default(), identity: Default::default() })).unwrap();
+        let m = d.add_style_item(Element::Material(Material { name: "Spare".into(), class: "Generic".into(), graphics: Default::default(), physical: Default::default(), identity: Default::default(), appearance: Default::default(), library_source: None })).unwrap();
         d.delete_style_item(m).unwrap();
     }
 

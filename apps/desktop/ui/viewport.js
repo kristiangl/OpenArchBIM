@@ -31,7 +31,7 @@ const Viewport = (() => {
   };
 
   const SHADER = /* wgsl */ `
-struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32>, lvp: mat4x4<f32>, sun: vec4<f32>, ao: vec4<f32>, proj: vec4<f32>, screen: vec4<f32> };
+struct U { vp: mat4x4<f32>, light: vec4<f32>, bg: vec4<f32>, edge: vec4<f32>, lvp: mat4x4<f32>, sun: vec4<f32>, ao: vec4<f32>, proj: vec4<f32>, screen: vec4<f32>, eye: vec4<f32> };
 @group(0) @binding(0) var<uniform> u: U;
 // the sun's depth map (cast shadows): u.lvp takes a world point into it; u.sun is (ambient, sun, shadow darkness, on);
 // u.bg.w on: glass casts a tinted shadow, from its own depth map
@@ -73,7 +73,34 @@ fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 { return shadowIn(wp, n, false);
 @vertex fn vs_shadow(@location(0) p: vec3<f32>, @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>) -> @builtin(position) vec4<f32> {
   return u.lvp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
 }
+// a material's maps (Realistic): albedo (alpha the cutout), surface (normal x, normal y, height), roughness.
+// mu.a: 1 / tile width and height (per metre), cos and sin of the tile's rotation; mu.b: tile offset (m), parallax
+// depth (m), on; mu.c: roughness, metalness, reflectivity; mu.d: tint
+struct MU { a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32> };
+@group(2) @binding(0) var albTex: texture_2d<f32>;
+@group(2) @binding(1) var surfTex: texture_2d<f32>;
+@group(2) @binding(2) var roughTex: texture_2d<f32>;
+@group(2) @binding(3) var matSamp: sampler;
+@group(2) @binding(4) var<uniform> mu: MU;
+
+// a point in the face's plane (m, before the tile's rotation) to texture coordinates (rows run down)
+fn toTex(pm: vec2<f32>) -> vec2<f32> {
+  let r = vec2<f32>(pm.x * mu.a.z + pm.y * mu.a.w, -pm.x * mu.a.w + pm.y * mu.a.z) * mu.a.xy;
+  return vec2<f32>(r.x, -r.y);
+}
+fn depthAt(t: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> f32 { return 1.0 - textureSampleGrad(surfTex, matSamp, t, gx, gy).b; }
+
 @fragment fn fs_box(i: VOut) -> @location(0) vec4<f32> {
+  // the face's frame (walls: along and up; floors and roofs: x and y, or across and up the slope) and the material's
+  // texture coordinates, worked out first so their derivatives are taken everywhere
+  let gn = normalize(i.n);
+  var T = vec3<f32>(1.0, 0.0, 0.0);
+  if (abs(gn.z) < 0.999) { T = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), gn)); }
+  let B = cross(gn, T);
+  let pm = vec2<f32>(dot(i.wp, T), dot(i.wp, B)) - mu.b.xy;
+  let tex0 = toTex(pm);
+  let gx = dpdx(tex0);
+  let gy = dpdy(tex0);
   if (u.light.w > 0.5) {
     // Hidden Line: every surface in the page colour, so the edges drawn over it are the only linework
     var c = u.bg.rgb;
@@ -81,29 +108,111 @@ fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 { return shadowIn(wp, n, false);
     if (i.tint < 0.0) { c = mix(c, vec3<f32>(0.55, 0.72, 0.86), 0.25); }
     // cast shadows in Hidden Line: grey where the sun does not reach
     if (u.sun.w > 0.5) {
-      let hn = normalize(i.n);
-      let hv = select(shadowAt(i.wp, hn), 1.0, dot(hn, normalize(u.light.xyz)) <= 0.0);
+      let hv = select(shadowAt(i.wp, gn), 1.0, dot(gn, normalize(u.light.xyz)) <= 0.0);
       c = c * mix(1.0 - 0.45 * u.sun.z, 1.0, hv);
     }
     return vec4<f32>(c, i.a);
   }
-  let nn = normalize(i.n);
-  let l = max(dot(nn, normalize(u.light.xyz)), 0.0);
+  // u.eye.w: 0 Shaded (grey by the light), 1 Consistent Colours (flat material colour), 2 Realistic
+  let mode = u.eye.w;
+  let selected = i.tint >= 0.99;
+  let glass = i.tint < 0.0;
   var base = mix(vec3<f32>(0.78, 0.80, 0.83), vec3<f32>(0.85, 0.62, 0.45), clamp(i.tint, 0.0, 1.0));
-  if (i.col.w > 0.5 && i.tint < 0.99) { base = i.col.rgb; } // material colour unless selected
-  if (i.tint < 0.0) { base = vec3<f32>(0.55, 0.72, 0.86); } // glass
+  if (i.col.w > 0.5 && !selected) { base = i.col.rgb; } // material colour unless selected
+  if (glass) { base = vec3<f32>(0.55, 0.72, 0.86); }
+  if (mode < 0.5 && !selected && !glass) { base = vec3<f32>(0.9, 0.9, 0.9); }
+  if (mode > 0.5 && mode < 1.5) { return vec4<f32>(base, i.a); }
+  let L = normalize(u.light.xyz);
+  var nn = gn;
+  var tex = tex0;
+  var lightOcc = 1.0;
+  var rough = 1.0;
+  var alpha = i.a;
+  let textured = mode > 1.5 && mu.b.w > 0.5 && !selected && !glass;
+  // the tile's own axes in the world (it may be turned)
+  let Td = T * mu.a.z + B * mu.a.w;
+  let Bd = -T * mu.a.w + B * mu.a.z;
+  if (textured) {
+    let V = normalize(u.eye.xyz - i.wp);
+    let vt = vec3<f32>(dot(V, T), dot(V, B), dot(V, gn));
+    // parallax occlusion while the relief spans a pixel or more on screen, plain normal mapping beyond
+    let reliefPx = mu.b.z / max(length(u.eye.xyz - i.wp), 0.01) * u.screen.y * 0.5 / u.proj.w;
+    if (mu.b.z > 0.0 && reliefPx > 0.6 && vt.z > 0.03) {
+      let dtex = toTex(-vt.xy / vt.z * mu.b.z);
+      let n = mix(40.0, 12.0, vt.z);
+      let st = 1.0 / n;
+      var cur = tex0;
+      var d = 0.0;
+      var hd = depthAt(cur, gx, gy);
+      for (var k = 0; k < 48; k++) {
+        if (d >= hd) { break; }
+        cur += dtex * st;
+        d += st;
+        hd = depthAt(cur, gx, gy);
+      }
+      let prev = cur - dtex * st;
+      let after = hd - d;
+      let before = depthAt(prev, gx, gy) - (d - st);
+      let w = clamp(after / (after - before + 1e-5), 0.0, 1.0);
+      let hit = mix(cur, prev, w);
+      let fade = smoothstep(0.6, 2.5, reliefPx);
+      tex = mix(tex0, hit, fade);
+      // self-shadowing: from the hit back up toward the sun, does the relief stand in the way?
+      let lt = vec3<f32>(dot(L, T), dot(L, B), dot(L, gn));
+      if (lt.z > 0.03) {
+        let hitD = depthAt(hit, gx, gy);
+        let ltex = toTex(lt.xy / lt.z * mu.b.z);
+        var occ = 0.0;
+        for (var j = 1; j <= 12; j++) {
+          let dd = hitD * (1.0 - f32(j) / 12.0);
+          let q = hit + ltex * (hitD - dd);
+          occ = max(occ, clamp((dd - depthAt(q, gx, gy)) * 12.0, 0.0, 1.0));
+        }
+        lightOcc = 1.0 - occ * fade * 0.8;
+      }
+    }
+    let a = textureSampleGrad(albTex, matSamp, tex, gx, gy);
+    if (a.a < 0.5) { discard; }
+    base = a.rgb * mu.d.rgb;
+    let s = textureSampleGrad(surfTex, matSamp, tex, gx, gy);
+    let nx = s.r * 2.0 - 1.0;
+    let ny = s.g * 2.0 - 1.0;
+    nn = normalize(Td * nx + Bd * ny + gn * sqrt(max(0.0, 1.0 - nx * nx - ny * ny)));
+    rough = clamp(textureSampleGrad(roughTex, matSamp, tex, gx, gy).r, 0.03, 1.0);
+  }
+  let l = max(dot(nn, L), 0.0) * lightOcc;
+  let lg = dot(gn, L);
   var k = vec3<f32>(u.sun.x + u.sun.y * l);
+  // Shaded: faces toward the light near white, turned away dark grey
+  if (mode < 0.5) { k = vec3<f32>(u.sun.x * 0.45 + u.sun.y * 1.25 * l); }
+  var vis = 1.0;
   if (u.sun.w > 0.5) {
     // a face turned from the sun has only the ambient light already: a cast shadow darkens what the sun reaches
-    let vis = select(shadowAt(i.wp, nn), 1.0, l <= 0.0);
+    vis = select(shadowAt(i.wp, gn), 1.0, lg <= 0.0);
     k = mix(k * (1.0 - u.sun.z), k, vis);
     // through glass (Realistic): the light that passes is tinted and weaker
-    if (u.bg.w > 0.5 && l > 0.0) {
-      let gv = shadowIn(i.wp, nn, true);
+    if (u.bg.w > 0.5 && lg > 0.0) {
+      let gv = shadowIn(i.wp, gn, true);
       k = k * mix(mix(vec3<f32>(1.0), vec3<f32>(0.62, 0.75, 0.86), u.sun.z), vec3<f32>(1.0), max(gv, 1.0 - vis));
     }
   }
-  return vec4<f32>(base * k, i.a);
+  if (!textured) { return vec4<f32>(base * k, alpha); }
+  // Realistic with maps: metallic and roughness shading (GGX)
+  let metal = mu.c.y;
+  let V = normalize(u.eye.xyz - i.wp);
+  let H = normalize(L + V);
+  let ndv = max(dot(nn, V), 0.001);
+  let ndh = max(dot(nn, H), 0.0);
+  let a2 = rough * rough * rough * rough;
+  let dn = ndh * ndh * (a2 - 1.0) + 1.0;
+  let D = a2 / (3.14159 * dn * dn);
+  let F0 = mix(vec3<f32>(mu.c.z), base, metal);
+  let F = F0 + (vec3<f32>(1.0) - F0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+  let kk = (rough + 1.0) * (rough + 1.0) / 8.0;
+  let G = ndv / (ndv * (1.0 - kk) + kk) * l / (l * (1.0 - kk) + kk + 1e-4);
+  let spec = D * F * G / max(4.0 * ndv * l, 0.001) * u.sun.y * l * vis;
+  let env = F0 * u.sun.x * 0.6 * (1.0 - rough * 0.5);
+  return vec4<f32>(base * (1.0 - metal) * k + spec + env, alpha);
 }
 
 struct LOut { @builtin(position) pos: vec4<f32>, @location(0) c: vec3<f32> };
@@ -198,7 +307,7 @@ fn silAt(px: vec2<i32>, p: vec4<f32>) -> f32 {
 `;
 
   // The same shading in GLSL ES 3.00, for WebGL2
-  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge; uniform mat4 lvp; uniform vec4 sun; uniform vec4 ao; uniform vec4 proj; uniform vec4 screen;";
+  const GL_UNIFORMS = "uniform mat4 vp; uniform vec4 light; uniform vec4 bg; uniform vec4 edge; uniform mat4 lvp; uniform vec4 sun; uniform vec4 ao; uniform vec4 proj; uniform vec4 screen; uniform vec4 eye;";
   const GL_BOX_VS = `#version 300 es
 ${GL_UNIFORMS}
 layout(location = 0) in vec3 p; layout(location = 1) in vec3 n;
@@ -209,6 +318,8 @@ void main() { vwp = p * sc.xyz + off.xyz; gl_Position = vp * vec4(vwp, 1.0); vn 
 precision highp float;
 ${GL_UNIFORMS}
 uniform highp sampler2DShadow shadowMap; uniform highp sampler2DShadow glassMap;
+uniform sampler2D albTex; uniform sampler2D surfTex; uniform sampler2D roughTex;
+uniform vec4 mA; uniform vec4 mB; uniform vec4 mC; uniform vec4 mD;
 in vec3 vn; in float vtint; in vec4 vcol; in float va; in vec3 vwp; out vec4 o;
 float shadowIn(vec3 wp, vec3 n, bool glass) {
   vec4 c = lvp * vec4(wp + n * 0.03, 1.0);
@@ -223,26 +334,80 @@ float shadowIn(vec3 wp, vec3 n, bool glass) {
   return s / 9.0;
 }
 float shadowAt(vec3 wp, vec3 n) { return shadowIn(wp, n, false); }
+vec2 toTex(vec2 pm) { vec2 r = vec2(pm.x * mA.z + pm.y * mA.w, -pm.x * mA.w + pm.y * mA.z) * mA.xy; return vec2(r.x, -r.y); }
+float depthAt(vec2 t, vec2 gx, vec2 gy) { return 1.0 - textureGrad(surfTex, t, gx, gy).b; }
 void main() {
+  vec3 gn = normalize(vn);
+  vec3 T = abs(gn.z) < 0.999 ? normalize(cross(vec3(0.0, 0.0, 1.0), gn)) : vec3(1.0, 0.0, 0.0);
+  vec3 B = cross(gn, T);
+  vec2 tex0 = toTex(vec2(dot(vwp, T), dot(vwp, B)) - mB.xy);
+  vec2 gx = dFdx(tex0), gy = dFdy(tex0);
   if (light.w > 0.5) {
     vec3 c = bg.rgb;
     if (vtint >= 0.99) c = mix(c, vec3(0.85, 0.62, 0.45), 0.45);
     if (vtint < 0.0) c = mix(c, vec3(0.55, 0.72, 0.86), 0.25);
-    if (sun.w > 0.5) { vec3 hn = normalize(vn); float hv = dot(hn, normalize(light.xyz)) <= 0.0 ? 1.0 : shadowAt(vwp, hn); c *= mix(1.0 - 0.45 * sun.z, 1.0, hv); }
+    if (sun.w > 0.5) { float hv = dot(gn, normalize(light.xyz)) <= 0.0 ? 1.0 : shadowAt(vwp, gn); c *= mix(1.0 - 0.45 * sun.z, 1.0, hv); }
     o = vec4(c, va); return;
   }
-  vec3 nn = normalize(vn);
-  float l = max(dot(nn, normalize(light.xyz)), 0.0);
+  float mode = eye.w;
+  bool selected = vtint >= 0.99, glass = vtint < 0.0;
   vec3 base = mix(vec3(0.78, 0.80, 0.83), vec3(0.85, 0.62, 0.45), clamp(vtint, 0.0, 1.0));
-  if (vcol.w > 0.5 && vtint < 0.99) base = vcol.rgb;
-  if (vtint < 0.0) base = vec3(0.55, 0.72, 0.86);
-  vec3 k = vec3(sun.x + sun.y * l);
-  if (sun.w > 0.5) {
-    float vis = l <= 0.0 ? 1.0 : shadowAt(vwp, nn);
-    k = mix(k * (1.0 - sun.z), k, vis);
-    if (bg.w > 0.5 && l > 0.0) { float gv = shadowIn(vwp, nn, true); k *= mix(mix(vec3(1.0), vec3(0.62, 0.75, 0.86), sun.z), vec3(1.0), max(gv, 1.0 - vis)); }
+  if (vcol.w > 0.5 && !selected) base = vcol.rgb;
+  if (glass) base = vec3(0.55, 0.72, 0.86);
+  if (mode < 0.5 && !selected && !glass) base = vec3(0.9);
+  if (mode > 0.5 && mode < 1.5) { o = vec4(base, va); return; }
+  vec3 L = normalize(light.xyz);
+  vec3 nn = gn; vec2 tx = tex0; float lightOcc = 1.0, rough = 1.0;
+  bool textured = mode > 1.5 && mB.w > 0.5 && !selected && !glass;
+  vec3 Td = T * mA.z + B * mA.w, Bd = -T * mA.w + B * mA.z;
+  if (textured) {
+    vec3 V = normalize(eye.xyz - vwp);
+    vec3 vt = vec3(dot(V, T), dot(V, B), dot(V, gn));
+    float reliefPx = mB.z / max(length(eye.xyz - vwp), 0.01) * screen.y * 0.5 / proj.w;
+    if (mB.z > 0.0 && reliefPx > 0.6 && vt.z > 0.03) {
+      vec2 dtex = toTex(-vt.xy / vt.z * mB.z);
+      float st = 1.0 / mix(40.0, 12.0, vt.z), d = 0.0;
+      vec2 cur = tex0; float hd = depthAt(cur, gx, gy);
+      for (int k = 0; k < 48; k++) { if (d >= hd) break; cur += dtex * st; d += st; hd = depthAt(cur, gx, gy); }
+      vec2 prev = cur - dtex * st;
+      float after = hd - d, before = depthAt(prev, gx, gy) - (d - st);
+      vec2 hit = mix(cur, prev, clamp(after / (after - before + 1e-5), 0.0, 1.0));
+      float fade = smoothstep(0.6, 2.5, reliefPx);
+      tx = mix(tex0, hit, fade);
+      vec3 lt = vec3(dot(L, T), dot(L, B), dot(L, gn));
+      if (lt.z > 0.03) {
+        float hitD = depthAt(hit, gx, gy), occ = 0.0;
+        vec2 ltex = toTex(lt.xy / lt.z * mB.z);
+        for (int j = 1; j <= 12; j++) { float dd = hitD * (1.0 - float(j) / 12.0); occ = max(occ, clamp((dd - depthAt(hit + ltex * (hitD - dd), gx, gy)) * 12.0, 0.0, 1.0)); }
+        lightOcc = 1.0 - occ * fade * 0.8;
+      }
+    }
+    vec4 a = textureGrad(albTex, tx, gx, gy);
+    if (a.a < 0.5) discard;
+    base = a.rgb * mD.rgb;
+    vec4 s = textureGrad(surfTex, tx, gx, gy);
+    float nx = s.r * 2.0 - 1.0, ny = s.g * 2.0 - 1.0;
+    nn = normalize(Td * nx + Bd * ny + gn * sqrt(max(0.0, 1.0 - nx * nx - ny * ny)));
+    rough = clamp(textureGrad(roughTex, tx, gx, gy).r, 0.03, 1.0);
   }
-  o = vec4(base * k, va);
+  float l = max(dot(nn, L), 0.0) * lightOcc, lg = dot(gn, L);
+  vec3 k = vec3(sun.x + sun.y * l);
+  if (mode < 0.5) k = vec3(sun.x * 0.45 + sun.y * 1.25 * l);
+  float vis = 1.0;
+  if (sun.w > 0.5) {
+    vis = lg <= 0.0 ? 1.0 : shadowAt(vwp, gn);
+    k = mix(k * (1.0 - sun.z), k, vis);
+    if (bg.w > 0.5 && lg > 0.0) { float gv = shadowIn(vwp, gn, true); k *= mix(mix(vec3(1.0), vec3(0.62, 0.75, 0.86), sun.z), vec3(1.0), max(gv, 1.0 - vis)); }
+  }
+  if (!textured) { o = vec4(base * k, va); return; }
+  float metal = mC.y;
+  vec3 V = normalize(eye.xyz - vwp), H = normalize(L + V);
+  float ndv = max(dot(nn, V), 0.001), ndh = max(dot(nn, H), 0.0), a2 = rough * rough * rough * rough;
+  float dn = ndh * ndh * (a2 - 1.0) + 1.0, D = a2 / (3.14159 * dn * dn);
+  vec3 F0 = mix(vec3(mC.z), base, metal), F = F0 + (1.0 - F0) * pow(1.0 - max(dot(H, V), 0.0), 5.0);
+  float kk = (rough + 1.0) * (rough + 1.0) / 8.0, G = ndv / (ndv * (1.0 - kk) + kk) * l / (l * (1.0 - kk) + kk + 1e-4);
+  vec3 spec = D * F * G / max(4.0 * ndv * l, 0.001) * sun.y * l * vis, env = F0 * sun.x * 0.6 * (1.0 - rough * 0.5);
+  o = vec4(base * (1.0 - metal) * k + spec + env, va);
 }`;
   // the sun's depth map: depth only
   const GL_SHADOW_VS = `#version 300 es
@@ -486,6 +651,85 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     return k / 6;
   }
 
+  // ---------------------------------------------------------------- materials
+  // What Realistic draws a material with: three images the same size, each as a chain of mipmaps (canvases halving
+  // down to 1 x 1), and 16 values (see MU in the shader).
+  const canvasOf = (w, h) => { const c = document.createElement("canvas"); c.width = w; c.height = h; return c; };
+  function mipChain(c) {
+    const out = [c];
+    while (out[out.length - 1].width > 1 || out[out.length - 1].height > 1) {
+      const p = out[out.length - 1], n = canvasOf(Math.max(1, p.width >> 1), Math.max(1, p.height >> 1));
+      const x = n.getContext("2d"); x.imageSmoothingEnabled = true; x.imageSmoothingQuality = "high";
+      x.drawImage(p, 0, 0, n.width, n.height);
+      out.push(n);
+    }
+    return out;
+  }
+  const solid = (r, g, b, a = 255) => { const c = canvasOf(1, 1), x = c.getContext("2d"); x.fillStyle = `rgba(${r},${g},${b},${a / 255})`; x.fillRect(0, 0, 1, 1); return [c]; };
+  // the default: no maps, off
+  function defaultMaterial() {
+    return { albedo: solid(255, 255, 255), surface: solid(128, 128, 255), rough: solid(255, 255, 255), params: new Float32Array([1, 1, 1, 0, 0, 0, 0, 0, 1, 0, 0.04, 0, 1, 1, 1, 0]) };
+  }
+  globalThis.Viewport_defaultMaterial = defaultMaterial;
+  const loadImage = (url) => new Promise((ok, bad) => { const i = new Image(); i.onload = () => ok(i); i.onerror = () => bad(new Error("could not read a material map")); i.src = url; });
+  /**
+   * Turn material_textures' answer into what setMaterial takes. A standard appearance's slots are drawn to one size
+   * and packed: normal (or normals worked out from a bump map) and height into `surface`, the cutout into albedo's alpha.
+   */
+  async function prepareMaterial(t) {
+    const imgs = {};
+    for (const k of ["albedo", "surface", "roughness_map", "normal", "height", "cutout"]) if (t[k]) imgs[k] = await loadImage(t[k]);
+    const first = imgs.albedo || imgs.surface || imgs.normal || imgs.height || imgs.roughness_map || imgs.cutout;
+    if (!first) return null;
+    const cap = 2048, sc = Math.min(1, cap / Math.max(first.naturalWidth, first.naturalHeight));
+    const w = Math.max(1, Math.round(first.naturalWidth * sc)), h = Math.max(1, Math.round(first.naturalHeight * sc));
+    const draw = (img) => { const c = canvasOf(w, h), x = c.getContext("2d"); x.drawImage(img, 0, 0, w, h); return c; };
+    const pixels = (img) => draw(img).getContext("2d").getImageData(0, 0, w, h);
+    const col = t.color || [190, 190, 190];
+    let albedo;
+    if (imgs.albedo) albedo = draw(imgs.albedo); else { albedo = canvasOf(w, h); const x = albedo.getContext("2d"); x.fillStyle = `rgb(${col.join(",")})`; x.fillRect(0, 0, w, h); }
+    if (imgs.cutout) {
+      const x = albedo.getContext("2d"), a = x.getImageData(0, 0, w, h), c = pixels(imgs.cutout);
+      for (let i = 0; i < a.data.length; i += 4) a.data[i + 3] = c.data[i] >= 128 ? 255 : 0;
+      x.putImageData(a, 0, 0);
+    }
+    let surface;
+    if (imgs.surface) surface = draw(imgs.surface);
+    else {
+      surface = canvasOf(w, h);
+      const x = surface.getContext("2d"), out = x.createImageData(w, h);
+      const nrm = imgs.normal && !t.bump_is_height ? pixels(imgs.normal) : null;
+      const bump = imgs.normal && t.bump_is_height ? pixels(imgs.normal) : null;
+      const hgt = imgs.height ? pixels(imgs.height) : null;
+      // a bump map's slope: its full range is the parallax depth (or 2 mm) over the sample size
+      const mmx = (t.uv_size_mm?.[0] || 1000) / w, mmy = (t.uv_size_mm?.[1] || 1000) / h, depth = t.pom_depth_mm > 0 ? t.pom_depth_mm : 2;
+      const at = (px, i, j) => px.data[((((j % h) + h) % h) * w + (((i % w) + w) % w)) * 4] / 255;
+      for (let j = 0; j < h; j++) for (let i = 0; i < w; i++) {
+        const k = (j * w + i) * 4;
+        let nx = 0, ny = 0;
+        if (nrm) { nx = nrm.data[k] / 127.5 - 1; ny = nrm.data[k + 1] / 127.5 - 1; }
+        else if (bump) {
+          nx = -(at(bump, i + 1, j) - at(bump, i - 1, j)) * depth / (2 * mmx);
+          ny = (at(bump, i, j - 1) - at(bump, i, j + 1)) * depth / (2 * mmy);
+          const l = Math.hypot(nx, ny, 1); nx /= l; ny /= l;
+        }
+        out.data[k] = Math.round((nx * 0.5 + 0.5) * 255); out.data[k + 1] = Math.round((ny * 0.5 + 0.5) * 255);
+        out.data[k + 2] = hgt ? hgt.data[k] : 255; out.data[k + 3] = 255;
+      }
+      x.putImageData(out, 0, 0);
+    }
+    let rough;
+    if (imgs.roughness_map) rough = draw(imgs.roughness_map);
+    else { rough = canvasOf(1, 1); const x = rough.getContext("2d"), v = Math.round((t.roughness ?? 0.6) * 255); x.fillStyle = `rgb(${v},${v},${v})`; x.fillRect(0, 0, 1, 1); }
+    if (rough.width !== w || rough.height !== h) { const r = canvasOf(w, h); r.getContext("2d").drawImage(rough, 0, 0, w, h); rough = r; }
+    const uv = t.uv_size_mm || [1000, 1000], rot = ((t.uv_rotation_deg || 0) * Math.PI) / 180, off = t.uv_offset_mm || [0, 0];
+    // the albedo already carries the colour (a standard appearance with no image is filled with it)
+    const tint = [1, 1, 1];
+    const params = new Float32Array([1000 / Math.max(1, uv[0]), 1000 / Math.max(1, uv[1]), Math.cos(rot), Math.sin(rot), off[0] / 1000, off[1] / 1000, (t.pom_depth_mm || 0) / 1000, 1,
+      t.roughness ?? 0.6, t.metalness ?? 0, t.reflectivity ?? 0.04, 0, ...tint, 0]);
+    return { key: t.key, albedo: mipChain(albedo), surface: mipChain(surface), rough: mipChain(rough), params };
+  }
+
   // ---------------------------------------------------------------- backends
   // A backend owns the GPU objects. mesh() uploads a model mesh (pos+normal triangles and its edge lines),
   // instance() writes the 12 per-mesh values (offset+tint, scale, colour), render() draws a frame, and
@@ -507,7 +751,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const info = adapter.info || {};
 
     const module = device.createShaderModule({ code: SHADER });
-    const ubuf = device.createBuffer({ size: 240, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+    const ubuf = device.createBuffer({ size: 256, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
     const bgl = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX | GPUShaderStage.FRAGMENT, buffer: {} }] });
     const bind = device.createBindGroup({ layout: bgl, entries: [{ binding: 0, resource: { buffer: ubuf } }] });
     // the sun's depth map, drawn first when shadows are on and read by the shaded surfaces
@@ -527,7 +771,29 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const aoModule = device.createShaderModule({ code: AO_SHADER });
     const bglAo = device.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: "depth" } }] });
     let aoTex = null, aoView = null, aoBind = null;
-    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl, bgl1] });
+    // a material's maps and values (Realistic), one bind group per material; meshes without one take the default
+    const bgl2 = device.createBindGroupLayout({ entries: [
+      { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 1, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 2, visibility: GPUShaderStage.FRAGMENT, texture: {} },
+      { binding: 3, visibility: GPUShaderStage.FRAGMENT, sampler: {} },
+      { binding: 4, visibility: GPUShaderStage.FRAGMENT, buffer: {} },
+    ] });
+    const matSampler = device.createSampler({ addressModeU: "repeat", addressModeV: "repeat", magFilter: "linear", minFilter: "linear", mipmapFilter: "linear", maxAnisotropy: 8 });
+    const texFrom = (levels) => {
+      const t = device.createTexture({ size: [levels[0].width, levels[0].height], format: "rgba8unorm", mipLevelCount: levels.length, usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST | GPUTextureUsage.RENDER_ATTACHMENT });
+      levels.forEach((c, i) => device.queue.copyExternalImageToTexture({ source: c }, { texture: t, mipLevel: i }, [c.width, c.height]));
+      return t;
+    };
+    const makeMaterial = (m) => {
+      const ub = device.createBuffer({ size: 64, usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST });
+      device.queue.writeBuffer(ub, 0, m.params);
+      const ts = [m.albedo, m.surface, m.rough].map(texFrom);
+      const bind = device.createBindGroup({ layout: bgl2, entries: [...ts.map((t, i) => ({ binding: i, resource: t.createView() })), { binding: 3, resource: matSampler }, { binding: 4, resource: { buffer: ub } }] });
+      return { bind, free() { ub.destroy(); ts.forEach((t) => t.destroy()); } };
+    };
+    const defaultMat = makeMaterial(Viewport_defaultMaterial());
+    const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl, bgl1, bgl2] });
     const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const depthFormat = "depth24plus";
     const boxBuffers = [
@@ -637,6 +903,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       },
       free(g) { g.vbuf.destroy(); g.ibuf.destroy(); g.ebuf?.destroy(); },
       instance(g, inst) { device.queue.writeBuffer(g.ibuf, 0, inst); },
+      material: makeMaterial,
       render(f) {
         device.queue.writeBuffer(ubuf, 0, f.uniforms);
         const enc = device.createCommandEncoder();
@@ -667,7 +934,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           depthStencilAttachment: { view: depth.createView(), depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" },
         });
         if (f.background && !f.stress) { pass.setPipeline(bgPipe); pass.setBindGroup(0, bind); pass.draw(3); }
-        pass.setBindGroup(0, bind); pass.setBindGroup(1, bind1);
+        pass.setBindGroup(0, bind); pass.setBindGroup(1, bind1); pass.setBindGroup(2, defaultMat.bind);
         const n = clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
         if (n) { device.queue.writeBuffer(gridBuf, 0, clipped, 0, n * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, gridBuf); pass.draw(n); }
         // lines given with setLines (imported CAD drawings), cut to the view like the grid
@@ -686,11 +953,13 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         } else {
           if (f.lineMode !== 2) {
             pass.setPipeline(f.lineMode === 1 || f.edges ? boxBiasPipe : boxPipe);
-            for (const g of f.meshes) { if (g.alpha < 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            for (const g of f.meshes) { if (g.alpha < 0.999) continue; pass.setBindGroup(2, (g.mat || defaultMat).bind); pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            pass.setBindGroup(2, defaultMat.bind);
             // the ground plane that catches shadows
             if (f.ground) { pass.setVertexBuffer(0, f.ground.vbuf); pass.setVertexBuffer(1, f.ground.ibuf); pass.draw(f.ground.count, 1); }
             pass.setPipeline(boxSeePipe);
-            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; pass.setBindGroup(2, (g.mat || defaultMat).bind); pass.setVertexBuffer(0, g.vbuf); pass.setVertexBuffer(1, g.ibuf); pass.draw(g.count, 1); }
+            pass.setBindGroup(2, defaultMat.bind);
           }
           if (f.lineMode || f.edges) {
             pass.setPipeline(f.lineMode === 2 ? wirePipe : edgePipe);
@@ -744,7 +1013,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       gl.linkProgram(p);
       if (!gl.getProgramParameter(p, gl.LINK_STATUS)) throw new Error("WebGL2 program: " + gl.getProgramInfoLog(p));
       const at = (n) => gl.getUniformLocation(p, n);
-      return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap"), glassMap: at("glassMap"), ao: at("ao"), proj: at("proj"), screen: at("screen"), depthMap: at("depthMap") };
+      return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap"), glassMap: at("glassMap"), ao: at("ao"), proj: at("proj"), screen: at("screen"), depthMap: at("depthMap"), eye: at("eye"),
+        albTex: at("albTex"), surfTex: at("surfTex"), roughTex: at("roughTex"), mA: at("mA"), mB: at("mB"), mC: at("mC"), mD: at("mD") };
     };
     const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS), aoProg = program(GL_AO_VS, GL_AO_FS), bgProg = program(GL_AO_VS, GL_BG_FS);
     // the sun's depth map
@@ -797,6 +1067,30 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     let extraClip = null;
     const stressVao = vao(buf(st.box), 24, [[0, 3, 0], [1, 3, 12]], buf(st.stress));
     const dbg = gl.getExtension("WEBGL_debug_renderer_info");
+    const aniso = gl.getExtension("EXT_texture_filter_anisotropic");
+    // a material's maps: three textures with their mipmaps, and its values
+    const makeMaterial = (m) => {
+      const tex = [m.albedo[0], m.surface[0], m.rough[0]].map((c) => {
+        const t = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, t);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, c);
+        gl.generateMipmap(gl.TEXTURE_2D);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.REPEAT); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.REPEAT);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR); gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        if (aniso) gl.texParameterf(gl.TEXTURE_2D, aniso.TEXTURE_MAX_ANISOTROPY_EXT, 8);
+        return t;
+      });
+      return { tex, params: m.params, free() { tex.forEach((t) => gl.deleteTexture(t)); } };
+    };
+    const defaultMat = makeMaterial(Viewport_defaultMaterial());
+    const bindMat = (m) => {
+      const mm = m || defaultMat;
+      mm.tex.forEach((t, i) => { gl.activeTexture(gl.TEXTURE3 + i); gl.bindTexture(gl.TEXTURE_2D, t); });
+      gl.activeTexture(gl.TEXTURE0);
+      gl.uniform1i(boxProg.albTex, 3); gl.uniform1i(boxProg.surfTex, 4); gl.uniform1i(boxProg.roughTex, 5);
+      gl.uniform4fv(boxProg.mA, mm.params.subarray(0, 4)); gl.uniform4fv(boxProg.mB, mm.params.subarray(4, 8)); gl.uniform4fv(boxProg.mC, mm.params.subarray(8, 12)); gl.uniform4fv(boxProg.mD, mm.params.subarray(12, 16));
+    };
     let lastW = 0, lastH = 0;
     const be = {
       name: "WebGL2",
@@ -812,6 +1106,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       },
       free(g) { gl.deleteBuffer(g.vbuf); gl.deleteBuffer(g.ibuf); if (g.ebuf) gl.deleteBuffer(g.ebuf); gl.deleteVertexArray(g.tri); if (g.lines) gl.deleteVertexArray(g.lines); },
       instance(g, inst) { gl.bindBuffer(gl.ARRAY_BUFFER, g.ibuf); gl.bufferSubData(gl.ARRAY_BUFFER, 0, inst); },
+      material: makeMaterial,
       render(f) {
         const t0 = performance.now();
         const toGL = (m) => { const o = new Float32Array(m); for (let c = 0; c < 4; c++) o[c * 4 + 2] = 2 * o[c * 4 + 2] - o[c * 4 + 3]; return o; };
@@ -863,6 +1158,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           if (pr.ao) gl.uniform4fv(pr.ao, f.uniforms.subarray(48, 52));
           if (pr.proj) gl.uniform4fv(pr.proj, f.uniforms.subarray(52, 56));
           if (pr.screen) gl.uniform4fv(pr.screen, f.uniforms.subarray(56, 60));
+          if (pr.eye) gl.uniform4fv(pr.eye, f.uniforms.subarray(60, 64));
         };
         if (f.background && !f.stress) { use(bgProg); gl.disable(gl.DEPTH_TEST); gl.bindVertexArray(null); gl.drawArrays(gl.TRIANGLES, 0, 3); }
         gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
@@ -882,20 +1178,22 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         }
         gl.enable(gl.CULL_FACE); gl.cullFace(gl.BACK); gl.frontFace(gl.CCW);
         if (f.stress) {
-          use(boxProg);
+          use(boxProg); bindMat(null);
           gl.bindVertexArray(stressVao);
           gl.drawArraysInstanced(gl.TRIANGLES, 0, 36, st.stress.length / 12);
         } else {
           if (f.lineMode !== 2) {
             use(boxProg);
             if (f.lineMode === 1 || f.edges) { gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4); }
-            for (const g of f.meshes) { if (g.alpha < 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            for (const g of f.meshes) { if (g.alpha < 0.999) continue; bindMat(g.mat); gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            bindMat(null);
             // the ground plane that catches shadows
             if (f.ground) { gl.bindVertexArray(f.ground.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, f.ground.count, 1); }
             // see-through surfaces after the rest, blended, leaving depth alone
             gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 4);
             gl.enable(gl.BLEND); gl.blendFuncSeparate(gl.SRC_ALPHA, gl.ONE_MINUS_SRC_ALPHA, gl.ONE, gl.ONE_MINUS_SRC_ALPHA); gl.depthMask(false);
-            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            for (const g of f.meshes) { if (g.alpha >= 0.999) continue; bindMat(g.mat); gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+            bindMat(null);
             gl.disable(gl.BLEND); gl.depthMask(true);
             gl.disable(gl.POLYGON_OFFSET_FILL);
           }
@@ -947,7 +1245,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     if (!be) be = webgl2Backend(canvas);
     if (why) console.info(`3D view: WebGPU not used (${why}); drawing with WebGL2.`);
 
-    let meshes = []; // { g (backend handles), id, kind, data, bounds, color }
+    let meshes = []; // { g (backend handles), id, kind, data, bounds, color, material }
+    const materials = new Map(); // material name -> { key, gpu }: the maps Realistic draws it with
     let lastVp = null; // the view and projection last drawn with, for box selection
     const cam = { az: -0.9, el: 0.5, dist: 38, target: [0, 0, 1.5] };
     let style = "shaded", stress = false, dirty = true, sized = false, last = performance.now(), frames = 0, acc = 0, fps = 0;
@@ -1027,7 +1326,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const ao = !!sun?.ambientShadows && !stress && lineMode !== 2 && meshes.length > 0;
       // Show Silhouettes (Graphic Display Options): outlines drawn in the same pass over the frame
       const sil = !!graphics.silhouettes && !stress && lineMode !== 2 && meshes.length > 0;
-      const u = new Float32Array(60); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, glassShadow ? 1 : 0], 20);
+      const u = new Float32Array(64); u.set(vp, 0); u.set([L[0], L[1], L[2], lineMode === 1 ? 1 : 0], 16); u.set([...page, glassShadow ? 1 : 0], 20);
       // edges' colour, and (w) how far sketchy edges are brought forward: a little more than their jitter
       const pull = graphics.sketchy ? graphics.sketchy.jitter * 0.004 + 0.02 : 0;
       u.set(dark ? [0.88, 0.9, 0.92, pull] : [0.08, 0.09, 0.1, pull], 24);
@@ -1046,6 +1345,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         horizon = cw > 1e-6 ? Math.max(-4, Math.min(4, cy / cw)) : cam.el > 0 ? 4 : -4;
       }
       u.set([canvas.width, canvas.height, horizon, background], 56);
+      // the eye (for specular light and parallax) and how surfaces are coloured: 0 Shaded, 1 Consistent Colours, 2 Realistic
+      u.set([eye[0], eye[1], eye[2], style === "consistent_colors" ? 1 : style === "realistic" ? 2 : 0], 60);
+      for (const m of meshes) m.g.mat = m.material ? materials.get(m.material)?.gpu || null : null;
       let gnd = null;
       if (shadow) {
         const c = [(sceneLo[0] + sceneHi[0]) / 2, (sceneLo[1] + sceneHi[1]) / 2];
@@ -1283,7 +1585,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           const data = datas[i];
           const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
           for (let i = 0; i < data.length; i += 6) for (let k = 0; k < 3; k++) { bounds[0][k] = Math.min(bounds[0][k], data[i + k]); bounds[1][k] = Math.max(bounds[1][k], data[i + k]); }
-          const out = { g: be.mesh(data, graphics.sketchy ? sketchify(edges[i], graphics.sketchy.jitter, graphics.sketchy.extension) : edges[i]), edges: edges[i], id: m.id, kind: m.kind, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
+          const out = { g: be.mesh(data, graphics.sketchy ? sketchify(edges[i], graphics.sketchy.jitter, graphics.sketchy.extension) : edges[i]), edges: edges[i], id: m.id, kind: m.kind, material: m.material || null, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
           writeTint(out, sel.has(m.id));
           return out;
         });
@@ -1293,7 +1595,18 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         if (!isFinite(sceneLo[0])) { sceneLo = [0, 0, 0]; sceneHi = [0, 0, 0]; }
         dirty = true;
       },
-      /** How the surfaces are drawn: shaded (also used for Consistent Colours and Realistic for now), hidden_line or wireframe. */
+      /** The key of the maps held for a material (see setMaterial), or null. */
+      materialKey(name) { return materials.get(name)?.key ?? null; },
+      /** Hold a material's maps for Realistic: { key, albedo, surface, rough (mip chains of canvases), params } from Viewport.prepareMaterial, or null to drop them. */
+      setMaterial(name, m) {
+        const old = materials.get(name);
+        if (old) { old.gpu.free(); materials.delete(name); }
+        if (m) materials.set(name, { key: m.key, gpu: be.material(m) });
+        dirty = true;
+      },
+      /** Drop the maps of materials not in `names`. */
+      keepMaterials(names) { const keep = new Set(names); for (const n of [...materials.keys()]) if (!keep.has(n)) this.setMaterial(n, null); },
+      /** How the surfaces are drawn: shaded (grey by the light), consistent_colors (flat material colours), realistic (material appearances), hidden_line or wireframe. */
       setStyle(st) { if (st !== style) { style = st; dirty = true; } },
       setSelection(ids) { const s = new Set(ids); for (const m of meshes) writeTint(m, s.has(m.id)); dirty = true; },
       /** Frame everything in the model (or reset to a default view when empty). */
@@ -1359,5 +1672,5 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     };
   }
 
-  return { init, mat };
+  return { init, mat, prepareMaterial };
 })();

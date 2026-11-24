@@ -347,6 +347,7 @@
     if (!ses) return null;
     let current = selectName || (std.materials[0] && std.materials[0].material.name);
     let tab = "graphics";
+    let side = "project"; // the left list: the project's materials or the user library
     let done;
     const result = new Promise((r) => { done = r; });
 
@@ -355,7 +356,8 @@
       const list = h("div", { className: "mat-list" });
       const pane = h("div", { className: "mat-pane" });
       const search = h("input", { placeholder: "Search" });
-      const left = h("div", { className: "mat-left" }, search, list);
+      const sideBar = h("div", { className: "modal-tabs" });
+      const left = h("div", { className: "mat-left" }, sideBar, search, list);
       body.append(h("div", { className: "mat-split" }, left, pane), msg);
       const find = () => std.materials.find((m) => m.material.name === current);
       const finish = async (how) => {
@@ -401,19 +403,36 @@
         const nameIn = h("input", { value: mat.name });
         nameIn.onchange = () => nameIn.value.trim() && patch({ name: nameIn.value.trim() });
         pane.append(h("label", { className: "mat-name" }, "Name ", nameIn));
-        const bar = h("div", { className: "modal-tabs" }, ...["identity", "graphics", "physical"].map((k) => {
+        const libRow = h("div");
+        pane.append(libRow);
+        MatUI.libraryButtons({ mat, id: m.id, msg: (t) => { msg.textContent = t; }, refresh: () => patch({}) }).then((r) => libRow.replaceChildren(r));
+        const bar = h("div", { className: "modal-tabs" }, ...["identity", "graphics", "appearance", "physical"].map((k) => {
           const b = h("button", { textContent: k[0].toUpperCase() + k.slice(1), className: k === tab ? "active" : "" });
           b.onclick = () => { tab = k; renderPane(); };
           return b;
         }));
         pane.append(bar);
         const t = h("table", { className: "range" });
-        if (tab === "graphics") {
+        if (tab === "appearance") {
+          const box = h("div", { className: "mat-appearance" });
+          pane.append(box);
+          MatUI.appearancePane(box, { mat, id: m.id, patch, colorInput, numberInput, msg: (t) => { msg.textContent = t; } }).catch((e) => { msg.textContent = errText(e); });
+        } else if (tab === "graphics") {
           const g = mat.graphics;
           t.append(h("tr", { className: "sect" }, h("td", { colSpan: 3, textContent: "Shading" })));
-          t.append(h("tr", {}, h("td", { textContent: "Color" }), h("td", { colSpan: 2 }, colorInput(g.shading_color, (c) => patch({ graphics: { shading_color: c } })))));
+          const sync = h("input", { type: "checkbox", checked: !!g.sync_with_appearance });
+          sync.onchange = () => patch({ graphics: { sync_with_appearance: sync.checked } });
+          t.append(h("tr", {}, h("td", {}), h("td", { colSpan: 2 }, h("label", { className: "check", title: "The shading colour follows the Appearance tab's colour (a generated material's primary colour after its colour modifiers)" }, sync, " Use Render Appearance"))));
+          const col = colorInput(g.shading_color, (c) => patch({ graphics: { shading_color: c } }));
+          if (g.sync_with_appearance) col.disabled = true;
+          t.append(h("tr", {}, h("td", { textContent: "Color" }), h("td", { colSpan: 2 }, col)));
           t.append(h("tr", {}, h("td", { textContent: "Transparency" }), h("td", { colSpan: 2 }, numberInput(g.shading_transparency, (v) => patch({ graphics: { shading_transparency: Math.max(0, Math.min(100, Math.round(v))) } }), { min: 0, max: 100, width: "70px" }))));
           t.append(h("tr", { className: "sect" }, h("td", { colSpan: 3, textContent: "Surface Pattern" })));
+          if (mat.appearance && mat.appearance.kind === "parametric") {
+            const gen = h("input", { type: "checkbox", checked: !!g.pattern_from_appearance });
+            gen.onchange = () => patch({ graphics: { pattern_from_appearance: gen.checked } });
+            t.append(h("tr", {}, h("td", {}), h("td", { colSpan: 2 }, h("label", { className: "check", title: "The foreground pattern is made from the generator's joints, so the lines fall on the texture's joints" }, gen, " Pattern from Appearance (generated)"))));
+          }
           t.append(patternRow("Foreground", "surface_foreground"), patternRow("Background", "surface_background"));
           t.append(h("tr", { className: "sect" }, h("td", { colSpan: 3, textContent: "Cut Pattern" })));
           t.append(patternRow("Foreground", "cut_foreground"), patternRow("Background", "cut_background"));
@@ -439,8 +458,19 @@
         pane.append(h("p", { className: "note", textContent: used.length ? `Used by: ${used.join(", ")}` : "Not used by anything yet." }));
       }
 
+      function renderSide() {
+        sideBar.replaceChildren(...[["project", "Project Materials"], ["library", "Library"]].map(([k, t]) => {
+          const b = h("button", { textContent: t, className: k === side ? "active" : "" });
+          b.onclick = () => { side = k; render(); };
+          return b;
+        }));
+      }
       function renderList() {
         const q = search.value.toLowerCase();
+        if (side === "library") {
+          MatUI.libraryList({ list, pane, query: q, toHex, msg: (t) => { msg.textContent = t; }, afterImport: async (name) => { std = await Backend.call("standards"); if (name) current = name; renderList(); } });
+          return;
+        }
         const extraItems = extras.filter((x) => x.toLowerCase().includes(q)).map((x) => {
           const b = h("button", { className: "mat-item mat-extra" + (x === current ? " active" : ""), textContent: x });
           b.onclick = () => { current = x; render(); };
@@ -460,7 +490,7 @@
           }));
       }
       search.oninput = renderList;
-      function render() { renderList(); renderPane(); }
+      function render() { renderSide(); renderList(); if (side === "project") renderPane(); left.querySelector(".row").style.display = side === "project" ? "" : "none"; }
 
       const unique = (base) => { let n = base, k = 2; while (std.materials.some((x) => x.material.name === n)) n = `${base} ${k++}`; return n; };
       const made = async (r, n) => { if (r) { std = await Backend.call("standards"); current = n; msg.textContent = ""; render(); } };

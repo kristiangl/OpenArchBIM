@@ -1384,6 +1384,23 @@ async function ensurePlan(what, opts = {}) {
   return true;
 }
 
+
+// The maps Realistic draws materials with: fetched again only for a material whose appearance changed (its key), and
+// dropped for materials the scene no longer uses. A material that fails to load draws in its flat colour.
+const appearanceLoads = new Map();
+function loadAppearances(vp, appearances) {
+  vp.keepMaterials(Object.keys(appearances));
+  for (const [name, key] of Object.entries(appearances)) {
+    if (vp.materialKey(name) === key || appearanceLoads.get(name) === key) continue;
+    appearanceLoads.set(name, key);
+    Backend.call("material_textures", { name })
+      .then((t) => Viewport.prepareMaterial(t))
+      .then((m) => { if (appearanceLoads.get(name) === key && app.vp === vp) vp.setMaterial(name, m); })
+      .catch((e) => Backend.log("warn", `material ${name}: ${e.message || e}`))
+      .finally(() => { if (appearanceLoads.get(name) === key) appearanceLoads.delete(name); });
+  }
+}
+
 async function refreshView(force) {
   const k = app.view.kind;
   // a study playing in one view stops when another is shown
@@ -1406,6 +1423,7 @@ async function refreshView(force) {
       app.sceneGraphics = scene.graphics || {};
       app.vp.setMeshes(scene.meshes, app.selection);
       app.sceneIds = new Set(scene.meshes.map((m) => m.id).filter((i) => typeof i === "number"));
+      loadAppearances(app.vp, scene.appearances || {});
       // imported CAD drawings, as lines at their levels
       // and model lines, in their line styles' colours
       Cad.lines3D(scene.cad_imports).then((lines) => { if (app.view.kind === "3d" && app.vp) app.vp.setLines(withModelLines(lines, scene.model_lines)); });
