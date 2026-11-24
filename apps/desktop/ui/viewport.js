@@ -83,13 +83,22 @@ struct MU { a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32> };
 @group(2) @binding(3) var matSamp: sampler;
 @group(2) @binding(4) var<uniform> mu: MU;
 
-// a surface pattern on the face (Hidden Line, Shaded, Consistent Colours): pu.h is (line families, solid, -, -),
-// pu.fg the line colour, pu.bg the background colour (w on); each family is three vec4: (cos, sin of its angle,
-// spacing, shift), (origin along, origin across, dash period, -), (dash, space, dash, space), all model mm
+// a surface pattern on the face (Hidden Line, Shaded, Consistent Colours): pu.h is (line families, solid, drafting,
+// paper mm a pixel), pu.fg the line colour, pu.bg the background colour (w on); each family is three vec4: (cos,
+// sin of its angle, spacing, shift), (origin along, origin across, dash period, -), (dash, space, dash, space), in
+// model mm on the face, or for a drafting pattern paper mm square to the screen
 struct PU { h: vec4<f32>, fg: vec4<f32>, bg: vec4<f32>, f: array<vec4<f32>, 96> };
 @group(3) @binding(0) var<uniform> pu: PU;
-// pmm is the point in the face plane (mm), hx and hy how it changes from pixel to pixel
-fn hatch(c: vec3<f32>, pmm: vec2<f32>, hx: vec2<f32>, hy: vec2<f32>) -> vec3<f32> {
+// pmm0 is the point in the face plane (mm), hx0 and hy0 how it changes from pixel to pixel; fc the pixel
+fn hatch(c: vec3<f32>, pmm0: vec2<f32>, hx0: vec2<f32>, hy0: vec2<f32>, fc: vec2<f32>) -> vec3<f32> {
+  var pmm = pmm0;
+  var hx = hx0;
+  var hy = hy0;
+  if (pu.h.z > 0.5) {
+    pmm = vec2<f32>(fc.x, -fc.y) * pu.h.w;
+    hx = vec2<f32>(pu.h.w, 0.0);
+    hy = vec2<f32>(0.0, -pu.h.w);
+  }
   var out = c;
   if (pu.bg.w > 0.5) { out = pu.bg.rgb; }
   if (pu.h.y > 0.5) { return pu.fg.rgb; }
@@ -153,7 +162,7 @@ fn depthAt(t: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> f32 { return 1.0 - tex
       let hv = select(shadowAt(i.wp, gn), 1.0, dot(gn, normalize(u.light.xyz)) <= 0.0);
       c = c * mix(1.0 - 0.45 * u.sun.z, 1.0, hv);
     }
-    return vec4<f32>(hatch(c, pmm, hx, hy), i.a);
+    return vec4<f32>(hatch(c, pmm, hx, hy, i.pos.xy), i.a);
   }
   // u.eye.w: 0 Shaded (grey by the light), 1 Consistent Colours (flat material colour), 2 Realistic
   let mode = u.eye.w;
@@ -163,7 +172,7 @@ fn depthAt(t: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> f32 { return 1.0 - tex
   if (i.col.w > 0.5 && !selected) { base = i.col.rgb; } // material colour unless selected
   if (glass) { base = vec3<f32>(0.55, 0.72, 0.86); }
   if (mode < 0.5 && !selected && !glass) { base = vec3<f32>(0.9, 0.9, 0.9); }
-  if (mode > 0.5 && mode < 1.5) { return vec4<f32>(hatch(base, pmm, hx, hy), i.a); }
+  if (mode > 0.5 && mode < 1.5) { return vec4<f32>(hatch(base, pmm, hx, hy, i.pos.xy), i.a); }
   let L = normalize(u.light.xyz);
   var nn = gn;
   var tex = tex0;
@@ -238,7 +247,7 @@ fn depthAt(t: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> f32 { return 1.0 - tex
       k = k * mix(mix(vec3<f32>(1.0), vec3<f32>(0.62, 0.75, 0.86), u.sun.z), vec3<f32>(1.0), max(gv, 1.0 - vis));
     }
   }
-  if (mode < 0.5) { return vec4<f32>(hatch(base * k, pmm, hx, hy), alpha); }
+  if (mode < 0.5) { return vec4<f32>(hatch(base * k, pmm, hx, hy, i.pos.xy), alpha); }
   if (!textured) { return vec4<f32>(base * k, alpha); }
   // Realistic with maps: metallic and roughness shading (GGX)
   let metal = mu.c.y;
@@ -382,6 +391,7 @@ vec2 toTex(vec2 pm) { vec2 r = vec2(pm.x * mA.z + pm.y * mA.w, -pm.x * mA.w + pm
 float depthAt(vec2 t, vec2 gx, vec2 gy) { return 1.0 - textureGrad(surfTex, t, gx, gy).b; }
 // a surface pattern on the face (see PU in the WGSL)
 vec3 hatch(vec3 c, vec2 pmm, vec2 hx, vec2 hy) {
+  if (pat[0].z > 0.5) { pmm = gl_FragCoord.xy * pat[0].w; hx = vec2(pat[0].w, 0.0); hy = vec2(0.0, pat[0].w); }
   vec3 o2 = c;
   if (pat[2].w > 0.5) o2 = pat[2].rgb;
   if (pat[0].y > 0.5) return pat[1].rgb;
@@ -749,6 +759,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     out.set([c[0], c[1], c[2], 1], 4);
     if (surf.background) out.set([...surf.background.map((x) => x / 255), 1], 8);
     if (def && def.solid) { out[1] = 1; return out; }
+    // a drafting pattern keeps its paper size on screen (96 pixels an inch at 100 %)
+    if (def && def.drafting) { out[2] = 1; out[3] = 25.4 / 96 / (globalThis.devicePixelRatio || 1); }
     const lines = (def && def.lines || []).filter((l) => l.spacing > 0).slice(0, 32);
     out[0] = lines.length;
     lines.forEach((l, k) => {

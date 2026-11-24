@@ -524,43 +524,53 @@ const Elev = (() => {
     }
   }
 
-  // A model pattern is laid from the project's origin, as 3D views and the material's texture lay it: the view
-  // measures across from its marker, so the pattern's origin moves back by how far along the marker stands. Faces
-  // square to the view then show the same joints here as in 3D.
-  function anchoredLines(def) {
+  // A model pattern is laid as 3D views and the material's texture lay it, in each face's own frame: along the face
+  // from the project's origin and up it. The API sends that frame for faces it knows (`pattern_map`: from the
+  // pattern's frame to the view, u = a s + c t + e, z = b s + d t + f); other faces take it square to the view, from
+  // the project's origin (the view measures across from its marker). Drafting patterns lie square to the paper.
+  function patternMap(def, it) {
+    if (!def || !def.model) return [1, 0, 0, 1, 0, 0];
+    if (it && it.pattern_map) return it.pattern_map;
     const fr = data.frame;
-    if (!def || !def.model || !fr || !fr.origin || !fr.right) return def ? def.lines : [];
-    const s = fr.origin[0] * fr.right[0] + fr.origin[1] * fr.right[1];
-    return def.lines.map((L) => ({ ...L, origin: [L.origin[0] - s, L.origin[1]] }));
+    const s = fr && fr.origin && fr.right ? fr.origin[0] * fr.right[0] + fr.origin[1] * fr.right[1] : 0;
+    return [1, 0, 0, 1, -s, 0];
   }
+  const mapped = (M, x, y) => toScreen(M[0] * x + M[2] * y + M[4], M[1] * x + M[3] * y + M[5]);
 
-  function hatchLines(it, f, col) {
+  function hatchLines(it, f, col, M) {
     const def = (data.fill_patterns || {})[f.pattern];
     if (!def || def.solid) { ctx.fillStyle = col; const { w, h } = size(); ctx.fillRect(0, 0, w, h); return; }
+    M = M || patternMap(def, null);
+    const det = M[0] * M[3] - M[1] * M[2];
+    if (Math.abs(det) < 1e-6) return;
     let u0 = Infinity, z0 = Infinity, u1 = -Infinity, z1 = -Infinity;
     for (const ring of it.polys) for (const [u, z] of ring) { u0 = Math.min(u0, u); u1 = Math.max(u1, u); z0 = Math.min(z0, z); z1 = Math.max(z1, z); }
     const unit = def.model ? 1 : (data.scale || 100); // model mm per pattern unit
-    const corners = [[u0, z0], [u1, z0], [u1, z1], [u0, z1]];
+    // the region's corners in the pattern's own frame
+    const back = ([u, z]) => { const x = u - M[4], y = z - M[5]; return [(M[3] * x - M[2] * y) / det, (-M[1] * x + M[0] * y) / det]; };
+    const corners = [[u0, z0], [u1, z0], [u1, z1], [u0, z1]].map(back);
     ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.lineCap = "butt"; ctx.setLineDash([]);
     let budget = 3000;
-    for (const L of anchoredLines(def)) {
+    for (const L of def.lines) {
       const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, sp = L.spacing * unit;
-      if (sp * cam.s < 2.5) { ctx.globalAlpha = 0.35; ctx.fillStyle = col; const { w, h } = size(); ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; break; }
+      // view mm along a line for each mm of the pattern, and between neighbouring lines
+      const along = Math.hypot(M[0] * dx + M[2] * dy, M[1] * dx + M[3] * dy) || 1e-9, gap = (Math.abs(det) * sp) / along;
+      if (gap * cam.s < 2.5) { ctx.globalAlpha = 0.35; ctx.fillStyle = col; const { w, h } = size(); ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; break; }
       const v0 = L.origin[0] * unit * nx + L.origin[1] * unit * ny, w0 = L.origin[0] * unit * dx + L.origin[1] * unit * dy;
       const vs = corners.map(([x, y]) => x * nx + y * ny), us = corners.map(([x, y]) => x * dx + y * dy);
       const k0 = Math.ceil((Math.min(...vs) - v0) / sp), k1 = Math.floor((Math.max(...vs) - v0) / sp), umin = Math.min(...us), umax = Math.max(...us);
       budget -= k1 - k0 + 1;
       if (budget < 0) break;
-      const dashPx = (L.dashes || []).map((d) => Math.max(d * unit * cam.s, 0.6));
+      const dashPx = (L.dashes || []).map((d) => Math.max(d * unit * along * cam.s, 0.6));
       const period = dashPx.reduce((m, d) => m + d, 0);
       ctx.setLineDash(dashPx);
       if (!dashPx.length) ctx.beginPath();
       for (let n = k0; n <= k1; n++) {
-        const v = v0 + n * sp, p0 = toScreen(umin * dx + v * nx, umin * dy + v * ny), p1 = toScreen(umax * dx + v * nx, umax * dy + v * ny);
+        const v = v0 + n * sp, p0 = mapped(M, umin * dx + v * nx, umin * dy + v * ny), p1 = mapped(M, umax * dx + v * nx, umax * dy + v * ny);
         if (dashPx.length) {
           // each line's dashes start where its origin, moved on by the shift, says
           ctx.beginPath();
-          const into = (umin - (w0 + n * (L.shift || 0) * unit)) * cam.s;
+          const into = (umin - (w0 + n * (L.shift || 0) * unit)) * along * cam.s;
           ctx.lineDashOffset = ((into % period) + period) % period;
         }
         ctx.moveTo(p0.x, p0.y); ctx.lineTo(p1.x, p1.y);
@@ -592,7 +602,8 @@ const Elev = (() => {
       if (!def || def.solid) { cutPath(it); ctx.fillStyle = st.fill.color; ctx.fill("evenodd"); }
       else {
         const ring = (r) => r.map(([u, z]) => { const s = toScreen(u, z); return [s.x, s.y]; });
-        ctx.oaHatch({ rings: [...it.polys, ...(it.holes || [])].map(ring), evenodd: true, name: st.fill.pattern, colour: st.fill.color, lines: anchoredLines(def), unit: def.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
+        const M = patternMap(def, null);
+        ctx.oaHatch({ rings: [...it.polys, ...(it.holes || [])].map(ring), evenodd: true, name: st.fill.pattern, colour: st.fill.color, lines: def.lines, unit: def.model ? 1 : (data.scale || 100), map: ([x, y]) => mapped(M, x, y), width: 1 });
       }
     } else if (vstyle !== "wireframe" && st.fill && st.fill.visible) {
       ctx.save();
@@ -1124,10 +1135,11 @@ const Elev = (() => {
           const pc = f < 1 ? mix(sf.color, viewBg, f) : sf.color;
           if (ctx.semantic && ctx.oaHatch) {
             const ring = (r) => r.map(([u, z]) => { const s2 = toScreen(u, z); return [s2.x, s2.y]; });
-            ctx.oaHatch({ rings: [poly, ...(it.holes || [])].map(ring), evenodd: true, name: sf.pattern, colour: pc, lines: anchoredLines(sdef), unit: sdef.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
+            const M = patternMap(sdef, it);
+            ctx.oaHatch({ rings: [poly, ...(it.holes || [])].map(ring), evenodd: true, name: sf.pattern, colour: pc, lines: sdef.lines, unit: sdef.model ? 1 : (data.scale || 100), map: ([x, y]) => mapped(M, x, y), width: 1 });
           } else {
             ctx.save(); ctx.clip("evenodd");
-            hatchLines({ polys: [poly] }, sf, pc);
+            hatchLines({ polys: [poly] }, sf, pc, patternMap(sdef, it));
             ctx.restore();
           }
           // the outline again: the pattern used the path

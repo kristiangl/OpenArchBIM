@@ -203,11 +203,16 @@ pub struct ElevItem {
     /// The subcategory a family's piece or line is drawn in (a door's Elevation Swing, dashed), for its style.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sub: Option<String>,
+    /// How a model surface pattern lies on the face, as 3D views and the material's texture lay it: from the
+    /// pattern's own frame (s along the face from the project origin, t up it) to the view, u = a s + c t + e and
+    /// z = b s + d t + f, as [a, b, c, d, e, f]. None for a face the pattern lies square to the view on.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pattern_map: Option<[f64; 6]>,
 }
 
 impl Default for ElevItem {
     fn default() -> Self {
-        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0, part: None, sub: None }
+        ElevItem { id: 0, category: "", depth: 0.0, polys: vec![], lines: vec![], fill: [200, 200, 200], stroke: true, cut: false, material: None, holes: vec![], fade: 1.0, part: None, sub: None, pattern_map: None }
     }
 }
 
@@ -1421,6 +1426,7 @@ impl Document {
             stroke: bool,
             /// The layer's material, whose surface pattern (brick courses, cladding) a face shows.
             material: String,
+            map: Option<[f64; 6]>,
         }
         let mut layer_items: Vec<LayerItem> = vec![];
         let layer_geo = self.wall_layer_geometry();
@@ -1437,6 +1443,20 @@ impl Document {
             let dir = Point::new((b.x - a.x) / wl, (b.y - a.y) / wl);
             let along = |p: Point| (p.x - a.x) * dir.x + (p.y - a.y) * dir.y;
             let (ua, us_per) = (u_of(a), dir.x * right.x + dir.y * right.y);
+            // how the surface pattern lies on the face of a straight wall's layer this view sees (its side, or its
+            // end when the wall runs along the line of sight): along it from the project origin and up, as in 3D
+            let face_map = |ring: &[Point], end_on: bool| -> Option<[f64; 6]> {
+                if w.curve.is_some() {
+                    return None;
+                }
+                let mut nrm = if end_on { dir } else { Point::new(-dir.y, dir.x) };
+                if nrm.x * look.x + nrm.y * look.y > 0.0 {
+                    nrm = Point::new(-nrm.x, -nrm.y);
+                }
+                let n = ring.iter().map(|p| p.x * nrm.x + p.y * nrm.y).fold(f64::NEG_INFINITY, f64::max);
+                let (a, e) = (-nrm.y * right.x + nrm.x * right.y, n * (nrm.x * right.x + nrm.y * right.y) - (o.x * right.x + o.y * right.y));
+                Some([a, 0.0, 0.0, 1.0, e, 0.0])
+            };
             if let Some(wlay) = layer_geo.get(id) {
                 let stroke = !(edge_on && !(wlay.free[0] && wlay.free[1]));
                 for layer in wlay.layers.iter().filter(|l| !l.is_void && l.thickness > 0.0) {
@@ -1477,17 +1497,17 @@ impl Document {
                             if edge_on {
                                 let (lo, hi) = clipped.iter().flatten().flatten().fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), p| (l.min(p.y), h.max(p.y)));
                                 if hi > lo {
-                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![rect(u0, u1, z0 + lo, z0 + hi)], lines: vec![], fill, stroke, material: Some(layer.material.clone()), ..Default::default() });
+                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![rect(u0, u1, z0 + lo, z0 + hi)], lines: vec![], fill, stroke, material: Some(layer.material.clone()), pattern_map: face_map(ring, true), ..Default::default() });
                                 }
                             } else {
                                 let view = |r: &Vec<Point>| r.iter().map(|p| [ua + us_per * p.x, z0 + p.y]).collect::<Vec<[f64; 2]>>();
                                 for s in &clipped {
-                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![view(&s[0])], holes: s[1..].iter().map(view).collect(), lines: vec![], fill, stroke, material: Some(layer.material.clone()), ..Default::default() });
+                                    items.push(ElevItem { id: *id, category: "Walls", depth, polys: vec![view(&s[0])], holes: s[1..].iter().map(view).collect(), lines: vec![], fill, stroke, material: Some(layer.material.clone()), pattern_map: face_map(ring, false), ..Default::default() });
                                 }
                             }
                             continue;
                         }
-                        layer_items.push(LayerItem { id: *id, depth, u0, u1, z0, z1, fill, edge_on, stroke, material: layer.material.clone() });
+                        layer_items.push(LayerItem { id: *id, depth, u0, u1, z0, z1, fill, edge_on, stroke, material: layer.material.clone(), map: face_map(ring, edge_on) });
                     }
                 }
                 continue;
@@ -1540,7 +1560,7 @@ impl Document {
         }
         for (k, l) in layer_items.iter().enumerate() {
             if !merged[k] {
-                items.push(ElevItem { id: l.id, category: "Walls", depth: l.depth, polys: vec![rect(l.u0, l.u1, l.z0, l.z1)], lines: vec![], fill: l.fill, stroke: l.stroke, material: Some(l.material.clone()), ..Default::default() });
+                items.push(ElevItem { id: l.id, category: "Walls", depth: l.depth, polys: vec![rect(l.u0, l.u1, l.z0, l.z1)], lines: vec![], fill: l.fill, stroke: l.stroke, material: Some(l.material.clone()), pattern_map: l.map, ..Default::default() });
             }
         }
         // curtain walls: each panel and mullion a rectangle across the view at its depth, glass in its own colour (at
@@ -2015,7 +2035,21 @@ impl Document {
             let t = self.roof_type(r.roof_type);
             let top = t.and_then(|t| t.layers.first()).and_then(|l| self.material(&l.material)).map_or([150, 120, 110], |m| [m.graphics.shading_color[0], m.graphics.shading_color[1], m.graphics.shading_color[2]]);
             let thick = t.map_or(0.0, |t| t.thickness_mm());
-            let mut add = |poly: &[[f64; 3]], shade: f64, bias: f64| {
+            let top_mat = t.and_then(|t| t.layers.first()).map(|l| l.material.clone());
+            // a sloping plane's surface pattern (roof tiles), laid as 3D lays it: along the eave from the project
+            // origin and up the slope
+            let plane_map = |f: &crate::roof::RoofFace| -> Option<[f64; 6]> {
+                if f.vertical {
+                    return None;
+                }
+                let (s, c) = f.slope_deg.to_radians().sin_cos();
+                let (ox, oy) = (f.outward[0], f.outward[1]);
+                let p = f.poly.first()?;
+                let n = (p[0] * ox + p[1] * oy) * s + p[2] * c;
+                let orr = ox * right.x + oy * right.y;
+                Some([-oy * right.x + ox * right.y, 0.0, -c * orr, s, n * s * orr - (o.x * right.x + o.y * right.y), n * c])
+            };
+            let mut add = |poly: &[[f64; 3]], shade: f64, bias: f64, map: Option<[f64; 6]>| {
                 let clipped;
                 let poly = match &sl {
                     Some(s) => {
@@ -2036,13 +2070,13 @@ impl Document {
                     return;
                 }
                 let c = |v: u8| (v as f64 * shade).clamp(0.0, 255.0) as u8;
-                items.push(ElevItem { id, category: "Roofs", depth: ds.iter().cloned().fold(f64::INFINITY, f64::min) + bias, polys: vec![uz], lines: vec![], fill: [c(top[0]), c(top[1]), c(top[2])], stroke: true , ..Default::default() });
+                items.push(ElevItem { id, category: "Roofs", depth: ds.iter().cloned().fold(f64::INFINITY, f64::min) + bias, polys: vec![uz], lines: vec![], fill: [c(top[0]), c(top[1]), c(top[2])], stroke: true, material: map.and(top_mat.clone()), pattern_map: map, ..Default::default() });
             };
             for f in &g.faces {
                 // faces turned toward the viewer are lit, the others a little darker
                 let facing = f.outward[0] * look.x + f.outward[1] * look.y;
                 let shade = if f.vertical { 0.92 } else { 1.0 - 0.18 * (facing).max(0.0) };
-                add(&f.poly, shade, 0.0);
+                add(&f.poly, shade, 0.0, plane_map(f));
                 // the thickness at the eave and along gable ends
                 if thick > 0.0 {
                     let n = f.poly.len();
@@ -2053,21 +2087,21 @@ impl Document {
                         if f.vertical && (a[2] - g.base_z).abs() < 1e-6 && (b[2] - g.base_z).abs() < 1e-6 {
                             continue;
                         }
-                        add(&[a, b, [b[0], b[1], b[2] - drop], [a[0], a[1], a[2] - drop]], 0.8, -0.5);
+                        add(&[a, b, [b[0], b[1], b[2] - drop], [a[0], a[1], a[2] - drop]], 0.8, -0.5, None);
                     }
                 }
             }
             for cap in &g.caps {
-                add(cap, 1.0, 0.0);
+                add(cap, 1.0, 0.0, None);
             }
             // a shape edited flat roof: its top, and the thickness round its edge
             if let Some((tin, bot)) = &g.shaped {
                 for k in &tin.tris {
-                    add(&[tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]], 1.0, 0.0);
+                    add(&[tin.verts[k[0]], tin.verts[k[1]], tin.verts[k[2]]], 1.0, 0.0, None);
                 }
                 for [i, j] in tin.boundary_edges() {
                     let (a, b) = (tin.verts[i], tin.verts[j]);
-                    add(&[a, b, [b[0], b[1], bot[j]], [a[0], a[1], bot[i]]], 0.85, -0.5);
+                    add(&[a, b, [b[0], b[1], bot[j]], [a[0], a[1], bot[i]]], 0.85, -0.5, None);
                 }
             }
             for reg in &g.flat {
@@ -2075,7 +2109,7 @@ impl Document {
                 let n = ring.len();
                 for i in 0..n {
                     let (a, b) = (ring[i], ring[(i + 1) % n]);
-                    add(&[a, b, [b[0], b[1], b[2] - thick], [a[0], a[1], a[2] - thick]], 0.85, 0.0);
+                    add(&[a, b, [b[0], b[1], b[2] - thick], [a[0], a[1], a[2] - thick]], 0.85, 0.0, None);
                 }
             }
         }

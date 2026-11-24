@@ -186,7 +186,7 @@ fn the_3d_scene_gives_faces_their_surface_patterns() {
     let gen = serde_json::to_value(openarch_model::matgen::GeneratorParams::preset(openarch_model::matgen::Archetype::Masonry)).unwrap();
     let brick = material_id(&mut s, "Face Brick");
     call(&mut s, "patch_style_item", json!({ "id": brick, "patch": { "appearance": { "kind": "parametric", "generator": gen }, "graphics": { "pattern_from_appearance": true } } }));
-    // a drafting pattern on the plasterboard: paper mm, so 100 times larger at 1:100
+    // a drafting pattern on the plasterboard: paper mm, laid square to the screen
     let board = material_id(&mut s, "Plasterboard");
     call(&mut s, "patch_style_item", json!({ "id": board, "patch": { "graphics": { "surface_foreground": { "pattern": "Diagonal up", "color": [200, 0, 0] } } } }));
     let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
@@ -196,9 +196,46 @@ fn the_3d_scene_gives_faces_their_surface_patterns() {
     assert!(surf(&scene, "Timber Frame").is_null(), "no surface pattern, nothing sent");
     let bed = scene["patterns"]["Face Brick (generated)"]["lines"].as_array().unwrap().iter().find(|l| l["angle"] == 0.0).unwrap().clone();
     assert_eq!(bed["spacing"], 172.0);
-    assert_eq!(scene["patterns"]["Diagonal up"]["lines"][0]["spacing"], 250.0);
+    assert_eq!(scene["patterns"]["Diagonal up"]["lines"][0]["spacing"], 2.5);
+    assert_eq!(scene["patterns"]["Diagonal up"]["drafting"], true);
+    assert_eq!(scene["patterns"]["Face Brick (generated)"]["drafting"], false);
     // Visibility/Graphics: surface patterns of walls off in this view
     call(&mut s, "patch_view", json!({ "id": v3, "patch": { "settings": { "overrides": { "model": { "Walls": { "surface_foreground": { "visible": false } } } } } } }));
     let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
     assert!(surf(&scene, "Face Brick").is_null() && surf(&scene, "Plasterboard").is_null());
+}
+
+#[test]
+fn elevations_lay_a_model_pattern_in_each_face_s_own_frame() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let lvl = info["levels"][0]["id"].as_u64().unwrap();
+    let wt = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"].as_str().unwrap().contains("Brick Veneer")).unwrap()["id"].as_u64().unwrap();
+    let south = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "South").unwrap()["id"].as_u64().unwrap();
+    let gen = serde_json::to_value(openarch_model::matgen::GeneratorParams::preset(openarch_model::matgen::Archetype::Masonry)).unwrap();
+    let brick = material_id(&mut s, "Face Brick");
+    call(&mut s, "patch_style_item", json!({ "id": brick, "patch": { "appearance": { "kind": "parametric", "generator": gen }, "graphics": { "pattern_from_appearance": true } } }));
+    // a wall square to the view and one at 30 degrees to it
+    call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [4000, 0], "height_mm": 2700 }));
+    let (c, sn) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
+    call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [8000, -3000], "end": [8000.0 + 4000.0 * c, -3000.0 + 4000.0 * sn], "height_mm": 2700 }));
+    let el = call(&mut s, "elevation", json!({ "view_id": south }));
+    let fr = &el["frame"];
+    let o_r = fr["origin"][0].as_f64().unwrap() * fr["right"][0].as_f64().unwrap() + fr["origin"][1].as_f64().unwrap() * fr["right"][1].as_f64().unwrap();
+    let maps: Vec<Vec<f64>> = el["items"].as_array().unwrap().iter().filter(|i| i["material"] == "Face Brick").filter_map(|i| i["pattern_map"].as_array()).map(|m| m.iter().map(|x| x.as_f64().unwrap()).collect()).collect();
+    // along the face, a mm of pattern is a mm across the view on the square wall and cos 30 on the other; up is up
+    let square = maps.iter().find(|m| (m[0] - 1.0).abs() < 1e-9).expect("the square wall's face");
+    assert_eq!(&square[1..4], &[0.0, 0.0, 1.0]);
+    assert!((square[4] + o_r).abs() < 1e-6, "from the project origin: {square:?}, marker at {o_r}");
+    let angled = maps.iter().find(|m| (m[0] - c).abs() < 1e-9).expect("the angled wall's face");
+    assert_eq!(&angled[1..4], &[0.0, 0.0, 1.0]);
+    // a roof plane facing the view: along the eave across, up the slope rising by its sine
+    let rt = info["roof_types"].as_array().unwrap()[0]["id"].as_u64().unwrap();
+    let pts = [[0.0, 3000.0], [6000.0, 3000.0], [6000.0, 8000.0], [0.0, 8000.0]];
+    let edges: Vec<Value> = (0..4).map(|i| json!({ "curve": { "type": "line", "a": { "x": pts[i][0], "y": pts[i][1] }, "b": { "x": pts[(i + 1) % 4][0], "y": pts[(i + 1) % 4][1] } }, "defines_slope": i % 2 == 0, "slope_deg": 30.0 })).collect();
+    call(&mut s, "add_roof_sketch", json!({ "type_id": rt, "level_id": lvl, "edges": edges }));
+    let el = call(&mut s, "elevation", json!({ "view_id": south }));
+    let roof: Vec<f64> = el["items"].as_array().unwrap().iter().filter(|i| i["category"] == "Roofs").filter_map(|i| i["pattern_map"].as_array())
+        .map(|m| m.iter().map(|x| x.as_f64().unwrap()).collect::<Vec<f64>>()).find(|m| (m[0] - 1.0).abs() < 1e-9).expect("the plane facing the view");
+    assert!(roof[1].abs() < 1e-9 && roof[2].abs() < 1e-9 && (roof[3] - 0.5).abs() < 1e-9, "{roof:?}");
 }

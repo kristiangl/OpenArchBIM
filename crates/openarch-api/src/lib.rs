@@ -3516,8 +3516,8 @@ impl Session {
             }
         }
         // surface patterns, which Hidden Line, Shaded and Consistent Colours draw on the faces: from the element's
-        // material, its category's Object Style and the view's overrides, as elevations resolve them; drafting
-        // patterns at the view's scale
+        // material, its category's Object Style and the view's overrides, as elevations resolve them. Model patterns
+        // in model mm on the face; drafting patterns in paper mm, which the view lays square to the screen
         let mut patterns = serde_json::Map::new();
         if let (Some(s), Some(vw)) = (settings.as_ref(), view.and_then(|v| d.view(v))) {
             let rgb = |h: &str| -> Option<[u8; 3]> {
@@ -3542,10 +3542,8 @@ impl Session {
                 if fg.is_none() && bg.is_none() { continue; }
                 if let Some(fp) = fg {
                     if !patterns.contains_key(&fp.name) {
-                        let k = if fp.pattern_type == openarch_model::styles::PatternKind::Model { 1.0 } else { f64::from(s.scale) };
-                        patterns.insert(fp.name.clone(), json!({ "solid": fp.solid, "lines": fp.lines.iter().map(|l| json!({
-                            "angle": l.angle_deg, "origin": [l.origin[0] * k, l.origin[1] * k], "shift": l.shift * k, "spacing": l.spacing * k,
-                            "dashes": l.dashes.iter().map(|x| x * k).collect::<Vec<_>>() })).collect::<Vec<_>>() }));
+                        patterns.insert(fp.name.clone(), json!({ "solid": fp.solid, "drafting": fp.pattern_type != openarch_model::styles::PatternKind::Model,
+                            "lines": fp.lines.iter().map(|l| json!({ "angle": l.angle_deg, "origin": l.origin, "shift": l.shift, "spacing": l.spacing, "dashes": l.dashes })).collect::<Vec<_>>() }));
                     }
                 }
                 m["surface"] = json!({ "pattern": fg.map(|p| p.name.clone()), "color": f["color"].as_str().and_then(rgb), "background": bg });
