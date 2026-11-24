@@ -947,6 +947,21 @@ mod tests {
     }
 
     #[test]
+    fn a_wall_opening_is_a_hole_of_its_own_size() {
+        let mut d = Document::new_project();
+        let w = wall(&mut d);
+        let t = type_named(&d, crate::family::WALL_OPENING, "Opening");
+        let id = d.place_on_wall(t, w, p(3000., 0.)).unwrap();
+        let o = d.wall_openings(w)[0];
+        assert_eq!((o.u1 - o.u0, o.z0, o.z1), (900.0, 0.0, 2100.0));
+        // its size is its own: each opening can differ
+        d.patch_instance(id, &json!({ "values": { "Width": 1200.0, "Height": 1000.0, "Sill Height": 900.0 } })).unwrap();
+        let o = d.wall_openings(w)[0];
+        assert_eq!((o.u1 - o.u0, o.z0, o.z1), (1200.0, 900.0, 1900.0));
+        assert!(d.patch_instance(id, &json!({ "values": { "Height": 5000.0 } })).is_err(), "taller than the wall");
+    }
+
+    #[test]
     fn instance_and_type_edits_go_through_patches() {
         let mut d = Document::new_project();
         let w = wall(&mut d);

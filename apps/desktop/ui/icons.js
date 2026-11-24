@@ -22,6 +22,7 @@ const ICONS = {
   room: '<rect x="3" y="3" width="18" height="18" rx="1"/><path class="af" d="M12 8.5l3.5 3.5-3.5 3.5L8.5 12z"/>',
 
   // ---- build, model, room, datum, work plane ----
+  wallOpening: '<path d="M3 4h18v16H3z"/><path class="a2" d="M8 20v-9h8v9"/>',
   curtainGrid: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16" stroke-dasharray="2.5 2"/><path class="a2" d="M12 3v18"/>',
   gridAll: '<rect x="4" y="3" width="16" height="18"/><path class="a2" d="M12 3v18"/>',
   gridOne: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 3v9"/>',
@@ -325,7 +326,7 @@ const ICONS = {
 // Ribbon ids, sketch tool ids and old two-letter monograms that use each icon
 const ICON_ALIAS = {
   // architecture
-  "curtain-grid": "curtainGrid", "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "det-group": "detailGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
+  "curtain-grid": "curtainGrid", "wall-opening": "wallOpening", "model-line": "modelLine", "model-text": "modelText", "model-group": "modelGroup", "det-group": "detailGroup", "room-sep": "roomSep", "tag-room": "tagRoom",
   "set-wp": "setWp", "show-wp": "showWp", "ref-plane": "refPlane",
   // structure
   "s-beam": "beam", "s-bsystem": "beam", "s-brace": "brace", "s-column": "sColumn", "s-truss": "truss", "s-isolated": "footing", "s-strip": "stripFooting", "s-slab": "slabEdge",

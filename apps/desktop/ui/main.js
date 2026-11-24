@@ -170,6 +170,7 @@ const COMMANDS = {
   "set-wp": () => setWorkPlane(),
   level: () => startLevelTool(),
   "curtain-grid": () => startCurtainGridTool(),
+  "wall-opening": () => startWallOpening(),
   grid: () => startGridTool(),
   "v-elev": () => startElevationTool(),
   "v-section": () => startSectionTool(),
@@ -1853,6 +1854,19 @@ async function startComponentTool(filter = null) {
   if (!types.some((t) => t.id === app.componentTypeId)) app.componentTypeId = (mruTypes().find((id) => types.some((t) => t.id === id))) ?? types[0].id;
   await useComponentType(app.componentTypeId);
   renderProperties();
+}
+// Wall Opening: a rectangular hole through a wall, placed by clicking the wall like a door; its width, height and
+// sill are its own (Properties)
+async function startWallOpening() {
+  const r = await run("wall_opening_type", {});
+  if (!r) return;
+  if (!app.info.family_types.some((t) => t.id === r.type_id)) await refresh();
+  if (!(await ensurePlan("A wall opening"))) return;
+  app.componentTypeId = r.type_id;
+  Plan.setTool("hosted");
+  Plan.setPlacement(900, "Wall Opening");
+  renderProperties();
+  setPrompt("Wall Opening: click a wall to cut a 900 x 2100 opening; change its size in Properties. Esc to finish.");
 }
 async function useComponentType(tid) {
   app.componentTypeId = tid;

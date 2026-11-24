@@ -2219,6 +2219,17 @@ impl Session {
                 self.doc.reset_wall_profile(id_of(p, "id")?)?;
                 Ok(json!({}))
             }
+            // the Wall Opening tool's type, the family added first in a project made before it existed
+            "wall_opening_type" => {
+                use openarch_model::family::{wall_opening_family, WALL_OPENING};
+                let fam = self.doc.families().into_iter().find(|(_, f)| f.name == WALL_OPENING).map(|(id, _)| id);
+                let fam = match fam {
+                    Some(f) => f,
+                    None => { let sf = wall_opening_family(); self.doc.add_family(sf.family, sf.types)?.0 }
+                };
+                let t = self.doc.family_types().into_iter().find(|(_, t)| t.family == fam).map(|(id, _)| id).ok_or("the Wall Opening family has no type")?;
+                Ok(json!({ "type_id": t, "family_id": fam }))
+            }
             // Attach Top: { ids, point } the roof under a plan point takes the walls' tops; Detach Top: { ids }
             "attach_top" => {
                 let ids: Vec<Id> = p.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_u64()).collect()).unwrap_or_default();

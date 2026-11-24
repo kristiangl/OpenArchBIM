@@ -561,7 +561,33 @@ pub fn starter_families() -> Vec<StarterFamily> {
     crate::ceiling::starter_ceiling_families()
         .into_iter()
         .chain(bundled_families())
+        .chain(std::iter::once(wall_opening_family()))
         .collect()
+}
+
+/// The name of the Wall Opening family (Architecture > Opening > Wall).
+pub const WALL_OPENING: &str = "Wall Opening";
+
+/// Wall Opening: a rectangular hole through a wall and nothing else. Hosted by a wall, with its width, height and
+/// sill on each instance, and no body, so the hole is all it makes.
+pub fn wall_opening_family() -> StarterFamily {
+    let p = |name: &str, default: f64| ParamDef { name: name.into(), param_kind: ParamKind::Length, instance: true, group: if name == "Sill Height" { "Constraints" } else { "Dimensions" }.into(), formula: None, reporting: false, shared_guid: None, choices: vec![], discipline: "common".into(), tooltip: String::new(), locked: false, family_category: None, default: ParamValue::Number(default) };
+    StarterFamily {
+        family: Family {
+            name: WALL_OPENING.into(),
+            category: FamilyCategory::GenericModels,
+            host: HostKind::Wall,
+            plan_symbol: PlanSymbol::None,
+            params: vec![p("Width", 900.0), p("Height", 2100.0), p("Sill Height", 0.0)],
+            built_in: true,
+            catalog: vec![],
+            settings: Default::default(),
+            source_path: None,
+            loaded_at: None,
+            body: Default::default(),
+        },
+        types: vec![("Opening".into(), Default::default())],
+    }
 }
 
 /// The starter families shipped as family files (door-window-spec.md step 3), opened and changed in the family

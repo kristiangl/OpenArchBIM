@@ -83,6 +83,7 @@ const RIBBON = {
       { id: "stair", label: "Stair", big: true }, { id: "ramp", label: "Ramp", big: true },
       { id: "railing", label: "Railing", big: true, menu: [{ id: "railing-sketch", label: "Sketch Path" }, { id: "railing-stair", label: "Place on Stair/Ramp" }] } ] },
     { label: "Circulation", items: [] },
+    { label: "Opening", items: [{ id: "wall-opening", label: "Wall Opening" }] },
     { label: "Model", items: [
       { id: "model-line", label: "Model Line" }, { id: "model-text", label: "Model Text" }, { id: "model-group", label: "Model Group" } ] },
     { label: "Room & Area", items: [

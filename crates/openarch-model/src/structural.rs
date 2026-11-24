@@ -401,9 +401,24 @@ impl Document {
     /// The starter types, for a project that has none. Steel sizes are the common Australian open and hollow
     /// sections (AS/NZS 3679.1, AS/NZS 1163), to the nearest tenth of a millimetre from the usual section tables.
     pub fn ensure_structural_types(&mut self) -> Result<(), String> {
-        if !self.structural_types().is_empty() { return Ok(()); }
         use Section::*;
         use StructuralUse::*;
+        // masonry piers, engaged in a wall or free standing; added to projects that had the other types first
+        let piers: Vec<(&str, &str, StructuralUse, Section, &str)> = vec![
+            ("Brick Pier", "290 x 90 engaged", Column, Rectangle { b: 290.0, d: 90.0 }, "Face Brick"),
+            ("Brick Pier", "230 x 230", Column, Rectangle { b: 230.0, d: 230.0 }, "Face Brick"),
+            ("Brick Pier", "350 x 350", Column, Rectangle { b: 350.0, d: 350.0 }, "Face Brick"),
+            ("Brick Pier", "470 x 350", Column, Rectangle { b: 470.0, d: 350.0 }, "Face Brick"),
+        ];
+        if !self.structural_types().is_empty() {
+            if self.structural_types().iter().any(|(_, t)| t.family == "Brick Pier") { return Ok(()); }
+            return self.transact("Brick pier types", |tx| {
+                for (family, name, used_for, section, material) in piers {
+                    tx.add(Element::StructuralType(StructuralType { family: family.into(), name: name.into(), used_for, section, material: material.into(), info: Default::default() }));
+                }
+                Ok(())
+            });
+        }
         let list: Vec<(&str, &str, StructuralUse, Section, &str)> = vec![
             ("Concrete Rectangular Column", "300 x 300", Column, Rectangle { b: 300.0, d: 300.0 }, "Concrete"),
             ("Concrete Rectangular Column", "450 x 450", Column, Rectangle { b: 450.0, d: 450.0 }, "Concrete"),
@@ -423,7 +438,7 @@ impl Document {
             ("Timber Beam", "240 x 45", Framing, Rectangle { b: 45.0, d: 240.0 }, "Timber"),
             ("Timber Beam", "190 x 45", Framing, Rectangle { b: 45.0, d: 190.0 }, "Timber"),
             ("Concrete Beam", "300 x 600", Framing, Rectangle { b: 300.0, d: 600.0 }, "Concrete"),
-        ];
+        ].into_iter().chain(piers).collect();
         self.transact("Structural types", |tx| {
             for (family, name, used_for, section, material) in list {
                 tx.add(Element::StructuralType(StructuralType { family: family.into(), name: name.into(), used_for, section, material: material.into(), info: Default::default() }));
