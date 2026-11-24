@@ -53,6 +53,7 @@ pub mod rooms;
 pub mod revisions;
 pub mod tags;
 pub mod ceiling;
+pub mod starterlib;
 pub mod shape;
 pub mod topo;
 pub mod propline;

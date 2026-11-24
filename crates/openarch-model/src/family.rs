@@ -562,6 +562,7 @@ pub fn starter_families() -> Vec<StarterFamily> {
         .into_iter()
         .chain(bundled_families())
         .chain(std::iter::once(wall_opening_family()))
+        .chain(crate::starterlib::starter_library())
         .collect()
 }
 

@@ -320,7 +320,7 @@ impl Document {
         }
         self.transact(if roof.is_some() { "Attach Top" } else { "Detach Top" }, |tx| {
             for (id, w) in walls {
-                tx.update(id, Element::Wall(w));
+                tx.update(id, Element::Wall(w))?;
             }
             Ok(())
         })

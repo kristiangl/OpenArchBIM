@@ -474,6 +474,12 @@ pub fn starter_materials() -> Vec<Material> {
         // Western Australian double brick: the outer leaf rendered, the inner one hard plastered
         mat("Render", "Plaster", [228, 222, 208], Some("Sand"), None, 1700.0, 1.0),
         mat("Hard Plaster", "Plaster", [240, 238, 232], None, None, 1200.0, 0.5),
+        // what the starter fixtures, cupboards and furniture are made of
+        mat("Laminate", "Wood", [236, 234, 228], None, None, 700.0, 0.17),
+        mat("Stone", "Stone", [214, 210, 202], None, None, 2400.0, 1.5),
+        mat("Vitreous China", "Ceramic", [246, 246, 244], None, None, 2300.0, 1.2),
+        mat("Stainless Steel", "Metal", [196, 198, 200], None, None, 7900.0, 16.0),
+        mat("Fabric", "Textile", [150, 146, 140], None, None, 300.0, 0.05),
     ]
 }
 

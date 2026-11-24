@@ -1043,7 +1043,7 @@ mod tests {
         // the choices are every type of the loaded Doors families, as "Family : Type"
         let choices = d.family_type_choices(Some(FamilyCategory::Doors));
         assert!(choices.contains(&"Glazed Leaf : t".to_string()) && choices.contains(&"Frame : Glazed".to_string()));
-        assert!(d.family_type_choices(Some(FamilyCategory::Furniture)).is_empty());
+        assert!(d.family_type_choices(Some(FamilyCategory::Mass)).is_empty());
         // a type is switched in the project like any text value
         d.patch_family_type(types[1], &json!({ "values": { "Door Panel Type": "Leaf : t" } })).unwrap();
         assert_eq!(width(&d, types[1]), 900.0);

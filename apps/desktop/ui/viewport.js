@@ -1504,8 +1504,10 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     function frame(now) {
       requestAnimationFrame(frame);
       if (stress) { cam.az += 0.0025; dirty = true; }
+      if (typeof stepEase === "function") stepEase(now);
       if (!dirty) return;
       dirty = false;
+      if (typeof drawCube === "function") drawCube();
       resize();
       const dt = now - last; last = now; frames++; acc += dt;
       if (acc >= 500) { fps = (frames * 1000) / acc; frames = 0; acc = 0; if (stress) onFrame?.(fps, be.gpuMs); }
@@ -1679,6 +1681,97 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     bandBox.className = "vp-band";
     bandBox.hidden = true;
     canvas.after(bandBox);
+
+    // ---- the view cube: a small cube in the corner that turns with the camera. A face looks square at that side
+    // (Top looks straight down), a corner gives the three-quarter view from it, Home goes back to the starting view.
+    // A click eases the camera round; drags still orbit the model.
+    const cube = document.createElement("div");
+    cube.className = "vp-cube";
+    cube.innerHTML = '<svg viewBox="-60 -60 120 120" width="96" height="96"></svg><button class="vp-cube-home" title="Home: the starting view, fitted to the model">⌂</button>' +
+      '<button class="vp-cube-turn" data-turn="up" title="Turn up a quarter">▴</button><button class="vp-cube-turn" data-turn="down" title="Turn down a quarter">▾</button>' +
+      '<button class="vp-cube-turn" data-turn="left" title="Turn left a quarter">◂</button><button class="vp-cube-turn" data-turn="right" title="Turn right a quarter">▸</button>';
+    canvas.after(cube);
+    const cubeSvg = cube.querySelector("svg");
+    const FACES = [
+      { name: "TOP", n: [0, 0, 1], c: [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], az: null, el: 1.5 },
+      { name: "FRONT", n: [0, -1, 0], c: [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]], az: -Math.PI / 2, el: 0 },
+      { name: "BACK", n: [0, 1, 0], c: [[1, 1, -1], [-1, 1, -1], [-1, 1, 1], [1, 1, 1]], az: Math.PI / 2, el: 0 },
+      { name: "RIGHT", n: [1, 0, 0], c: [[1, -1, -1], [1, 1, -1], [1, 1, 1], [1, -1, 1]], az: 0, el: 0 },
+      { name: "LEFT", n: [-1, 0, 0], c: [[-1, 1, -1], [-1, -1, -1], [-1, -1, 1], [-1, 1, 1]], az: Math.PI, el: 0 },
+      { name: "BOTTOM", n: [0, 0, -1], c: [[-1, 1, -1], [1, 1, -1], [1, -1, -1], [-1, -1, -1]], az: null, el: -0.05 },
+    ];
+    let ease = null;
+    function turnTo(az, el, fitAfter) {
+      // the short way round
+      let a = az == null ? cam.az : az;
+      while (a - cam.az > Math.PI) a -= 2 * Math.PI;
+      while (a - cam.az < -Math.PI) a += 2 * Math.PI;
+      ease = { az0: cam.az, el0: cam.el, az1: a, el1: el, t0: performance.now(), fitAfter };
+      dirty = true;
+    }
+    function stepEase(now) {
+      if (!ease) return;
+      const k = Math.min(1, (now - ease.t0) / 350), s = k * k * (3 - 2 * k);
+      cam.az = ease.az0 + (ease.az1 - ease.az0) * s;
+      cam.el = ease.el0 + (ease.el1 - ease.el0) * s;
+      dirty = true;
+      if (k >= 1) { const f = ease.fitAfter; ease = null; if (f) f(); }
+    }
+    function drawCube() {
+      const eye = eyePos();
+      const nrm = (a) => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
+      const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+      const dot = (a, b) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+      const f = nrm([cam.target[0] - eye[0], cam.target[1] - eye[1], cam.target[2] - eye[2]]);
+      // looking straight down, the right is taken from the turn so the cube does not spin
+      const flat = Math.hypot(f[0], f[1]) < 1e-6 ? [-Math.sin(cam.az), Math.cos(cam.az), 0] : nrm(cross(f, [0, 0, 1]));
+      const right = flat, up = cross(right, f);
+      const S = 26;
+      const scr = (p) => [dot(p, right) * S, -dot(p, up) * S];
+      const parts = [];
+      const shown = FACES.filter((fc) => dot(fc.n, f) < -1e-3).sort((a, b) => dot(b.n, f) - dot(a.n, f));
+      for (const fc of shown) {
+        const pts = fc.c.map(scr);
+        const facing = -dot(fc.n, f);
+        const tx = scr(fc.n.map((v) => v));
+        const sk = Math.max(0.35, facing);
+        parts.push(`<g class="vp-cube-face" data-face="${fc.name}"><polygon points="${pts.map((p) => p.join(",")).join(" ")}" style="fill-opacity:${(0.55 + 0.4 * facing).toFixed(2)}"/>` +
+          (facing > 0.3 ? `<text x="${tx[0].toFixed(1)}" y="${(tx[1] + 3.5).toFixed(1)}" style="font-size:${(10 * sk).toFixed(1)}px">${fc.name}</text>` : "") + `</g>`);
+      }
+      // the corners that face the camera, for the three-quarter views
+      for (const x of [-1, 1]) for (const y of [-1, 1]) for (const z of [-1, 1]) {
+        const n = nrm([x, y, z]);
+        if (dot(n, f) > -0.2) continue;
+        const [sx, sy] = scr([x, y, z]);
+        parts.push(`<circle class="vp-cube-corner" data-corner="${x},${y},${z}" cx="${sx.toFixed(1)}" cy="${sy.toFixed(1)}" r="5"/>`);
+      }
+      // north on the compass ring below the cube
+      const nn = scr([0, 1.9, -1]);
+      parts.push(`<text class="vp-cube-n" x="${nn[0].toFixed(1)}" y="${(nn[1] + 3).toFixed(1)}">N</text>`);
+      cubeSvg.innerHTML = parts.join("");
+      cube.style.left = `${canvas.offsetLeft + canvas.clientWidth - 112}px`;
+      cube.style.top = `${canvas.offsetTop + 8}px`;
+    }
+    cube.addEventListener("pointerdown", (e) => e.stopPropagation());
+    cube.addEventListener("click", (e) => {
+      if (e.target.closest(".vp-cube-home")) { turnTo(-0.9, 0.5, () => api.fit && api.fit()); return; }
+      const turn = e.target.closest("[data-turn]");
+      if (turn) {
+        // a quarter turn, landing square on the next face
+        const q = Math.PI / 2, d = turn.dataset.turn;
+        if (d === "left" || d === "right") turnTo(Math.round(cam.az / q) * q + (d === "left" ? q : -q), cam.el);
+        else turnTo(cam.az, d === "up" ? (cam.el > 0.7 ? 1.5 : Math.min(1.5, cam.el + q)) : (cam.el > 1.0 ? 0 : -0.05));
+        return;
+      }
+      const corner = e.target.closest("[data-corner]");
+      if (corner) {
+        const [x, y, z] = corner.dataset.corner.split(",").map(Number);
+        turnTo(Math.atan2(y, x), z > 0 ? 0.62 : -0.05);
+        return;
+      }
+      const face = e.target.closest("[data-face]");
+      if (face) { const fc = FACES.find((q) => q.name === face.dataset.face); turnTo(fc.az, fc.el); }
+    });
     canvas.addEventListener("pointerdown", (e) => {
       canvas.setPointerCapture(e.pointerId);
       const what = e.button === buttons.select && !e.shiftKey ? "select" : e.button === buttons.orbit || (e.button === buttons.pan && e.shiftKey) ? "orbit" : e.button === buttons.pan ? "pan" : "select";
@@ -1771,7 +1864,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       be.instance(m.g, new Float32Array([0, 0, 0, selected ? 1.0 : m.color ? 0 : TINT[m.kind] ?? 0, 1, 1, 1, t, ...(m.color || [0, 0, 0]), m.color ? 1 : 0]));
     };
 
-    return {
+    const api = {
       info: be.info,
       /** "WebGPU" or "WebGL2" */
       backend: be.name,
@@ -1899,6 +1992,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       snapshot() { return new Promise((res) => { be.pending = res; dirty = true; }); },
       instances: () => (stress ? 1200 : meshes.length),
     };
+    return api;
   }
 
   return { init, mat, prepareMaterial };
