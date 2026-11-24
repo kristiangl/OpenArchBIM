@@ -45,6 +45,7 @@ pub mod ifc_import;
 pub mod join;
 pub mod layers;
 pub mod matgen;
+pub mod generated;
 pub mod mesh;
 pub mod roof;
 pub mod schedule;

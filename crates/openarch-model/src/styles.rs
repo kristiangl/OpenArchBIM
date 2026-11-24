@@ -381,6 +381,8 @@ pub struct Appearance {
     pub maps: TextureMaps,
     /// The parametric definition (kept when switching to Standard, so switching back restores it).
     pub generator: Option<crate::matgen::GeneratorParams>,
+    /// The generator version the material was made with (generated.rs); 0 before versions were kept.
+    pub generator_version: u32,
 }
 
 impl Default for Appearance {
@@ -397,6 +399,7 @@ impl Default for Appearance {
             pom_depth_mm: 0.0,
             maps: TextureMaps::default(),
             generator: None,
+            generator_version: 0,
         }
     }
 }
@@ -1027,14 +1030,31 @@ impl Document {
         let mut pattern = None;
         if a.kind == AppearanceKind::Parametric {
             let g = a.generator.get_or_insert_with(Default::default).clone();
-            let (w, h) = crate::matgen::domain(&g)?;
-            a.uv_size_mm = [w, h];
-            a.pom_depth_mm = crate::matgen::relief_mm(&g);
-            a.color = g.base_color();
-            a.roughness = g.finish.roughness();
-            a.metalness = if g.archetype == crate::matgen::Archetype::Metal && !matches!(g.finish, crate::matgen::Finish::PowderCoated | crate::matgen::Finish::Patina) { 1.0 } else { 0.0 };
+            // what the generator made for these values at the version the material was made with, as the project
+            // keeps it; otherwise (its values changed, or it is new to the project) the current generator's
+            let kept = self.generated_entry(&crate::matgen::store_key(&g, a.generator_version));
+            let made = match kept {
+                Some(e) => e,
+                None => {
+                    a.generator_version = crate::matgen::GENERATOR_VERSION;
+                    let key = crate::matgen::store_key(&g, a.generator_version);
+                    match self.generated_entry(&key) {
+                        Some(e) => e,
+                        None => {
+                            let e = crate::generated::GeneratedEntry::make(&g)?;
+                            self.put_generated_entry(key, e.clone());
+                            e
+                        }
+                    }
+                }
+            };
+            a.uv_size_mm = made.uv_size_mm;
+            a.pom_depth_mm = made.depth_mm;
+            a.color = made.color;
+            a.roughness = made.roughness;
+            a.metalness = made.metalness;
             if m.graphics.pattern_from_appearance {
-                let lines = crate::matgen::rotate_hatch(&crate::matgen::hatch(&g)?, a.uv_rotation_deg);
+                let lines = crate::matgen::rotate_hatch(&made.hatch, a.uv_rotation_deg);
                 let off = a.uv_offset_mm;
                 let lines: Vec<HatchLine> = lines.into_iter().map(|mut l| { l.origin = [l.origin[0] + off[0], l.origin[1] + off[1]]; l }).collect();
                 let name = generated_pattern_name(&m.name);

@@ -464,6 +464,8 @@ impl Session {
             "material_library_delete" => materials::library_delete(p),
             "material_library_add_category" => materials::library_add_category(p),
             "material_library_move" => materials::library_move(p),
+            "material_update_generated" => materials::update_generated(&mut self.doc, p),
+            "material_generated_status" => Ok(json!({ "version": openarch_model::matgen::GENERATOR_VERSION, "outdated": self.doc.outdated_generated().into_iter().map(|(id, n)| json!({ "id": id, "name": n })).collect::<Vec<_>>() })),
             "plan" => self.plan(p),
             "scene" => Ok(self.scene(p)),
             "patch_wall" => {
@@ -2549,6 +2551,8 @@ impl Session {
                     Some(s) => PathBuf::from(s),
                     None => self.path.clone().ok_or("no file name yet")?,
                 };
+                // generated materials keep their maps in the file
+                materials::fill_generated(&self.doc)?;
                 // the file as it was is kept as a numbered backup; one that cannot be made does not stop the save
                 use openarch_model::store::Backup;
                 let (backup, backup_error) = match self.doc.save_keeping_backups(&path)? {

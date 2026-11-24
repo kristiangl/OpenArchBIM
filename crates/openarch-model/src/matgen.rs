@@ -296,6 +296,28 @@ pub struct Generated {
     pub notes: Vec<String>,
 }
 
+/// The generator's version. Raise it whenever the generator makes something different from the same values (a
+/// better texture, a changed layout): projects keep what the earlier version made until their materials are changed
+/// or Update Generated Materials is run (generated.rs), and the map cache starts afresh.
+pub const GENERATOR_VERSION: u32 = 1;
+
+/// The key a generator's output for `g` at `version` is kept under, in the project and in the map cache.
+pub fn store_key(g: &GeneratorParams, version: u32) -> String {
+    let text = serde_json::to_string(g).unwrap_or_default();
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
+    for b in text.bytes() {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    format!("{h:016x}-v{version}")
+}
+
+/// The resolution the 3D view's maps are made at: about 2 mm a pixel, 512 to `cap` along the longer side.
+pub fn auto_res(g: &GeneratorParams, cap: u32) -> Result<u32, String> {
+    let (w, h) = domain(g)?;
+    Ok(((w.max(h) / 2.0).ceil() as u32).clamp(512.min(cap), cap))
+}
+
 // ---------------------------------------------------------------- layouts
 
 #[derive(Debug, Clone, Copy, PartialEq)]

@@ -490,7 +490,20 @@
           }));
       }
       search.oninput = renderList;
-      function render() { renderSide(); renderList(); if (side === "project") renderPane(); left.querySelector(".row").style.display = side === "project" ? "" : "none"; }
+      // generated materials made by an earlier version of the generator keep their look until updated
+      const updRow = h("div", { className: "row" });
+      async function renderUpdate() {
+        let st = null;
+        if (side === "project") { try { st = await Backend.call("material_generated_status"); } catch { /* an older core */ } }
+        if (!st || !st.outdated.length) { updRow.replaceChildren(); return; }
+        const b = h("button", { textContent: `Update Generated Materials (${st.outdated.length})`, title: `Made by an earlier version of the material generator: ${st.outdated.map((o) => o.name).join(", ")}. They keep how they looked until updated.` });
+        b.onclick = async () => {
+          const r = await Backend.call("material_update_generated", {}).catch((e) => { msg.textContent = errText(e); return null; });
+          if (r) { std = await Backend.call("standards"); msg.textContent = `Made ${r.updated.join(", ")} again with generator version ${r.version}.`; render(); }
+        };
+        updRow.replaceChildren(b);
+      }
+      function render() { renderSide(); renderList(); if (side === "project") renderPane(); left.querySelector(".row").style.display = side === "project" ? "" : "none"; renderUpdate(); }
 
       const unique = (base) => { let n = base, k = 2; while (std.materials.some((x) => x.material.name === n)) n = `${base} ${k++}`; return n; };
       const made = async (r, n) => { if (r) { std = await Backend.call("standards"); current = n; msg.textContent = ""; render(); } };
@@ -514,7 +527,7 @@
         msg.textContent = err || "";
         if (!err) { std = await Backend.call("standards"); current = std.materials[0] && std.materials[0].material.name; render(); }
       };
-      left.append(h("div", { className: "row" }, add, dup, del));
+      left.append(h("div", { className: "row" }, add, dup, del), updRow);
       foot.append(button("OK", () => finish("ok"), true), button("Cancel", () => finish("cancel")), button("Apply", () => finish("apply")));
       render();
     }, { wide: true });

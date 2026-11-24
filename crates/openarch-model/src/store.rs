@@ -28,12 +28,14 @@ use crate::element::{Element, Id};
 /// 24: insulation on detail lines (a width that draws the line as batt insulation).
 /// 25: symbols (a new element kind) and generic annotation families.
 /// 26: images (a new element kind).
+/// 34: what the material generator made for parametric materials (the `generated` table), and the version each
+///     material was made with.
 ///
 /// Raise this whenever a build starts to store something an earlier build would not know: a new element kind
 /// always (the test `the_element_kinds_match_the_format_version` holds the list), and a new field whose loss would
 /// matter. An earlier build then says the file is from a newer version instead of failing on it or, worse, opening
 /// it and saving it back without the new data.
-const FORMAT_VERSION: i64 = 33;
+const FORMAT_VERSION: i64 = 34;
 
 /// The backups a new project keeps, and the most that can be asked for.
 pub const DEFAULT_BACKUPS: u32 = 5;
@@ -69,7 +71,8 @@ impl Document {
             let mut conn = Connection::open(&tmp).map_err(|e| e.to_string())?;
             conn.execute_batch(
                 "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-                 CREATE TABLE elements (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, data TEXT NOT NULL);",
+                 CREATE TABLE elements (id INTEGER PRIMARY KEY, kind TEXT NOT NULL, data TEXT NOT NULL);
+                 CREATE TABLE generated (key TEXT PRIMARY KEY, data TEXT NOT NULL, maps BLOB);",
             )
             .map_err(|e| e.to_string())?;
             let tx = conn.transaction().map_err(|e| e.to_string())?;
@@ -83,6 +86,10 @@ impl Document {
                 let json = serde_json::to_string(e).map_err(|e| e.to_string())?;
                 tx.execute("INSERT INTO elements VALUES (?1, ?2, ?3)", params![id as i64, e.kind(), json])
                     .map_err(|e| e.to_string())?;
+            }
+            // what the generator made for the parametric materials, with their maps
+            for (key, json, maps) in self.generated_rows() {
+                tx.execute("INSERT INTO generated VALUES (?1, ?2, ?3)", params![key, json, maps]).map_err(|e| e.to_string())?;
             }
             tx.commit().map_err(|e| e.to_string())?;
         }
@@ -153,6 +160,17 @@ impl Document {
         d.ensure_view_marker_types();
         d.ensure_detail_defaults(); // projects saved before detail items
         d.ensure_curtain_types(); // projects saved before curtain walls
+        // what the generator made, in projects saved since it was kept
+        if let Ok(mut stmt) = conn.prepare("SELECT key, data, maps FROM generated") {
+            let rows: Vec<(String, String, Option<Vec<u8>>)> = stmt
+                .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+                .map(|it| it.flatten().collect())
+                .unwrap_or_default();
+            for (key, json, maps) in rows {
+                d.load_generated(key, &json, maps.as_deref());
+            }
+        }
+        d.ensure_generated();
         if v < 2 {
             d.use_hidden_line_in_elevations_and_3d(); // projects saved before the visual style was drawn
         }
@@ -191,7 +209,7 @@ mod tests {
     /// Every element kind the project file can hold, as of FORMAT_VERSION. A kind added to `Element` without this
     /// list (and so the version) being touched fails here: an earlier build could not read such a file and has to
     /// be told it is from a newer version.
-    const KINDS: (i64, &str) = (33, "Level WallType FloorType Wall Floor RoofType Roof View ViewTemplate Family FamilyType FamilyInstance ObjectStyles LineWeights LinePattern FillPattern Material ProjectLocation ElevationMarker Grid GridType AnnotationFamily LevelType Dimension DimensionType Spot SpotType Section ViewType ViewMarkerType DetailLine DetailRegion FilledRegionType TextNote TextNoteType GlobalParam GroupType GroupInstance GroupArray ProjectInfo Sheet Viewport SheetCollection SheetSchedule ProjectParameter Room RoomSeparation RoomTag RoomSettings Revision RevisionSettings RevisionCloud RevisionTag ElementTag CeilingType Ceiling AreaScheme AreaBoundary Area AreaTag ColorFillScheme ColorFillLegend StairType Stair RailingType Railing RampType Ramp ToposolidType Toposolid ContourLabel PropertyLine LineMarking ParkingRow Kerb KerbRamp CadImport ViewFilter StructuralType StructuralColumn Beam BeamSystem Truss PropertyLineTag Phasing DesignOptions LegendComponent AnnotationSymbol ImageItem ModelLine RefPlane WallFoundationType WallFoundation IsolatedFootingType IsolatedFooting SlabEdgeType SlabEdge ModelText KeynoteTable");
+    const KINDS: (i64, &str) = (34, "Level WallType FloorType Wall Floor RoofType Roof View ViewTemplate Family FamilyType FamilyInstance ObjectStyles LineWeights LinePattern FillPattern Material ProjectLocation ElevationMarker Grid GridType AnnotationFamily LevelType Dimension DimensionType Spot SpotType Section ViewType ViewMarkerType DetailLine DetailRegion FilledRegionType TextNote TextNoteType GlobalParam GroupType GroupInstance GroupArray ProjectInfo Sheet Viewport SheetCollection SheetSchedule ProjectParameter Room RoomSeparation RoomTag RoomSettings Revision RevisionSettings RevisionCloud RevisionTag ElementTag CeilingType Ceiling AreaScheme AreaBoundary Area AreaTag ColorFillScheme ColorFillLegend StairType Stair RailingType Railing RampType Ramp ToposolidType Toposolid ContourLabel PropertyLine LineMarking ParkingRow Kerb KerbRamp CadImport ViewFilter StructuralType StructuralColumn Beam BeamSystem Truss PropertyLineTag Phasing DesignOptions LegendComponent AnnotationSymbol ImageItem ModelLine RefPlane WallFoundationType WallFoundation IsolatedFootingType IsolatedFooting SlabEdgeType SlabEdge ModelText KeynoteTable");
 
     #[test]
     fn the_element_kinds_match_the_format_version() {

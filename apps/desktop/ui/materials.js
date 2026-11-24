@@ -192,6 +192,12 @@ const MatUI = (() => {
     });
     kind.options[0].text = "Standard (image maps)"; kind.options[1].text = "Parametric (generated)";
     t.append(row("Type", kind));
+    if ((a.kind || "standard") === "parametric" && a.generator_version !== P.generator_version) {
+      // made by an earlier version of the generator: the project keeps how it looked until it is made again
+      const upd = h("button", { textContent: "Update", title: "Make this material again with the current generator" });
+      upd.onclick = async () => { try { await Backend.call("material_update_generated", { ids: [ctx.id] }); ctx.msg(""); } catch (e) { ctx.msg(errText(e)); } ctx.patch({}); };
+      t.append(row("Generator", h("span", {}, h("span", { className: "muted", textContent: `Made by generator version ${a.generator_version}; the project keeps that look (the preview shows version ${P.generator_version}). ` }), upd)));
+    }
     const num = (v, on, o = {}) => ctx.numberInput(v, on, { width: "90px", ...o });
     const ap = (patchObj) => ctx.patch({ appearance: patchObj });
     if ((a.kind || "standard") === "parametric") {

@@ -61,6 +61,9 @@ pub struct Document {
     pub(crate) drawing_view: std::cell::Cell<Option<Id>>,
     /// The phase being exported, while it is (phasing.rs): openings follow it. None outside export.
     pub(crate) export_phase: std::cell::Cell<Option<Id>>,
+    /// What the material generator made for the parametric materials, by values and generator version
+    /// (generated.rs). Saved with the project, not undone.
+    pub(crate) generated: std::cell::RefCell<BTreeMap<String, crate::generated::GeneratedEntry>>,
 }
 
 /// Handle passed to a transaction closure. Every change is recorded so the
@@ -165,7 +168,7 @@ pub const MAX_WALL_HEIGHT_MM: f64 = 1_000_000.0;
 
 impl Default for Document {
     fn default() -> Self {
-        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default(), active_option: None, options_cache: Default::default(), all_openings: Default::default(), drawing_view: Default::default(), export_phase: Default::default() }
+        Document { elements: BTreeMap::new(), next_id: 1, undo: vec![], redo: vec![], undo_base: 0, max_backups: crate::store::DEFAULT_BACKUPS, revision: 0, edit_count: 0, solve_cache: Default::default(), defer_settle: 0, settling: false, key_writing: false, room_cache: Default::default(), filter_cache: Default::default(), temp_templates: Default::default(), display: Default::default(), creation_phase: None, phasing_cache: Default::default(), active_option: None, options_cache: Default::default(), all_openings: Default::default(), drawing_view: Default::default(), export_phase: Default::default(), generated: Default::default() }
     }
 }
 

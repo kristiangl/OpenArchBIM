@@ -5,7 +5,8 @@
 use std::path::{Path, PathBuf};
 
 use openarch_model::image::{base64_encode, image_kind};
-use openarch_model::matgen::{self, Archetype, Finish, GeneratorParams, Layout, MortarProfile};
+use openarch_model::generated::GeneratedMaps;
+use openarch_model::matgen::{self, auto_res, Archetype, Finish, GeneratorParams, Layout, MortarProfile, GENERATOR_VERSION};
 use openarch_model::styles::{AppearanceKind, FillPattern, LibraryRef, Material, TextureImage};
 use openarch_model::{Document, Element, Id};
 use serde_json::{json, Value};
@@ -36,6 +37,7 @@ pub fn presets() -> Res {
         .iter().map(|f| json!({ "id": f, "roughness": f.roughness() })).collect();
     Ok(json!({
         "archetypes": archetypes,
+        "generator_version": GENERATOR_VERSION,
         "finishes": finishes,
         "mortar_profiles": [MortarProfile::Flush, MortarProfile::Raked, MortarProfile::Concave, MortarProfile::Weathered],
         // unit size presets (mm): name, length, height
@@ -84,12 +86,6 @@ pub fn maps(d: &Document, p: &Value) -> Res {
     Ok(out)
 }
 
-/// Pixels along the longer side for about 2 mm a pixel, between 512 and `cap`.
-fn auto_res(g: &GeneratorParams, cap: u32) -> Result<u32, String> {
-    let (w, h) = matgen::domain(g)?;
-    Ok(((w.max(h) / 2.0).ceil() as u32).clamp(512, cap))
-}
-
 /// A key that changes whenever what the 3D view draws for a material changes.
 pub fn appearance_key(m: &Material) -> String {
     format!("{:016x}", fnv(&serde_json::to_string(&(&m.appearance, m.graphics.shading_color)).unwrap_or_default()))
@@ -107,10 +103,9 @@ fn fnv(text: &str) -> u64 {
 
 // ---------------------------------------------------------------- the map cache
 
-/// Generated maps are kept on disk between sessions, by what they are made from (the generator's values, the
-/// resolution and this version, raised whenever the generator draws differently), so a project opens without
-/// making them again. The least recently used go once the cache passes its limit.
-const CACHE_VERSION: u32 = 1;
+/// Maps the current generator made are also kept on this computer, by the generator's values, version and the
+/// resolution, so the same material in another project, or one not saved since, is not made again. The project file
+/// keeps its own (generated.rs). The least recently used go once the cache passes its limit.
 const CACHE_LIMIT: u64 = 512 << 20;
 
 fn cache_dir() -> PathBuf {
@@ -129,34 +124,77 @@ fn cache_dir() -> PathBuf {
 }
 
 pub(crate) fn cache_path(g: &GeneratorParams, res: u32) -> PathBuf {
-    cache_dir().join(format!("{:016x}-{res}-v{CACHE_VERSION}.json", fnv(&serde_json::to_string(g).unwrap_or_default())))
+    cache_dir().join(format!("{}-{res}.maps", matgen::store_key(g, GENERATOR_VERSION)))
 }
 
-/// The 3D view's maps of a generator at `res` (albedo, surface, roughness_map as PNG data URLs), from the cache
-/// when they are there, else made and kept.
-fn generated_maps(g: &GeneratorParams, res: u32) -> Res {
+/// The current generator's 3D maps of `g` at `res`, from this computer's cache when they are there, else made and
+/// kept in it.
+fn maps_for(g: &GeneratorParams, res: u32) -> Result<GeneratedMaps, String> {
     let path = cache_path(g, res);
-    let cached = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| ["albedo", "surface", "roughness_map"].iter().all(|k| v[*k].is_string()));
-    if let Some(v) = cached {
+    if let Some(m) = std::fs::read(&path).ok().and_then(|b| GeneratedMaps::from_bytes(&b)) {
         // used again: the last to be pruned
         if let Ok(f) = std::fs::File::options().write(true).open(&path) {
             let _ = f.set_modified(std::time::SystemTime::now());
         }
-        return Ok(v);
+        return Ok(m);
     }
-    let gen = matgen::generate(g, res, false)?;
-    let v = json!({ "albedo": png_url(&gen.albedo_png()?), "surface": png_url(&gen.surface_png()?), "roughness_map": png_url(&gen.roughness_png()?) });
-    let _ = write_cache(&path, &v.to_string());
-    Ok(v)
+    let m = GeneratedMaps::make(g, res)?;
+    let _ = write_cache(&path, &m.to_bytes());
+    Ok(m)
 }
 
-fn write_cache(path: &Path, text: &str) -> std::io::Result<()> {
+/// A parametric material's 3D maps as the project keeps them: made by the version the material was made with. Ones
+/// not made yet are made now (current version) and kept with the project.
+fn project_maps(d: &Document, m: &Material) -> Result<GeneratedMaps, String> {
+    let g = m.appearance.generator.as_ref().ok_or("the material has no generator")?;
+    let key = openarch_model::generated::key_of(m);
+    if let Some(maps) = key.as_deref().and_then(|k| d.generated_maps(k)) {
+        return Ok(maps);
+    }
+    let maps = maps_for(g, auto_res(g, 2048)?)?;
+    // an earlier version's output with its maps missing can only be drawn as the generator draws now: not kept
+    if let Some(k) = key.filter(|k| d.generated_entry(k).is_some_and(|e| e.version == GENERATOR_VERSION)) {
+        d.set_generated_maps(&k, maps.clone());
+    }
+    Ok(maps)
+}
+
+/// Before a save: every generated material's maps made and kept with the project.
+pub fn fill_generated(d: &Document) -> Result<(), String> {
+    for (_, m) in d.materials() {
+        if m.appearance.kind == AppearanceKind::Parametric && m.appearance.generator.is_some() {
+            project_maps(d, m)?;
+        }
+    }
+    Ok(())
+}
+
+/// Make the project's generated materials again with the current generator (`ids`, or every one made by another
+/// version), as one undo step.
+pub fn update_generated(d: &mut Document, p: &Value) -> Res {
+    let only: Option<Vec<u64>> = p.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|x| x.as_u64()).collect());
+    let todo: Vec<(Id, String)> = d.outdated_generated().into_iter().filter(|(id, _)| only.as_ref().is_none_or(|o| o.contains(id))).collect();
+    if todo.is_empty() {
+        return Ok(json!({ "updated": [], "version": GENERATOR_VERSION }));
+    }
+    let mark = d.edit_mark();
+    for (id, _) in &todo {
+        if let Err(e) = d.patch_style_item(*id, &json!({ "appearance": { "generator_version": GENERATOR_VERSION } })) {
+            d.roll_back_to(mark);
+            return Err(e);
+        }
+    }
+    d.fold_since(mark, "Update generated materials");
+    Ok(json!({ "updated": todo.into_iter().map(|(_, n)| n).collect::<Vec<_>>(), "version": GENERATOR_VERSION }))
+}
+
+fn write_cache(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let dir = path.parent().unwrap_or(Path::new("."));
     std::fs::create_dir_all(dir)?;
     // written whole, then renamed into place, so a reader never sees half a file
     let tmp = path.with_extension(format!("tmp{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
-    std::fs::write(&tmp, text)?;
+    std::fs::write(&tmp, bytes)?;
     if let Err(e) = std::fs::rename(&tmp, path) {
         let _ = std::fs::remove_file(&tmp);
         return Err(e);
@@ -167,9 +205,16 @@ fn write_cache(path: &Path, text: &str) -> std::io::Result<()> {
 
 fn prune_cache(dir: &Path) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
-    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = rd
-        .flatten()
-        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+    let entries: Vec<std::fs::DirEntry> = rd.flatten().collect();
+    // the first cache kept JSON files: gone
+    for e in &entries {
+        if e.path().extension().is_some_and(|x| x == "json") {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = entries
+        .into_iter()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "maps"))
         .filter_map(|e| e.metadata().ok().filter(|m| m.is_file()).map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), e.path())))
         .collect();
     let mut total: u64 = files.iter().map(|f| f.1).sum();
@@ -187,10 +232,16 @@ fn prune_cache(dir: &Path) {
     }
 }
 
-/// Make the 3D maps of a project's generated materials in the background (those not in the cache), so the 3D view
-/// finds them ready.
+/// Make the 3D maps the project does not keep yet (current generator only) in the background, into this computer's
+/// cache, so the 3D view finds them ready.
 pub fn warm_cache(d: &Document) {
-    let gens: Vec<GeneratorParams> = d.materials().into_iter().filter(|(_, m)| m.appearance.kind == AppearanceKind::Parametric).filter_map(|(_, m)| m.appearance.generator.clone()).collect();
+    let gens: Vec<GeneratorParams> = d
+        .materials()
+        .into_iter()
+        .filter(|(_, m)| m.appearance.kind == AppearanceKind::Parametric && m.appearance.generator_version == GENERATOR_VERSION)
+        .filter(|(_, m)| openarch_model::generated::key_of(m).is_some_and(|k| d.generated_maps(&k).is_none()))
+        .filter_map(|(_, m)| m.appearance.generator.clone())
+        .collect();
     if gens.is_empty() {
         return;
     }
@@ -198,7 +249,7 @@ pub fn warm_cache(d: &Document) {
         for g in gens {
             if let Ok(r) = auto_res(&g, 2048) {
                 if !cache_path(&g, r).exists() {
-                    let _ = generated_maps(&g, r);
+                    let _ = maps_for(&g, r);
                 }
             }
         }
@@ -219,11 +270,15 @@ pub fn textures(d: &Document, p: &Value) -> Res {
     });
     match a.kind {
         AppearanceKind::Parametric => {
-            if let Some(g) = &a.generator {
-                let maps = generated_maps(g, match res { Some(r) => r, None => auto_res(g, 2048)? })?;
-                for k in ["albedo", "surface", "roughness_map"] {
-                    out[k] = maps[k].clone();
-                }
+            if a.generator.is_some() {
+                // the project's own maps; a size asked for is made (or taken from the cache) and not kept
+                let maps = match res {
+                    Some(r) => maps_for(a.generator.as_ref().unwrap_or(&GeneratorParams::default()), r)?,
+                    None => project_maps(d, &m)?,
+                };
+                out["albedo"] = json!(png_url(&maps.albedo));
+                out["surface"] = json!(png_url(&maps.surface));
+                out["roughness_map"] = json!(png_url(&maps.roughness));
             }
         }
         AppearanceKind::Standard => {

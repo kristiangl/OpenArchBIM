@@ -1,4 +1,5 @@
 use super::*;
+use openarch_model::generated::GeneratedMaps;
 
 fn call(s: &mut Session, m: &str, p: Value) -> Value {
     s.handle(m, &p).unwrap_or_else(|e| panic!("{m} failed: {e}"))
@@ -252,21 +253,82 @@ fn generated_maps_are_kept_on_disk_and_used_again() {
     let path = crate::materials::cache_path(&gen, 128);
     let _ = std::fs::remove_file(&path);
     let first = call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }));
-    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
-    assert_eq!(kept["albedo"], first["albedo"]);
+    let kept = GeneratedMaps::from_bytes(&std::fs::read(&path).unwrap()).unwrap();
+    assert_eq!(first["albedo"], json!(format!("data:image/png;base64,{}", openarch_model::image::base64_encode(&kept.albedo))));
     // the next call reads the file
-    let mut marked = kept.clone();
-    marked["albedo"] = json!("data:image/png;base64,KEPT");
-    std::fs::write(&path, marked.to_string()).unwrap();
-    assert_eq!(call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }))["albedo"], "data:image/png;base64,KEPT");
+    std::fs::write(&path, GeneratedMaps { albedo: b"KEPT".to_vec(), ..kept.clone() }.to_bytes()).unwrap();
+    assert_eq!(call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }))["albedo"], "data:image/png;base64,S0VQVA==");
     // a broken file is made again
-    std::fs::write(&path, "not json").unwrap();
+    std::fs::write(&path, "not maps").unwrap();
     assert_eq!(call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }))["albedo"], first["albedo"]);
-    assert!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).is_ok());
+    assert!(GeneratedMaps::from_bytes(&std::fs::read(&path).unwrap()).is_some());
     // other values, another file
     assert_ne!(crate::materials::cache_path(&openarch_model::matgen::GeneratorParams { seed: 913_372, ..gen.clone() }, 128), path);
     assert_ne!(crate::materials::cache_path(&gen, 256), path);
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn generated_materials_keep_what_their_generator_made_until_updated() {
+    use openarch_model::generated::GeneratedEntry;
+    use openarch_model::matgen::{store_key, Archetype, GeneratorParams, GENERATOR_VERSION};
+    let mut s = Session::new();
+    let gen = GeneratorParams::preset(Archetype::Masonry);
+    let id = material_id(&mut s, "Face Brick");
+    call(&mut s, "patch_style_item", json!({ "id": id, "patch": { "appearance": { "kind": "parametric", "generator": gen }, "graphics": { "sync_with_appearance": true, "pattern_from_appearance": true } } }));
+    assert_eq!(material(&mut s, "Face Brick")["appearance"]["generator_version"], GENERATOR_VERSION);
+    // what an earlier generator (version 0 here) made from the same values: its own size, colour, one pattern line
+    // at 30 degrees and its own maps
+    let old = GeneratedEntry {
+        version: 0, uv_size_mm: [500.0, 300.0], depth_mm: 5.0, color: [10, 20, 30], roughness: 0.5, metalness: 0.0,
+        hatch: vec![openarch_model::styles::HatchLine { angle_deg: 30.0, origin: [0.0, 0.0], shift: 0.0, spacing: 100.0, dashes: vec![] }],
+        maps: Some(GeneratedMaps { res: 512, px: [4, 4], albedo: b"OLD".to_vec(), surface: b"S".to_vec(), roughness: b"R".to_vec() }),
+    };
+    s.doc.put_generated_entry(store_key(&gen, 0), old);
+    call(&mut s, "patch_style_item", json!({ "id": id, "patch": { "appearance": { "generator_version": 0 } } }));
+    let looks = |s: &mut Session, name: &str| -> (Value, Value, Value, Value) {
+        let m = material(s, name);
+        let st = call(s, "standards", json!({}));
+        let pat = st["fill_patterns"].as_array().unwrap().iter().find(|p| p["pattern"]["name"] == format!("{name} (generated)")).map(|p| p["pattern"]["lines"][0]["angle_deg"].clone()).unwrap_or(Value::Null);
+        let tex = call(s, "material_textures", json!({ "name": name }));
+        (m["appearance"]["uv_size_mm"].clone(), m["graphics"]["shading_color"].clone(), pat, tex["albedo"].clone())
+    };
+    let frozen = (json!([500.0, 300.0]), json!([10, 20, 30]), json!(30.0), json!("data:image/png;base64,T0xE"));
+    assert_eq!(looks(&mut s, "Face Brick"), frozen);
+    // a rename keeps it
+    call(&mut s, "patch_style_item", json!({ "id": id, "patch": { "name": "Old Brick" } }));
+    assert_eq!(looks(&mut s, "Old Brick"), frozen);
+    let st = call(&mut s, "material_generated_status", json!({}));
+    assert_eq!(st["outdated"][0]["name"], "Old Brick");
+    // saved and opened again, maps and all
+    let dir = temp("keep");
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("p.oab");
+    call(&mut s, "save", json!({ "path": file.to_string_lossy() }));
+    call(&mut s, "open", json!({ "path": file.to_string_lossy() }));
+    assert_eq!(looks(&mut s, "Old Brick"), frozen);
+    // Update Generated Materials: the current generator's output, one undo step
+    let id = material_id(&mut s, "Old Brick");
+    let r = call(&mut s, "material_update_generated", json!({}));
+    assert_eq!(r["updated"], json!(["Old Brick"]));
+    let now = looks(&mut s, "Old Brick");
+    assert_eq!(now.0, json!([240.0, 172.0]));
+    assert_ne!(now.3, frozen.3);
+    assert!(call(&mut s, "material_generated_status", json!({}))["outdated"].as_array().unwrap().is_empty());
+    call(&mut s, "undo", json!({}));
+    assert_eq!(looks(&mut s, "Old Brick"), frozen);
+    // changing one of its values makes it with the current generator too
+    call(&mut s, "patch_style_item", json!({ "id": id, "patch": { "appearance": { "generator": { "seed": 77 } } } }));
+    let m = material(&mut s, "Old Brick");
+    assert_eq!(m["appearance"]["generator_version"], GENERATOR_VERSION);
+    assert_eq!(m["appearance"]["uv_size_mm"], json!([240.0, 172.0]));
+    // a project saved with a generated material keeps its maps: opened, they are there without being made
+    let file2 = dir.join("q.oab");
+    call(&mut s, "save", json!({ "path": file2.to_string_lossy() }));
+    call(&mut s, "open", json!({ "path": file2.to_string_lossy() }));
+    let m: openarch_model::styles::Material = serde_json::from_value(material(&mut s, "Old Brick")).unwrap();
+    assert!(s.doc.generated_maps(&openarch_model::generated::key_of(&m).unwrap()).is_some());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
