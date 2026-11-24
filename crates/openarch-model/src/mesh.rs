@@ -641,11 +641,18 @@ fn roof_band(g: &crate::roof::RoofGeometry, a: f64, b: f64) -> Vec<f32> {
             tri_facing(&mut out, at(p, da), at(q, da), at(r, da), up);
             tri_facing(&mut out, at(p, db), at(q, db), at(r, db), down);
         }
-        // plumb end at the eave: the edge from the last corner back to the first
-        let (p, q) = (f.poly[f.poly.len() - 1], f.poly[0]);
-        let out_n = [f.outward[0], f.outward[1], 0.0];
-        tri_facing(&mut out, at(p, da), at(q, da), at(q, db), out_n);
-        tri_facing(&mut out, at(p, da), at(q, db), at(p, db), out_n);
+        // plumb ends at the eave, and where another edge's eave cuts the plane
+        let m = f.poly.len();
+        for &i in &f.ends {
+            let (p, q) = (f.poly[i % m], f.poly[(i + 1) % m]);
+            let len = (q[0] - p[0]).hypot(q[1] - p[1]).max(1e-9);
+            // facing out of the face: to the right of the side when the face runs counter-clockwise
+            let ccw = crate::geom::signed_area(&f.poly.iter().map(|v| Point::new(v[0], v[1])).collect::<Vec<_>>()) > 0.0;
+            let s = if ccw { 1.0 } else { -1.0 };
+            let out_n = [s * (q[1] - p[1]) / len, -s * (q[0] - p[0]) / len, 0.0];
+            tri_facing(&mut out, at(p, da), at(q, da), at(q, db), out_n);
+            tri_facing(&mut out, at(p, da), at(q, db), at(p, db), out_n);
+        }
     }
     // gable ends: the band between the planes' top and underside
     for f in g.faces.iter().filter(|f| f.vertical) {

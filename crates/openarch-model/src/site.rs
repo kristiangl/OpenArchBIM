@@ -2134,7 +2134,7 @@ impl Document {
                 if thick > 0.0 {
                     let n = f.poly.len();
                     let drop = thick / f.slope_deg.min(80.0).to_radians().cos().max(0.2);
-                    let edges: Vec<usize> = if f.vertical { (0..n.saturating_sub(1)).collect() } else { vec![n - 1] };
+                    let edges: Vec<usize> = if f.vertical { (0..n.saturating_sub(1)).collect() } else { f.ends.clone() };
                     for i in edges {
                         let (a, b) = (f.poly[i], f.poly[(i + 1) % n]);
                         if f.vertical && (a[2] - g.base_z).abs() < 1e-6 && (b[2] - g.base_z).abs() < 1e-6 {

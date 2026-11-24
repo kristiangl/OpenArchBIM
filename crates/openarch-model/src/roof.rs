@@ -44,7 +44,9 @@ pub struct RoofEdge {
     /// The slope of the plane over this edge, degrees from horizontal.
     #[serde(default = "default_slope")]
     pub slope_deg: f64,
-    /// The overhang this edge was picked from a wall with. Kept so Edit Footprint shows it.
+    /// The overhang this edge was picked from a wall with: the sketch line is this far out from the wall. A sloping
+    /// plane passes through the roof's base height at the wall line, so the eave is lower by the overhang times the
+    /// slope, and edges with different overhangs share one plate height.
     #[serde(default)]
     pub overhang_mm: f64,
 }
@@ -173,6 +175,9 @@ pub struct RoofFace {
     pub edge: usize,
     /// Horizontal direction pointing away from the roof at this face's edge.
     pub outward: [f64; 2],
+    /// The sides of the polygon (from corner `i` to corner `i + 1`) that lie on the footprint: where a sloping
+    /// plane ends in a plumb cut. The plane's own eave, and any cut where another edge's eave stops it.
+    pub ends: Vec<usize>,
 }
 
 /// A slope symbol for a slope-defining edge: where to draw it and which way is up the slope.
@@ -252,6 +257,8 @@ struct LoopPoly {
     pts: Vec<Point>,
     /// For the segment from `pts[i]` to `pts[i + 1]`: defines slope, slope, sketch edge.
     attr: Vec<(bool, f64, usize)>,
+    /// The overhang of each segment's edge.
+    over: Vec<f64>,
 }
 
 impl LoopPoly {
@@ -264,23 +271,109 @@ impl LoopPoly {
         let n = self.pts.len();
         self.pts.reverse();
         let old = self.attr.clone();
+        let over = self.over.clone();
         for j in 0..n {
             self.attr[j] = old[(n + n - 2 - j) % n];
+            self.over[j] = over[(n + n - 2 - j) % n];
         }
     }
+}
+
+/// The height of a sloping face's plane over a plan point, from three of its corners that are not in line.
+fn plane_z(poly: &[[f64; 3]]) -> Option<impl Fn(f64, f64) -> f64> {
+    let n = poly.len();
+    let p0 = poly[0];
+    for i in 1..n {
+        for j in i + 1..n {
+            let (u, v) = ([poly[i][0] - p0[0], poly[i][1] - p0[1], poly[i][2] - p0[2]], [poly[j][0] - p0[0], poly[j][1] - p0[1], poly[j][2] - p0[2]]);
+            let nz = u[0] * v[1] - u[1] * v[0];
+            if nz.abs() > 1e-3 {
+                let (nx, ny) = (u[1] * v[2] - u[2] * v[1], u[2] * v[0] - u[0] * v[2]);
+                return Some(move |x: f64, y: f64| p0[2] - (nx * (x - p0[0]) + ny * (y - p0[1])) / nz);
+            }
+        }
+    }
+    None
+}
+
+/// A sloping face cut to the footprint in plan: the pieces of it inside, each on the face's plane and running the
+/// same way round as the face.
+fn clip_to_footprint(poly: &[[f64; 3]], footprint: &[Vec<Point>]) -> Vec<Vec<[f64; 3]>> {
+    let Some(z) = plane_z(poly) else { return vec![] };
+    let plan: Vec<Point> = poly.iter().map(|q| Point::new(q[0], q[1])).collect();
+    let ccw = crate::geom::signed_area(&plan) > 0.0;
+    crate::shape::overlap(&[plan], footprint)
+        .into_iter()
+        .filter(|r| r.len() >= 3 && crate::geom::polygon_area_abs(r) > 1.0)
+        .map(|mut r| {
+            if (crate::geom::signed_area(&r) > 0.0) != ccw {
+                r.reverse();
+            }
+            r.iter().map(|p| [p.x, p.y, z(p.x, p.y)]).collect()
+        })
+        .collect()
+}
+
+/// A vertical (gable) face cut to its own edge from `a` to `b`, keeping its bottom side last.
+fn clip_along(poly: &[[f64; 3]], a: Point, b: Point) -> Vec<[f64; 3]> {
+    let len = a.dist(&b).max(1e-9);
+    let u = [(b.x - a.x) / len, (b.y - a.y) / len];
+    let t = |q: &[f64; 3]| (q[0] - a.x) * u[0] + (q[1] - a.y) * u[1];
+    let mut out: Vec<[f64; 3]> = poly.to_vec();
+    for (lo, keep_above) in [(0.0, true), (len, false)] {
+        let inside = |q: &[f64; 3]| if keep_above { t(q) >= lo - 1e-6 } else { t(q) <= lo + 1e-6 };
+        let n = out.len();
+        if n < 3 {
+            return vec![];
+        }
+        let mut next = vec![];
+        for i in 0..n {
+            let (p, q) = (out[i], out[(i + 1) % n]);
+            if inside(&p) {
+                next.push(p);
+            }
+            if inside(&p) != inside(&q) {
+                let k = (lo - t(&p)) / (t(&q) - t(&p));
+                next.push([p[0] + (q[0] - p[0]) * k, p[1] + (q[1] - p[1]) * k, p[2] + (q[2] - p[2]) * k]);
+            }
+        }
+        out = next;
+    }
+    // the side along the bottom runs last to first, as the skeleton gives it
+    let n = out.len();
+    if n >= 3 {
+        if let Some(i) = (0..n).min_by(|&i, &j| (out[i][2] + out[(i + 1) % n][2]).total_cmp(&(out[j][2] + out[(j + 1) % n][2]))) {
+            out.rotate_left((i + 1) % n);
+        }
+    }
+    out
+}
+
+/// The sides of a face's polygon that lie along the footprint in plan.
+fn footprint_sides(poly: &[[f64; 3]], footprint: &[Vec<Point>]) -> Vec<usize> {
+    let n = poly.len();
+    let on = |p: Point, q: Point| {
+        footprint.iter().any(|l| {
+            let m = l.len();
+            (0..m).any(|k| crate::geom::dist_to_segment(p, l[k], l[(k + 1) % m]) < 0.5 && crate::geom::dist_to_segment(q, l[k], l[(k + 1) % m]) < 0.5)
+        })
+    };
+    (0..n).filter(|&i| on(Point::new(poly[i][0], poly[i][1]), Point::new(poly[(i + 1) % n][0], poly[(i + 1) % n][1]))).collect()
 }
 
 fn loop_poly(l: &[RoofEdge], first_edge: usize) -> LoopPoly {
     let mut pts: Vec<Point> = vec![];
     let mut attr = vec![];
+    let mut over = vec![];
     for (j, e) in l.iter().enumerate() {
         let t = e.curve.tessellate(TOL);
         for k in 0..t.len().saturating_sub(1) {
             pts.push(t[k]);
             attr.push((e.defines_slope, e.slope_deg, first_edge + j));
+            over.push(e.overhang_mm);
         }
     }
-    LoopPoly { pts, attr }
+    LoopPoly { pts, attr, over }
 }
 
 impl Document {
@@ -451,7 +544,7 @@ impl Document {
                 .collect();
             let mut set: Vec<LoopPoly> = vec![];
             for (k, i) in std::iter::once(o).chain(holes.iter().copied()).enumerate() {
-                let mut lp = LoopPoly { pts: polys[i].pts.clone(), attr: polys[i].attr.clone() };
+                let mut lp = LoopPoly { pts: polys[i].pts.clone(), attr: polys[i].attr.clone(), over: polys[i].over.clone() };
                 // the material is on the left of every edge: outline counter-clockwise, openings clockwise
                 if (lp.area() < 0.0) == (k == 0) {
                     lp.reverse();
@@ -464,15 +557,72 @@ impl Document {
                 g.flat.push(g.regions.last().unwrap().clone());
                 continue;
             }
-            let loops: Vec<Vec<Point>> = set.iter().map(|l| l.pts.clone()).collect();
-            let speeds: Vec<Vec<f64>> = set.iter().map(|l| l.attr.iter().map(|a| if a.0 { 1.0 / a.1.clamp(0.1, 89.9).to_radians().tan() } else { 0.0 }).collect()).collect();
+            // Edges picked from walls with an overhang: each sloping plane passes through the base height at its wall
+            // line and hangs lower over the overhang. The skeleton grows from one height, so it runs on the outline
+            // moved out until every plane is at the lowest eave's height there, and the faces are cut back to the
+            // footprint after.
+            let tan = |deg: f64| deg.clamp(0.1, 89.9).to_radians().tan();
+            let picked = set.iter().any(|l| l.attr.iter().zip(&l.over).any(|(a, o)| a.0 && o.abs() > 1e-6));
+            let z_ref = if picked { set.iter().flat_map(|l| l.attr.iter().zip(&l.over).filter(|(a, _)| a.0).map(|(a, o)| -o * tan(a.1))).fold(0.0, f64::min) } else { 0.0 };
+            let moved: Vec<(Vec<Point>, Vec<Option<usize>>, Vec<f64>)> = set
+                .iter()
+                .map(|l| {
+                    let n = l.pts.len();
+                    if !picked {
+                        return (l.pts.clone(), (0..n).map(Some).collect(), l.attr.iter().map(|a| if a.0 { 1.0 / tan(a.1) } else { 0.0 }).collect());
+                    }
+                    let shift: Vec<f64> = (0..n).map(|i| if l.attr[i].0 { -z_ref / tan(l.attr[i].1) - l.over[i] } else { 0.0 }).collect();
+                    let dir = |i: usize| {
+                        let (a, b) = (l.pts[i], l.pts[(i + 1) % n]);
+                        let len = a.dist(&b).max(1e-9);
+                        ((b.x - a.x) / len, (b.y - a.y) / len)
+                    };
+                    // a point moved out square to segment i (the interior is on the left)
+                    let on = |i: usize, p: Point| {
+                        let (dx, dy) = dir(i);
+                        Point::new(p.x + dy * shift[i], p.y - dx * shift[i])
+                    };
+                    let (mut pts, mut seg, mut speed) = (vec![], vec![], vec![]);
+                    for j in 0..n {
+                        let i = (j + n - 1) % n;
+                        let ((ax, ay), (bx, by)) = (dir(i), dir(j));
+                        let cross = ax * by - ay * bx;
+                        let (pi, pj) = (on(i, l.pts[j]), on(j, l.pts[j]));
+                        if cross.abs() > 1e-9 {
+                            // where the two moved lines meet
+                            let t = ((pj.x - pi.x) * by - (pj.y - pi.y) * bx) / cross;
+                            pts.push(Point::new(pi.x + ax * t, pi.y + ay * t));
+                        } else if pi.dist(&pj) > 1e-6 {
+                            // in line but moved apart: a short vertical step joins them
+                            pts.push(pi);
+                            seg.push(None);
+                            speed.push(0.0);
+                            pts.push(pj);
+                        } else {
+                            pts.push(pj);
+                        }
+                        seg.push(Some(j));
+                        speed.push(if l.attr[j].0 { 1.0 / tan(l.attr[j].1) } else { 0.0 });
+                    }
+                    (pts, seg, speed)
+                })
+                .collect();
+            let loops: Vec<Vec<Point>> = moved.iter().map(|m| m.0.clone()).collect();
+            let speeds: Vec<Vec<f64>> = moved.iter().map(|m| m.2.clone()).collect();
+            let footprint: Vec<Vec<Point>> = set.iter().map(|l| l.pts.clone()).collect();
             for f in skeleton::skeleton(&loops, &speeds) {
-                let (_, deg, edge) = set[f.loop_idx].attr[f.edge_idx];
-                let (a, b) = (set[f.loop_idx].pts[f.edge_idx], set[f.loop_idx].pts[(f.edge_idx + 1) % set[f.loop_idx].pts.len()]);
+                let Some(si) = moved[f.loop_idx].1[f.edge_idx] else { continue };
+                let (_, deg, edge) = set[f.loop_idx].attr[si];
+                let (a, b) = (set[f.loop_idx].pts[si], set[f.loop_idx].pts[(si + 1) % set[f.loop_idx].pts.len()]);
                 let len = a.dist(&b).max(1e-9);
                 // the interior is on the left, so outward is to the right of the edge
                 let outward = [(b.y - a.y) / len, -(b.x - a.x) / len];
-                g.faces.push(RoofFace { poly: f.poly.iter().map(|q| [q[0], q[1], q[2] + base_z]).collect(), vertical: f.vertical, slope_deg: if f.vertical { 90.0 } else { deg }, edge, outward });
+                let poly: Vec<[f64; 3]> = f.poly.iter().map(|q| [q[0], q[1], q[2] + base_z + z_ref]).collect();
+                let pieces = if !picked { vec![poly] } else if f.vertical { vec![clip_along(&poly, a, b)] } else { clip_to_footprint(&poly, &footprint) };
+                for poly in pieces.into_iter().filter(|p| p.len() >= 3) {
+                    let ends = if f.vertical || !picked { vec![poly.len() - 1] } else { footprint_sides(&poly, &footprint) };
+                    g.faces.push(RoofFace { poly, vertical: f.vertical, slope_deg: if f.vertical { 90.0 } else { deg }, edge, outward, ends });
+                }
             }
             // slope symbols: the middle segment of each slope-defining edge
             let mut by_edge: std::collections::BTreeMap<usize, Vec<(Point, [f64; 2], f64)>> = Default::default();
@@ -502,7 +652,10 @@ impl Document {
                 }
                 let below = clip_z(&f.poly, zc, true);
                 if below.len() >= 3 && (poly_area_3d(&below) > 1.0 || f.vertical && below.iter().any(|q| q[2] < zc - 1e-6)) {
-                    faces.push(RoofFace { poly: below, ..f });
+                    // the cut keeps the eave; find its sides again on the footprint
+                    let rings: Vec<Vec<Point>> = g.regions.iter().flat_map(|r| std::iter::once(r.outer.clone()).chain(r.holes.iter().cloned())).collect();
+                    let ends = if f.vertical { f.ends.clone() } else { footprint_sides(&below, &rings) };
+                    faces.push(RoofFace { poly: below, ends, ..f });
                 }
             }
             g.faces = faces;
@@ -514,7 +667,8 @@ impl Document {
             let n = f.poly.len();
             for i in 0..n {
                 let (a, b) = (f.poly[i], f.poly[(i + 1) % n]);
-                if (a[2] - base_z).abs() < 1e-6 && (b[2] - base_z).abs() < 1e-6 {
+                // the footprint is the roof's outline, not a ridge
+                if (a[2] - base_z).abs() < 1e-6 && (b[2] - base_z).abs() < 1e-6 || !f.vertical && f.ends.contains(&i) {
                     continue;
                 }
                 if a[0].hypot(a[1]) < 0.0 || ((a[0] - b[0]).hypot(a[1] - b[1])) < 1e-6 {
@@ -620,6 +774,41 @@ mod tests {
         // the surface is bigger than the footprint by 1/cos(slope)
         let flat = 10000.0 * 6000.0;
         assert!((g.surface_area_mm2() - flat / 22.5f64.to_radians().cos()).abs() < 1.0);
+    }
+
+    #[test]
+    fn picked_overhangs_hang_below_one_plate_height() {
+        // 10 x 6 m eave line: 600 overhang north and south, none east and west (boundary walls)
+        let (mut d, lvl, rt) = setup();
+        let mut e = rect(0., 0., 10000., 6000.);
+        e[0].overhang_mm = 600.0;
+        e[2].overhang_mm = 600.0;
+        for x in &mut e {
+            x.slope_deg = 25.0;
+        }
+        let id = d.add_roof_sketch(rt, lvl, e).unwrap();
+        let g = d.roof_geometry(d.roof(id).unwrap()).unwrap();
+        let t = 25f64.to_radians().tan();
+        // the walls are 4800 apart, so the ridge is 2400 up the slope from the plate
+        assert!((g.top_z - (3000.0 + 2400.0 * t)).abs() < 1.0, "{}", g.top_z);
+        // the long eaves are 600 x tan 25 below the plate; the east and west eaves sit at the plate
+        let zs = |pred: &dyn Fn(&[f64; 3]) -> bool| g.faces.iter().flat_map(|f| f.poly.iter()).filter(|q| pred(q)).map(|q| q[2]).collect::<Vec<_>>();
+        for z in zs(&|q| q[1].abs() < 0.5 && q[0] > 1500.0 && q[0] < 8500.0) {
+            assert!((z - (3000.0 - 600.0 * t)).abs() < 1.0, "{z}");
+        }
+        for z in zs(&|q| q[0].abs() < 0.5 && q[1] > 700.0 && q[1] < 5300.0) {
+            assert!(z >= 3000.0 - 1.0, "{z}");
+        }
+        // the faces still cover the footprint, and every face has its plumb cut on the footprint
+        let plan: f64 = g.faces.iter().filter(|f| !f.vertical).map(|f| crate::skeleton::plan_area(&f.poly)).sum();
+        assert!((plan - 60e6).abs() < 1e4, "{plan}");
+        assert!(g.faces.iter().all(|f| !f.ends.is_empty()));
+        // no overhang anywhere: as before, the eave is the base
+        let mut e = rect(0., 0., 10000., 6000.);
+        e[0].overhang_mm = 0.0;
+        d.set_roof_sketch(id, e).unwrap();
+        let g = d.roof_geometry(d.roof(id).unwrap()).unwrap();
+        assert!(g.faces.iter().flat_map(|f| f.poly.iter()).all(|q| q[2] >= 3000.0 - 1e-6));
     }
 
     #[test]

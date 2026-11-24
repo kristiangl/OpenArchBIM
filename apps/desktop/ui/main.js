@@ -3573,6 +3573,7 @@ function sketchBarKids(sk) {
       kids.push(
         el("label", { title: "Selected edges: whether the roof slopes up from them. Off makes a gable end." }, [el("input", { type: "checkbox", checked: sel.defines_slope === true, onchange: (e) => sk.patchSelected({ defines_slope: e.target.checked }) }), ` Defines Slope (${sel.count} selected)`]),
         el("label", {}, ["Slope ", el("input", { type: "number", step: "any", min: "0", max: "89", value: sel.slope_deg ?? "", placeholder: "varies", onchange: (e) => { const v = parseFloat(e.target.value); if (v >= 0 && v < 90) sk.patchSelected({ slope_deg: v }); } }), "\u00b0"]),
+        el("label", { title: "How far the selected edges stand out from the wall below. The slope passes through the base height at the wall, so a deeper overhang hangs lower." }, ["Overhang ", el("input", { type: "number", step: "any", value: sel.overhang_mm ?? "", placeholder: "varies", onchange: (e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) sk.patchSelected({ overhang_mm: v }); } }), " mm"]),
       );
     } else if (sk.DRAW.some((d) => d.id === t)) {
       kids.push(check("Defines Slope", "definesSlope", "New edges slope up from this line. Off makes a gable end."), num("Slope", "slopeDeg", "\u00b0", "0"));
