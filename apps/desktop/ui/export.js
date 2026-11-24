@@ -231,7 +231,17 @@ const ExportFlow = (() => {
     return l > 250 ? [255, 255, 255] : [0, 0, 0];
   }
   const rgb = (c) => c.map((x) => num(x / 255)).join(" ");
-  const pdfText = (s) => "(" + [...s].map((ch) => { const n = ch.charCodeAt(0); if (ch === "(" || ch === ")" || ch === "\\") return "\\" + ch; return n < 32 || n > 255 ? "?" : ch; }).join("") + ")";
+  // text in the fonts' WinAnsi encoding: anything past ASCII goes as an octal byte, since the page content is written
+  // out as UTF-8 (a raw "²" would arrive as two bytes and print as "Â²")
+  const WIN_ANSI = { "€": 0x80, "…": 0x85, "‘": 0x91, "’": 0x92, "“": 0x93, "”": 0x94, "•": 0x95, "–": 0x96, "—": 0x97, "™": 0x99 };
+  const pdfText = (s) => "(" + [...s].map((ch) => {
+    const n = ch.codePointAt(0);
+    if (ch === "(" || ch === ")" || ch === "\\") return "\\" + ch;
+    if (n < 32) return "?";
+    if (n < 128) return ch;
+    const b = WIN_ANSI[ch] ?? (n >= 160 && n <= 255 ? n : null);
+    return b == null ? "?" : "\\" + b.toString(8).padStart(3, "0");
+  }).join("") + ")";
   // one page's content: page points with y up (`h` tall), offset and scaled for the paper it goes on
   function pdfContent(ops, h, place, mode) {
     const out = [`q ${num(place.s)} 0 0 ${num(place.s)} ${num(place.x)} ${num(place.y)} cm`];
