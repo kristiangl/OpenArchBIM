@@ -265,6 +265,35 @@ pub fn instance_meshes(doc: &Document, id: u64) -> Option<(FamilyCategory, Vec<f
     Some((cat, Vec::new(), Vec::new()))
 }
 
+/// A curved wall's frame for the surface patterns and textures on its faces: the centre of its arc and the angle
+/// the middle of the wall stands at. Along a face the pattern's s is the arc length, `arc_s`, so it runs round the
+/// wall as it runs along a straight one; 3D views and elevations both lay it so.
+pub fn arc_frame(w: &Wall) -> Option<(Point, f64)> {
+    match w.curve.as_ref()? {
+        crate::curve::Curve::Arc { start, end, centre, ccw } => {
+            let a0 = (start.y - centre.y).atan2(start.x - centre.x);
+            let a1 = (end.y - centre.y).atan2(end.x - centre.x);
+            let tau = std::f64::consts::TAU;
+            let sweep = if *ccw { (a1 - a0).rem_euclid(tau) } else { -(a0 - a1).rem_euclid(tau) };
+            let mid = a0 + sweep / 2.0;
+            Some((*centre, (mid + std::f64::consts::PI).rem_euclid(tau) - std::f64::consts::PI))
+        }
+        crate::curve::Curve::Circle { centre, .. } => Some((*centre, 0.0)),
+        _ => None,
+    }
+}
+
+/// Where plan point `p` on a curved face lies along it (mm): its radius times its angle from the frame's middle
+/// (within half a turn) plus the middle's angle, counter-clockwise on a face whose normal `n` points away from the
+/// centre and clockwise on one facing it, the way the face's own frame runs (along is Z x n).
+pub fn arc_s(centre: Point, mid: f64, p: Point, n: Point) -> f64 {
+    let (dx, dy) = (p.x - centre.x, p.y - centre.y);
+    let (mx, my) = (mid.cos(), mid.sin());
+    let delta = (mx * dy - my * dx).atan2(mx * dx + my * dy);
+    let sign = if dx * n.x + dy * n.y >= 0.0 { 1.0 } else { -1.0 };
+    sign * dx.hypot(dy) * (mid + delta)
+}
+
 pub fn floor_mesh(doc: &Document, f: &Floor) -> Option<Vec<f32>> {
     slab_mesh(doc, f, doc.floor_type(f.floor_type)?.thickness_mm())
 }

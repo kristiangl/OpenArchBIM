@@ -92,14 +92,117 @@ fn auto_res(g: &GeneratorParams, cap: u32) -> Result<u32, String> {
 
 /// A key that changes whenever what the 3D view draws for a material changes.
 pub fn appearance_key(m: &Material) -> String {
-    let text = serde_json::to_string(&(&m.appearance, m.graphics.shading_color)).unwrap_or_default();
-    // FNV-1a
+    format!("{:016x}", fnv(&serde_json::to_string(&(&m.appearance, m.graphics.shading_color)).unwrap_or_default()))
+}
+
+/// FNV-1a.
+fn fnv(text: &str) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for b in text.bytes() {
         h ^= u64::from(b);
         h = h.wrapping_mul(0x0100_0000_01b3);
     }
-    format!("{h:016x}")
+    h
+}
+
+// ---------------------------------------------------------------- the map cache
+
+/// Generated maps are kept on disk between sessions, by what they are made from (the generator's values, the
+/// resolution and this version, raised whenever the generator draws differently), so a project opens without
+/// making them again. The least recently used go once the cache passes its limit.
+const CACHE_VERSION: u32 = 1;
+const CACHE_LIMIT: u64 = 512 << 20;
+
+fn cache_dir() -> PathBuf {
+    if cfg!(test) {
+        return std::env::temp_dir().join("openarch-test-map-cache");
+    }
+    if let Some(d) = std::env::var_os("OPENARCH_CACHE_DIR") {
+        return PathBuf::from(d).join("maps");
+    }
+    let base = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("XDG_CACHE_HOME").map(PathBuf::from))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        .unwrap_or_else(std::env::temp_dir);
+    base.join("OpenArch BIM").join("maps")
+}
+
+pub(crate) fn cache_path(g: &GeneratorParams, res: u32) -> PathBuf {
+    cache_dir().join(format!("{:016x}-{res}-v{CACHE_VERSION}.json", fnv(&serde_json::to_string(g).unwrap_or_default())))
+}
+
+/// The 3D view's maps of a generator at `res` (albedo, surface, roughness_map as PNG data URLs), from the cache
+/// when they are there, else made and kept.
+fn generated_maps(g: &GeneratorParams, res: u32) -> Res {
+    let path = cache_path(g, res);
+    let cached = std::fs::read_to_string(&path).ok().and_then(|t| serde_json::from_str::<Value>(&t).ok()).filter(|v| ["albedo", "surface", "roughness_map"].iter().all(|k| v[*k].is_string()));
+    if let Some(v) = cached {
+        // used again: the last to be pruned
+        if let Ok(f) = std::fs::File::options().write(true).open(&path) {
+            let _ = f.set_modified(std::time::SystemTime::now());
+        }
+        return Ok(v);
+    }
+    let gen = matgen::generate(g, res, false)?;
+    let v = json!({ "albedo": png_url(&gen.albedo_png()?), "surface": png_url(&gen.surface_png()?), "roughness_map": png_url(&gen.roughness_png()?) });
+    let _ = write_cache(&path, &v.to_string());
+    Ok(v)
+}
+
+fn write_cache(path: &Path, text: &str) -> std::io::Result<()> {
+    static N: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let dir = path.parent().unwrap_or(Path::new("."));
+    std::fs::create_dir_all(dir)?;
+    // written whole, then renamed into place, so a reader never sees half a file
+    let tmp = path.with_extension(format!("tmp{}-{}", std::process::id(), N.fetch_add(1, std::sync::atomic::Ordering::Relaxed)));
+    std::fs::write(&tmp, text)?;
+    if let Err(e) = std::fs::rename(&tmp, path) {
+        let _ = std::fs::remove_file(&tmp);
+        return Err(e);
+    }
+    prune_cache(dir);
+    Ok(())
+}
+
+fn prune_cache(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    let mut files: Vec<(std::time::SystemTime, u64, PathBuf)> = rd
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "json"))
+        .filter_map(|e| e.metadata().ok().filter(|m| m.is_file()).map(|m| (m.modified().unwrap_or(std::time::UNIX_EPOCH), m.len(), e.path())))
+        .collect();
+    let mut total: u64 = files.iter().map(|f| f.1).sum();
+    if total <= CACHE_LIMIT {
+        return;
+    }
+    files.sort_by_key(|f| f.0);
+    for (_, len, p) in files {
+        if total <= CACHE_LIMIT / 4 * 3 {
+            break;
+        }
+        if std::fs::remove_file(&p).is_ok() {
+            total -= len;
+        }
+    }
+}
+
+/// Make the 3D maps of a project's generated materials in the background (those not in the cache), so the 3D view
+/// finds them ready.
+pub fn warm_cache(d: &Document) {
+    let gens: Vec<GeneratorParams> = d.materials().into_iter().filter(|(_, m)| m.appearance.kind == AppearanceKind::Parametric).filter_map(|(_, m)| m.appearance.generator.clone()).collect();
+    if gens.is_empty() {
+        return;
+    }
+    let _ = std::thread::Builder::new().name("material maps".into()).spawn(move || {
+        for g in gens {
+            if let Ok(r) = auto_res(&g, 2048) {
+                if !cache_path(&g, r).exists() {
+                    let _ = generated_maps(&g, r);
+                }
+            }
+        }
+    });
 }
 
 /// What the 3D view needs to draw a material in Realistic: its shader values and, when it has them, its maps
@@ -117,10 +220,10 @@ pub fn textures(d: &Document, p: &Value) -> Res {
     match a.kind {
         AppearanceKind::Parametric => {
             if let Some(g) = &a.generator {
-                let gen = matgen::generate(g, match res { Some(r) => r, None => auto_res(g, 2048)? }, false)?;
-                out["albedo"] = json!(png_url(&gen.albedo_png()?));
-                out["surface"] = json!(png_url(&gen.surface_png()?));
-                out["roughness_map"] = json!(png_url(&gen.roughness_png()?));
+                let maps = generated_maps(g, match res { Some(r) => r, None => auto_res(g, 2048)? })?;
+                for k in ["albedo", "surface", "roughness_map"] {
+                    out[k] = maps[k].clone();
+                }
             }
         }
         AppearanceKind::Standard => {

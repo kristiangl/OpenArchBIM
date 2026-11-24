@@ -244,6 +244,71 @@ fn the_library_lists_thumbnails_and_moves_between_folders() {
 }
 
 #[test]
+fn generated_maps_are_kept_on_disk_and_used_again() {
+    let mut s = Session::new();
+    let gen = openarch_model::matgen::GeneratorParams { seed: 913_371, ..openarch_model::matgen::GeneratorParams::preset(openarch_model::matgen::Archetype::Masonry) };
+    let id = material_id(&mut s, "Face Brick");
+    call(&mut s, "patch_style_item", json!({ "id": id, "patch": { "appearance": { "kind": "parametric", "generator": gen } } }));
+    let path = crate::materials::cache_path(&gen, 128);
+    let _ = std::fs::remove_file(&path);
+    let first = call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }));
+    let kept: Value = serde_json::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+    assert_eq!(kept["albedo"], first["albedo"]);
+    // the next call reads the file
+    let mut marked = kept.clone();
+    marked["albedo"] = json!("data:image/png;base64,KEPT");
+    std::fs::write(&path, marked.to_string()).unwrap();
+    assert_eq!(call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }))["albedo"], "data:image/png;base64,KEPT");
+    // a broken file is made again
+    std::fs::write(&path, "not json").unwrap();
+    assert_eq!(call(&mut s, "material_textures", json!({ "name": "Face Brick", "res": 128 }))["albedo"], first["albedo"]);
+    assert!(serde_json::from_str::<Value>(&std::fs::read_to_string(&path).unwrap()).is_ok());
+    // other values, another file
+    assert_ne!(crate::materials::cache_path(&openarch_model::matgen::GeneratorParams { seed: 913_372, ..gen.clone() }, 128), path);
+    assert_ne!(crate::materials::cache_path(&gen, 256), path);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn curved_walls_lay_patterns_round_the_arc_in_3d_and_elevations() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let lvl = info["levels"][0]["id"].as_u64().unwrap();
+    let wt = info["wall_types"].as_array().unwrap().iter().find(|t| t["name"].as_str().unwrap().contains("Brick Veneer")).unwrap()["id"].as_u64().unwrap();
+    let gen = serde_json::to_value(openarch_model::matgen::GeneratorParams::preset(openarch_model::matgen::Archetype::Masonry)).unwrap();
+    let brick = material_id(&mut s, "Face Brick");
+    call(&mut s, "patch_style_item", json!({ "id": brick, "patch": { "appearance": { "kind": "parametric", "generator": gen }, "graphics": { "pattern_from_appearance": true } } }));
+    // a half circle of 5 m radius about (0, 10000), bulging south toward the South elevation
+    let curve = json!({ "type": "arc", "start": { "x": -5000.0, "y": 10000.0 }, "end": { "x": 5000.0, "y": 10000.0 }, "centre": { "x": 0.0, "y": 10000.0 }, "ccw": true });
+    let w = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "curve": curve, "height_mm": 2700 }))["id"].as_u64().unwrap();
+    let v3 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+    let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
+    let walls: Vec<&Value> = scene["meshes"].as_array().unwrap().iter().filter(|m| m["id"] == w).collect();
+    assert!(!walls.is_empty());
+    for m in &walls {
+        // centre in metres, the middle of the arc straight south (-90 degrees)
+        let a = m["arc"].as_array().expect("an arc frame");
+        assert!(a[0].as_f64().unwrap().abs() < 1e-9 && (a[1].as_f64().unwrap() - 10.0).abs() < 1e-9);
+        assert!((a[2].as_f64().unwrap() + std::f64::consts::FRAC_PI_2).abs() < 1e-9, "{a:?}");
+    }
+    // the South elevation: strips over the brick face, each mapping arc length to the view
+    let south = info["views"].as_array().unwrap().iter().find(|v| v["name"] == "South").unwrap()["id"].as_u64().unwrap();
+    let el = call(&mut s, "elevation", json!({ "view_id": south }));
+    let strips: Vec<&Value> = el["items"].as_array().unwrap().iter().filter(|i| i["id"] == w && i["stroke"] == false && i["material"] == "Face Brick").collect();
+    assert!(strips.len() > 8, "{} strips", strips.len());
+    let fr = &el["frame"];
+    let o_r = fr["origin"][0].as_f64().unwrap() * fr["right"][0].as_f64().unwrap() + fr["origin"][1].as_f64().unwrap() * fr["right"][1].as_f64().unwrap();
+    // at the middle of the bulge the face runs square to the view, its s there is r times -pi/2 (counter-clockwise
+    // from east): the strip's map puts that s at the view's u of x = 0
+    let mid = strips.iter().find(|i| { let p = &i["polys"][0]; p[0][0].as_f64().unwrap() <= -o_r + 1.0 && p[1][0].as_f64().unwrap() >= -o_r - 1.0 }).expect("a strip over x = 0");
+    let m: Vec<f64> = mid["pattern_map"].as_array().unwrap().iter().map(|x| x.as_f64().unwrap()).collect();
+    assert!((m[0] - 1.0).abs() < 0.02, "{m:?}");
+    let s_mid = (-o_r - m[4]) / m[0];
+    let rr = s_mid / -std::f64::consts::FRAC_PI_2;
+    assert!(rr > 4700.0 && rr < 5300.0, "the brick face's radius from the map: {rr}");
+}
+
+#[test]
 fn elevations_lay_a_model_pattern_in_each_face_s_own_frame() {
     let mut s = Session::new();
     let info = call(&mut s, "doc_info", json!({}));
@@ -256,8 +321,13 @@ fn elevations_lay_a_model_pattern_in_each_face_s_own_frame() {
     // a wall square to the view and one at 30 degrees to it
     call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [4000, 0], "height_mm": 2700 }));
     let (c, sn) = (30f64.to_radians().cos(), 30f64.to_radians().sin());
-    call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [8000, -3000], "end": [8000.0 + 4000.0 * c, -3000.0 + 4000.0 * sn], "height_mm": 2700 }));
+    let angled = call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [8000, -3000], "end": [8000.0 + 4000.0 * c, -3000.0 + 4000.0 * sn], "height_mm": 2700 }))["id"].as_u64().unwrap();
+    let door = info["family_types"].as_array().unwrap().iter().find(|t| t["label"] == "Single Flush Door - Metal Frame: 820 x 2040").unwrap()["id"].as_u64().unwrap();
+    call(&mut s, "place_instance", json!({ "type_id": door, "host_id": angled, "point": [8000.0 + 2000.0 * c, -3000.0 + 2000.0 * sn - 200.0] }));
     let el = call(&mut s, "elevation", json!({ "view_id": south }));
+    // the door's pieces lie in the angled wall's frame too
+    let doors: Vec<Vec<f64>> = el["items"].as_array().unwrap().iter().filter(|i| i["category"] == "Doors").filter_map(|i| i["pattern_map"].as_array()).map(|m| m.iter().map(|x| x.as_f64().unwrap()).collect()).collect();
+    assert!(!doors.is_empty() && doors.iter().all(|m| (m[0] - c).abs() < 1e-6), "{doors:?}");
     let fr = &el["frame"];
     let o_r = fr["origin"][0].as_f64().unwrap() * fr["right"][0].as_f64().unwrap() + fr["origin"][1].as_f64().unwrap() * fr["right"][1].as_f64().unwrap();
     let maps: Vec<Vec<f64>> = el["items"].as_array().unwrap().iter().filter(|i| i["material"] == "Face Brick").filter_map(|i| i["pattern_map"].as_array()).map(|m| m.iter().map(|x| x.as_f64().unwrap()).collect()).collect();

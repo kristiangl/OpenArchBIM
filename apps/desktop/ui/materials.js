@@ -19,7 +19,7 @@ const MatUI = (() => {
     tile: "Ceramic / Stone Tiles", wood_plank: "Wood Planks", wood_solid: "Wood Solid", masonry: "Masonry", metal: "Architectural Metal",
     stack_bond: "Stack Bond", running_bond: "Running Bond", herringbone: "Herringbone", chevron: "Chevron", basketweave: "Basketweave", versailles: "Versailles (French pattern)",
     flemish: "Flemish Bond", english: "English Bond", strip: "Strip (random lengths)", board_and_batten: "Board and Batten",
-    seamless: "Seamless Grain", glulam: "Glue-Laminated Strips", corrugated: "Corrugated", trapezoidal: "Trapezoidal Ribbed",
+    regular: "Regular offset", random: "Random", seamless: "Seamless Grain", glulam: "Glue-Laminated Strips", corrugated: "Corrugated", trapezoidal: "Trapezoidal Ribbed",
     standing_seam: "Standing Seam", cassette: "Flat Cassette Panels", perforated: "Perforated Sheet",
     matte: "Matte", satin: "Satin", high_gloss: "High Gloss", textured_stone: "Textured Stone", natural: "Natural (oiled)", lacquered: "Lacquered",
     mill_finish: "Mill Finish", brushed: "Brushed", powder_coated: "Powder-Coated Matte", patina: "Patina",
@@ -89,8 +89,8 @@ const MatUI = (() => {
 
   let previewMode = "lit";
 
-  /** The preview: a few tiles of the generated maps, lit or one map at a time, with the matching hatch to check by. */
-  function preview(params) {
+  /** The preview: a few tiles of the generated maps, lit or one map at a time, with the matching hatch to check by, turned by `rot` degrees as the material is. */
+  function preview(params, rot = 0) {
     const W = 360, H = 220;
     const canvas = h("canvas", { width: W, height: H, className: "matgen-preview" });
     const info = h("div", { className: "muted", textContent: "Generating..." });
@@ -111,11 +111,15 @@ const MatUI = (() => {
       ctx.clearRect(0, 0, W, H);
       const pat = ctx.createPattern(src, "repeat");
       const sw = src.naturalWidth || src.width, sh = src.naturalHeight || src.height;
-      pat.setTransform(new DOMMatrix([(got.width_mm * k) / sw, 0, 0, (got.height_mm * k) / sh, 0, 0]));
+      // turned about the pattern's origin, the preview's bottom left (a tile corner)
+      const oy = vh * k;
+      pat.setTransform(new DOMMatrix().translateSelf(0, oy).rotateSelf(-rot).translateSelf(0, -oy).scaleSelf((got.width_mm * k) / sw, (got.height_mm * k) / sh));
       ctx.fillStyle = pat; ctx.fillRect(0, 0, W, H);
       if (previewMode === "hatch") {
         ctx.fillStyle = "rgba(255,255,255,0.55)"; ctx.fillRect(0, 0, W, H);
-        drawHatch(ctx, got.hatch || [], vw, vh, k, "#000");
+        const r = (rot * Math.PI) / 180, c = Math.cos(r), s = Math.sin(r);
+        const lines = (got.hatch || []).map((L) => ({ ...L, angle_deg: L.angle_deg + rot, origin: [L.origin[0] * c - L.origin[1] * s, L.origin[0] * s + L.origin[1] * c] }));
+        drawHatch(ctx, lines, vw, vh, k, "#000");
       }
       const notes = (got.notes || []).join("; ");
       info.textContent = `Tile ${+got.width_mm.toFixed(1)} x ${+got.height_mm.toFixed(1)} mm, relief ${+got.depth_mm.toFixed(1)} mm, ${got.hatch_lines} pattern lines. Preview ${+vw.toFixed(0)} mm across.` + (notes ? ` Note: ${notes}.` : "");
@@ -138,7 +142,9 @@ const MatUI = (() => {
       add("joint_width", { tile: "Grout joint width", masonry: "Mortar joint thickness", metal: "Reveal joint width" }[a] || "Seam / gap width", "mm", { min: 0 });
       add("joint_depth", { tile: "Grout depth", masonry: "Mortar depth" }[a] || "Joint depth", "mm", { min: 0 });
     }
-    if (["running_bond", "cassette"].includes(l)) add("offset", "Course offset", g.offset_percent ? "%" : "mm");
+    const randomEnds = l === "running_bond" && a !== "masonry" && g.random_stagger;
+    if (["running_bond", "cassette"].includes(l) && !randomEnds) add("offset", "Course offset", g.offset_percent ? "%" : "mm");
+    if (randomEnds) add("min_stagger", "Least end-joint stagger", "mm", { min: 0 });
     if (l === "strip") add("min_stagger", "Least end-joint stagger", "mm", { min: 0 });
     if (["flemish", "english"].includes(l)) add("header_length", "Header length (0 auto)", "mm", { min: 0 });
     if (l === "chevron") add("chevron_angle", "Chevron angle", "deg", { min: 15, max: 75 });
@@ -191,11 +197,18 @@ const MatUI = (() => {
     if ((a.kind || "standard") === "parametric") {
       const g = a.generator;
       const gp = (o) => ap({ generator: o });
-      pane.append(preview(g));
+      pane.append(preview(g, a.uv_rotation_deg || 0));
       t.append(sect("Generator"));
       t.append(row("Archetype", selectOf(P.archetypes.map((x) => x.id), g.archetype, (v) => gp(P.archetypes.find((x) => x.id === v).preset))));
       const arch = P.archetypes.find((x) => x.id === g.archetype);
       t.append(row("Layout", selectOf(arch.layouts, g.layout, (v) => gp({ layout: v }))));
+      // the whole material turned (herringbone at 45 degrees, boards running up a wall); the pattern turns with it
+      const turn = h("span", {}, num(a.uv_rotation_deg || 0, (v) => ap({ uv_rotation_deg: v }), { width: "70px", step: 15 }), " ",
+        ...[0, 45, 90].map((d) => h("button", { textContent: String(d), title: `Turn the material ${d} degrees`, onclick: () => ap({ uv_rotation_deg: d }) })));
+      t.append(row("Rotation", turn, "deg"));
+      if (g.layout === "running_bond" && g.archetype !== "masonry") {
+        t.append(row("End joints", selectOf(["regular", "random"], g.random_stagger ? "random" : "regular", (v) => gp({ random_stagger: v === "random" }))));
+      }
       const sizes = P.unit_presets[g.archetype];
       if (sizes && !["corrugated", "trapezoidal", "standing_seam", "perforated", "versailles"].includes(g.layout)) {
         const s = h("select");
@@ -268,7 +281,7 @@ const MatUI = (() => {
     const off = a.uv_offset_mm || [0, 0];
     t.append(row("Offset across", num(off[0], (v) => ap({ uv_offset_mm: [v, off[1]] })), "mm"));
     t.append(row("Offset up", num(off[1], (v) => ap({ uv_offset_mm: [off[0], v] })), "mm"));
-    t.append(row("Rotation", num(a.uv_rotation_deg, (v) => ap({ uv_rotation_deg: v })), "deg"));
+    if (a.kind !== "parametric") t.append(row("Rotation", num(a.uv_rotation_deg, (v) => ap({ uv_rotation_deg: v })), "deg"));
     pane.append(t);
     if (a.kind === "parametric") {
       pane.append(h("div", { className: "row" }, h("button", { textContent: "Bake to Images...", title: "Export the generated maps as image files for other renderers", onclick: () => bake(m) })));

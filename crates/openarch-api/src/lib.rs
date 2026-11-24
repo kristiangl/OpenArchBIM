@@ -2594,6 +2594,8 @@ impl Session {
             "open" => {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
                 let doc = Document::open(&path)?;
+                // the generated materials' 3D maps, made in the background where the cache lacks them
+                materials::warm_cache(&doc);
                 self.saved_revision = doc.revision();
                 self.doc = doc;
                 self.doc_serial += 1;
@@ -3453,8 +3455,14 @@ impl Session {
                 if shown("Walls") {
                     let parts = mesh::wall_layer_meshes(d, id, w, wl);
                     if !parts.is_empty() {
+                        // a curved wall's frame for its patterns and textures (m, radians): see mesh::arc_frame
+                        let arc = mesh::arc_frame(w).map(|(c, mid)| json!([c.x / 1000.0, c.y / 1000.0, mid]));
                         for p in parts {
-                            meshes.push(json!({ "id": id, "kind": "Wall", "material": p.material, "color": p.color, "verts": p.verts }));
+                            let mut j = json!({ "id": id, "kind": "Wall", "material": p.material, "color": p.color, "verts": p.verts });
+                            if let Some(a) = &arc {
+                                j["arc"] = a.clone();
+                            }
+                            meshes.push(j);
                         }
                         continue;
                     }

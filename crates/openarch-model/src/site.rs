@@ -1407,6 +1407,13 @@ impl Document {
         let d_of = |p: Point| (p.x - o.x) * look.x + (p.y - o.y) * look.y;
         let mut items: Vec<ElevItem> = vec![];
         let rect = |u0: f64, u1: f64, z0: f64, z1: f64| vec![[u0, z0], [u1, z0], [u1, z1], [u0, z1]];
+        // how a model pattern lies on a plane face (`nrm` square to it, through `at`) seen in this view: along it from
+        // the project origin and up, as 3D lays it (ElevItem::pattern_map)
+        let plane_map = |nrm: Point, at: Point| -> [f64; 6] {
+            let nrm = if nrm.x * look.x + nrm.y * look.y > 0.0 { Point::new(-nrm.x, -nrm.y) } else { nrm };
+            let n = at.x * nrm.x + at.y * nrm.y;
+            [-nrm.y * right.x + nrm.x * right.y, 0.0, 0.0, 1.0, n * (nrm.x * right.x + nrm.y * right.y) - (o.x * right.x + o.y * right.y), 0.0]
+        };
         let (near, far) = sl.map_or((0.0, frame.depth_mm), |s| (s.plane, s.depth));
         let visible = |dmin: f64, dmax: f64| dmax > near && dmin < far;
         let hidden = |id: Id| v.hidden_elements.contains(&id) || self.filter_hides(v, id);
@@ -1443,6 +1450,7 @@ impl Document {
             let dir = Point::new((b.x - a.x) / wl, (b.y - a.y) / wl);
             let along = |p: Point| (p.x - a.x) * dir.x + (p.y - a.y) * dir.y;
             let (ua, us_per) = (u_of(a), dir.x * right.x + dir.y * right.y);
+            let arc = crate::mesh::arc_frame(w);
             // how the surface pattern lies on the face of a straight wall's layer this view sees (its side, or its
             // end when the wall runs along the line of sight): along it from the project origin and up, as in 3D
             let face_map = |ring: &[Point], end_on: bool| -> Option<[f64; 6]> {
@@ -1508,6 +1516,39 @@ impl Document {
                             continue;
                         }
                         layer_items.push(LayerItem { id: *id, depth, u0, u1, z0, z1, fill, edge_on, stroke, material: layer.material.clone(), map: face_map(ring, edge_on) });
+                        // a curved wall: each facet of the layer's faces that the view sees as a strip drawn over the
+                        // outline, laying the pattern round the arc as 3D does
+                        if let Some((c, mid)) = arc {
+                            let n = ring.len();
+                            let area: f64 = (0..n).map(|i| ring[i].x * ring[(i + 1) % n].y - ring[(i + 1) % n].x * ring[i].y).sum();
+                            for i in 0..n {
+                                let (p, q) = (ring[i], ring[(i + 1) % n]);
+                                let (ex, ey) = (q.x - p.x, q.y - p.y);
+                                let len = ex.hypot(ey);
+                                if len < 1e-6 {
+                                    continue;
+                                }
+                                // the outward normal: right of the edge for a counter-clockwise ring
+                                let nrm = if area > 0.0 { Point::new(ey / len, -ex / len) } else { Point::new(-ey / len, ex / len) };
+                                if nrm.x * look.x + nrm.y * look.y >= -1e-6 {
+                                    continue;
+                                }
+                                let (dx, dy) = ((p.x + q.x) / 2.0 - c.x, (p.y + q.y) / 2.0 - c.y);
+                                let dl = dx.hypot(dy);
+                                // the wall's ends are not round the arc
+                                if dl < 1e-6 || ((dx * nrm.x + dy * nrm.y) / dl).abs() < 0.7 {
+                                    continue;
+                                }
+                                let (up, uq) = (u_of(p), u_of(q));
+                                if (uq - up).abs() < 0.01 {
+                                    continue;
+                                }
+                                let a = -nrm.y * right.x + nrm.x * right.y;
+                                let e = up - a * crate::mesh::arc_s(c, mid, p, nrm);
+                                let fd = d_of(p).min(d_of(q));
+                                items.push(ElevItem { id: *id, category: "Walls", depth: depth - 0.01 + 1e-7 * (fd - dmin).max(0.0), polys: vec![rect(up.min(uq), up.max(uq), z0, z1)], lines: vec![], fill, stroke: false, material: Some(layer.material.clone()), pattern_map: Some([a, 0.0, 0.0, 1.0, e, 0.0]), ..Default::default() });
+                            }
+                        }
                     }
                 }
                 continue;
@@ -1692,8 +1733,14 @@ impl Document {
             }
             shown.sort_by(|a, b| a.0.total_cmp(&b.0));
             let to_view = |q: &Point| [u_of(f.fam_world(q.x, 0.0)), f.z_ref + q.y];
+            let fam_y = { let (a, b) = (f.fam_world(0.0, 0.0), f.fam_world(0.0, 1.0)); Point::new(b.x - a.x, b.y - a.y) };
             let n = shown.len();
             for (k, (_, p)) in shown.into_iter().enumerate() {
+                // the pattern on the face of the piece the view sees
+                let map = s.form(p.form).and_then(|form| form.solid.bounds()).map(|b| {
+                    let (f0, f1) = (f.fam_world(0.0, b[0][1]), f.fam_world(0.0, b[1][1]));
+                    plane_map(fam_y, if d_of(f0) <= d_of(f1) { f0 } else { f1 })
+                });
                 // the outline, and its holes left open (a frame round its glass) so what lies behind shows through
                 let mut rings = p.shape.iter().map(|ring| ring.iter().map(to_view).collect::<Vec<[f64; 2]>>());
                 let polys: Vec<Vec<[f64; 2]>> = rings.next().into_iter().collect();
@@ -1703,7 +1750,7 @@ impl Document {
                     "Panel" => [232, 226, 214],
                     _ => [205, 196, 180],
                 };
-                items.push(ElevItem { id: iid, category: cat, depth: depth - 0.01 * k as f64, polys, holes, lines: vec![], fill, stroke: true, sub: (!p.subcategory.is_empty()).then(|| p.subcategory.clone()), ..Default::default() });
+                items.push(ElevItem { id: iid, category: cat, depth: depth - 0.01 * k as f64, polys, holes, lines: vec![], fill, stroke: true, sub: (!p.subcategory.is_empty()).then(|| p.subcategory.clone()), pattern_map: map, ..Default::default() });
             }
             let side = if viewer > 0.0 { crate::famgeom::SymView::Front } else { crate::famgeom::SymView::Back };
             for (k, y) in s.syms.iter().filter(|y| y.view == side && y.vis.present && at_detail(&y.vis) && !y.filled && y.points.len() >= 2).enumerate() {
@@ -1741,7 +1788,7 @@ impl Document {
             let swing = if f.flip_facing { -1.0 } else { 1.0 };
             let (ax, ay) = (Point::new(f.dir.x * hand, f.dir.y * hand), Point::new(f.left.x * swing, f.left.y * swing));
             let (lx, ly) = (look.x * ax.x + look.y * ax.y, look.x * ay.x + look.y * ay.y);
-            let mut shown: Vec<(f64, Vec<Vec<[f64; 2]>>)> = vec![];
+            let mut shown: Vec<(f64, Vec<Vec<[f64; 2]>>, Option<[f64; 6]>)> = vec![];
             let centre = |form: &crate::famgeom::SolvedForm| form.solid.bounds().map_or(f.origin, |bb| f.fam_world((bb[0][0] + bb[1][0]) / 2.0, (bb[0][1] + bb[1][1]) / 2.0));
             if lx.abs() > 0.999 || ly.abs() > 0.999 {
                 use crate::famgeom::Axis;
@@ -1752,19 +1799,25 @@ impl Document {
                         continue;
                     }
                     let polys = p.shape.iter().map(|ring| ring.iter().map(|q| [u_of(if along_y { f.fam_world(q.x, 0.0) } else { f.fam_world(0.0, q.x) }), f.z_ref + q.y]).collect()).collect();
-                    shown.push((d_of(centre(form)), polys));
+                    // the pattern on the form's face nearest the viewer
+                    let map = form.solid.bounds().map(|b| {
+                        let (f0, f1) = if along_y { (f.fam_world(0.0, b[0][1]), f.fam_world(0.0, b[1][1])) } else { (f.fam_world(b[0][0], 0.0), f.fam_world(b[1][0], 0.0)) };
+                        let axis = if along_y { ay } else { ax };
+                        plane_map(axis, if d_of(f0) <= d_of(f1) { f0 } else { f1 })
+                    });
+                    shown.push((d_of(centre(form)), polys, map));
                 }
             } else {
                 for form in s.forms.iter().filter(|x| !x.void && x.vis.present) {
                     let pts: Vec<[f64; 2]> = form.solid.tris.iter().flatten().map(|q| { let w = f.fam_point(*q); [u_of(Point::new(w[0], w[1])), w[2]] }).collect();
                     let hull = convex_hull_2d(pts);
                     if hull.len() >= 3 {
-                        shown.push((d_of(centre(form)), vec![hull]));
+                        shown.push((d_of(centre(form)), vec![hull], None));
                     }
                 }
             }
-            for (d, polys) in shown {
-                items.push(ElevItem { id: iid, category: cat, depth: d, polys, lines: vec![], fill: [205, 196, 180], stroke: true, ..Default::default() });
+            for (d, polys, map) in shown {
+                items.push(ElevItem { id: iid, category: cat, depth: d, polys, lines: vec![], fill: [205, 196, 180], stroke: true, pattern_map: map, ..Default::default() });
             }
         }
         // floors seen edge on

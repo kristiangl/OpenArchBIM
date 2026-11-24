@@ -140,6 +140,23 @@ fn metal_is_metallic_unless_painted() {
 }
 
 #[test]
+fn random_end_joints_keep_the_least_stagger() {
+    let p = GeneratorParams { layout: Layout::RunningBond, random_stagger: true, min_stagger: 300.0, ..GeneratorParams::preset(Archetype::WoodPlank) };
+    let xs = |p: &GeneratorParams| -> Vec<f64> { let pl = plan(p).unwrap(); pl.units.iter().map(|u| u.poly[0][0].rem_euclid(pl.w)).collect() };
+    let a = xs(&p);
+    let cw = plan(&p).unwrap().w;
+    assert_eq!(a.len(), 8);
+    for k in 0..8 {
+        let d = (a[k] - a[(k + 1) % 8]).rem_euclid(cw);
+        assert!(d.min(cw - d) >= 300.0, "courses {k} and {} are {:.0} apart: {a:?}", (k + 1) % 8, d.min(cw - d));
+    }
+    assert_ne!(a, xs(&GeneratorParams { seed: 7, ..p.clone() }), "another seed, other joints");
+    // off, the regular half-board offset (two courses); masonry keeps its bond
+    assert_eq!(xs(&GeneratorParams { random_stagger: false, ..p.clone() }).len(), 2);
+    assert_eq!(xs(&GeneratorParams { random_stagger: true, layout: Layout::RunningBond, ..GeneratorParams::preset(Archetype::Masonry) }).len(), 2);
+}
+
+#[test]
 fn maps_write_as_tiff_and_the_height_as_exr() {
     let g = generate(&GeneratorParams { layout: Layout::RunningBond, ..GeneratorParams::preset(Archetype::Masonry) }, 64, false).unwrap();
     let [w, h] = g.px;

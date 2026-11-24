@@ -147,7 +147,8 @@ pub struct GeneratorParams {
     /// Course offset: a percentage of a unit (with `offset_percent`) or a distance.
     pub offset: f64,
     pub offset_percent: bool,
-    /// Boards: random end joints (Strip always is).
+    /// Running bond (boards and tiles): end joints at random along each course instead of the regular offset (Strip
+    /// always is random).
     pub random_stagger: bool,
     /// Boards: the least distance between end joints in neighbouring rows.
     pub min_stagger: f64,
@@ -375,6 +376,36 @@ fn plan(p: &GeneratorParams) -> Result<Plan, String> {
         StackBond => {
             units.push(rect(0.0, 0.0, cw, ch, next(), along, Kind::Face));
             out(cw, ch, units, None, notes)
+        }
+        RunningBond if p.random_stagger && p.archetype != Archetype::Masonry => {
+            // end joints at random along each course, each kept the least stagger from the course below (and the last
+            // from the first, which repeats above it); eight courses repeat
+            let rows = 8usize;
+            let need = p.min_stagger.clamp(0.0, cw * 0.45);
+            let apart = |a: f64, b: f64| { let d = (a - b).rem_euclid(cw); d.min(cw - d) };
+            let mut rng = Rng::new(p.seed ^ 0x0e9d);
+            let mut xs: Vec<f64> = vec![];
+            for r in 0..rows {
+                let mut best = (0.0, -1.0);
+                for _try in 0..60 {
+                    let x = (rng.next() * cw).round().rem_euclid(cw);
+                    let mut gap = xs.last().map_or(cw, |q| apart(x, *q));
+                    if r + 1 == rows {
+                        gap = gap.min(apart(x, xs[0]));
+                    }
+                    if gap > best.1 {
+                        best = (x, gap);
+                    }
+                    if gap >= need {
+                        break;
+                    }
+                }
+                xs.push(best.0);
+            }
+            for (r, x) in xs.iter().enumerate() {
+                units.push(rect(*x, r as f64 * ch, cw, ch, next(), along, Kind::Face));
+            }
+            out(cw, ch * rows as f64, units, None, notes)
         }
         RunningBond => {
             let (n, o) = repeat_of(cw, offset, &mut notes);

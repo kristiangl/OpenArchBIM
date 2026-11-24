@@ -73,6 +73,15 @@ fn shadowAt(wp: vec3<f32>, n: vec3<f32>) -> f32 { return shadowIn(wp, n, false);
 @vertex fn vs_shadow(@location(0) p: vec3<f32>, @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>) -> @builtin(position) vec4<f32> {
   return u.lvp * vec4<f32>(p * sc.xyz + off.xyz, 1.0);
 }
+// a material with a cutout casts no shadow where the cutout is clear (Realistic)
+struct SCut { @builtin(position) pos: vec4<f32>, @location(0) n: vec3<f32>, @location(1) wp: vec3<f32> };
+@vertex fn vs_shadow_cut(@location(0) p: vec3<f32>, @location(1) n: vec3<f32>, @location(2) off: vec4<f32>, @location(3) sc: vec4<f32>) -> SCut {
+  var o: SCut;
+  o.wp = p * sc.xyz + off.xyz;
+  o.pos = u.lvp * vec4<f32>(o.wp, 1.0);
+  o.n = n;
+  return o;
+}
 // a material's maps (Realistic): albedo (alpha the cutout), surface (normal x, normal y, height), roughness.
 // mu.a: 1 / tile width and height (per metre), cos and sin of the tile's rotation; mu.b: tile offset (m), parallax
 // depth (m), on; mu.c: roughness, metalness, reflectivity; mu.d: tint
@@ -87,8 +96,24 @@ struct MU { a: vec4<f32>, b: vec4<f32>, c: vec4<f32>, d: vec4<f32> };
 // paper mm a pixel), pu.fg the line colour, pu.bg the background colour (w on); each family is three vec4: (cos,
 // sin of its angle, spacing, shift), (origin along, origin across, dash period, -), (dash, space, dash, space), in
 // model mm on the face, or for a drafting pattern paper mm square to the screen
-struct PU { h: vec4<f32>, fg: vec4<f32>, bg: vec4<f32>, f: array<vec4<f32>, 96> };
+// pu.arc: a curved wall's centre (m), the angle its middle stands at, on (see faceAt)
+struct PU { h: vec4<f32>, fg: vec4<f32>, bg: vec4<f32>, arc: vec4<f32>, f: array<vec4<f32>, 96> };
 @group(3) @binding(0) var<uniform> pu: PU;
+// a point on a face in the face's own frame (m): along it (Z x n) and up it; round a curved wall's face, along the
+// arc (its radius times its angle, counter-clockwise outside, clockwise inside), as elevations lay it
+fn faceAt(wp: vec3<f32>, gn: vec3<f32>, T: vec3<f32>, B: vec3<f32>) -> vec2<f32> {
+  var p = vec2<f32>(dot(wp, T), dot(wp, B));
+  if (pu.arc.w > 0.5 && abs(gn.z) < 0.5) {
+    let d = wp.xy - pu.arc.xy;
+    let r = length(d);
+    let k = dot(d, gn.xy) / max(r * length(gn.xy), 1e-6);
+    if (r > 1e-4 && abs(k) > 0.7) {
+      let m = vec2<f32>(cos(pu.arc.z), sin(pu.arc.z));
+      p.x = sign(k) * r * (pu.arc.z + atan2(m.x * d.y - m.y * d.x, dot(m, d)));
+    }
+  }
+  return p;
+}
 // pmm0 is the point in the face plane (mm), hx0 and hy0 how it changes from pixel to pixel; fc the pixel
 fn hatch(c: vec3<f32>, pmm0: vec2<f32>, hx0: vec2<f32>, hy0: vec2<f32>, fc: vec2<f32>) -> vec3<f32> {
   var pmm = pmm0;
@@ -137,6 +162,14 @@ fn toTex(pm: vec2<f32>) -> vec2<f32> {
   return vec2<f32>(r.x, -r.y);
 }
 fn depthAt(t: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> f32 { return 1.0 - textureSampleGrad(surfTex, matSamp, t, gx, gy).b; }
+@fragment fn fs_shadow_cut(i: SCut) {
+  let gn = normalize(i.n);
+  var T = vec3<f32>(1.0, 0.0, 0.0);
+  if (abs(gn.z) < 0.999) { T = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), gn)); }
+  let B = cross(gn, T);
+  let a = textureSample(albTex, matSamp, toTex(vec2<f32>(dot(i.wp, T), dot(i.wp, B)) - mu.b.xy)).a;
+  if (a < 0.5) { discard; }
+}
 
 @fragment fn fs_box(i: VOut) -> @location(0) vec4<f32> {
   // the face's frame (walls: along and up; floors and roofs: x and y, or across and up the slope) and the material's
@@ -145,11 +178,12 @@ fn depthAt(t: vec2<f32>, gx: vec2<f32>, gy: vec2<f32>) -> f32 { return 1.0 - tex
   var T = vec3<f32>(1.0, 0.0, 0.0);
   if (abs(gn.z) < 0.999) { T = normalize(cross(vec3<f32>(0.0, 0.0, 1.0), gn)); }
   let B = cross(gn, T);
-  let pm = vec2<f32>(dot(i.wp, T), dot(i.wp, B)) - mu.b.xy;
+  let fp = faceAt(i.wp, gn, T, B);
+  let pm = fp - mu.b.xy;
   let tex0 = toTex(pm);
   let gx = dpdx(tex0);
   let gy = dpdy(tex0);
-  let pmm = vec2<f32>(dot(i.wp, T), dot(i.wp, B)) * 1000.0;
+  let pmm = fp * 1000.0;
   let hx = dpdx(pmm);
   let hy = dpdy(pmm);
   if (u.light.w > 0.5) {
@@ -372,7 +406,7 @@ ${GL_UNIFORMS}
 uniform highp sampler2DShadow shadowMap; uniform highp sampler2DShadow glassMap;
 uniform sampler2D albTex; uniform sampler2D surfTex; uniform sampler2D roughTex;
 uniform vec4 mA; uniform vec4 mB; uniform vec4 mC; uniform vec4 mD;
-uniform vec4 pat[99];
+uniform vec4 pat[100];
 in vec3 vn; in float vtint; in vec4 vcol; in float va; in vec3 vwp; out vec4 o;
 float shadowIn(vec3 wp, vec3 n, bool glass) {
   vec4 c = lvp * vec4(wp + n * 0.03, 1.0);
@@ -398,7 +432,7 @@ vec3 hatch(vec3 c, vec2 pmm, vec2 hx, vec2 hy) {
   int n = int(pat[0].x);
   for (int k = 0; k < 32; k++) {
     if (k >= n) break;
-    vec4 a = pat[3 + k * 3], b = pat[4 + k * 3], ds = pat[5 + k * 3];
+    vec4 a = pat[4 + k * 3], b = pat[5 + k * 3], ds = pat[6 + k * 3];
     vec2 dd = a.xy, nn = vec2(-a.y, a.x);
     float sp = a.z, v = dot(pmm, nn) - b.y, j = floor(v / sp + 0.5);
     float fw = abs(dot(hx, nn)) + abs(dot(hy, nn)) + 1e-6, fa = abs(dot(hx, dd)) + abs(dot(hy, dd)) + 1e-6;
@@ -413,13 +447,24 @@ vec3 hatch(vec3 c, vec2 pmm, vec2 hx, vec2 hy) {
   }
   return o2;
 }
+// a point on a face in its own frame (see faceAt in the WGSL); pat[3] is the curved wall's arc
+vec2 faceAt(vec3 wp, vec3 gn, vec3 T, vec3 B) {
+  vec2 p = vec2(dot(wp, T), dot(wp, B));
+  if (pat[3].w > 0.5 && abs(gn.z) < 0.5) {
+    vec2 d = wp.xy - pat[3].xy;
+    float r = length(d), k = dot(d, gn.xy) / max(r * length(gn.xy), 1e-6);
+    if (r > 1e-4 && abs(k) > 0.7) { vec2 m = vec2(cos(pat[3].z), sin(pat[3].z)); p.x = sign(k) * r * (pat[3].z + atan(m.x * d.y - m.y * d.x, dot(m, d))); }
+  }
+  return p;
+}
 void main() {
   vec3 gn = normalize(vn);
   vec3 T = abs(gn.z) < 0.999 ? normalize(cross(vec3(0.0, 0.0, 1.0), gn)) : vec3(1.0, 0.0, 0.0);
   vec3 B = cross(gn, T);
-  vec2 tex0 = toTex(vec2(dot(vwp, T), dot(vwp, B)) - mB.xy);
+  vec2 fp = faceAt(vwp, gn, T, B);
+  vec2 tex0 = toTex(fp - mB.xy);
   vec2 gx = dFdx(tex0), gy = dFdy(tex0);
-  vec2 pmm = vec2(dot(vwp, T), dot(vwp, B)) * 1000.0, hx = dFdx(pmm), hy = dFdy(pmm);
+  vec2 pmm = fp * 1000.0, hx = dFdx(pmm), hy = dFdy(pmm);
   if (light.w > 0.5) {
     vec3 c = bg.rgb;
     if (vtint >= 0.99) c = mix(c, vec3(0.85, 0.62, 0.45), 0.45);
@@ -497,6 +542,25 @@ void main() { gl_Position = vp * vec4(p * sc.xyz + off.xyz, 1.0); }`;
 precision highp float;
 out vec4 o;
 void main() { o = vec4(1.0); }`;
+  // a material with a cutout casts no shadow where the cutout is clear
+  const GL_SHADOW_CUT_VS = `#version 300 es
+uniform mat4 vp;
+layout(location = 0) in vec3 p; layout(location = 1) in vec3 n; layout(location = 2) in vec4 off; layout(location = 3) in vec4 sc;
+out vec3 vwp; out vec3 vn;
+void main() { vwp = p * sc.xyz + off.xyz; vn = n; gl_Position = vp * vec4(vwp, 1.0); }`;
+  const GL_SHADOW_CUT_FS = `#version 300 es
+precision highp float;
+uniform sampler2D albTex; uniform vec4 mA; uniform vec4 mB;
+in vec3 vwp; in vec3 vn; out vec4 o;
+void main() {
+  vec3 gn = normalize(vn);
+  vec3 T = abs(gn.z) < 0.999 ? normalize(cross(vec3(0.0, 0.0, 1.0), gn)) : vec3(1.0, 0.0, 0.0);
+  vec3 B = cross(gn, T);
+  vec2 pm = vec2(dot(vwp, T), dot(vwp, B)) - mB.xy;
+  vec2 r = vec2(pm.x * mA.z + pm.y * mA.w, -pm.x * mA.w + pm.y * mA.z) * mA.xy;
+  if (texture(albTex, vec2(r.x, -r.y)).a < 0.5) discard;
+  o = vec4(1.0);
+}`;
   // ambient shadows over the frame (see AO_SHADER)
   const GL_BG_FS = `#version 300 es
 precision highp float;
@@ -752,8 +816,9 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
   globalThis.Viewport_defaultMaterial = defaultMaterial;
   // A surface pattern as 99 vec4s (see PU in the shader): `surf` is a mesh's { pattern, color, background }, `def`
   // the pattern's { solid, lines } in model mm. At most 32 line families and two dashes a family are drawn.
-  function patternData(surf, def) {
-    const out = new Float32Array(99 * 4);
+  function patternData(surf, def, arc) {
+    const out = new Float32Array(100 * 4);
+    if (arc) out.set([arc[0], arc[1], arc[2], 1], 12);
     if (!surf) return out;
     const c = (surf.color || [0, 0, 0]).map((x) => x / 255);
     out.set([c[0], c[1], c[2], 1], 4);
@@ -766,7 +831,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     lines.forEach((l, k) => {
       const a = (l.angle * Math.PI) / 180, ca = Math.cos(a), sa = Math.sin(a);
       const dash = (l.dashes || []).slice(0, 4), period = (l.dashes || []).reduce((t, d) => t + d, 0);
-      const o = 12 + k * 12;
+      const o = 16 + k * 12;
       out.set([ca, sa, l.spacing, l.shift || 0], o);
       out.set([l.origin[0] * ca + l.origin[1] * sa, -l.origin[0] * sa + l.origin[1] * ca, dash.length ? period : 0, 0], o + 4);
       out.set([dash[0] || 0, dash[1] || 0, dash[2] || 0, dash[3] || 0], o + 8);
@@ -829,7 +894,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     const tint = [1, 1, 1];
     const params = new Float32Array([1000 / Math.max(1, uv[0]), 1000 / Math.max(1, uv[1]), Math.cos(rot), Math.sin(rot), off[0] / 1000, off[1] / 1000, (t.pom_depth_mm || 0) / 1000, 1,
       t.roughness ?? 0.6, t.metalness ?? 0, t.reflectivity ?? 0.04, 0, ...tint, 0]);
-    return { key: t.key, albedo: mipChain(albedo), surface: mipChain(surface), rough: mipChain(rough), params };
+    return { key: t.key, albedo: mipChain(albedo), surface: mipChain(surface), rough: mipChain(rough), params, cutout: !!imgs.cutout };
   }
 
   // ---------------------------------------------------------------- backends
@@ -902,7 +967,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       device.queue.writeBuffer(ub, 0, data);
       return { bind: device.createBindGroup({ layout: bgl3, entries: [{ binding: 0, resource: { buffer: ub } }] }), free() { ub.destroy(); } };
     };
-    const defaultPat = makePattern(new Float32Array(99 * 4));
+    const defaultPat = makePattern(new Float32Array(100 * 4));
     const layout = device.createPipelineLayout({ bindGroupLayouts: [bgl, bgl1, bgl2, bgl3] });
     const shadowLayout = device.createPipelineLayout({ bindGroupLayouts: [bgl] });
     const depthFormat = "depth24plus";
@@ -937,6 +1002,18 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }] },
         { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }] },
       ] },
+      primitive: { topology: "triangle-list", cullMode: "none" },
+      depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less", depthBias: 2, depthBiasSlopeScale: 2 },
+    });
+    const bglNone = device.createBindGroupLayout({ entries: [] });
+    const noneBind = device.createBindGroup({ layout: bglNone, entries: [] });
+    const shadowCutPipe = device.createRenderPipeline({
+      layout: device.createPipelineLayout({ bindGroupLayouts: [bgl, bglNone, bgl2] }),
+      vertex: { module, entryPoint: "vs_shadow_cut", buffers: [
+        { arrayStride: 24, attributes: [{ shaderLocation: 0, offset: 0, format: "float32x3" }, { shaderLocation: 1, offset: 12, format: "float32x3" }] },
+        { arrayStride: 48, stepMode: "instance", attributes: [{ shaderLocation: 2, offset: 0, format: "float32x4" }, { shaderLocation: 3, offset: 16, format: "float32x4" }] },
+      ] },
+      fragment: { module, entryPoint: "fs_shadow_cut", targets: [] },
       primitive: { topology: "triangle-list", cullMode: "none" },
       depthStencil: { format: "depth32float", depthWriteEnabled: true, depthCompare: "less", depthBias: 2, depthBiasSlopeScale: 2 },
     });
@@ -1022,7 +1099,12 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         if (f.shadow) {
           const sp = enc.beginRenderPass({ colorAttachments: [], depthStencilAttachment: { view: shadowView, depthClearValue: 1, depthLoadOp: "clear", depthStoreOp: "store" } });
           sp.setPipeline(shadowPipe); sp.setBindGroup(0, bind);
-          for (const g of f.meshes) { if (!g.solid) continue; sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
+          for (const g of f.meshes) { if (!g.solid || g.cut) continue; sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
+          const cut = f.meshes.filter((g) => g.solid && g.cut);
+          if (cut.length) {
+            sp.setPipeline(shadowCutPipe); sp.setBindGroup(0, bind); sp.setBindGroup(1, noneBind);
+            for (const g of cut) { sp.setBindGroup(2, g.cut.bind); sp.setVertexBuffer(0, g.vbuf); sp.setVertexBuffer(1, g.ibuf); sp.draw(g.count, 1); }
+          }
           sp.end();
           // and the glass, for tinted shadows
           if (f.glassShadow) {
@@ -1127,7 +1209,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       return { p, vp: at("vp"), light: at("light"), bg: at("bg"), edge: at("edge"), lvp: at("lvp"), sun: at("sun"), shadowMap: at("shadowMap"), glassMap: at("glassMap"), ao: at("ao"), proj: at("proj"), screen: at("screen"), depthMap: at("depthMap"), eye: at("eye"),
         albTex: at("albTex"), surfTex: at("surfTex"), roughTex: at("roughTex"), mA: at("mA"), mB: at("mB"), mC: at("mC"), mD: at("mD"), pat: at("pat") };
     };
-    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS), aoProg = program(GL_AO_VS, GL_AO_FS), bgProg = program(GL_AO_VS, GL_BG_FS);
+    const boxProg = program(GL_BOX_VS, GL_BOX_FS), lineProg = program(GL_LINE_VS, GL_LINE_FS), edgeProg = program(GL_EDGE_VS, GL_EDGE_FS), shadowProg = program(GL_SHADOW_VS, GL_SHADOW_FS), shadowCutProg = program(GL_SHADOW_CUT_VS, GL_SHADOW_CUT_FS), aoProg = program(GL_AO_VS, GL_AO_FS), bgProg = program(GL_AO_VS, GL_BG_FS);
     // the sun's depth map
     const SHADOW = 2048;
     const shadowTex = gl.createTexture();
@@ -1195,7 +1277,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       return { tex, params: m.params, free() { tex.forEach((t) => gl.deleteTexture(t)); } };
     };
     const defaultMat = makeMaterial(Viewport_defaultMaterial());
-    const emptyPat = new Float32Array(99 * 4);
+    const emptyPat = new Float32Array(100 * 4);
     let shownPat = null;
     const bindPat = (pt) => { const d = pt ? pt.data : emptyPat; if (d !== shownPat) { gl.uniform4fv(boxProg.pat, d); shownPat = d; } };
     const bindMat = (m) => {
@@ -1234,7 +1316,18 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           gl.clearDepth(1); gl.clear(gl.DEPTH_BUFFER_BIT);
           gl.disable(gl.CULL_FACE); gl.enable(gl.POLYGON_OFFSET_FILL); gl.polygonOffset(2, 2);
           gl.useProgram(shadowProg.p); gl.uniformMatrix4fv(shadowProg.vp, false, toGL(f.uniforms.subarray(28, 44)));
-          for (const g of f.meshes) { if (!g.solid) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          for (const g of f.meshes) { if (!g.solid || g.cut) continue; gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1); }
+          const cut = f.meshes.filter((g) => g.solid && g.cut);
+          if (cut.length) {
+            gl.useProgram(shadowCutProg.p); gl.uniformMatrix4fv(shadowCutProg.vp, false, toGL(f.uniforms.subarray(28, 44)));
+            for (const g of cut) {
+              gl.activeTexture(gl.TEXTURE3); gl.bindTexture(gl.TEXTURE_2D, g.cut.tex[0]); gl.uniform1i(shadowCutProg.albTex, 3);
+              gl.uniform4fv(shadowCutProg.mA, g.cut.params.subarray(0, 4)); gl.uniform4fv(shadowCutProg.mB, g.cut.params.subarray(4, 8));
+              gl.bindVertexArray(g.tri); gl.drawArraysInstanced(gl.TRIANGLES, 0, g.count, 1);
+            }
+            gl.activeTexture(gl.TEXTURE0);
+            gl.useProgram(shadowProg.p);
+          }
           // and the glass, for tinted shadows
           if (f.glassShadow) {
             gl.bindFramebuffer(gl.FRAMEBUFFER, glassT.fbo); gl.clear(gl.DEPTH_BUFFER_BIT);
@@ -1464,7 +1557,13 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       u.set([canvas.width, canvas.height, horizon, background], 56);
       // the eye (for specular light and parallax) and how surfaces are coloured: 0 Shaded, 1 Consistent Colours, 2 Realistic
       u.set([eye[0], eye[1], eye[2], style === "consistent_colors" ? 1 : style === "realistic" ? 2 : 0], 60);
-      for (const m of meshes) { m.g.mat = m.material ? materials.get(m.material)?.gpu || null : null; m.g.pat = m.surfKey ? patternGpu.get(m.surfKey) || null : null; }
+      for (const m of meshes) {
+        const mt = m.material ? materials.get(m.material) : null;
+        m.g.mat = mt?.gpu || null;
+        m.g.pat = m.surfKey ? patternGpu.get(m.surfKey) || null : null;
+        // Realistic draws a cutout's holes, so the sun shines through them too
+        m.g.cut = style === "realistic" && mt?.cutout ? mt.gpu : null;
+      }
       let gnd = null;
       if (shadow) {
         const c = [(sceneLo[0] + sceneHi[0]) / 2, (sceneLo[1] + sceneHi[1]) / 2];
@@ -1701,10 +1800,11 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         // one pattern buffer for each pattern and colour in use (a definition may have changed under its name)
         for (const g of patternGpu.values()) g.free();
         patternGpu = new Map();
+        // a curved wall's arc goes with its pattern (its faces' frame), so it has one even without a surface pattern
+        const patKey = (m) => (m.surface || m.arc ? JSON.stringify([m.surface || null, m.arc || null]) : null);
         for (const m of list) {
-          if (!m.surface) continue;
-          const key = JSON.stringify(m.surface);
-          if (!patternGpu.has(key)) patternGpu.set(key, be.pattern(patternData(m.surface, patterns[m.surface.pattern])));
+          const key = patKey(m);
+          if (key && !patternGpu.has(key)) patternGpu.set(key, be.pattern(patternData(m.surface, m.surface && patterns[m.surface.pattern], m.arc)));
         }
         const sel = new Set(selected);
         const datas = list.map((m) => new Float32Array(m.verts));
@@ -1714,7 +1814,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
           const data = datas[i];
           const bounds = [[Infinity, Infinity, Infinity], [-Infinity, -Infinity, -Infinity]];
           for (let i = 0; i < data.length; i += 6) for (let k = 0; k < 3; k++) { bounds[0][k] = Math.min(bounds[0][k], data[i + k]); bounds[1][k] = Math.max(bounds[1][k], data[i + k]); }
-          const out = { g: be.mesh(data, graphics.sketchy ? sketchify(edges[i], graphics.sketchy.jitter, graphics.sketchy.extension) : edges[i]), edges: edges[i], id: m.id, kind: m.kind, material: m.material || null, surfKey: m.surface ? JSON.stringify(m.surface) : null, data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
+          const out = { g: be.mesh(data, graphics.sketchy ? sketchify(edges[i], graphics.sketchy.jitter, graphics.sketchy.extension) : edges[i]), edges: edges[i], id: m.id, kind: m.kind, material: m.material || null, surfKey: patKey(m), data, bounds, color: m.color ? m.color.map((c) => c / 255) : null, transparency: m.transparency != null ? m.transparency / 100 : m.kind === "Glass" ? 0.5 : 0 };
           writeTint(out, sel.has(m.id));
           return out;
         });
@@ -1730,7 +1830,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       setMaterial(name, m) {
         const old = materials.get(name);
         if (old) { old.gpu.free(); materials.delete(name); }
-        if (m) materials.set(name, { key: m.key, gpu: be.material(m) });
+        if (m) materials.set(name, { key: m.key, gpu: be.material(m), cutout: !!m.cutout });
         dirty = true;
       },
       /** Drop the maps of materials not in `names`. */
