@@ -471,6 +471,9 @@ pub fn starter_materials() -> Vec<Material> {
         // what structural columns and beams are made of: steel cuts solid, as sections of it are drawn
         mat("Steel", "Metal", [150, 156, 166], Some(SOLID_FILL), None, 7850.0, 50.0),
         mat("Timber", "Wood", [198, 166, 120], Some("Diagonal crosshatch"), None, 550.0, 0.13),
+        // Western Australian double brick: the outer leaf rendered, the inner one hard plastered
+        mat("Render", "Plaster", [228, 222, 208], Some("Sand"), None, 1700.0, 1.0),
+        mat("Hard Plaster", "Plaster", [240, 238, 232], None, None, 1200.0, 0.5),
     ]
 }
 

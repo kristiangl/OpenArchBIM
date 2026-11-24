@@ -542,9 +542,7 @@ impl Document {
         if width <= 0.0 || height <= 0.0 {
             return Err("width and height must be positive".into());
         }
-        if sill < 0.0 {
-            return Err("sill height cannot be negative".into());
-        }
+        // a sill may sit below its level (a garage door on a slab set down from it); the wall's base is the limit
         let (u0, u1) = (h.u_mm - width / 2.0, h.u_mm + width / 2.0);
         if u0 < -1e-6 || u1 > len + 1e-6 {
             return Err("the opening does not fit along the wall".into());
@@ -960,6 +958,12 @@ mod tests {
         assert_eq!((o.z0, o.z1), (1170.0, 1830.0));
         assert!(d.patch_instance(id, &json!({ "values": { "Width": 1000.0 } })).unwrap_err().contains("type parameter"));
         assert!(d.patch_instance(id, &json!({ "values": { "Sill Height": 2400.0 } })).is_err(), "head above the wall");
+        // below the level is fine while it stays inside the wall: a wall set down 86 takes a sill of -50, not -100
+        assert!(d.patch_instance(id, &json!({ "values": { "Sill Height": -86.0 } })).is_err(), "below the wall's base");
+        d.patch_wall(w, &json!({ "base_offset_mm": -86.0 })).unwrap();
+        d.patch_instance(id, &json!({ "values": { "Sill Height": -50.0 } })).unwrap();
+        assert!(d.patch_instance(id, &json!({ "values": { "Sill Height": -100.0 } })).is_err());
+        d.patch_instance(id, &json!({ "values": { "Sill Height": 1200.0 } })).unwrap();
         // widen the type: placed instances follow
         d.patch_family_type(win, &json!({ "values": { "Width": 1500.0 } })).unwrap();
         let o = d.wall_openings(w)[0];

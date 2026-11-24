@@ -211,8 +211,44 @@ impl Document {
     pub fn add_automatic_ceiling(&mut self, ceiling_type: Id, level: Id, offset_mm: f64, at: Point) -> Result<Id, String> {
         let region = self.ceiling_region_at(level, offset_mm, at).ok_or("Click inside walls that form a closed loop at the ceiling's height.")?;
         let ring = |pts: &[Point]| -> Vec<Curve> { (0..pts.len()).map(|i| Curve::line(pts[i], pts[(i + 1) % pts.len()])).collect() };
-        let curves: Vec<Curve> = std::iter::once(&region.outer).chain(region.holes.iter()).flat_map(|r| ring(r)).collect();
+        // wall joins and piers leave slivers in the outline: points a hair apart, or in line, are one corner
+        let curves: Vec<Curve> = std::iter::once(&region.outer).chain(region.holes.iter()).map(|r| clean_ring(r)).filter(|r| r.len() >= 3).flat_map(|r| ring(&r)).collect();
         self.add_ceiling_sketch(ceiling_type, level, curves, offset_mm, None)
+    }
+}
+
+/// A closed outline with its near-duplicate points (closer than 1 mm) and its in-line points taken out, so each side
+/// is long enough to be a sketch line.
+pub(crate) fn clean_ring(pts: &[Point]) -> Vec<Point> {
+    let d = |a: Point, b: Point| ((a.x - b.x).powi(2) + (a.y - b.y).powi(2)).sqrt();
+    let mut out: Vec<Point> = vec![];
+    for &p in pts {
+        if out.last().map_or(true, |q| d(*q, p) >= 1.0) {
+            out.push(p);
+        }
+    }
+    while out.len() > 1 && d(out[0], out[out.len() - 1]) < 1.0 {
+        out.pop();
+    }
+    // drop points lying on the line between their neighbours (within 0.05 mm), until none are left
+    loop {
+        let n = out.len();
+        if n < 4 {
+            return out;
+        }
+        let k = (0..n).find(|&i| {
+            let (a, b, c) = (out[(i + n - 1) % n], out[i], out[(i + 1) % n]);
+            let (ux, uy, vx, vy) = (c.x - a.x, c.y - a.y, b.x - a.x, b.y - a.y);
+            let len2 = ux * ux + uy * uy;
+            let along = vx * ux + vy * uy;
+            len2 > 0.0 && ((ux * vy - uy * vx) / len2.sqrt()).abs() < 0.05 && along > 0.0 && along < len2
+        });
+        match k {
+            Some(i) => {
+                out.remove(i);
+            }
+            None => return out,
+        }
     }
 }
 
@@ -283,4 +319,41 @@ pub(crate) fn starter_ceiling_types() -> Vec<CeilingType> {
         CeilingType { name: "Plasterboard 13".into(), layers: vec![Layer::new("Plasterboard", 13.0, LayerFunction::Finish2, true)], coarse_fill: fill(), info: TypeInfo::default(), grid: None },
         CeilingType { name: "Suspended Grid 1200 x 600".into(), layers: vec![Layer::new("Ceiling Tile", 15.0, LayerFunction::Finish2, true)], coarse_fill: fill(), info: TypeInfo::default(), grid: Some([600.0, 1200.0]) },
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn p(x: f64, y: f64) -> Point {
+        Point::new(x, y)
+    }
+
+    #[test]
+    fn an_outline_loses_its_slivers() {
+        // a corner doubled 0.3 mm apart, and a point in the middle of a side
+        let r = clean_ring(&[p(0., 0.), p(2000., 0.), p(4000., 0.), p(4000., 3000.), p(4000.3, 3000.), p(0., 3000.)]);
+        assert_eq!(r.len(), 4);
+        // a real step stays
+        let r = clean_ring(&[p(0., 0.), p(4000., 0.), p(4000., 1000.), p(3910., 1000.), p(3910., 1290.), p(4000., 1290.), p(4000., 3000.), p(0., 3000.)]);
+        assert_eq!(r.len(), 8);
+    }
+
+    #[test]
+    fn an_automatic_ceiling_fills_a_room_with_a_pier() {
+        use crate::element::{Element, Wall};
+        let mut d = Document::new_project();
+        let level = d.levels()[0].0;
+        let wt = d.iter().find_map(|(id, e)| matches!(e, Element::WallType(t) if t.name == "Plastered Brick 90").then_some(id)).unwrap();
+        for (a, b) in [((0., 0.), (5000., 0.)), ((5000., 0.), (5000., 4000.)), ((5000., 4000.), (0., 4000.)), ((0., 4000.), (0., 0.))] {
+            d.add_wall_with(Wall::new(wt, level, p(a.0, a.1), p(b.0, b.1), 2700.)).unwrap();
+        }
+        // a 290 pier against the inside of the east wall, not joined
+        let mut pier = Wall::new(wt, level, p(4900., 1500.), p(4900., 1790.), 2700.);
+        pier.start_join.allowed = false;
+        pier.end_join.allowed = false;
+        d.add_wall_with(pier).unwrap();
+        let ct = d.iter().find_map(|(id, e)| matches!(e, Element::CeilingType(_)).then_some(id)).unwrap();
+        d.add_automatic_ceiling(ct, level, 2580., p(2500., 2000.)).unwrap();
+    }
 }

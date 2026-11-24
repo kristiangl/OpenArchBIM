@@ -226,12 +226,26 @@ impl Document {
                 ),
                 ("Concrete 200", vec![layer("Concrete", 200.0, St, true)]),
                 ("Blockwork 190", vec![layer("Concrete Block", 190.0, St, true)]),
+                // WA construction: 90 brick leaves with a 50 cavity, rendered outside and hard plastered inside
+                (
+                    "Rendered Double Brick 230",
+                    vec![
+                        layer("Render", 12.0, F1, false),
+                        layer("Face Brick", 90.0, St, true),
+                        void("Cavity", 50.0, true),
+                        layer("Face Brick", 90.0, St, true),
+                        layer("Hard Plaster", 10.0, F2, false),
+                    ],
+                ),
+                ("Plastered Brick 90", vec![layer("Hard Plaster", 10.0, F1, false), layer("Face Brick", 90.0, St, true), layer("Hard Plaster", 10.0, F2, false)]),
+                ("Rendered Brick 90", vec![layer("Render", 12.0, F1, false), layer("Face Brick", 90.0, St, true)]),
             ] {
                 tx.add(Element::WallType(WallType { name: name.into(), layers, wrap_ends: Wrap::None, wrap_inserts: Wrap::None, coarse_fill: default_coarse_fill(), function: WallFunction::default(), info: TypeInfo::default(), sample_height_mm: 6000.0, curtain: None }));
             }
             for (name, layers) in [
                 ("Concrete Slab 200", vec![floor_layer("Concrete", 200.0, St)]),
                 ("Timber Floor 190", vec![floor_layer("Timber Flooring", 19.0, F1), floor_layer("Timber Joist", 170.0, St)]),
+                ("Concrete Slab 100", vec![floor_layer("Concrete", 100.0, St)]),
             ] {
                 tx.add(Element::FloorType(FloorType { name: name.into(), layers, coarse_fill: default_coarse_fill(), function: FloorFunction::default(), info: TypeInfo::default() }));
             }
