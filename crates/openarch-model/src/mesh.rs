@@ -269,6 +269,62 @@ pub fn floor_mesh(doc: &Document, f: &Floor) -> Option<Vec<f32>> {
     slab_mesh(doc, f, doc.floor_type(f.floor_type)?.thickness_mm())
 }
 
+/// A floor by its type's layers: one closed solid per layer in the layer's material, as sections cut it, so the
+/// slab edge shows the build-up.
+pub fn floor_layer_meshes(doc: &Document, f: &Floor) -> Vec<(Option<String>, Vec<f32>)> {
+    let Some(ty) = doc.floor_type(f.floor_type) else { return vec![] };
+    slab_layer_meshes(doc, f, &ty.layers, ty.layers.first())
+}
+
+/// A ceiling by its type's layers (top first), the same way; a basic ceiling is the one plane in the material
+/// facing the room.
+pub fn ceiling_layer_meshes(doc: &Document, c: &crate::ceiling::Ceiling) -> Vec<(Option<String>, Vec<f32>)> {
+    let Some(ty) = doc.ceiling_type(c.ceiling_type) else { return vec![] };
+    slab_layer_meshes(doc, &c.as_slab(ty.thickness_mm()), &ty.layers, ty.layers.last())
+}
+
+/// Each layer of a slab (top first) as a solid of its own; with fewer than two layers that have a thickness, the
+/// whole slab in the one layer's material (or `whole`'s).
+fn slab_layer_meshes(doc: &Document, f: &Floor, layers: &[crate::element::Layer], whole: Option<&crate::element::Layer>) -> Vec<(Option<String>, Vec<f32>)> {
+    let t: f64 = layers.iter().map(|l| l.thickness_mm).sum();
+    let thick: Vec<_> = layers.iter().filter(|l| l.thickness_mm > 0.0 || l.variable).collect();
+    if thick.len() < 2 {
+        let mat = thick.first().copied().or(whole).map(|l| l.material.clone());
+        return slab_mesh(doc, f, t).map(|m| vec![(mat, m)]).unwrap_or_default();
+    }
+    if let Some(tin) = doc.floor_shape(f) {
+        let bot = doc.floor_bottoms(f, &tin);
+        let spans: Vec<Vec<(f64, f64)>> = tin.verts.iter().zip(&bot).map(|(v, &b)| crate::floorshape::layer_spans(layers, v[2], b)).collect();
+        return layers.iter().enumerate().filter_map(|(k, l)| {
+            let m = layer_tin_mesh(&tin, &spans, k);
+            (!m.is_empty()).then(|| (Some(l.material.clone()), m))
+        }).collect();
+    }
+    let mut out = vec![];
+    let mut o = 0.0;
+    for l in layers {
+        if l.thickness_mm > 0.0 {
+            if let Some(m) = slab_band(doc, f, o, o + l.thickness_mm) {
+                out.push((Some(l.material.clone()), m));
+            }
+        }
+        o += l.thickness_mm;
+    }
+    out
+}
+
+/// Layer `k` of a shaped top: the solid between its span's top and bottom under each corner (`spans`, from
+/// `layer_spans`).
+fn layer_tin_mesh(tin: &crate::shape::Tin, spans: &[Vec<(f64, f64)>], k: usize) -> Vec<f32> {
+    let top = crate::shape::Tin { verts: tin.verts.iter().zip(spans).map(|(v, s)| [v[0], v[1], s[k].0]).collect(), tris: tin.tris.clone() };
+    let low: Vec<f64> = spans.iter().map(|s| s[k].1).collect();
+    let th = spans.iter().map(|s| s[k].0 - s[k].1).fold(0.0, f64::max);
+    if th < 0.5 {
+        return vec![];
+    }
+    tin_solid_mesh(&top, &low, th)
+}
+
 /// A ceiling: its slab from the underside up through its layers; a basic ceiling is one plane seen from both sides.
 pub fn ceiling_mesh(doc: &Document, c: &crate::ceiling::Ceiling) -> Option<Vec<f32>> {
     let t = doc.ceiling_thickness(c);
@@ -349,6 +405,12 @@ fn slab_mesh(doc: &Document, f: &Floor, t: f64) -> Option<Vec<f32>> {
         let bot = doc.floor_bottoms(f, &tin);
         return Some(tin_solid_mesh(&tin, &bot, t));
     }
+    slab_band(doc, f, 0.0, t)
+}
+
+/// The part of a slab that isn't shape edited from `a` to `b` below its top (measured plumb, `a` <= `b`), closed.
+fn slab_band(doc: &Document, f: &Floor, a: f64, b: f64) -> Option<Vec<f32>> {
+    let t = b - a;
     let surf = doc.floor_surface(f)?;
     let regions = f.regions(0.5);
     if regions.is_empty() {
@@ -361,8 +423,8 @@ fn slab_mesh(doc: &Document, f: &Floor, t: f64) -> Option<Vec<f32>> {
     let mut out = Vec::new();
     for r in &regions {
         let (pts, tris) = triangulate_region(r)?;
-        let top = |p: Point| [p.x, p.y, surf.z(p)];
-        let bot = |p: Point| [p.x, p.y, surf.z(p) - t];
+        let top = |p: Point| [p.x, p.y, surf.z(p) - a];
+        let bot = |p: Point| [p.x, p.y, surf.z(p) - b];
         for tr in &tris {
             let (a, b, c) = (pts[tr[0]], pts[tr[1]], pts[tr[2]]);
             tri(&mut out, top(a), top(b), top(c), up);
@@ -493,89 +555,119 @@ fn tri_facing(out: &mut Vec<f32>, a: [f64; 3], b: [f64; 3], c: [f64; 3], n: [f64
     }
 }
 
-/// The roof as a shell: the top planes, the same planes dropped by the roof's thickness for the
-/// underside, and plumb ends at the eaves and along gable ends. Hips and ridges of roofs with
-/// different slopes on each side leave a hairline between undersides; the top is exact.
+/// The roof as a shell (the whole type's thickness).
 pub fn roof_mesh(doc: &Document, r: &Roof) -> Option<Vec<f32>> {
     let t = doc.roof_type(r.roof_type)?.thickness_mm();
     let g = doc.roof_geometry(r)?;
+    let mut out = roof_band(&g, 0.0, t);
+    // a shape edited flat roof: the solid under its surface
+    if let Some((tin, bot)) = &g.shaped {
+        out.extend(tin_solid_mesh(tin, bot, t));
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// A roof by its type's layers (top first): one shell per layer in the layer's material, so eaves, verges and
+/// slab edges show the build-up.
+pub fn roof_layer_meshes(doc: &Document, r: &Roof) -> Vec<(Option<String>, Vec<f32>)> {
+    let (Some(ty), Some(g)) = (doc.roof_type(r.roof_type), doc.roof_geometry(r)) else { return vec![] };
+    if ty.layers.iter().filter(|l| l.thickness_mm > 0.0 || l.variable).count() < 2 {
+        return roof_mesh(doc, r).map(|m| vec![(ty.layers.first().map(|l| l.material.clone()), m)]).unwrap_or_default();
+    }
+    let spans: Option<Vec<Vec<(f64, f64)>>> = g.shaped.as_ref().map(|(tin, bot)| tin.verts.iter().zip(bot).map(|(v, &b)| crate::floorshape::layer_spans(&ty.layers, v[2], b)).collect());
+    let mut out = vec![];
+    let mut o = 0.0;
+    for (k, l) in ty.layers.iter().enumerate() {
+        let mut m = if l.thickness_mm > 0.0 { roof_band(&g, o, o + l.thickness_mm) } else { vec![] };
+        if let (Some((tin, _)), Some(sp)) = (&g.shaped, &spans) {
+            m.extend(layer_tin_mesh(tin, sp, k));
+        }
+        o += l.thickness_mm;
+        if !m.is_empty() {
+            out.push((Some(l.material.clone()), m));
+        }
+    }
+    out
+}
+
+/// The part of a roof from `a` to `b` under its top surface, measured square to each plane (plumb on flat parts),
+/// as a closed shell: its sloping planes, plumb ends at the eaves and along gable ends, flat parts as slabs, and the
+/// flat tops a cutoff level leaves. Hips and ridges of roofs with different slopes on each side leave a hairline
+/// between undersides; the top is exact. A shape edited flat part is drawn by the caller.
+fn roof_band(g: &crate::roof::RoofGeometry, a: f64, b: f64) -> Vec<f32> {
     let mut out = Vec::new();
-    // the drop that keeps the thickness square to a plane of this slope
-    let drop_for = |deg: f64| t / deg.to_radians().cos().max(0.05);
+    // the drop that keeps a depth square to a plane of this slope
+    let drop_for = |deg: f64, x: f64| x / deg.to_radians().cos().max(0.05);
     for f in g.faces.iter().filter(|f| !f.vertical) {
         let plan: Vec<Point> = f.poly.iter().map(|q| Point::new(q[0], q[1])).collect();
         let Some((_, tris)) = triangulate_region(&crate::geom::Region { outer: plan, holes: vec![] }) else { continue };
-        let d = drop_for(f.slope_deg);
+        let (da, db) = (drop_for(f.slope_deg, a), drop_for(f.slope_deg, b));
         let sl = f.slope_deg.to_radians();
         // the plane normal: up, tilted away from the direction the roof rises
         let up = [f.outward[0] * sl.sin(), f.outward[1] * sl.sin(), sl.cos()];
         let down = [-up[0], -up[1], -up[2]];
+        let at = |q: [f64; 3], d: f64| [q[0], q[1], q[2] - d];
         for tr in &tris {
-            let (a, b, c) = (f.poly[tr[0]], f.poly[tr[1]], f.poly[tr[2]]);
-            tri_facing(&mut out, a, b, c, up);
-            tri_facing(&mut out, [a[0], a[1], a[2] - d], [b[0], b[1], b[2] - d], [c[0], c[1], c[2] - d], down);
+            let (p, q, r) = (f.poly[tr[0]], f.poly[tr[1]], f.poly[tr[2]]);
+            tri_facing(&mut out, at(p, da), at(q, da), at(r, da), up);
+            tri_facing(&mut out, at(p, db), at(q, db), at(r, db), down);
         }
         // plumb end at the eave: the edge from the last corner back to the first
-        let (a, b) = (f.poly[f.poly.len() - 1], f.poly[0]);
+        let (p, q) = (f.poly[f.poly.len() - 1], f.poly[0]);
         let out_n = [f.outward[0], f.outward[1], 0.0];
-        let (a2, b2) = ([a[0], a[1], a[2] - d], [b[0], b[1], b[2] - d]);
-        tri_facing(&mut out, a, b, b2, out_n);
-        tri_facing(&mut out, a, b2, a2, out_n);
+        tri_facing(&mut out, at(p, da), at(q, da), at(q, db), out_n);
+        tri_facing(&mut out, at(p, da), at(q, db), at(p, db), out_n);
     }
-    // gable ends: the band between the top surface and the underside
+    // gable ends: the band between the planes' top and underside
     for f in g.faces.iter().filter(|f| f.vertical) {
         let n = f.poly.len();
         let out_n = [f.outward[0], f.outward[1], 0.0];
         for i in 0..n {
-            let (a, b) = (f.poly[i], f.poly[(i + 1) % n]);
+            let (p, q) = (f.poly[i], f.poly[(i + 1) % n]);
             // the eave edge (last to first) is the footprint line itself
-            if i == n - 1 || ((a[2] - g.base_z).abs() < 1e-6 && (b[2] - g.base_z).abs() < 1e-6) {
+            if i == n - 1 || ((p[2] - g.base_z).abs() < 1e-6 && (q[2] - g.base_z).abs() < 1e-6) {
                 continue;
             }
-            // the sloping plane that shares this edge sets how far the underside drops
-            let near = |p: &[f64; 3], q: &[f64; 3]| (p[0] - q[0]).hypot(p[1] - q[1]) < 1e-3 && (p[2] - q[2]).abs() < 1e-3;
+            // the sloping plane that shares this edge sets how far the band drops
+            let near = |u: &[f64; 3], v: &[f64; 3]| (u[0] - v[0]).hypot(u[1] - v[1]) < 1e-3 && (u[2] - v[2]).abs() < 1e-3;
             let deg = g
                 .faces
                 .iter()
                 .filter(|o| !o.vertical)
                 .find(|o| {
                     let m = o.poly.len();
-                    (0..m).any(|k| (near(&o.poly[k], &a) && near(&o.poly[(k + 1) % m], &b)) || (near(&o.poly[k], &b) && near(&o.poly[(k + 1) % m], &a)))
+                    (0..m).any(|k| (near(&o.poly[k], &p) && near(&o.poly[(k + 1) % m], &q)) || (near(&o.poly[k], &q) && near(&o.poly[(k + 1) % m], &p)))
                 })
                 .map_or(crate::roof::DEFAULT_SLOPE_DEG, |o| o.slope_deg);
-            let d = drop_for(deg);
-            let (a2, b2) = ([a[0], a[1], a[2] - d], [b[0], b[1], b[2] - d]);
-            tri_facing(&mut out, a, b, b2, out_n);
-            tri_facing(&mut out, a, b2, a2, out_n);
+            let (da, db) = (drop_for(deg, a), drop_for(deg, b));
+            let at = |u: [f64; 3], d: f64| [u[0], u[1], u[2] - d];
+            tri_facing(&mut out, at(p, da), at(q, da), at(q, db), out_n);
+            tri_facing(&mut out, at(p, da), at(q, db), at(p, db), out_n);
         }
     }
     // flat roofs are slabs, as floors are
     for reg in &g.flat {
-        let (pts, tris) = triangulate_region(reg)?;
-        let top = |p: Point| [p.x, p.y, g.base_z];
-        let bot = |p: Point| [p.x, p.y, g.base_z - t];
+        let Some((pts, tris)) = triangulate_region(reg) else { continue };
+        let top = |p: Point| [p.x, p.y, g.base_z - a];
+        let bot = |p: Point| [p.x, p.y, g.base_z - b];
         for tr in &tris {
-            let (a, b, c) = (pts[tr[0]], pts[tr[1]], pts[tr[2]]);
-            tri(&mut out, top(a), top(b), top(c), [0., 0., 1.]);
-            tri(&mut out, bot(a), bot(c), bot(b), [0., 0., -1.]);
+            let (p, q, r) = (pts[tr[0]], pts[tr[1]], pts[tr[2]]);
+            tri(&mut out, top(p), top(q), top(r), [0., 0., 1.]);
+            tri(&mut out, bot(p), bot(r), bot(q), [0., 0., -1.]);
         }
         for ring in std::iter::once(&reg.outer).chain(reg.holes.iter()) {
             let n = ring.len();
             for i in 0..n {
-                let (a, b) = (ring[i], ring[(i + 1) % n]);
-                let len = a.dist(&b);
+                let (p, q) = (ring[i], ring[(i + 1) % n]);
+                let len = p.dist(&q);
                 if len < 1e-9 {
                     continue;
                 }
-                let nrm = [(b.y - a.y) / len, -(b.x - a.x) / len, 0.];
-                tri(&mut out, bot(a), bot(b), top(b), nrm);
-                tri(&mut out, bot(a), top(b), top(a), nrm);
+                let nrm = [(q.y - p.y) / len, -(q.x - p.x) / len, 0.];
+                tri(&mut out, bot(p), bot(q), top(q), nrm);
+                tri(&mut out, bot(p), top(q), top(p), nrm);
             }
         }
-    }
-    // a shape edited flat roof: the solid under its surface
-    if let Some((tin, bot)) = &g.shaped {
-        out.extend(tin_solid_mesh(tin, bot, t));
     }
     // the flat top left by a cutoff level
     for cap in &g.caps {
@@ -583,12 +675,12 @@ pub fn roof_mesh(doc: &Document, r: &Roof) -> Option<Vec<f32>> {
         let Some((_, tris)) = triangulate_region(&crate::geom::Region { outer: plan, holes: vec![] }) else { continue };
         let z = cap[0][2];
         for tr in &tris {
-            let (a, b, c) = (cap[tr[0]], cap[tr[1]], cap[tr[2]]);
-            tri_facing(&mut out, a, b, c, [0., 0., 1.]);
-            tri_facing(&mut out, [a[0], a[1], z - t], [b[0], b[1], z - t], [c[0], c[1], z - t], [0., 0., -1.]);
+            let (p, q, r) = (cap[tr[0]], cap[tr[1]], cap[tr[2]]);
+            tri_facing(&mut out, [p[0], p[1], z - a], [q[0], q[1], z - a], [r[0], r[1], z - a], [0., 0., 1.]);
+            tri_facing(&mut out, [p[0], p[1], z - b], [q[0], q[1], z - b], [r[0], r[1], z - b], [0., 0., -1.]);
         }
     }
-    (!out.is_empty()).then_some(out)
+    out
 }
 
 #[cfg(test)]
@@ -722,6 +814,52 @@ mod tests {
             let (u, w) = ([b[0] - a[0], b[1] - a[1], b[2] - a[2]], [c[0] - a[0], c[1] - a[1], c[2] - a[2]]);
             let cr = [u[1] * w[2] - u[2] * w[1], u[2] * w[0] - u[0] * w[2], u[0] * w[1] - u[1] * w[0]];
             assert!(cr[0] * tr[3] as f64 + cr[1] * tr[4] as f64 + cr[2] * tr[5] as f64 > -1e-9);
+        }
+    }
+
+    #[test]
+    fn floors_roofs_and_ceilings_draw_each_layer_in_its_material() {
+        use crate::curve::Curve;
+        use crate::roof::RoofEdge;
+        let mut d = Document::new_project();
+        let lvl = d.levels()[1].0;
+        let zr = |m: &[f32]| m.chunks(6).fold((f64::MAX, f64::MIN), |(a, b), v| (a.min(f64::from(v[2]) * 1000.0), b.max(f64::from(v[2]) * 1000.0)));
+        // a floor of several layers: one closed solid each, stacked down from the top
+        let (ft, fty) = d.floor_types().into_iter().find(|(_, t)| t.layers.iter().filter(|l| l.thickness_mm > 0.0).count() > 1).map(|(i, t)| (i, t.clone())).unwrap();
+        let id = d.add_floor(ft, lvl, vec![p(0., 0.), p(4000., 0.), p(4000., 3000.), p(0., 3000.)]).unwrap();
+        let Some(Element::Floor(f)) = d.get(id).cloned() else { panic!() };
+        let parts = floor_layer_meshes(&d, &f);
+        let layers: Vec<_> = fty.layers.iter().filter(|l| l.thickness_mm > 0.0).collect();
+        assert_eq!(parts.len(), layers.len());
+        let mut z = d.floor_base_z(&f);
+        for ((mat, m), l) in parts.iter().zip(&layers) {
+            assert_eq!(mat.as_deref(), Some(l.material.as_str()));
+            assert_eq!(m.len(), 12 * 18, "a box per layer");
+            let (lo, hi) = zr(m);
+            assert!((hi - z).abs() < 0.01 && (lo - (z - l.thickness_mm)).abs() < 0.01, "{}: {lo}..{hi}", l.material);
+            z -= l.thickness_mm;
+        }
+        // a roof of several layers: the first takes the top, the last the underside of the whole roof
+        let (rt, rty) = d.roof_types().into_iter().find(|(_, t)| t.layers.iter().filter(|l| l.thickness_mm > 0.0).count() > 1).map(|(i, t)| (i, t.clone())).unwrap();
+        let c = [p(0., 0.), p(10000., 0.), p(10000., 6000.), p(0., 6000.)];
+        let edges: Vec<RoofEdge> = (0..4).map(|i| RoofEdge::new(Curve::line(c[i], c[(i + 1) % 4]))).collect();
+        let id = d.add_roof_sketch(rt, lvl, edges).unwrap();
+        let r = d.roof(id).unwrap().clone();
+        let parts = roof_layer_meshes(&d, &r);
+        assert_eq!(parts.len(), rty.layers.iter().filter(|l| l.thickness_mm > 0.0).count());
+        assert_eq!(parts[0].0.as_deref(), Some(rty.layers[0].material.as_str()));
+        let whole = zr(&roof_mesh(&d, &r).unwrap());
+        assert!((zr(&parts[0].1).1 - whole.1).abs() < 0.01);
+        assert!((zr(&parts.last().unwrap().1).0 - whole.0).abs() < 0.01);
+        let tops: Vec<f64> = parts.iter().map(|(_, m)| zr(m).1).collect();
+        assert!(tops.windows(2).all(|w| w[1] < w[0]), "each layer lies under the one before: {tops:?}");
+        // a ceiling: its layers the same way, a one-layer ceiling in the material facing the room
+        for (ct, cty) in d.ceiling_types().into_iter().map(|(i, t)| (i, t.clone())).collect::<Vec<_>>() {
+            let c = crate::ceiling::Ceiling::new(ct, lvl, vec![(0..4).map(|i| Curve::line([p(0., 0.), p(3000., 0.), p(3000., 3000.), p(0., 3000.)][i], [p(0., 0.), p(3000., 0.), p(3000., 3000.), p(0., 3000.)][(i + 1) % 4])).collect()], 2400.0);
+            let parts = ceiling_layer_meshes(&d, &c);
+            let n = cty.layers.iter().filter(|l| l.thickness_mm > 0.0).count();
+            assert_eq!(parts.len(), n.max(1), "{}", cty.name);
+            assert_eq!(parts.last().unwrap().0.as_deref(), cty.layers.last().map(|l| l.material.as_str()));
         }
     }
 }

@@ -3430,6 +3430,23 @@ impl Session {
                 }
                 continue;
             }
+            // floors, roofs and ceilings: one mesh per layer of the type, in the layer's material
+            let slab = match e {
+                Element::Floor(f) if shown("Floors") => Some(("Floor", mesh::floor_layer_meshes(d, f))),
+                Element::Roof(r) if shown("Roofs") => Some(("Roof", mesh::roof_layer_meshes(d, r))),
+                Element::Ceiling(c) if shown("Ceilings") => Some(("Ceiling", mesh::ceiling_layer_meshes(d, c))),
+                Element::Floor(_) | Element::Roof(_) | Element::Ceiling(_) => continue,
+                _ => None,
+            };
+            if let Some((kind, parts)) = slab {
+                for (mat, verts) in parts {
+                    match mat.as_deref().and_then(|n| d.material(n)) {
+                        Some(m) => meshes.push(json!({ "id": id, "kind": kind, "material": m.name, "color": m.graphics.shading_color, "verts": verts })),
+                        None => meshes.push(json!({ "id": id, "kind": kind, "verts": verts })),
+                    }
+                }
+                continue;
+            }
             if let (Element::Wall(w), Some(wl)) = (e, layered.get(&id)) {
                 // layered walls draw one mesh per layer in the material's shading colour
                 if shown("Walls") {
@@ -3460,23 +3477,10 @@ impl Session {
                     };
                     (kind, Some(frame))
                 }
-                Element::Floor(f) if shown("Floors") => ("Floor", mesh::floor_mesh(d, f)),
-                Element::Roof(r) if shown("Roofs") => ("Roof", mesh::roof_mesh(d, r)),
-                Element::Ceiling(c) if shown("Ceilings") => ("Ceiling", mesh::ceiling_mesh(d, c)),
                 _ => continue,
             };
             if let Some(v) = verts {
-                // floors and roofs show their top layer, ceilings the one facing the room
-                let layer_mat = match e {
-                    Element::Floor(f) => d.floor_type(f.floor_type).and_then(|t| t.layers.first()).map(|l| l.material.clone()),
-                    Element::Roof(r) => d.roof_type(r.roof_type).and_then(|t| t.layers.first()).map(|l| l.material.clone()),
-                    Element::Ceiling(c) => d.ceiling_type(c.ceiling_type).and_then(|t| t.layers.last()).map(|l| l.material.clone()),
-                    _ => None,
-                };
-                match layer_mat.as_deref().and_then(|n| d.material(n)) {
-                    Some(m) => meshes.push(json!({ "id": id, "kind": kind, "material": m.name, "color": m.graphics.shading_color, "verts": v })),
-                    None => meshes.push(json!({ "id": id, "kind": kind, "verts": v })),
-                }
+                meshes.push(json!({ "id": id, "kind": kind, "verts": v }));
             }
         }
         // line markings, parking rows and kerbs on the ground
