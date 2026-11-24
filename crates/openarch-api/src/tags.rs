@@ -10,7 +10,7 @@ use openarch_model::{Element, Id};
 use crate::{id_of, Res, Session};
 
 /// The tag kinds Tag All offers, by the name the UI sends.
-const KINDS: [(&str, AnnotationKind); 2] = [("door_tag", AnnotationKind::DoorTag), ("window_tag", AnnotationKind::WindowTag)];
+const KINDS: [(&str, AnnotationKind); 3] = [("door_tag", AnnotationKind::DoorTag), ("window_tag", AnnotationKind::WindowTag), ("ceiling_tag", AnnotationKind::CeilingTag)];
 
 fn kind_named(name: &str) -> Option<AnnotationKind> {
     KINDS.iter().find(|(n, _)| *n == name).map(|(_, k)| *k)

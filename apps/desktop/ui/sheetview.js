@@ -80,7 +80,8 @@ const SheetView = (() => {
       const d = data.get(v.view);
       const ctr = at(v.centre[0], v.centre[1]), w = v.paper_size[0] * k, h = v.paper_size[1] * k;
       c.save();
-      c.beginPath(); c.rect(ctr.x - w / 2, ctr.y - h / 2, w, h); c.clip();
+      // no clip at the viewport's box: the view crops its own model to its crop region, and its annotations show
+      // beyond it unless the view's Annotation Crop is on (as in the view itself)
       // the view, turned with its viewport: drawn unturned about the box's middle
       const uw = v.rotation ? h : w, uh = v.rotation ? w : h;
       c.translate(ctr.x, ctr.y);
@@ -124,7 +125,7 @@ const SheetView = (() => {
   // Sizes in paper mm: the title, the headings, each row; text 2.5 mm (the title 3.5 mm), 1.5 mm in from the lines.
   const S = { title: 8, head: 6.5, row: 5.5, text: 2.5, titleText: 3.5, pad: 1.5 };
   const measurer = document.createElement("canvas").getContext("2d");
-  const textMm = (t, size, bold) => { measurer.font = `${bold ? "600 " : ""}${size * 10}px system-ui, sans-serif`; return measurer.measureText(String(t)).width / 10; };
+  const textMm = (t, size, bold) => { measurer.font = `${bold ? "600 " : ""}${size * 10}px Arial, Helvetica, sans-serif`; return measurer.measureText(String(t)).width / 10; };
   // A placed schedule laid out: its columns' widths (the same in every segment) and each segment's place, size and
   // rows. Segment i takes its number of rows, the last the rest.
   function schedLayout(p) {
@@ -161,7 +162,7 @@ const SheetView = (() => {
     const line = (x0, y0, x1, y1, w) => { const a = at(x0, y0), b = at(x1, y1); c.lineWidth = Math.max(0.5, Pen.w(w, k)); c.beginPath(); c.moveTo(a.x, a.y); c.lineTo(b.x, b.y); c.stroke(); };
     const text = (s, x, yTop, hRow, size, bold, align, italic) => {
       if (s == null || s === "") return;
-      c.font = `${italic ? "italic " : ""}${bold ? "600 " : ""}${size * k}px system-ui, sans-serif`;
+      c.font = `${italic ? "italic " : ""}${bold ? "600 " : ""}${size * k}px Arial, Helvetica, sans-serif`;
       c.textAlign = align === "right" ? "right" : align === "centre" ? "center" : "left"; c.textBaseline = "middle";
       const q = at(x, yTop - hRow / 2);
       c.fillText(String(s), q.x, q.y);
@@ -236,7 +237,7 @@ const SheetView = (() => {
     if (c.oaTag) c.oaTag({ cat: "View Titles", sub: null, kind: "text" });
     c.strokeStyle = "#000"; c.fillStyle = "#000"; c.lineWidth = Math.max(0.5, Pen.w(0.25, k));
     c.beginPath(); c.arc(p.x, p.y, r * k, 0, Math.PI * 2); c.stroke();
-    c.textAlign = "center"; c.textBaseline = "middle"; c.font = `600 ${3.5 * k}px system-ui, sans-serif`;
+    c.textAlign = "center"; c.textBaseline = "middle"; c.font = `600 ${3.5 * k}px Arial, Helvetica, sans-serif`;
     c.fillText(v.detail_number, p.x, p.y);
     c.textAlign = "left"; c.textBaseline = "alphabetic";
     const t0 = at(cx + r + 2, cy + 0.8);
@@ -245,7 +246,7 @@ const SheetView = (() => {
     const l0 = at(cx + r + 2, cy), l1 = at(cx + r + 2 + titleLen(v, tw), cy);
     c.lineWidth = Math.max(0.5, Pen.w(0.35, k));
     c.beginPath(); c.moveTo(l0.x, l0.y); c.lineTo(l1.x, l1.y); c.stroke();
-    c.font = `${2.5 * k}px system-ui, sans-serif`; c.textBaseline = "top";
+    c.font = `${2.5 * k}px Arial, Helvetica, sans-serif`; c.textBaseline = "top";
     const s0 = at(cx + r + 2, cy - 1);
     c.fillText(`1 : ${v.scale}`, s0.x, s0.y);
     c.restore();

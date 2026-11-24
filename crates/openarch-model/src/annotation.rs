@@ -50,6 +50,8 @@ pub enum AnnotationKind {
     MaterialTag,
     /// A keynote (keynote.rs): its labels read the key and its text from the keynote table.
     KeynoteTag,
+    /// A tag of a ceiling (tags.rs): its labels read the ceiling's parameters, its height above the level first.
+    CeilingTag,
 }
 
 impl AnnotationKind {
@@ -67,6 +69,7 @@ impl AnnotationKind {
             AnnotationKind::Symbol => "Generic Annotation",
             AnnotationKind::MaterialTag => "Material Tag",
             AnnotationKind::KeynoteTag => "Keynote Tag",
+            AnnotationKind::CeilingTag => "Ceiling Tag",
         }
     }
 
@@ -85,6 +88,7 @@ impl AnnotationKind {
             AnnotationKind::Symbol => "Generic Annotations",
             AnnotationKind::MaterialTag => "Material Tags",
             AnnotationKind::KeynoteTag => "Keynote Tags",
+            AnnotationKind::CeilingTag => "Ceiling Tags",
         }
     }
 
@@ -102,6 +106,7 @@ impl AnnotationKind {
             AnnotationKind::Symbol => &[],
             AnnotationKind::MaterialTag => &["Name", "Description", "Mark", "Keynote", "Class", "Manufacturer", "Model", "Comments", "Cost", "URL"],
             AnnotationKind::KeynoteTag => &["Key Value", "Keynote Text"],
+            AnnotationKind::CeilingTag => &["Height Offset From Level", "Type", "Type Mark", "Comments", "Level"],
         }
     }
 }
@@ -572,7 +577,9 @@ impl AnnotationFamily {
         let (x1, x0) = (w - m, w - m - panel);
         let mut f = AnnotationFamily::drawn_with(name, AnnotationKind::TitleBlock, vec![], vec![], vec![]);
         f.paper_mm = Some(paper);
-        let mut table=crate::revisions::RevisionTable::default();table.at=[x0,h-20.0*k];for c in &mut table.columns{c.width_mm*=k;}table.row_height_mm*=k;table.text_mm*=k;f.revision_schedule=Some(table);
+        let mut table=crate::revisions::RevisionTable::default();table.at=[x0,h-20.0*k];for c in &mut table.columns{c.width_mm*=k;}
+        // the table fits the panel it sits in
+        let tw:f64=table.columns.iter().map(|c|c.width_mm).sum();if tw>panel{let f=panel/tw;for c in &mut table.columns{c.width_mm*=f;}}table.row_height_mm*=k;table.text_mm*=k;f.revision_schedule=Some(table);
         let size = |n: &str, mm: f64, bold: bool| TextType::new(n, mm, bold);
         f.label_types = vec![size("Small", 2.5 * k, false), size("Value", 3.5 * k, false), size("Name", 5.0 * k, true), size("Number", 10.0 * k, true)];
         f.text_types = vec![size("Heading", 2.0 * k, false)];
@@ -1206,6 +1213,8 @@ impl Document {
             AnnotationKind::MaterialTag => ("Material Tag", "Description", "Material", vec![]),
             // Revit's keynote tag: the key in a box
             AnnotationKind::KeynoteTag => ("Keynote Tag", "Key Value", "E10", vec![[0.0, -2.5], [8.0, -2.5], [8.0, 2.5], [0.0, 2.5]]),
+            // Revit's ceiling tag: the height above the level, no border
+            AnnotationKind::CeilingTag => ("Ceiling Tag", "Height Offset From Level", "2400", vec![]),
             _ => return Err("not a door or window tag".into()),
         };
         // a material tag's text starts just past its leader's end, as Revit's does

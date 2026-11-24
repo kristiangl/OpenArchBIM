@@ -517,7 +517,8 @@ const Plan = (() => {
   }
   function taggableAt(sx, sy) {
     const inserts = new Map(data.inserts.map((i) => [i.id, i]));
-    return rawCandidates(sx, sy).flat().find((id) => inserts.has(id) && Tags.taggable(inserts.get(id).category)) ?? null;
+    const ceilings = new Set((data.ceilings || []).map((c) => c.id));
+    return rawCandidates(sx, sy).flat().find((id) => (inserts.has(id) && Tags.taggable(inserts.get(id).category)) || ceilings.has(id)) ?? null;
   }
   function segsCross(a, b, c, d) {
     const o = (p, q, r) => (q[0] - p[0]) * (r[1] - p[1]) - (q[1] - p[1]) * (r[0] - p[0]);

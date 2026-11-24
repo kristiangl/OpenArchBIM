@@ -16,6 +16,10 @@ use serde_json::{json, Value};
 pub const SCALES: &[u32] = &[1, 2, 5, 10, 20, 25, 50, 75, 100, 125, 150, 200, 250, 300, 400, 500, 1000, 2000, 5000];
 
 /// Nest `value` under a dotted path: ("settings.scale", 50) -> {"settings":{"scale":50}}.
+fn fam_has_head(d: &Document, i: &openarch_model::family::FamilyInstance) -> bool {
+    d.family_type(i.type_id).and_then(|t| d.family(t.family)).is_some_and(|f| f.params.iter().any(|p| p.name == "Head Height"))
+}
+
 pub fn nest(path: &str, value: Value) -> Value {
     path.rsplit('.').fold(value, |v, k| json!({ k: v }))
 }
@@ -523,7 +527,13 @@ pub fn instance_props(d: &Document, id: Id, i: &FamilyInstance) -> Res {
     match i.host {
         Some(h) => {
             add("Constraints", ro("Host", format!("{} ({})", if h.v_mm.is_some() { "Curtain Wall" } else { "Basic Wall" }, h.wall)));
-            add("Constraints", ro("Head Height", format!("{:.0}", sill + height)));
+            // Sill Height plus Height, as the family says them (not the rough opening, which is larger by the frame's
+            // clearance); a family with its own Head Height shows that row instead
+            let num = |n: &str| d.instance_param(i, n).and_then(|v| v.as_f64());
+            if !fam_has_head(d, i) {
+                let head = match (num("Sill Height"), num("Height")) { (Some(s), Some(h)) => s + h, _ => sill + height };
+                add("Constraints", ro("Head Height", format!("{head:.0}")));
+            }
         }
         // a site component stands on the ground: Offset from Host raises it off it
         None if i.face_host.is_some_and(|h| h.kind == openarch_model::family::HostKind::Floor) => {

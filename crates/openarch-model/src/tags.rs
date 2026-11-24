@@ -84,6 +84,9 @@ impl Document {
 
     /// The tag family kind an element takes, if it can be tagged.
     pub fn tag_kind(&self, element: Id) -> Option<AnnotationKind> {
+        if let Some(Element::Ceiling(_)) = self.get(element) {
+            return Some(AnnotationKind::CeilingTag);
+        }
         let Some(Element::FamilyInstance(i)) = self.get(element) else { return None };
         match self.instance_family(i)?.0.category {
             FamilyCategory::Doors => Some(AnnotationKind::DoorTag),
@@ -196,6 +199,14 @@ impl Document {
     /// plan), in the view's own frame. None when the view cannot show the element's tags.
     pub fn tag_point(&self, view: Id, element: Id) -> Option<Point> {
         let v = self.view(view)?;
+        // a ceiling's tag: in the middle of its largest piece, in plans of its level
+        if let Some(Element::Ceiling(c)) = self.get(element) {
+            if !v.view_kind.is_plan() || v.level != Some(c.level) {
+                return None;
+            }
+            let r = c.regions(0.5).into_iter().max_by(|a, b| a.area().total_cmp(&b.area()))?;
+            return Some(inside_point(&r));
+        }
         let Some(Element::FamilyInstance(i)) = self.get(element) else { return None };
         let frame = self.instance_frame(element)?;
         let at = frame.fam_world(0.0, 0.0);
@@ -271,11 +282,17 @@ impl Document {
         let drawn: Option<std::collections::BTreeSet<Id>> = if v.view_kind.is_plan() { None } else {
             match self.elevation_data(view) { Ok(e) => Some(e.items.iter().map(|i| i.id).collect()), Err(_) => return vec![] }
         };
-        self.instances().into_iter()
+        let mut out: Vec<Id> = self.instances().into_iter()
             .filter(|(id, _)| only.is_none_or(|s| s.contains(id)) && !v.hidden_elements.contains(id))
             .filter(|(id, i)| match &drawn { Some(d) => d.contains(id), None => v.level.is_none_or(|l| l == i.level) })
             .filter(|(id, _)| self.tag_kind(*id).is_some_and(|k| kinds.contains(&k)) && !self.is_tagged(view, *id) && self.tag_point(view, *id).is_some())
-            .map(|(id, _)| id).collect()
+            .map(|(id, _)| id).collect();
+        // ceilings: those of the plan's level
+        if kinds.contains(&AnnotationKind::CeilingTag) {
+            out.extend(self.ceilings().into_iter().map(|(id, _)| id)
+                .filter(|id| only.is_none_or(|s| s.contains(id)) && !v.hidden_elements.contains(id) && !self.is_tagged(view, *id) && self.tag_point(view, *id).is_some()));
+        }
+        out
     }
 
     /// Tag every untagged door and window of `kinds` the view shows (or only those in `only`), as one undo step; each
@@ -325,4 +342,31 @@ impl Document {
             if !marks.iter().any(|(_, m)| *m == mark) { return mark; }
         }
     }
+}
+
+/// A point inside a region for a label: its outline's centroid when that falls inside, else the middle of its
+/// largest triangle.
+fn inside_point(r: &crate::geom::Region) -> Point {
+    let pts = &r.outer;
+    let a = crate::geom::signed_area(pts);
+    if a.abs() > 1e-9 {
+        let (mut cx, mut cy) = (0.0, 0.0);
+        for i in 0..pts.len() {
+            let (p, q) = (pts[i], pts[(i + 1) % pts.len()]);
+            let k = p.x * q.y - q.x * p.y;
+            cx += (p.x + q.x) * k;
+            cy += (p.y + q.y) * k;
+        }
+        let c = Point::new(cx / (6.0 * a), cy / (6.0 * a));
+        if crate::rooms::contains(r, c) {
+            return c;
+        }
+    }
+    crate::geom::triangulate_region(r)
+        .and_then(|(ps, tris)| tris.iter().map(|t| [ps[t[0]], ps[t[1]], ps[t[2]]]).max_by(|a, b| tri_area(a).total_cmp(&tri_area(b))))
+        .map_or(pts[0], |t| Point::new((t[0].x + t[1].x + t[2].x) / 3.0, (t[0].y + t[1].y + t[2].y) / 3.0))
+}
+
+fn tri_area(t: &[Point; 3]) -> f64 {
+    ((t[1].x - t[0].x) * (t[2].y - t[0].y) - (t[2].x - t[0].x) * (t[1].y - t[0].y)).abs() / 2.0
 }
