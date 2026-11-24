@@ -1169,7 +1169,121 @@ fn png(w: u32, h: u32, color: png::ColorType, depth: png::BitDepth, data: &[u8])
     Ok(out)
 }
 
+/// A baseline TIFF: uncompressed, one strip, `samples` (1 grey or 3 RGB) of `bits` (8 or 16, little-endian) a
+/// pixel, rows from the top.
+fn tiff(w: u32, h: u32, samples: u16, bits: u16, data: &[u8]) -> Vec<u8> {
+    const SHORT: u16 = 3;
+    const LONG: u16 = 4;
+    const RATIONAL: u16 = 5;
+    let n_tags: u16 = 13;
+    let ifd = 8u32;
+    // after the directory: bits per sample for RGB (padded to 8 bytes), the two resolutions, then the pixels
+    let bps_off = ifd + 2 + 12 * u32::from(n_tags) + 4;
+    let (xres_off, yres_off) = (bps_off + 8, bps_off + 16);
+    let data_off = bps_off + 24;
+    let mut o = Vec::with_capacity(data_off as usize + data.len());
+    o.extend_from_slice(b"II");
+    o.extend_from_slice(&42u16.to_le_bytes());
+    o.extend_from_slice(&ifd.to_le_bytes());
+    o.extend_from_slice(&n_tags.to_le_bytes());
+    let tag = |o: &mut Vec<u8>, id: u16, ty: u16, count: u32, value: u32| {
+        o.extend_from_slice(&id.to_le_bytes());
+        o.extend_from_slice(&ty.to_le_bytes());
+        o.extend_from_slice(&count.to_le_bytes());
+        o.extend_from_slice(&value.to_le_bytes());
+    };
+    tag(&mut o, 256, LONG, 1, w);
+    tag(&mut o, 257, LONG, 1, h);
+    if samples == 1 { tag(&mut o, 258, SHORT, 1, u32::from(bits)) } else { tag(&mut o, 258, SHORT, u32::from(samples), bps_off) }
+    tag(&mut o, 259, SHORT, 1, 1);
+    tag(&mut o, 262, SHORT, 1, if samples == 1 { 1 } else { 2 });
+    tag(&mut o, 273, LONG, 1, data_off);
+    tag(&mut o, 277, SHORT, 1, u32::from(samples));
+    tag(&mut o, 278, LONG, 1, h);
+    tag(&mut o, 279, LONG, 1, data.len() as u32);
+    tag(&mut o, 282, RATIONAL, 1, xres_off);
+    tag(&mut o, 283, RATIONAL, 1, yres_off);
+    tag(&mut o, 284, SHORT, 1, 1);
+    tag(&mut o, 296, SHORT, 1, 2);
+    o.extend_from_slice(&0u32.to_le_bytes());
+    for _ in 0..4 {
+        o.extend_from_slice(&bits.to_le_bytes());
+    }
+    for _ in 0..2 {
+        o.extend_from_slice(&72u32.to_le_bytes());
+        o.extend_from_slice(&1u32.to_le_bytes());
+    }
+    o.extend_from_slice(data);
+    o
+}
+
+/// A one-channel OpenEXR image: channel Y, 32-bit float, uncompressed scanlines, rows from the top.
+fn exr(w: u32, h: u32, values: &[f32]) -> Vec<u8> {
+    let mut o = vec![];
+    o.extend_from_slice(&20000630i32.to_le_bytes());
+    o.extend_from_slice(&2i32.to_le_bytes());
+    let attr = |o: &mut Vec<u8>, name: &str, ty: &str, v: &[u8]| {
+        o.extend_from_slice(name.as_bytes());
+        o.push(0);
+        o.extend_from_slice(ty.as_bytes());
+        o.push(0);
+        o.extend_from_slice(&(v.len() as i32).to_le_bytes());
+        o.extend_from_slice(v);
+    };
+    // one channel: name, pixel type (2 float), linear and three reserved bytes, x and y sampling; then the end
+    let mut ch = b"Y\0".to_vec();
+    ch.extend_from_slice(&2i32.to_le_bytes());
+    ch.extend_from_slice(&[0, 0, 0, 0]);
+    ch.extend_from_slice(&1i32.to_le_bytes());
+    ch.extend_from_slice(&1i32.to_le_bytes());
+    ch.push(0);
+    attr(&mut o, "channels", "chlist", &ch);
+    attr(&mut o, "compression", "compression", &[0]);
+    let bx: Vec<u8> = [0i32, 0, w as i32 - 1, h as i32 - 1].iter().flat_map(|v| v.to_le_bytes()).collect();
+    attr(&mut o, "dataWindow", "box2i", &bx);
+    attr(&mut o, "displayWindow", "box2i", &bx);
+    attr(&mut o, "lineOrder", "lineOrder", &[0]);
+    attr(&mut o, "pixelAspectRatio", "float", &1f32.to_le_bytes());
+    attr(&mut o, "screenWindowCenter", "v2f", &[0u8; 8]);
+    attr(&mut o, "screenWindowWidth", "float", &1f32.to_le_bytes());
+    o.push(0);
+    // the offset of each scanline, then the scanlines: y, byte count, the row
+    let (w, h) = (w as usize, h as usize);
+    let first = o.len() + h * 8;
+    for y in 0..h {
+        o.extend_from_slice(&((first + y * (8 + w * 4)) as u64).to_le_bytes());
+    }
+    for y in 0..h {
+        o.extend_from_slice(&(y as i32).to_le_bytes());
+        o.extend_from_slice(&((w * 4) as i32).to_le_bytes());
+        for v in &values[y * w..(y + 1) * w] {
+            o.extend_from_slice(&v.to_le_bytes());
+        }
+    }
+    o
+}
+
 impl Generated {
+    /// A map (albedo, normal, height, roughness, metalness) as an image file: "png" or "tiff" (16-bit height), or
+    /// "exr" for the height map (32-bit float, 0 at the deepest, 1 at the face).
+    pub fn map_file(&self, map: &str, format: &str) -> Result<Vec<u8>, String> {
+        let [w, h] = self.px;
+        match (format, map) {
+            ("png", "albedo") => self.albedo_png(),
+            ("png", "normal") => self.normal_png(),
+            ("png", "height") => self.height_png(),
+            ("png", "roughness") => self.roughness_png(),
+            ("png", "metalness") => self.metalness_png(),
+            ("tiff", "albedo") => Ok(tiff(w, h, 3, 8, &self.albedo)),
+            ("tiff", "normal") => Ok(tiff(w, h, 3, 8, &self.normal)),
+            ("tiff", "height") => Ok(tiff(w, h, 1, 16, &self.height.iter().flat_map(|v| v.to_le_bytes()).collect::<Vec<u8>>())),
+            ("tiff", "roughness") => Ok(tiff(w, h, 1, 8, &self.roughness)),
+            ("tiff", "metalness") => Ok(tiff(w, h, 1, 8, &self.metalness)),
+            ("exr", "height") => Ok(exr(w, h, &self.height.iter().map(|v| f32::from(*v) / 65535.0).collect::<Vec<f32>>())),
+            _ => Err(format!("no {map} map as {format}")),
+        }
+    }
+
     pub fn albedo_png(&self) -> Result<Vec<u8>, String> {
         png(self.px[0], self.px[1], png::ColorType::Rgb, png::BitDepth::Eight, &self.albedo)
     }

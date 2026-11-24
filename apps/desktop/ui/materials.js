@@ -4,7 +4,10 @@
 const MatUI = (() => {
   const h = (tag, props, ...kids) => {
     const e = document.createElement(tag);
-    Object.assign(e, props || {});
+    // `list` (an input's datalist) is an attribute only
+    const { list, ...rest } = props || {};
+    Object.assign(e, rest);
+    if (list) e.setAttribute("list", list);
     e.append(...kids.filter((k) => k !== null && k !== undefined));
     return e;
   };
@@ -268,7 +271,7 @@ const MatUI = (() => {
     t.append(row("Rotation", num(a.uv_rotation_deg, (v) => ap({ uv_rotation_deg: v })), "deg"));
     pane.append(t);
     if (a.kind === "parametric") {
-      pane.append(h("div", { className: "row" }, h("button", { textContent: "Bake to Images...", title: "Export the generated maps as PNG files for other renderers", onclick: () => bake(m) })));
+      pane.append(h("div", { className: "row" }, h("button", { textContent: "Bake to Images...", title: "Export the generated maps as image files for other renderers", onclick: () => bake(m) })));
     }
   }
 
@@ -276,7 +279,7 @@ const MatUI = (() => {
     openModal(`Bake "${m.name}" to Images`, (body, foot, close) => {
       const res = h("select"); for (const r of [1024, 2048, 4096]) res.add(new Option(`${r} px`, r)); res.value = "2048";
       const shape = h("select"); shape.add(new Option("Square", "square")); shape.add(new Option("Tile proportions", "aspect"));
-      const fmt = h("select"); fmt.add(new Option("PNG (16-bit height)", "png"));
+      const fmt = h("select"); fmt.add(new Option("PNG (16-bit height)", "png")); fmt.add(new Option("TIFF (16-bit height)", "tiff")); fmt.add(new Option("EXR height (32-bit float), PNG maps", "exr"));
       const msg = h("div", { className: "modal-msg" });
       body.append(h("table", { className: "range" }, row("Resolution", res), row("Shape", shape), row("Format", fmt)),
         h("p", { className: "note", textContent: "Writes Albedo, Normal, Height_POM, Roughness and Metalness images and a Metadata file with the real tile size and parallax depth." }), msg);
@@ -318,8 +321,9 @@ const MatUI = (() => {
       kids.push(h("div", { className: "mat-cat", textContent: cat }));
       for (const i of items) {
         const b = h("button", { className: "mat-item" + (libSel.has(libKey(i)) ? " active" : "") });
-        const chip = h("span", { className: "mat-chip" }); chip.style.background = ctx.toHex(i.color);
-        b.append(chip, i.name, i.kind === "parametric" ? h("span", { className: "mat-tag", textContent: "P" }) : null);
+        const chip = h("span", { className: i.thumbnail ? "mat-thumb" : "mat-chip" });
+        if (i.thumbnail) chip.style.backgroundImage = `url(${i.thumbnail})`; else chip.style.background = ctx.toHex(i.color);
+        b.append(chip, i.name, ...(i.kind === "parametric" ? [h("span", { className: "mat-tag", textContent: "P" })] : []));
         b.title = `${i.class || "Generic"}${i.description ? ": " + i.description : ""}\n${i.path}`;
         b.onclick = (e) => {
           if (!e.ctrlKey && !e.shiftKey && !e.metaKey) libSel.clear();
@@ -355,7 +359,21 @@ const MatUI = (() => {
       try { await Backend.call("material_library_add_category", { dir, category: n }); } catch (e) { ctx.msg(errText(e)); }
       libraryList(ctx);
     } });
-    pane.append(h("div", { className: "row" }, imp, del), h("label", { className: "check" }, replace, " Replace project materials of the same name"), h("div", { className: "row" }, folder, newCat));
+    const move = h("button", { textContent: "Move to Folder...", disabled: !picked.length, onclick: () => openModal("Move to Folder", (body, foot, close) => {
+      const to = h("input", { value: lib.categories.find((c) => !picked.some((i) => i.category === c)) || "", list: "matlib-move" });
+      const dl = h("datalist", { id: "matlib-move" }, ...lib.categories.map((c) => h("option", { value: c })));
+      const msg = h("div", { className: "modal-msg" });
+      body.append(h("table", { className: "range" }, row("Folder", h("span", {}, to, dl))), h("p", { className: "note", textContent: "A new name makes a new folder. Project materials that came from these keep naming their old folder." }), msg);
+      foot.append(button("Move", async () => {
+        try {
+          const r = await Backend.call("material_library_move", { dir, to: to.value.trim(), items: picked.map((i) => ({ category: i.category, name: i.name })) });
+          close(); libSel.clear();
+          ctx.msg(r.skipped.length ? `Moved ${r.moved.length}; already in ${to.value.trim()}: ${r.skipped.join(", ")}.` : `Moved ${r.moved.length} to ${to.value.trim()}.`);
+          libraryList(ctx);
+        } catch (e) { msg.textContent = errText(e); }
+      }, true), button("Cancel", close));
+    }) });
+    pane.append(h("div", { className: "row" }, imp, del, move), h("label", { className: "check" }, replace, " Replace project materials of the same name"), h("div", { className: "row" }, folder, newCat));
   }
 
   async function doImport(ctx, items, replace = false) {

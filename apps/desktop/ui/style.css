@@ -316,6 +316,7 @@ table.range select, table.range input { width: 100%; padding: 1px 4px; backgroun
 .mat-chip { width: 14px; height: 14px; border: 1px solid var(--line); border-radius: 2px; flex: none; }
 .mat-item.mat-extra { font-style: italic; }
 .mat-cat { padding: 4px 8px 2px; font-weight: 600; color: var(--muted); font-size: 11px; text-transform: uppercase; }
+.mat-thumb { width: 26px; height: 26px; flex: none; background-size: cover; background-position: center; border: 1px solid var(--line); border-radius: 2px; }
 .mat-tag { margin-left: auto; font-size: 10px; color: var(--muted); border: 1px solid var(--line); border-radius: 2px; padding: 0 3px; }
 .mat-pane .row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
 .mat-appearance { display: flex; flex-direction: column; gap: 6px; max-height: 470px; overflow: auto; }

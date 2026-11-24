@@ -129,6 +129,15 @@ fn standard_maps_load_from_files_and_parametric_materials_bake_to_images() {
     assert_eq!(meta["pom_depth_mm"], 18.0);
     let h = std::fs::read(dir.join("Cladding _ Grey_Height_POM.png")).unwrap();
     assert_eq!(h[24], 16, "the height map is 16-bit");
+    // TIFF throughout; EXR for the height with the colour maps as PNG
+    let out = call(&mut s, "material_export", json!({ "name": "Cladding / Grey", "dir": dir.join("tiff").to_string_lossy(), "res": 64, "format": "tiff" }));
+    assert!(out["files"].as_array().unwrap().iter().take(5).all(|f| f.as_str().unwrap().ends_with(".tiff")));
+    let out = call(&mut s, "material_export", json!({ "name": "Cladding / Grey", "dir": dir.join("exr").to_string_lossy(), "res": 64, "format": "exr" }));
+    let names: Vec<&str> = out["files"].as_array().unwrap().iter().map(|f| f.as_str().unwrap()).collect();
+    assert!(names[2].ends_with("_Height_POM.exr") && names[0].ends_with("_Albedo.png"), "{names:?}");
+    let meta: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("exr").join("Cladding _ Grey_Metadata.json")).unwrap()).unwrap();
+    assert_eq!(meta["format"], "exr");
+    assert!(s.handle("material_export", &json!({ "name": "Cladding / Grey", "dir": dir.to_string_lossy(), "format": "bmp" })).is_err());
     let _ = std::fs::remove_dir_all(&dir);
 }
 
@@ -203,6 +212,35 @@ fn the_3d_scene_gives_faces_their_surface_patterns() {
     call(&mut s, "patch_view", json!({ "id": v3, "patch": { "settings": { "overrides": { "model": { "Walls": { "surface_foreground": { "visible": false } } } } } } }));
     let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
     assert!(surf(&scene, "Face Brick").is_null() && surf(&scene, "Plasterboard").is_null());
+}
+
+#[test]
+fn the_library_lists_thumbnails_and_moves_between_folders() {
+    let mut s = Session::new();
+    let dir = temp("move");
+    let gen = serde_json::to_value(openarch_model::matgen::GeneratorParams::preset(openarch_model::matgen::Archetype::Tile)).unwrap();
+    let tile = material_id(&mut s, "Ceiling Tile");
+    call(&mut s, "patch_style_item", json!({ "id": tile, "patch": { "appearance": { "kind": "parametric", "generator": gen } } }));
+    let d = dir.to_string_lossy();
+    call(&mut s, "material_library_save", json!({ "dir": d, "id": tile, "category": "Interior Tiles" }));
+    let board = material_id(&mut s, "Plasterboard");
+    call(&mut s, "material_library_save", json!({ "dir": d, "id": board, "category": "Linings" }));
+    let list = call(&mut s, "material_library_list", json!({ "dir": d }));
+    let item = |l: &Value, n: &str| l["items"].as_array().unwrap().iter().find(|i| i["name"] == n).cloned().unwrap();
+    assert!(item(&list, "Ceiling Tile")["thumbnail"].as_str().unwrap().starts_with("data:image/png;base64,"));
+    assert!(item(&list, "Plasterboard")["thumbnail"].is_null(), "no image, its colour stands in");
+    let file: Value = serde_json::from_str(&std::fs::read_to_string(dir.join("Interior Tiles").join("Ceiling Tile.oamat")).unwrap()).unwrap();
+    assert_eq!(file["thumbnail"], item(&list, "Ceiling Tile")["thumbnail"], "kept in the file");
+    // moved into another folder (made for it); one already there stays put
+    let r = call(&mut s, "material_library_move", json!({ "dir": d, "to": "Linings", "items": [{ "category": "Interior Tiles", "name": "Ceiling Tile" }] }));
+    assert_eq!(r["moved"], json!(["Ceiling Tile"]));
+    let list = call(&mut s, "material_library_list", json!({ "dir": d }));
+    assert_eq!(item(&list, "Ceiling Tile")["category"], "Linings");
+    call(&mut s, "material_library_save", json!({ "dir": d, "id": tile, "category": "Interior Tiles" }));
+    let r = call(&mut s, "material_library_move", json!({ "dir": d, "to": "Linings", "items": [{ "category": "Interior Tiles", "name": "Ceiling Tile" }] }));
+    assert_eq!(r["skipped"], json!(["Ceiling Tile"]));
+    assert!(dir.join("Interior Tiles").join("Ceiling Tile.oamat").exists());
+    let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]

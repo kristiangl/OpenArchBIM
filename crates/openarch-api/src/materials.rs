@@ -171,21 +171,24 @@ pub fn export(d: &Document, p: &Value) -> Res {
     let res = p.get("res").and_then(|v| v.as_u64()).unwrap_or(2048).clamp(64, 8192) as u32;
     let square = p.get("square").and_then(|v| v.as_bool()).unwrap_or(true);
     let format = p.get("format").and_then(|v| v.as_str()).unwrap_or("png");
-    if format != "png" {
-        return Err("only PNG export is built so far (the height map is 16-bit PNG)".into());
+    if !["png", "tiff", "exr"].contains(&format) {
+        return Err(format!("no export to {format}: PNG, TIFF or EXR"));
     }
     let gen = matgen::generate(&g, res, square)?;
     std::fs::create_dir_all(&dir).map_err(|e| format!("could not make {}: {e}", dir.display()))?;
     let base = safe(&m.name);
     let mut files = vec![];
-    for (suffix, bytes) in [("Albedo", gen.albedo_png()?), ("Normal", gen.normal_png()?), ("Height_POM", gen.height_png()?), ("Roughness", gen.roughness_png()?), ("Metalness", gen.metalness_png()?)] {
-        let path = dir.join(format!("{base}_{suffix}.png"));
-        std::fs::write(&path, bytes).map_err(|e| format!("could not write {}: {e}", path.display()))?;
+    for (suffix, map) in [("Albedo", "albedo"), ("Normal", "normal"), ("Height_POM", "height"), ("Roughness", "roughness"), ("Metalness", "metalness")] {
+        // EXR is for the height data: the colour maps go alongside it as PNG
+        let f = if format == "exr" && map != "height" { "png" } else { format };
+        let path = dir.join(format!("{base}_{suffix}.{f}"));
+        std::fs::write(&path, gen.map_file(map, f)?).map_err(|e| format!("could not write {}: {e}", path.display()))?;
         files.push(path.to_string_lossy().into_owned());
     }
+    let height = if format == "exr" { "32-bit float, 1 is the face, 0 is pom_depth_mm below it" } else { "16-bit, white is the face, black is pom_depth_mm below it" };
     let meta = json!({
         "material": m.name, "generator": "OpenArch BIM parametric material", "uv_width_mm": gen.width_mm, "uv_height_mm": gen.height_mm,
-        "uv_rotation_deg": m.appearance.uv_rotation_deg, "pom_depth_mm": gen.depth_mm, "pixels": gen.px, "height_map": "16-bit, white is the face, black is pom_depth_mm below it",
+        "uv_rotation_deg": m.appearance.uv_rotation_deg, "pom_depth_mm": gen.depth_mm, "pixels": gen.px, "format": format, "height_map": height,
         "normal_map": "tangent space, +Y up (OpenGL)", "base_color": g.base_color(), "parameters": g,
     });
     let path = dir.join(format!("{base}_Metadata.json"));
@@ -225,7 +228,8 @@ fn asset(d: &Document, m: &Material) -> Value {
     let patterns: Vec<&FillPattern> = d.fill_patterns().into_iter().map(|(_, p)| p).filter(|p| !p.built_in && names.contains(&p.name) && p.name != openarch_model::styles::generated_pattern_name(&m.name)).collect();
     let mut m = m.clone();
     m.library_source = None;
-    json!({ "format": 1, "material": m, "patterns": patterns })
+    // the list's picture, kept with the file so listing doesn't make it again
+    json!({ "format": 1, "material": m, "patterns": patterns, "thumbnail": thumbnail(&m) })
 }
 
 /// The library's folders and materials: [{ category, name, class, kind, color, path }].
@@ -246,11 +250,53 @@ pub fn library_list(p: &Value) -> Res {
                 let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
                 let Ok(v) = serde_json::from_str::<Value>(&text) else { continue };
                 let Ok(m) = serde_json::from_value::<Material>(v["material"].clone()) else { continue };
-                items.push(json!({ "category": cat, "name": m.name, "class": m.class, "kind": m.appearance.kind, "color": m.graphics.shading_color, "description": m.identity.description, "path": f.path().to_string_lossy() }));
+                // files saved before thumbnails were kept get one made now
+                let thumb = v.get("thumbnail").and_then(|t| t.as_str()).map(String::from).or_else(|| if v.get("thumbnail").is_some() { None } else { thumbnail(&m) });
+                items.push(json!({ "category": cat, "name": m.name, "class": m.class, "kind": m.appearance.kind, "color": m.graphics.shading_color, "description": m.identity.description, "path": f.path().to_string_lossy(), "thumbnail": thumb }));
             }
         }
     }
     Ok(json!({ "dir": dir.to_string_lossy(), "exists": dir.is_dir(), "categories": categories, "items": items }))
+}
+
+/// A small picture of a library material: a generated material's tile, or a standard one's albedo image when it is
+/// small enough to send with the list (otherwise the list shows its colour).
+fn thumbnail(m: &Material) -> Option<String> {
+    match m.appearance.kind {
+        AppearanceKind::Parametric => {
+            let g = matgen::generate(m.appearance.generator.as_ref()?, 64, false).ok()?;
+            Some(png_url(&g.albedo_png().ok()?))
+        }
+        AppearanceKind::Standard => {
+            let a = m.appearance.maps.albedo.as_ref()?;
+            (a.data.len() < 300_000).then(|| format!("data:{};base64,{}", a.mime, a.data))
+        }
+    }
+}
+
+/// Move library materials (`items`: category and name) into the folder `to`. One whose name is already there is left
+/// where it is. Project materials that came from a moved one still name its old folder.
+pub fn library_move(p: &Value) -> Res {
+    let dir = lib_dir(p);
+    let to = s(p, "to")?;
+    let (mut moved, mut skipped) = (vec![], vec![]);
+    for it in p.get("items").and_then(|v| v.as_array()).ok_or("missing items")? {
+        let (cat, name) = (s(it, "category")?, s(it, "name")?);
+        let (from, dest) = (asset_path(&dir, cat, name)?, asset_path(&dir, to, name)?);
+        if from == dest {
+            continue;
+        }
+        if dest.exists() {
+            skipped.push(name.to_string());
+            continue;
+        }
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent).map_err(|e| format!("could not make {}: {e}", parent.display()))?;
+        }
+        std::fs::rename(&from, &dest).map_err(|e| format!("could not move {}: {e}", from.display()))?;
+        moved.push(name.to_string());
+    }
+    Ok(json!({ "moved": moved, "skipped": skipped }))
 }
 
 /// Save a project material to the library under `category` (as `as_name`, or its own name). An asset of that name

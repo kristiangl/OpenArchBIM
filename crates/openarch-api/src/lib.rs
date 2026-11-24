@@ -463,6 +463,7 @@ impl Session {
             "material_library_import" => materials::library_import(&mut self.doc, p),
             "material_library_delete" => materials::library_delete(p),
             "material_library_add_category" => materials::library_add_category(p),
+            "material_library_move" => materials::library_move(p),
             "plan" => self.plan(p),
             "scene" => Ok(self.scene(p)),
             "patch_wall" => {

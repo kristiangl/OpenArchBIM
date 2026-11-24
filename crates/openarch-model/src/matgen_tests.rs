@@ -140,6 +140,47 @@ fn metal_is_metallic_unless_painted() {
 }
 
 #[test]
+fn maps_write_as_tiff_and_the_height_as_exr() {
+    let g = generate(&GeneratorParams { layout: Layout::RunningBond, ..GeneratorParams::preset(Archetype::Masonry) }, 64, false).unwrap();
+    let [w, h] = g.px;
+    let u16le = |b: &[u8], i: usize| u16::from_le_bytes([b[i], b[i + 1]]);
+    let u32le = |b: &[u8], i: usize| u32::from_le_bytes([b[i], b[i + 1], b[i + 2], b[i + 3]]);
+    // a TIFF's directory: size, samples, bits, and the pixels where the strip says
+    for (map, samples, bits) in [("albedo", 3u32, 8u32), ("height", 1, 16), ("roughness", 1, 8)] {
+        let t = g.map_file(map, "tiff").unwrap();
+        assert_eq!(&t[..4], b"II*\0");
+        let ifd = u32le(&t, 4) as usize;
+        let n = u16le(&t, ifd) as usize;
+        let tag = |id: u16| (0..n).map(|k| ifd + 2 + 12 * k).find(|&e| u16le(&t, e) == id).map(|e| (u32le(&t, e + 4), u32le(&t, e + 8))).unwrap();
+        assert_eq!(tag(256).1, w);
+        assert_eq!(tag(257).1, h);
+        assert_eq!(tag(277).1, samples);
+        let (count, v) = tag(258);
+        assert_eq!(if count == 1 { v } else { u32::from(u16le(&t, v as usize)) }, bits);
+        let (off, len) = (tag(273).1 as usize, tag(279).1 as usize);
+        assert_eq!(len, (w * h * samples * bits / 8) as usize);
+        assert_eq!(off + len, t.len());
+        if map == "height" {
+            assert_eq!(u16le(&t, off + 2 * 5), g.height[5]);
+        }
+    }
+    // the EXR: magic, version, a header ending in an empty name, one offset a row, rows of floats
+    let e = g.map_file("height", "exr").unwrap();
+    assert_eq!(u32le(&e, 0), 20000630);
+    assert_eq!(u32le(&e, 4), 2);
+    let rows = (h * (8 + 4 * w)) as usize;
+    let header_end = e.len() - rows - 8 * h as usize;
+    assert_eq!(e[header_end - 1], 0);
+    let first = u64::from_le_bytes(e[header_end..header_end + 8].try_into().unwrap()) as usize;
+    assert_eq!(first, header_end + 8 * h as usize);
+    assert_eq!(u32le(&e, first), 0);
+    assert_eq!(u32le(&e, first + 4), w * 4);
+    let v = f32::from_le_bytes(e[first + 8 + 4 * 5..first + 8 + 4 * 6].try_into().unwrap());
+    assert!((v - f32::from(g.height[5]) / 65535.0).abs() < 1e-6);
+    assert!(g.map_file("albedo", "exr").is_err());
+}
+
+#[test]
 fn versailles_has_its_four_sizes_and_a_hatch_on_every_joint() {
     let p = GeneratorParams { layout: Layout::Versailles, unit_height: 200.0, joint_width: 3.0, ..GeneratorParams::preset(Archetype::Tile) };
     let pl = plan(&p).unwrap();
