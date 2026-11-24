@@ -612,11 +612,14 @@
         const p = find();
         if (!p) return;
         const pat = p.pattern;
-        const ro = pat.built_in;
+        // a pattern the generator keeps for a material is made again whenever that material changes
+        const owner = !isLine && pat.name.endsWith(" (generated)") && (std.materials || []).find((m) => `${m.material.name} (generated)` === pat.name && m.material.graphics.pattern_from_appearance);
+        const ro = pat.built_in || !!owner;
         const nameIn = h("input", { value: pat.name, disabled: ro });
         nameIn.onchange = () => nameIn.value.trim() && patch({ name: nameIn.value.trim() });
         pane.append(h("label", { className: "mat-name" }, "Name ", nameIn));
-        if (ro) pane.append(h("p", { className: "note", textContent: "Built-in. Duplicate it to make changes." }));
+        if (owner) pane.append(h("p", { className: "note", textContent: `Made from the appearance of the material ${owner.material.name}, on its joints; it changes with that material. Duplicate it to keep a version of your own.` }));
+        else if (ro) pane.append(h("p", { className: "note", textContent: "Built-in. Duplicate it to make changes." }));
         if (isLine) {
           pane.append(linePreview(p.dash));
           const t = h("table", { className: "range" });

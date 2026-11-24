@@ -175,3 +175,30 @@ fn the_user_library_saves_imports_and_updates_independent_copies() {
     assert_eq!(call(&mut b, "material_library_list", json!({ "dir": d }))["items"].as_array().unwrap().len(), 1);
     let _ = std::fs::remove_dir_all(&lib);
 }
+
+#[test]
+fn the_3d_scene_gives_faces_their_surface_patterns() {
+    let mut s = Session::new();
+    let info = call(&mut s, "doc_info", json!({}));
+    let (lvl, wt) = (info["levels"][0]["id"].as_u64().unwrap(), info["wall_types"].as_array().unwrap().iter().find(|t| t["name"].as_str().unwrap().contains("Brick Veneer")).unwrap()["id"].as_u64().unwrap());
+    let v3 = info["views"].as_array().unwrap().iter().find(|v| v["view_kind"] == "three_d").unwrap()["id"].as_u64().unwrap();
+    call(&mut s, "add_wall", json!({ "type_id": wt, "level_id": lvl, "start": [0, 0], "end": [4000, 0], "height_mm": 2700 }));
+    let gen = serde_json::to_value(openarch_model::matgen::GeneratorParams::preset(openarch_model::matgen::Archetype::Masonry)).unwrap();
+    let brick = material_id(&mut s, "Face Brick");
+    call(&mut s, "patch_style_item", json!({ "id": brick, "patch": { "appearance": { "kind": "parametric", "generator": gen }, "graphics": { "pattern_from_appearance": true } } }));
+    // a drafting pattern on the plasterboard: paper mm, so 100 times larger at 1:100
+    let board = material_id(&mut s, "Plasterboard");
+    call(&mut s, "patch_style_item", json!({ "id": board, "patch": { "graphics": { "surface_foreground": { "pattern": "Diagonal up", "color": [200, 0, 0] } } } }));
+    let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
+    let surf = |sc: &Value, mat: &str| sc["meshes"].as_array().unwrap().iter().find(|m| m["material"] == mat).map(|m| m["surface"].clone()).unwrap_or(Value::Null);
+    assert_eq!(surf(&scene, "Face Brick")["pattern"], "Face Brick (generated)");
+    assert_eq!(surf(&scene, "Plasterboard"), json!({ "pattern": "Diagonal up", "color": [200, 0, 0], "background": null }));
+    assert!(surf(&scene, "Timber Frame").is_null(), "no surface pattern, nothing sent");
+    let bed = scene["patterns"]["Face Brick (generated)"]["lines"].as_array().unwrap().iter().find(|l| l["angle"] == 0.0).unwrap().clone();
+    assert_eq!(bed["spacing"], 172.0);
+    assert_eq!(scene["patterns"]["Diagonal up"]["lines"][0]["spacing"], 250.0);
+    // Visibility/Graphics: surface patterns of walls off in this view
+    call(&mut s, "patch_view", json!({ "id": v3, "patch": { "settings": { "overrides": { "model": { "Walls": { "surface_foreground": { "visible": false } } } } } } }));
+    let scene = call(&mut s, "scene", json!({ "view_id": v3 }));
+    assert!(surf(&scene, "Face Brick").is_null() && surf(&scene, "Plasterboard").is_null());
+}

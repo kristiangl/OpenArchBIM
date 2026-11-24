@@ -524,6 +524,16 @@ const Elev = (() => {
     }
   }
 
+  // A model pattern is laid from the project's origin, as 3D views and the material's texture lay it: the view
+  // measures across from its marker, so the pattern's origin moves back by how far along the marker stands. Faces
+  // square to the view then show the same joints here as in 3D.
+  function anchoredLines(def) {
+    const fr = data.frame;
+    if (!def || !def.model || !fr || !fr.origin || !fr.right) return def ? def.lines : [];
+    const s = fr.origin[0] * fr.right[0] + fr.origin[1] * fr.right[1];
+    return def.lines.map((L) => ({ ...L, origin: [L.origin[0] - s, L.origin[1]] }));
+  }
+
   function hatchLines(it, f, col) {
     const def = (data.fill_patterns || {})[f.pattern];
     if (!def || def.solid) { ctx.fillStyle = col; const { w, h } = size(); ctx.fillRect(0, 0, w, h); return; }
@@ -533,7 +543,7 @@ const Elev = (() => {
     const corners = [[u0, z0], [u1, z0], [u1, z1], [u0, z1]];
     ctx.strokeStyle = col; ctx.lineWidth = 1; ctx.lineCap = "butt"; ctx.setLineDash([]);
     let budget = 3000;
-    for (const L of def.lines) {
+    for (const L of anchoredLines(def)) {
       const a = (L.angle * Math.PI) / 180, dx = Math.cos(a), dy = Math.sin(a), nx = -dy, ny = dx, sp = L.spacing * unit;
       if (sp * cam.s < 2.5) { ctx.globalAlpha = 0.35; ctx.fillStyle = col; const { w, h } = size(); ctx.fillRect(0, 0, w, h); ctx.globalAlpha = 1; break; }
       const v0 = L.origin[0] * unit * nx + L.origin[1] * unit * ny, w0 = L.origin[0] * unit * dx + L.origin[1] * unit * dy;
@@ -582,7 +592,7 @@ const Elev = (() => {
       if (!def || def.solid) { cutPath(it); ctx.fillStyle = st.fill.color; ctx.fill("evenodd"); }
       else {
         const ring = (r) => r.map(([u, z]) => { const s = toScreen(u, z); return [s.x, s.y]; });
-        ctx.oaHatch({ rings: [...it.polys, ...(it.holes || [])].map(ring), evenodd: true, name: st.fill.pattern, colour: st.fill.color, lines: def.lines, unit: def.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
+        ctx.oaHatch({ rings: [...it.polys, ...(it.holes || [])].map(ring), evenodd: true, name: st.fill.pattern, colour: st.fill.color, lines: anchoredLines(def), unit: def.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
       }
     } else if (vstyle !== "wireframe" && st.fill && st.fill.visible) {
       ctx.save();
@@ -1114,7 +1124,7 @@ const Elev = (() => {
           const pc = f < 1 ? mix(sf.color, viewBg, f) : sf.color;
           if (ctx.semantic && ctx.oaHatch) {
             const ring = (r) => r.map(([u, z]) => { const s2 = toScreen(u, z); return [s2.x, s2.y]; });
-            ctx.oaHatch({ rings: [poly, ...(it.holes || [])].map(ring), evenodd: true, name: sf.pattern, colour: pc, lines: sdef.lines, unit: sdef.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
+            ctx.oaHatch({ rings: [poly, ...(it.holes || [])].map(ring), evenodd: true, name: sf.pattern, colour: pc, lines: anchoredLines(sdef), unit: sdef.model ? 1 : (data.scale || 100), map: ([u, z]) => toScreen(u, z), width: 1 });
           } else {
             ctx.save(); ctx.clip("evenodd");
             hatchLines({ polys: [poly] }, sf, pc);

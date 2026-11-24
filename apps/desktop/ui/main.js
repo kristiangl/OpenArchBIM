@@ -1421,7 +1421,7 @@ async function refreshView(force) {
       app.sceneRevision = scene.revision;
       app.sceneStyle = scene.visual_style || "shaded";
       app.sceneGraphics = scene.graphics || {};
-      app.vp.setMeshes(scene.meshes, app.selection);
+      app.vp.setMeshes(scene.meshes, app.selection, scene.patterns || {});
       app.sceneIds = new Set(scene.meshes.map((m) => m.id).filter((i) => typeof i === "number"));
       loadAppearances(app.vp, scene.appearances || {});
       // imported CAD drawings, as lines at their levels

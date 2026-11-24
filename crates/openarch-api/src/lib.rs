@@ -3511,6 +3511,42 @@ impl Session {
                 }
             }
         }
+        // surface patterns, which Hidden Line, Shaded and Consistent Colours draw on the faces: from the element's
+        // material, its category's Object Style and the view's overrides, as elevations resolve them; drafting
+        // patterns at the view's scale
+        let mut patterns = serde_json::Map::new();
+        if let (Some(s), Some(vw)) = (settings.as_ref(), view.and_then(|v| d.view(v))) {
+            let rgb = |h: &str| -> Option<[u8; 3]> {
+                let h = h.trim_start_matches('#');
+                (h.len() == 6).then(|| [0, 2, 4].map(|i| u8::from_str_radix(&h[i..i + 2], 16).unwrap_or(0)))
+            };
+            for m in meshes.iter_mut() {
+                let Some(id) = m["id"].as_u64() else { continue };
+                let cat = match m["kind"].as_str().unwrap_or("") {
+                    "Wall" => "Walls", "Floor" => "Floors", "Roof" => "Roofs", "Ceiling" => "Ceilings", "Stair" => "Stairs", "Ramp" => "Ramps",
+                    "Railing" => "Railings", "Toposolid" => "Topography", "Door" => "Doors", "Window" => "Windows", "Component" => "Generic Models",
+                    "Beam" => "Structural Framing", "StructuralColumn" => "Structural Columns", "WallFoundation" | "IsolatedFooting" | "SlabEdge" => "Structural Foundations",
+                    "ModelText" => "Generic Models", "Kerb" | "KerbRamp" => "Hardscape",
+                    _ => continue,
+                };
+                let hint = m["material"].as_str().and_then(|n| d.material(n)).map(graphics::Hint::from_material).unwrap_or_default();
+                let eo = d.graphics_of(vw, &id);
+                let Some(st) = graphics::style_for(d, s, cat, None, eo.as_ref(), "projection", &hint) else { continue };
+                let f = &st["fill"];
+                let fg = f["pattern"].as_str().filter(|_| f["visible"].as_bool() == Some(true)).and_then(|n| d.fill_pattern(n));
+                let bg = f["background"].as_str().and_then(rgb);
+                if fg.is_none() && bg.is_none() { continue; }
+                if let Some(fp) = fg {
+                    if !patterns.contains_key(&fp.name) {
+                        let k = if fp.pattern_type == openarch_model::styles::PatternKind::Model { 1.0 } else { f64::from(s.scale) };
+                        patterns.insert(fp.name.clone(), json!({ "solid": fp.solid, "lines": fp.lines.iter().map(|l| json!({
+                            "angle": l.angle_deg, "origin": [l.origin[0] * k, l.origin[1] * k], "shift": l.shift * k, "spacing": l.spacing * k,
+                            "dashes": l.dashes.iter().map(|x| x * k).collect::<Vec<_>>() })).collect::<Vec<_>>() }));
+                    }
+                }
+                m["surface"] = json!({ "pattern": fg.map(|p| p.name.clone()), "color": f["color"].as_str().and_then(rgb), "background": bg });
+            }
+        }
         // the materials with maps the meshes use, keyed by what they draw (the view fetches material_textures once per key)
         let mut appearances = serde_json::Map::new();
         for m in &meshes {
@@ -3520,7 +3556,7 @@ impl Session {
                 }
             }
         }
-        json!({ "revision": d.revision(), "meshes": meshes, "appearances": appearances, "cad_imports": cad::scene(d, view, shown("Imported Drawings")),
+        json!({ "revision": d.revision(), "meshes": meshes, "appearances": appearances, "patterns": patterns, "cad_imports": cad::scene(d, view, shown("Imported Drawings")),
             "model_lines": if shown("Lines") { d.model_lines_3d(|i| hidden.contains(&i)).into_iter().map(|(id, c, pts)| json!({ "id": id, "color": c, "pts": pts })).collect::<Vec<_>>() } else { vec![] }, "visual_style": settings.as_ref().map(|s| s.visual_style),
             // the Graphic Display Options the 3D view draws (shadows and the sun come with `sun`)
             "graphics": settings.as_ref().map(|s| json!({ "showEdges": s.graphic_display.show_edges, "silhouettes": s.graphic_display.silhouettes, "transparency": s.graphic_display.transparency, "background": s.graphic_display.background,
