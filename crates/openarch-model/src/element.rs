@@ -510,6 +510,10 @@ pub struct Wall {
     /// host, built in the phase it was demolished in. Kept to the opening by `Document::sync_infills`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub infill: Option<Id>,
+    /// Attach Top: the roofs whose underside the wall's top follows, up or down from its top constraint, along its
+    /// location line. A sketched profile takes precedence.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_attach: Vec<Id>,
 }
 
 impl Wall {
@@ -544,6 +548,7 @@ impl Wall {
             curtain_lines: None,
             profile: None,
             infill: None,
+            top_attach: vec![],
         }
     }
 }

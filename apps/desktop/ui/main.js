@@ -452,6 +452,7 @@ function currentContext() {
   if (app.view.kind === "plan" && Plan.tool === "stair") return Stairs.context();
   if (app.view.kind === "plan" && Plan.tool === "railingstair") return Railings.context();
   if (app.view.kind === "plan" && Plan.tool === "railinghost") return Railings.hostContext();
+  if (app.view.kind === "plan" && Plan.tool === "attachtop") return { auto: true, key: "attachtop", title: "Attach Top", groups: [{ label: "Mode", items: [{ label: "Cancel", ico: "\u2715", big: true, onclick: () => { attachFor = null; Plan.setTool("select"); updateRibbonContext(); setPrompt(""); } }] }] };
   if (app.view.kind === "plan" && Plan.tool === "ramp") return Ramps.context();
   if (app.view.kind === "plan" && ["area", "areatag", "areaboundary"].includes(Plan.tool)) return Areas.context();
   if (app.view.kind === "plan" && Plan.tool === "colorlegend") return ColorFill.context();
@@ -504,11 +505,19 @@ function currentContext() {
   if (cloud) return { auto: true, key: `revcloud:${cloud}`, title: "Revision Clouds", groups: [
     { label: "Mode", items: [{ label: "Edit Sketch", icon: "editBoundary", onclick: () => Revisions.start(cloud) }] } ] };
   const pt = profileTarget();
-  if (pt) return { auto: true, key: `profile:${pt.id}:${pt.profiled}`, title: "Walls", groups: [
+  const at = attachTargets();
+  const attachItems = at ? [
+    { label: "Attach Top", icon: "attachTop", big: true, onclick: () => startAttachTop(at.ids) },
+    ...(at.attached ? [{ label: "Detach Top", icon: "detachTop", big: true, onclick: () => detachTop(at.ids) }] : []),
+  ] : [];
+  if (pt) return { auto: true, key: `profile:${pt.id}:${pt.profiled}:${at && at.attached}`, title: "Walls", groups: [
     { label: "Mode", items: [
       { label: "Edit Profile", icon: "editProfile", big: true, onclick: () => startProfileSketch(pt.id) },
       ...(pt.profiled ? [{ label: "Reset Profile", icon: "resetProfile", big: true, onclick: () => resetProfile(pt.id) }] : []),
-    ] } ] };
+    ] },
+    ...(attachItems.length ? [{ label: "Modify Wall", items: attachItems }] : []),
+  ] };
+  if (at) return { auto: true, key: `attach:${at.ids.join(",")}:${at.attached}`, title: "Walls", groups: [{ label: "Modify Wall", items: attachItems }] };
   const sec = selectedSection();
   if (sec && !sec.pinned) return { auto: true, key: `section:${sec.id}`, title: "Section", groups: [
     { label: "Section", items: [{ label: "Split Segment", ico: "Sl", onclick: () => runCommand("split-segment") }] } ] };
@@ -3879,6 +3888,40 @@ async function finishProfile(o) {
   setPrompt("Profile updated.");
   return true;
 }
+// ---- Attach Top / Detach Top: selected walls' tops follow a roof's underside ----
+let attachFor = null;
+function attachTargets() {
+  if (!app.selection.length || Sketch.active || app.view.kind !== "plan" || Plan.tool !== "select") return null;
+  const walls = new Set(Plan.selectionInfo().Walls || []);
+  if (!app.selection.every((id) => walls.has(id))) return null;
+  const attached = app.selection.some((id) => (app.info.attached_walls || []).includes(id));
+  return { ids: [...app.selection], attached };
+}
+function startAttachTop(ids) {
+  attachFor = ids;
+  Plan.setTool("attachtop");
+  updateRibbonContext(true);
+  setPrompt("Attach Top: click the roof the walls' tops should follow. Esc cancels.");
+}
+async function attachTopClick(p) {
+  const ids = attachFor;
+  if (!ids) return;
+  const r = await run("attach_top", { ids, point: [p.x, p.y] });
+  if (!r) return;
+  attachFor = null;
+  Plan.setTool("select");
+  await refresh();
+  app.selection = ids; Plan.setSelection(ids);
+  updateRibbonContext(); renderProperties();
+  setPrompt(`${ids.length === 1 ? "The wall follows" : `${ids.length} walls follow`} the roof's underside.`);
+}
+async function detachTop(ids) {
+  if (!(await run("detach_top", { ids }))) return;
+  await refresh();
+  updateRibbonContext();
+  setPrompt("Detached: the walls go back to their top constraint.");
+}
+
 async function resetProfile(id) {
   if (!(await run("reset_wall_profile", { id }))) return;
   await refresh();

@@ -2219,6 +2219,21 @@ impl Session {
                 self.doc.reset_wall_profile(id_of(p, "id")?)?;
                 Ok(json!({}))
             }
+            // Attach Top: { ids, point } the roof under a plan point takes the walls' tops; Detach Top: { ids }
+            "attach_top" => {
+                let ids: Vec<Id> = p.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_u64()).collect()).unwrap_or_default();
+                let roof = match p.get("roof_id").and_then(|v| v.as_u64()) {
+                    Some(r) => r,
+                    None => self.doc.roof_at(point_of(p.get("point").ok_or("missing point")?)?).ok_or("Click a roof to attach the walls to.")?,
+                };
+                self.doc.attach_wall_tops(&ids, Some(roof))?;
+                Ok(json!({ "roof_id": roof }))
+            }
+            "detach_top" => {
+                let ids: Vec<Id> = p.get("ids").and_then(|v| v.as_array()).map(|a| a.iter().filter_map(|v| v.as_u64()).collect()).unwrap_or_default();
+                self.doc.attach_wall_tops(&ids, None)?;
+                Ok(json!({}))
+            }
             // ---- export: files the page writes (PDF, DXF, settings), and where they go by default ----
             "write_file" => {
                 let path = PathBuf::from(p.get("path").and_then(|v| v.as_str()).ok_or("missing path")?);
@@ -2731,6 +2746,7 @@ impl Session {
             "levels": d.levels().iter().map(|(id, l)| json!({ "id": id, "name": l.name, "elevation_mm": l.elevation_mm, "elevation": d.level_display_elevation(l), "building_story": l.building_story })).collect::<Vec<_>>(),
             "site_ids": { "base": SITE_BASE_ID, "survey": SITE_SURVEY_ID },
             "profiled_walls": d.iter().filter(|(_, e)| matches!(e, Element::Wall(w) if w.profile.is_some())).map(|(id, _)| id).collect::<Vec<_>>(),
+            "attached_walls": d.iter().filter(|(_, e)| matches!(e, Element::Wall(w) if !w.top_attach.is_empty())).map(|(id, _)| id).collect::<Vec<_>>(),
             "wall_types": d.wall_types().iter().map(|(id, t)| json!({
                 "id": id, "name": t.name, "thickness_mm": t.thickness_mm(),
                 // reach left/right of each location line, for the plan preview

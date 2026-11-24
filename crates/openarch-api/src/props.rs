@@ -141,7 +141,7 @@ pub fn wall_props(d: &Document, id: Id, w: &Wall) -> Value {
                 }),
                 num("Unconnected Height", "height_mm", w.height_mm, !has_top_level),
                 num("Top Offset", "top_offset_mm", w.top_offset_mm, has_top_level),
-                ro("Top is Attached", "No"),
+                ro("Top is Attached", if w.top_attach.is_empty() { "No" } else { "Yes" }),
                 num("Top Extension Distance", "top_extension_mm", w.top_extension_mm, true),
                 boolean("Room Bounding", "room_bounding", w.room_bounding, true),
                 ro("Related to Mass", "No"),

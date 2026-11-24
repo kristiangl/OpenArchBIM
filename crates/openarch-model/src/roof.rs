@@ -279,6 +279,11 @@ impl LoopPoly {
     }
 }
 
+/// The height of a sloping face's top over a plan point.
+pub fn face_z(poly: &[[f64; 3]], p: Point) -> Option<f64> {
+    plane_z(poly).map(|z| z(p.x, p.y))
+}
+
 /// The height of a sloping face's plane over a plan point, from three of its corners that are not in line.
 fn plane_z(poly: &[[f64; 3]]) -> Option<impl Fn(f64, f64) -> f64> {
     let n = poly.len();

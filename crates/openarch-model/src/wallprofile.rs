@@ -36,7 +36,7 @@ impl Document {
     /// The wall's outline as it is now: one shape per region (outer ring counter-clockwise, then its holes), along
     /// the wall and up from its base. None for a wall without a sketched profile.
     pub fn wall_profile_shapes(&self, w: &Wall) -> Option<Vec<Shape>> {
-        let p = w.profile.as_ref()?;
+        let Some(p) = w.profile.as_ref() else { return self.attached_shape(w) };
         let (z0, z1) = self.wall_extent(w);
         let (len, h) = (w.length(), z1 - z0);
         let follow = |q: Point| Point::new(if (q.x - p.length_mm).abs() < 1.0 { len } else { q.x }, if (q.y - p.height_mm).abs() < 1.0 { h } else { q.y });
@@ -71,6 +71,86 @@ impl Document {
             None => return None,
         };
         Some(self.less_openings(&shapes, &openings, w))
+    }
+
+    /// A straight wall attached to roofs: its rectangle with the top following the roofs' underside along the
+    /// location line (up or down from the top constraint), where a roof is over it. None when nothing is attached or
+    /// no attached roof is over the wall.
+    pub fn attached_shape(&self, w: &Wall) -> Option<Vec<Shape>> {
+        if w.top_attach.is_empty() || w.curve.is_some() {
+            return None;
+        }
+        let (z0, z1) = self.wall_extent(w);
+        let len = w.length();
+        if len < 1.0 {
+            return None;
+        }
+        let under = self.roof_undersides(&w.top_attach);
+        let at = |u: f64| Point::new(w.start.x + (w.end.x - w.start.x) * u / len, w.start.y + (w.end.y - w.start.y) * u / len);
+        // the underside is flat or sloped plane by plane: sample finely, then keep only the bends
+        let n = ((len / 50.0).ceil() as usize).max(2);
+        let mut top: Vec<Point> = vec![];
+        let mut any = false;
+        for k in 0..=n {
+            let u = len * k as f64 / n as f64;
+            // the ends a hair inside, so a wall ending on the roof's edge still finds it
+            let z = match under(at(u.clamp(0.5, len - 0.5))) {
+                Some(z) => {
+                    any = true;
+                    z
+                }
+                None => z1,
+            };
+            top.push(Point::new(u, (z - z0).max(1.0)));
+        }
+        if !any {
+            return None;
+        }
+        let mut keep: Vec<Point> = vec![top[0]];
+        for i in 1..top.len() - 1 {
+            let (a, b, c) = (*keep.last().unwrap(), top[i], top[i + 1]);
+            let bend = ((c.x - a.x) * (b.y - a.y) - (c.y - a.y) * (b.x - a.x)).abs() / (c.x - a.x).hypot(c.y - a.y).max(1e-9);
+            if bend > 0.5 {
+                keep.push(b);
+            }
+        }
+        keep.push(top[top.len() - 1]);
+        let mut ring = vec![Point::new(0.0, 0.0), Point::new(len, 0.0)];
+        ring.extend(keep.into_iter().rev());
+        Some(vec![vec![ring]])
+    }
+
+    /// The height of the underside of the lowest of `roofs` over a plan point, if any of them is over it.
+    pub fn roof_undersides(&self, roofs: &[Id]) -> impl Fn(Point) -> Option<f64> + '_ {
+        let parts: Vec<(crate::roof::RoofGeometry, f64)> = roofs
+            .iter()
+            .filter_map(|id| {
+                let r = self.roof(*id)?;
+                let thick = self.roof_type(r.roof_type).map_or(0.0, |t| t.thickness_mm());
+                Some((self.roof_geometry(r)?, thick))
+            })
+            .collect();
+        move |p: Point| {
+            let mut best: Option<f64> = None;
+            for (g, thick) in &parts {
+                for f in g.faces.iter().filter(|f| !f.vertical) {
+                    let plan: Vec<Point> = f.poly.iter().map(|q| Point::new(q[0], q[1])).collect();
+                    if !crate::curve::point_in_polygon(p, &plan) {
+                        continue;
+                    }
+                    let Some(z) = crate::roof::face_z(&f.poly, p) else { continue };
+                    let z = z - thick / f.slope_deg.min(80.0).to_radians().cos().max(0.2);
+                    best = Some(best.map_or(z, |b: f64| b.min(z)));
+                }
+                for reg in &g.flat {
+                    if crate::rooms::contains(reg, p) {
+                        let z = g.base_z - thick;
+                        best = Some(best.map_or(z, |b: f64| b.min(z)));
+                    }
+                }
+            }
+            best
+        }
     }
 
     /// The whole of a wall's face, end to end and base to top, along it and up from its base.
@@ -204,6 +284,48 @@ impl Document {
         self.transact("Edit Profile", |tx| tx.update(id, Element::Wall(w)))
     }
 
+    /// The roof whose footprint is under a plan point (the lowest base when roofs overlap).
+    pub fn roof_at(&self, p: Point) -> Option<Id> {
+        self.roofs()
+            .into_iter()
+            .filter_map(|(id, r)| {
+                let g = self.roof_geometry(r)?;
+                g.regions.iter().any(|reg| crate::rooms::contains(reg, p)).then_some((id, g.base_z))
+            })
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map(|(id, _)| id)
+    }
+
+    /// Attach Top (with a roof) or Detach Top (without) for walls, as one undo step. Curved walls are refused.
+    pub fn attach_wall_tops(&mut self, ids: &[Id], roof: Option<Id>) -> Result<(), String> {
+        if let Some(r) = roof {
+            self.roof(r).ok_or("not a roof")?;
+        }
+        let mut walls = vec![];
+        for &id in ids {
+            let Some(Element::Wall(mut w)) = self.get(id).cloned() else { continue };
+            if w.pinned {
+                return Err("A pinned wall cannot be attached or detached.".into());
+            }
+            match roof {
+                Some(_) if w.curve.is_some() => return Err("Only straight walls attach to roofs so far.".into()),
+                Some(r) => w.top_attach = vec![r],
+                None if w.top_attach.is_empty() => continue,
+                None => w.top_attach.clear(),
+            }
+            walls.push((id, w));
+        }
+        if walls.is_empty() {
+            return Err(if roof.is_some() { "Select walls to attach." } else { "No selected wall is attached." }.into());
+        }
+        self.transact(if roof.is_some() { "Attach Top" } else { "Detach Top" }, |tx| {
+            for (id, w) in walls {
+                tx.update(id, Element::Wall(w));
+            }
+            Ok(())
+        })
+    }
+
     /// Reset Profile: the wall goes back to its rectangle. One undo step.
     pub fn reset_wall_profile(&mut self, id: Id) -> Result<(), String> {
         let Some(Element::Wall(mut w)) = self.get(id).cloned() else { return Err("not a wall".into()) };
@@ -305,6 +427,34 @@ mod tests {
         let hole = [v(1000.0, 1000.0), v(1600.0, 1000.0), v(1600.0, 1600.0), v(1000.0, 1600.0)];
         let lines = |r: &[Point]| (0..r.len()).map(|i| Curve::line(r[i], r[(i + 1) % r.len()])).collect::<Vec<_>>();
         lines(&outer).into_iter().chain(lines(&hole)).collect()
+    }
+
+    #[test]
+    fn a_wall_attached_to_a_roof_follows_its_underside() {
+        use crate::roof::RoofEdge;
+        let mut d = Document::new_project();
+        let (lvl, top) = (d.levels()[0].0, d.levels()[1].0);
+        let wt = d.wall_types().into_iter().find(|(_, t)| t.name == "Brick Veneer").unwrap().0;
+        // a gable wall across a 6 m wide roof sloping 30 degrees from its long sides, set at Level 1 (3000)
+        let c = [Point::new(0.0, 0.0), Point::new(8000.0, 0.0), Point::new(8000.0, 6000.0), Point::new(0.0, 6000.0)];
+        let edges: Vec<RoofEdge> = (0..4).map(|i| { let mut e = RoofEdge::new(Curve::line(c[i], c[(i + 1) % 4])); e.slope_deg = 30.0; e.defines_slope = i % 2 == 0; e }).collect();
+        let rt = d.roof_types()[0].0;
+        let roof = d.add_roof_sketch(rt, top, edges).unwrap();
+        let w = d.add_wall(wt, lvl, Point::new(0.0, 0.0), Point::new(0.0, 6000.0), 3000.0).unwrap();
+        d.patch_wall(w, &serde_json::json!({ "top_attach": [roof] })).unwrap();
+        let Some(Element::Wall(x)) = d.get(w).cloned() else { unreachable!() };
+        let shape = d.wall_profile_shapes(&x).unwrap();
+        let ring = &shape[0][0];
+        let thick = d.roof_type(rt).unwrap().thickness_mm() / 30f64.to_radians().cos();
+        let peak = ring.iter().map(|p| p.y).fold(0.0, f64::max);
+        // the wall goes up past its top constraint to the ridge, less the roof's thickness
+        assert!((peak - (3000.0 + 3000.0 * 30f64.to_radians().tan() - thick)).abs() < 2.0, "{peak}");
+        // a gable needs only its corners: the base, two eaves and the ridge
+        assert_eq!(ring.len(), 5, "{ring:?}");
+        // detached, it is a rectangle again
+        d.patch_wall(w, &serde_json::json!({ "top_attach": [] })).unwrap();
+        let Some(Element::Wall(x)) = d.get(w).cloned() else { unreachable!() };
+        assert!(d.wall_profile_shapes(&x).is_none());
     }
 
     #[test]

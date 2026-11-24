@@ -28,6 +28,8 @@ const ICONS = {
   gridExcept: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 12v9"/><path d="M12 3v9" stroke-dasharray="1.5 2"/>',
   segments: '<rect x="4" y="3" width="16" height="18"/><path d="M4 12h16"/><path class="a2" d="M12 12v9"/><path d="M12 3v9" stroke-dasharray="1.5 2"/><path class="a2" d="M15 6.5h4M17 4.5v4"/>',
   editProfile: '<path d="M3 21V10l9-7 9 7v11z"/><path class="a2" d="M8 21v-6h4v6"/><path class="a2" d="M14.5 13.5l4-4 2 2-4 4h-2z"/>',
+  attachTop: '<path d="M2 9l10-6 10 6"/><path d="M5 21V11M19 21V11"/><path class="a2" d="M12 19v-8M9 14l3-3 3 3"/>',
+  detachTop: '<path d="M2 9l10-6 10 6"/><path d="M5 21V12M19 21V12"/><path class="a2" d="M12 11v8M9 16l3 3 3-3"/>',
   resetProfile: '<path d="M3 21V8h18v13z"/><path class="a2" d="M7 5.5A6 6 0 0 1 17 5"/><path class="a2" d="M17 2v3h-3"/>',
   joinMullion: '<path d="M3 10.5h7.5M13.5 10.5h7.5M3 13.5h7.5M13.5 13.5h7.5"/><rect class="af" x="10.5" y="3" width="3" height="18"/>',
   breakMullion: '<rect x="3" y="10.5" width="18" height="3"/><path class="a2" d="M10.5 3v6M13.5 3v6M10.5 15v6M13.5 15v6"/>',
