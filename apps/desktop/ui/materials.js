@@ -14,7 +14,7 @@ const MatUI = (() => {
 
   const LABEL = {
     tile: "Ceramic / Stone Tiles", wood_plank: "Wood Planks", wood_solid: "Wood Solid", masonry: "Masonry", metal: "Architectural Metal",
-    stack_bond: "Stack Bond", running_bond: "Running Bond", herringbone: "Herringbone", chevron: "Chevron", basketweave: "Basketweave",
+    stack_bond: "Stack Bond", running_bond: "Running Bond", herringbone: "Herringbone", chevron: "Chevron", basketweave: "Basketweave", versailles: "Versailles (French pattern)",
     flemish: "Flemish Bond", english: "English Bond", strip: "Strip (random lengths)", board_and_batten: "Board and Batten",
     seamless: "Seamless Grain", glulam: "Glue-Laminated Strips", corrugated: "Corrugated", trapezoidal: "Trapezoidal Ribbed",
     standing_seam: "Standing Seam", cassette: "Flat Cassette Panels", perforated: "Perforated Sheet",
@@ -128,7 +128,8 @@ const MatUI = (() => {
     const sized = !["corrugated", "trapezoidal", "standing_seam", "perforated"].includes(l);
     if (sized) {
       const names = { tile: ["Tile width", "Tile height"], wood_plank: ["Plank length", "Plank width"], wood_solid: ["Sample length", "Sample height"], masonry: ["Unit length", "Unit height"], metal: ["Panel width", "Panel height"] }[a];
-      add("unit_length", names[0], "mm", { min: 1 }); add("unit_height", names[1], "mm", { min: 1 });
+      if (l === "versailles") add("unit_height", "Small square tile", "mm", { min: 1 });
+      else { add("unit_length", names[0], "mm", { min: 1 }); add("unit_height", names[1], "mm", { min: 1 }); }
     }
     if (!["seamless", "corrugated", "trapezoidal", "standing_seam", "perforated", "glulam"].includes(l)) {
       add("joint_width", { tile: "Grout joint width", masonry: "Mortar joint thickness", metal: "Reveal joint width" }[a] || "Seam / gap width", "mm", { min: 0 });
@@ -193,7 +194,7 @@ const MatUI = (() => {
       const arch = P.archetypes.find((x) => x.id === g.archetype);
       t.append(row("Layout", selectOf(arch.layouts, g.layout, (v) => gp({ layout: v }))));
       const sizes = P.unit_presets[g.archetype];
-      if (sizes && !["corrugated", "trapezoidal", "standing_seam", "perforated"].includes(g.layout)) {
+      if (sizes && !["corrugated", "trapezoidal", "standing_seam", "perforated", "versailles"].includes(g.layout)) {
         const s = h("select");
         s.add(new Option("Custom", ""));
         for (const [n, l, hh] of sizes) s.add(new Option(n, `${l},${hh}`));
@@ -208,6 +209,10 @@ const MatUI = (() => {
           continue;
         }
         t.append(row(txt, num(g[k], (v) => gp({ [k]: o.min !== undefined ? Math.max(o.min, o.max !== undefined ? Math.min(o.max, v) : v) : v }), o), unit));
+        if (k === "unit_height" && g.layout === "versailles") {
+          const m = g.unit_height + g.joint_width, sz = (a, b) => `${Math.round(a * m - g.joint_width)} x ${Math.round(b * m - g.joint_width)}`;
+          t.append(row("", h("span", { className: "muted", textContent: `Also ${sz(2, 2)}, ${sz(1, 2)} and ${sz(2, 3)}; repeats every ${Math.round(6 * m)} mm` })));
+        }
       }
       if (g.archetype === "masonry") t.append(row("Mortar profile", selectOf(P.mortar_profiles, g.mortar_profile, (v) => gp({ mortar_profile: v }))));
       t.append(row("Surface finish", selectOf(P.finishes.map((f) => f.id), g.finish, (v) => gp({ finish: v }))));

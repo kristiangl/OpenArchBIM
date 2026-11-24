@@ -44,6 +44,9 @@ pub enum Layout {
     Chevron,
     /// Squares of parallel units, turned in turn.
     Basketweave,
+    /// Tiles: the French (Versailles) pattern, twelve tiles of four sizes (1 x 1, 1 x 2, 2 x 2 and 2 x 3 small
+    /// squares) repeating on a square six small squares across.
+    Versailles,
     /// Masonry: stretchers and headers in each course.
     Flemish,
     /// Masonry: a course of stretchers, then a course of headers.
@@ -73,7 +76,7 @@ impl Layout {
     pub fn for_archetype(a: Archetype) -> &'static [Layout] {
         use Layout::*;
         match a {
-            Archetype::Tile => &[StackBond, RunningBond, Herringbone, Chevron, Basketweave],
+            Archetype::Tile => &[StackBond, RunningBond, Herringbone, Chevron, Basketweave, Versailles],
             Archetype::WoodPlank => &[Strip, RunningBond, Herringbone, Chevron, BoardAndBatten],
             Archetype::WoodSolid => &[Seamless, Glulam],
             Archetype::Masonry => &[RunningBond, StackBond, Flemish, English],
@@ -459,6 +462,20 @@ fn plan(p: &GeneratorParams) -> Result<Plan, String> {
                 }
             }
             out(2.0 * b, 2.0 * b, units, None, notes)
+        }
+        Versailles => {
+            // the small square with its joint is the module; each tile as (column, row from the top, width,
+            // height) in modules, as the usual twelve-piece drawing lays them out
+            const TILES: [(f64, f64, f64, f64); 12] = [
+                (0.0, 0.0, 2.0, 2.0), (5.0, 0.0, 1.0, 1.0), (2.0, 1.0, 2.0, 2.0), (4.0, 1.0, 2.0, 3.0),
+                (0.0, 2.0, 1.0, 2.0), (1.0, 2.0, 1.0, 1.0), (1.0, 3.0, 2.0, 2.0), (3.0, 3.0, 1.0, 1.0),
+                (3.0, 4.0, 2.0, 1.0), (5.0, 4.0, 2.0, 2.0), (1.0, 5.0, 1.0, 1.0), (2.0, 5.0, 3.0, 2.0),
+            ];
+            let m = ch;
+            for (c, r, w, hh) in TILES {
+                units.push(rect(c * m, (6.0 - r - hh) * m, w * m, hh * m, next(), along, Kind::Face));
+            }
+            out(6.0 * m, 6.0 * m, units, None, notes)
         }
         Strip => {
             // two boards' length per row, six rows, each row cut at random lengths

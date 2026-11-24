@@ -44,8 +44,8 @@ fn every_layout_covers_its_domain_and_tiles() {
 }
 
 #[test]
-fn herringbone_basketweave_and_chevron_cells_do_not_overlap() {
-    for l in [Layout::Herringbone, Layout::Basketweave, Layout::Chevron] {
+fn herringbone_basketweave_chevron_and_versailles_cells_do_not_overlap() {
+    for l in [Layout::Herringbone, Layout::Basketweave, Layout::Chevron, Layout::Versailles] {
         let p = GeneratorParams { layout: l, unit_length: 297.0, unit_height: 147.0, joint_width: 3.0, ..GeneratorParams::preset(Archetype::Tile) };
         let pl = plan(&p).unwrap();
         let inside = |u: &Unit, x: f64, y: f64| -> bool {
@@ -137,4 +137,24 @@ fn metal_is_metallic_unless_painted() {
     assert_eq!(g.depth_mm, 38.0);
     assert_eq!(g.hatch.len(), 1);
     assert_eq!(g.hatch[0].spacing, 450.0);
+}
+
+#[test]
+fn versailles_has_its_four_sizes_and_a_hatch_on_every_joint() {
+    let p = GeneratorParams { layout: Layout::Versailles, unit_height: 200.0, joint_width: 3.0, ..GeneratorParams::preset(Archetype::Tile) };
+    let pl = plan(&p).unwrap();
+    assert_eq!((pl.w, pl.h), (1218.0, 1218.0));
+    let mut sizes: Vec<(i64, i64)> = pl.units.iter().map(|u| {
+        let w = (u.poly[2][0] - u.poly[0][0]) / 203.0;
+        let h = (u.poly[2][1] - u.poly[0][1]) / 203.0;
+        (w.round().min(h.round()) as i64, w.round().max(h.round()) as i64)
+    }).collect();
+    sizes.sort_unstable();
+    assert_eq!(sizes, vec![(1, 1), (1, 1), (1, 1), (1, 1), (1, 2), (1, 2), (2, 2), (2, 2), (2, 2), (2, 2), (2, 3), (2, 3)]);
+    // each joint line has one run per repeat: six lines each way, each its own family
+    let g = generate(&p, 512, false).unwrap();
+    assert_eq!(g.hatch.len(), 12, "{:?}", g.hatch);
+    let along: f64 = g.hatch.iter().map(|l| l.dashes.first().copied().unwrap_or(0.0)).sum();
+    // joint runs, modules: across 4 + 4 + 4 + 2 + 3 + 3 and up 3 + 4 + 2 + 3 + 4 + 4
+    assert!((along - 40.0 * 203.0).abs() < 1.0, "joint length {along}");
 }
