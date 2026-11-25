@@ -148,7 +148,12 @@ impl Document {
             .map_err(|e| e.to_string())?;
         for row in rows {
             let (id, json) = row.map_err(|e| e.to_string())?;
-            let e: Element = serde_json::from_str(&json).map_err(|e| format!("element {id}: {e}"))?;
+            let e: Element = match serde_json::from_str(&json) {
+                Ok(e) => e,
+                // saved before these elements' own `kind` field was renamed: it clashed with the element tag
+                Err(_) if json.matches("\"kind\":").count() > 1 => serde_json::from_str(&rename_own_kind(&json)).map_err(|e| format!("element {id}: {e}"))?,
+                Err(e) => return Err(format!("element {id}: {e}")),
+            };
             d.elements.insert(id as Id, e);
         }
         d.ensure_roof_defaults(); // projects saved before roofs
@@ -373,5 +378,21 @@ mod tests {
         assert!(Document::open(&path).is_err());
         assert!(Document::open(&dir.join("missing.oab")).is_err());
         std::fs::remove_dir_all(dir).ok();
+    }
+}
+
+/// An element saved with its own `kind` field beside the element tag `kind` (dimensions, spots, spot types, global
+/// parameters and group types, before the field was saved under its own name): the second `kind` becomes that name.
+/// The field comes before anything nested in each of these, so the second `"kind":` is the field.
+pub(crate) fn rename_own_kind(json: &str) -> String {
+    let field = [("Dimension", "dim_kind"), ("Spot", "spot_kind"), ("SpotType", "spot_kind"), ("GlobalParam", "param_kind"), ("GroupType", "group_kind"), ("ViewFilter", "filter_kind")]
+        .iter()
+        .find(|(tag, _)| json.starts_with(&format!("{{\"kind\":\"{tag}\"")))
+        .map(|(_, f)| *f);
+    let Some(field) = field else { return json.to_string() };
+    let first = json.find("\"kind\":").unwrap_or(0);
+    match json[first + 7..].find("\"kind\":") {
+        Some(i) => { let at = first + 7 + i; format!("{}\"{field}\":{}", &json[..at], &json[at + 7..]) }
+        None => json.to_string(),
     }
 }

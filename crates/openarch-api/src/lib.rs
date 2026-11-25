@@ -2728,7 +2728,7 @@ impl Session {
             "path": self.path.as_ref().map(|p| p.to_string_lossy().to_string()),
             "views": d.views().iter().map(|(id, v)| json!({
                 "id": id, "name": v.name, "view_kind": v.view_kind, "level_id": v.level, "area_scheme": v.area_scheme, "template_id": v.template, "type_id": d.view_type_of(v),
-                "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type,
+                "marker_id": v.elevation.as_ref().map(|e| e.marker), "slot": v.elevation.as_ref().map(|e| e.slot), "section_id": v.section, "view_type_id": v.view_type, "orbit": v.orbit,
             })).collect::<Vec<_>>(),
             "arrays": d.group_arrays().iter().map(|(id, a)| json!({ "id": id, "members": a.members, "count": a.members.len(), "move_to": if a.to_last { "last" } else { "second" }, "kind": if matches!(a.step, openarch_model::array::ArrayKind::Radial { .. }) { "radial" } else { "linear" } })).collect::<Vec<_>>(),
             "group_types": d.group_types().iter().map(|(id, t)| json!({ "id": id, "name": t.name, "kind": t.kind, "attached_to": t.attached_to, "view_kind": t.view_kind, "count": d.group_instances().iter().filter(|(_, g)| g.group_type == *id).count() })).collect::<Vec<_>>(),

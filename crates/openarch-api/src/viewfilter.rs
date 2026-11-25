@@ -14,7 +14,20 @@ use crate::schedule::Params;
 use crate::{id_of, Res, Session};
 
 fn filter_of(p: &Value) -> Result<ViewFilter, String> {
-    serde_json::from_value(p.get("filter").cloned().ok_or("missing filter")?).map_err(|e| format!("bad filter: {e}"))
+    let mut v = p.get("filter").cloned().ok_or("missing filter")?;
+    if let Some(o) = v.as_object_mut() {
+        if let Some(k) = o.remove("kind") { o.entry("filter_kind").or_insert(k); }
+    }
+    serde_json::from_value(v).map_err(|e| format!("bad filter: {e}"))
+}
+
+/// A filter as the page reads it: its kind as `kind`.
+fn filter_json(f: &ViewFilter) -> Value {
+    let mut v = serde_json::to_value(f).unwrap_or_default();
+    if let Some(o) = v.as_object_mut() {
+        if let Some(k) = o.remove("filter_kind") { o.insert("kind".into(), k); }
+    }
+    v
 }
 
 fn list_of(p: &Value) -> Result<Vec<FilterApplication>, String> {
@@ -127,7 +140,7 @@ impl Session {
                 let d = &self.doc;
                 let used = d.views_with_filters();
                 Ok(json!({ "filters": d.view_filters().into_iter().map(|(id, f)| {
-                    let mut v = serde_json::to_value(f).unwrap_or_default();
+                    let mut v = filter_json(f);
                     v["id"] = json!(id);
                     v["used_in"] = json!(used.iter().filter(|(_, l)| l.iter().any(|a| a.filter == id)).count());
                     v

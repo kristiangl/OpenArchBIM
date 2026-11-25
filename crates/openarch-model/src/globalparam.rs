@@ -21,7 +21,8 @@ use crate::family::{ParamKind, ParamValue};
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GlobalParam {
     pub name: String,
-    #[serde(default = "length")]
+    /// Saved as `param_kind`: elements are tagged with `kind` in the project file.
+    #[serde(default = "length", rename = "param_kind")]
     pub kind: ParamKind,
     pub value: ParamValue,
     /// Over other global parameters; the value then comes from it.

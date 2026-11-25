@@ -124,7 +124,8 @@ pub struct GroupMember {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct GroupType {
     pub name: String,
-    #[serde(default)]
+    /// Saved as `group_kind`: elements are tagged with `kind` in the project file.
+    #[serde(default, rename = "group_kind")]
     pub kind: GroupKind,
     /// An attached detail group: the model group type it annotates, and the kind of view it is drawn in.
     #[serde(default)]

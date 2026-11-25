@@ -73,7 +73,8 @@ impl FilterNode {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "snake_case")]
+// tagged `filter_kind` in the file, where elements are tagged with `kind` (the API still speaks of `kind`)
+#[serde(tag = "filter_kind", rename_all = "snake_case")]
 pub enum FilterKind {
     /// The elements of these categories that pass the rules. No rules at all passes every element of them.
     Rules { categories: Vec<String>, root: FilterNode },
@@ -401,5 +402,18 @@ mod tests {
         assert!(d.view(view).unwrap().settings.overrides.filters.is_empty() && d.view_filters().is_empty());
         d.undo().unwrap();
         assert_eq!((d.view_filters().len(), d.view(view).unwrap().settings.overrides.filters.len()), (1, 1));
+    }
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    #[test]
+    fn a_view_filter_reads_back_as_saved() {
+        let f = Element::ViewFilter(ViewFilter { name: "Picked".into(), kind: FilterKind::Selection { ids: [3, 4].into_iter().collect() } });
+        let text = serde_json::to_string(&f).unwrap();
+        let back: Element = serde_json::from_str(&text).unwrap_or_else(|e| panic!("{text}: {e}"));
+        assert_eq!(back, f);
     }
 }

@@ -293,7 +293,8 @@ pub struct SegmentFmt {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Dimension {
     pub view: Id,
-    #[serde(default)]
+    /// Saved as `dim_kind`: elements are tagged with `kind` in the project file.
+    #[serde(default, rename = "dim_kind")]
     pub kind: DimKind,
     pub dim_type: Id,
     pub refs: Vec<DimRef>,
@@ -2168,4 +2169,31 @@ mod tests {
         assert!(ends.iter().all(|c| matches!(c.spec, RefSpec::WallEnd { .. })) && !ends.is_empty());
     }
 
+}
+
+#[cfg(test)]
+mod save_tests {
+    use super::*;
+
+    #[test]
+    fn a_project_with_dimensions_saves_and_opens_again() {
+        let mut d = Document::new_project();
+        let lvl = d.levels()[0].0;
+        let wt = d.wall_types().iter().find(|(_, t)| t.name == "Internal Stud 90").unwrap().0;
+        let a = d.add_wall(wt, lvl, Point::new(0.0, 0.0), Point::new(0.0, 4000.0), 2700.0).unwrap();
+        let b = d.add_wall(wt, lvl, Point::new(3000.0, 0.0), Point::new(3000.0, 4000.0), 2700.0).unwrap();
+        let view = d.views().iter().find(|(_, v)| v.view_kind == ViewKind::FloorPlan).unwrap().0;
+        let r = |w| DimRef { spec: RefSpec::Wall { id: w, offset: 0.0 }, pick: Some([0.0, 500.0]) };
+        let dim = d.add_dimension(view, DimKind::Linear, vec![r(a), r(b)], Point::new(1500.0, 5000.0), Some([1.0, 0.0]), None).unwrap();
+        let path = std::env::temp_dir().join(format!("oa-dims-{}.oab", std::process::id()));
+        d.save(&path).unwrap();
+        let back = Document::open(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert!(matches!(back.get(dim), Some(Element::Dimension(x)) if x.kind == DimKind::Linear));
+        // a project saved before the field had its own name: the second "kind" was the dimension's
+        let Some(Element::Dimension(x)) = d.get(dim) else { unreachable!() };
+        let old = serde_json::to_string(&Element::Dimension(x.clone())).unwrap().replace("\"dim_kind\"", "\"kind\"");
+        let e: Element = serde_json::from_str(&crate::store::rename_own_kind(&old)).unwrap();
+        assert!(matches!(e, Element::Dimension(x) if x.kind == DimKind::Linear));
+    }
 }

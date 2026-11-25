@@ -137,6 +137,8 @@ fn dec1() -> u8 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SpotType {
     pub name: String,
+    /// Saved as `spot_kind`: elements are tagged with `kind` in the project file.
+    #[serde(rename = "spot_kind")]
     pub kind: SpotKind,
     #[serde(default = "d_text")]
     pub text_size_mm: f64,
@@ -272,7 +274,8 @@ impl SpotType {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Spot {
     pub view: Id,
-    #[serde(default)]
+    /// Saved as `spot_kind`: elements are tagged with `kind` in the project file.
+    #[serde(default, rename = "spot_kind")]
     pub kind: SpotKind,
     pub spot_type: Id,
     /// The point measured, in the plan (mm).

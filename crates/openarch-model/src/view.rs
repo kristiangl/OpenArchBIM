@@ -625,6 +625,10 @@ impl Default for Underlay {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct View {
     pub name: String,
+    /// A 3D view's camera as it was last left: turn and tilt (radians), distance and the point looked at (metres),
+    /// so it opens and prints on sheets the same way.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub orbit: Option<[f64; 6]>,
     #[serde(default)]
     pub view_kind: ViewKind,
     /// Associated level of a plan view.
@@ -737,6 +741,7 @@ impl View {
         }
         View {
             name: name.into(),
+            orbit: None,
             view_kind: ViewKind::FloorPlan,
             level: Some(level),
             title_on_sheet: String::new(),

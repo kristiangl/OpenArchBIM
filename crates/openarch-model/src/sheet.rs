@@ -409,9 +409,6 @@ impl Document {
             return Err(format!("{} - {} is a placeholder: clear Placeholder in its properties to draw on it.", s.number, s.name));
         }
         let v = self.view(view).ok_or("not a view")?;
-        if v.view_kind == ViewKind::ThreeD {
-            return Err("3D views go on sheets in a later step.".into());
-        }
         if v.view_kind == ViewKind::Schedule {
             return Err("Schedules go on sheets in the next step.".into());
         }
@@ -512,6 +509,8 @@ impl Document {
         let v = self.view(view)?;
         let scale = v.settings.scale.max(1);
         let (drawing, c, size) = match v.view_kind {
+            // a 3D view: a picture of it as its camera sees it, 180 x 120 on paper
+            ViewKind::ThreeD => ("three_d", [0.0, 0.0], [180.0 * scale as f64, 120.0 * scale as f64]),
             ViewKind::Elevation | ViewKind::Section => {
                 let f = self.elevation_frame(view)?;
                 // the view runs from -left_mm to right_mm along it
