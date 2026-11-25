@@ -1128,7 +1128,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         });
         if (f.background && !f.stress) { pass.setPipeline(bgPipe); pass.setBindGroup(0, bind); pass.draw(3); }
         pass.setBindGroup(0, bind); pass.setBindGroup(1, bind1); pass.setBindGroup(2, defaultMat.bind); pass.setBindGroup(3, defaultPat.bind);
-        const n = clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
+        const n = f.noGrid ? 0 : clipLines(f.stress ? st.bigGrid : st.grid, f.uniforms.subarray(0, 16), clipped, true);
         if (n) { device.queue.writeBuffer(gridBuf, 0, clipped, 0, n * 6); pass.setPipeline(linePipe); pass.setVertexBuffer(0, gridBuf); pass.draw(n); }
         // lines given with setLines (imported CAD drawings), cut to the view like the grid
         if (f.lines && f.lines.length && !f.stress) {
@@ -1373,7 +1373,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LESS);
         gl.disable(gl.CULL_FACE); gl.disable(gl.POLYGON_OFFSET_FILL);
         use(lineProg);
-        const n = clipLines(f.stress ? st.bigGrid : st.grid, vp, clipped, false);
+        const n = f.noGrid ? 0 : clipLines(f.stress ? st.bigGrid : st.grid, vp, clipped, false);
         gl.bindBuffer(gl.ARRAY_BUFFER, gridDyn);
         gl.bufferData(gl.ARRAY_BUFFER, clipped.subarray(0, n * 6), gl.DYNAMIC_DRAW);
         gl.bindVertexArray(gridDynVao);
@@ -1516,7 +1516,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       const vp = mat.mul(mat.perspective(0.9, aspect, 0.1, 4000), mat.lookAt(eye, cam.target, [0, 0, 1]));
       lastVp = vp;
       const dark = matchMedia("(prefers-color-scheme: dark)").matches;
-      const page = dark ? [0.12, 0.14, 0.16] : [0.98, 0.98, 0.99];
+      // a picture for a sheet is on white paper
+      const page = opts.bare ? [1, 1, 1] : dark ? [0.12, 0.14, 0.16] : [0.98, 0.98, 0.99];
       const lineMode = !stress && style === "hidden_line" ? 1 : !stress && style === "wireframe" ? 2 : 0;
       // the light: the view's sun, over the viewer's shoulder, or (no sun given) a fixed one
       let L = [0.4, -0.5, 0.8], amb = 0.38, dif = 0.62, shadow = false;
@@ -1573,7 +1574,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
         gnd = groundMesh(sun.groundZ - 0.003, c, Math.round(R), dark ? [0.2, 0.22, 0.24] : [0.93, 0.93, 0.91]);
       }
       if (!allLines) allLines = extraLines && sunLines ? (() => { const a = new Float32Array(extraLines.length + sunLines.length); a.set(extraLines); a.set(sunLines, extraLines.length); return a; })() : extraLines || sunLines;
-      be.render({ uniforms: u, clear: page, stress, lineMode, edges, background, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao: ao || sil, aoGround: ao, ground: gnd });
+      be.render({ noGrid: !!opts.bare, uniforms: u, clear: page, stress, lineMode, edges, background: background && !opts.bare, meshes: meshes.map((m) => m.g), lines: allLines, shadow, glassShadow, ao: ao || sil, aoGround: ao, ground: gnd });
       if (afterRender) afterRender();
     }
 
@@ -1685,13 +1686,16 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
     // ---- the view cube: a small cube in the corner that turns with the camera. A face looks square at that side
     // (Top looks straight down), a corner gives the three-quarter view from it, Home goes back to the starting view.
     // A click eases the camera round; drags still orbit the model.
-    const cube = document.createElement("div");
+    // a bare viewport (pictures for sheets) has no cube
+    const cube = opts.bare ? null : document.createElement("div");
+    if (cube) {
     cube.className = "vp-cube";
     cube.innerHTML = '<svg viewBox="-60 -60 120 120" width="96" height="96"></svg><button class="vp-cube-home" title="Home: the starting view, fitted to the model">⌂</button>' +
       '<button class="vp-cube-turn" data-turn="up" title="Turn up a quarter">▴</button><button class="vp-cube-turn" data-turn="down" title="Turn down a quarter">▾</button>' +
       '<button class="vp-cube-turn" data-turn="left" title="Turn left a quarter">◂</button><button class="vp-cube-turn" data-turn="right" title="Turn right a quarter">▸</button>';
     canvas.after(cube);
-    const cubeSvg = cube.querySelector("svg");
+    }
+    const cubeSvg = cube ? cube.querySelector("svg") : null;
     const FACES = [
       { name: "TOP", n: [0, 0, 1], c: [[-1, -1, 1], [1, -1, 1], [1, 1, 1], [-1, 1, 1]], az: null, el: 1.5 },
       { name: "FRONT", n: [0, -1, 0], c: [[-1, -1, -1], [1, -1, -1], [1, -1, 1], [-1, -1, 1]], az: -Math.PI / 2, el: 0 },
@@ -1718,6 +1722,7 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       if (k >= 1) { const f = ease.fitAfter; ease = null; if (f) f(); }
     }
     function drawCube() {
+      if (!cube) return;
       const eye = eyePos();
       const nrm = (a) => { const l = Math.hypot(...a) || 1; return [a[0] / l, a[1] / l, a[2] / l]; };
       const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
@@ -1752,8 +1757,8 @@ void main() { o = vtint >= 0.99 ? vec4(0.85, 0.35, 0.08, 1.0) : vec4(edge.rgb, 1
       cube.style.left = `${canvas.offsetLeft + canvas.clientWidth - 112}px`;
       cube.style.top = `${canvas.offsetTop + 8}px`;
     }
-    cube.addEventListener("pointerdown", (e) => e.stopPropagation());
-    cube.addEventListener("click", (e) => {
+    if (cube) cube.addEventListener("pointerdown", (e) => e.stopPropagation());
+    if (cube) cube.addEventListener("click", (e) => {
       if (e.target.closest(".vp-cube-home")) { turnTo(-0.9, 0.5, () => api.fit && api.fit()); return; }
       const turn = e.target.closest("[data-turn]");
       if (turn) {

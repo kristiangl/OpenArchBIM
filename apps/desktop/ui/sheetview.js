@@ -88,6 +88,18 @@ const SheetView = (() => {
       if (v.rotation) c.rotate((-v.rotation * Math.PI) / 180);
       c.translate(-uw / 2, -uh / 2);
       const s2 = k / v.scale;
+      if (v.drawing === "three_d") {
+        // a 3D view: its picture, rendered as its camera sees it
+        const shot = shots.get(shotKey(v));
+        if (shot && shot.canvas) c.drawImage(shot.canvas, 0, 0, uw, uh);
+        else {
+          c.strokeStyle = "#9aa3b0"; c.lineWidth = 1; c.strokeRect(0, 0, uw, uh);
+          if (!shot) picture(v).then(() => render()).catch(() => {});
+        }
+        c.restore();
+        label(c, v, at, k);
+        continue;
+      }
       if (c.oaViewport) c.oaViewport({ view: v.view, kind: v.drawing, scale: v.scale, rotation: v.rotation || 0, centre: v.centre, paper_size: v.paper_size, title: v.title, local: { s: s2, cx: v.view_centre[0], cy: v.view_centre[1], w: uw, h: uh } });
       if (d && v.drawing === "plan") Plan.renderTo(c, { data: d, cam: { x: v.view_centre[0], y: v.view_centre[1], s: s2 }, w: uw, h: uh });
       else if (d) Elev.renderTo(c, { data: d, cam: { u: v.view_centre[0], z: v.view_centre[1], s: s2 }, w: uw, h: uh });
@@ -339,10 +351,47 @@ const SheetView = (() => {
   }
 
   // the sheet and the data of every view on it
+  // ---- 3D views on sheets: a picture from a bare viewport drawn off screen, kept until the model changes -------------
+  const shots = new Map(); // key -> { canvas } (or {} while it is being made)
+  const shotKey = (v) => `${v.view}:${app.info && app.info.revision}:${Math.round(v.paper_size[0])}x${Math.round(v.paper_size[1])}`;
+  async function picture(v) {
+    const key = shotKey(v);
+    if (shots.has(key)) return shots.get(key);
+    shots.set(key, {});
+    const pxPerMm = 8; // about 200 dpi on paper
+    const w = Math.round(v.paper_size[0] * pxPerMm), h = Math.round(v.paper_size[1] * pxPerMm);
+    const holder = document.createElement("div");
+    Object.assign(holder.style, { position: "fixed", left: "-20000px", top: "0", width: `${w}px`, height: `${h}px` });
+    const cv = document.createElement("canvas");
+    Object.assign(cv.style, { width: `${w}px`, height: `${h}px`, display: "block" });
+    holder.append(cv); document.body.append(holder);
+    try {
+      const vp = await Viewport.init(cv, () => {}, { bare: true });
+      const scene = await Backend.call("scene", { view_id: v.view });
+      vp.setMeshes(scene.meshes, [], scene.patterns || {});
+      vp.setStyle(scene.visual_style || "hidden_line");
+      vp.setGraphics(scene.graphics || {});
+      const view = (app.info.views || []).find((x) => x.id === v.view);
+      vp.fit();
+      if (view && view.orbit) vp.setCameraState({ az: view.orbit[0], el: view.orbit[1], dist: view.orbit[2], target: view.orbit.slice(3, 6) });
+      const s = await vp.snapshot();
+      const out = document.createElement("canvas"); out.width = s.w; out.height = s.h;
+      out.getContext("2d").putImageData(new ImageData(s.data, s.w, s.h), 0, 0);
+      const shot = { canvas: out };
+      shots.set(key, shot);
+      return shot;
+    } finally { holder.remove(); }
+  }
+  // the pictures a sheet's 3D views need, made before it is drawn (Export)
+  async function prepare(s) {
+    for (const v of s.views || []) if (v.drawing === "three_d") await picture(v);
+  }
+
   async function load(id, refit) {
     const s = await Backend.call("sheet", { id });
     const data = new Map();
     for (const v of s.views) {
+      if (v.drawing === "three_d") continue;
       try { data.set(v.view, await Backend.call(v.drawing === "plan" ? "plan" : "elevation", { view_id: v.view })); } catch (e) { /* a view that cannot be drawn shows as an empty box */ }
     }
     const first = !sheet || sheet.id !== s.id;
@@ -601,5 +650,6 @@ const SheetView = (() => {
     screenBox,
     schedLayout,
     scheduleAt,
+    prepare,
   };
 })();

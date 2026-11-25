@@ -206,8 +206,11 @@ const ExportFlow = (() => {
     const s = item.kind === "sheet" ? await Backend.call("sheet", { id: item.id }) : await Backend.call("view_print", { view_id: item.id });
     const data = new Map();
     for (const v of s.views) {
+      if (v.drawing === "three_d") continue;
       try { data.set(v.view, await Backend.call(v.drawing === "plan" ? "plan" : "elevation", { view_id: v.view })); } catch { /* drawn empty */ }
     }
+    // a 3D view's picture is made before the page is drawn
+    await SheetView.prepare(s);
     // pictures fetched before drawing, so the pages have them
     await Images.preload([...(s.images || []), ...[...data.values()].flatMap((d) => d.images || [])]);
     const [pw, ph] = s.paper;

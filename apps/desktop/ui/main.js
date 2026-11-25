@@ -1291,7 +1291,18 @@ function saveCamera() {
   const k = app.view.kind;
   const c = k === "plan" ? Plan.getCamera() : k === "elevation" ? Elev.getCamera() : k === "3d" ? app.vp?.getCamera() : k === "sheet" ? SheetView.getCamera() : null;
   if (c) app.cams[viewKey(app.view)] = c;
+  if (k === "3d" && c) saveOrbit(app.view.viewId, c);
 }
+// a 3D view's camera goes into the model when it is left, so the view opens and prints on sheets that way
+function saveOrbit(viewId, c) {
+  const v = viewById(viewId);
+  if (!v || viewId == null) return;
+  const orbit = [c.az, c.el, c.dist, ...c.target].map((x) => Math.round(x * 1e4) / 1e4);
+  if (v.orbit && v.orbit.every((x, i) => Math.abs(x - orbit[i]) < 1e-3)) return;
+  v.orbit = orbit;
+  Backend.call("patch_view", { id: viewId, patch: { orbit } }).catch(() => {});
+}
+const orbitCamera = (o) => ({ az: o[0], el: o[1], dist: o[2], target: [o[3], o[4], o[5]] });
 function restoreCamera() {
   const c = app.cams[viewKey(app.view)], k = app.view.kind;
   if (!c) return;
@@ -1438,7 +1449,7 @@ async function refreshView(force) {
       // and model lines, in their line styles' colours
       Cad.lines3D(scene.cad_imports).then((lines) => { if (app.view.kind === "3d" && app.vp) app.vp.setLines(withModelLines(lines, scene.model_lines)); });
       snapGeometry3D(scene.meshes);
-      if (force) app.vp.fit();
+      if (force) { const o = (viewById(app.view.viewId) || {}).orbit; if (o && !app.cams[viewKey(app.view)]) app.vp.setCameraState(orbitCamera(o)); else if (!app.cams[viewKey(app.view)]) app.vp.fit(); }
     }
     app.vp.setStyle(app.sceneStyle || "shaded");
     app.vp.setGraphics(app.sceneGraphics);
